@@ -7,7 +7,6 @@ services:
       dockerfile: Dockerfile
     env_file:
       - .env
-      - .env.secrets
     ports:
       - "${SERVER_PORT}:${SERVER_PORT}"
     environment:
@@ -27,12 +26,16 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:${SERVER_PORT}/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   db:
     image: postgres:${POSTGRES_VERSION}
     env_file:
       - .env
-      - .env.secrets
     environment:
       - POSTGRES_USER=${DB_USER}
       - POSTGRES_PASSWORD=${DB_PASSWORD}
@@ -74,14 +77,22 @@ services:
     env_file:
       - .env
     volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus_rules.yml:/etc/prometheus/prometheus_rules.yml:ro
+      - prometheus_data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
       - '--web.listen-address=:${PROMETHEUS_PORT}'
     ports:
       - "${PROMETHEUS_PORT}:${PROMETHEUS_PORT}"
     networks:
       - monitoring
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:${PROMETHEUS_PORT}/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   grafana:
     image: grafana/grafana:${GRAFANA_VERSION}
@@ -89,15 +100,25 @@ services:
       - .env
     environment:
       - GF_SERVER_HTTP_PORT=${GRAFANA_PORT}
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
     ports:
       - "${GRAFANA_PORT}:${GRAFANA_PORT}"
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/etc/grafana/dashboards:ro
     networks:
       - monitoring
       - frontend
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:${GRAFANA_PORT}/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
 networks:
   frontend:
@@ -112,3 +133,4 @@ networks:
 volumes:
   db_data:
   grafana_data:
+  prometheus_data:
