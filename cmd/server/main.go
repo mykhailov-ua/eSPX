@@ -33,7 +33,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	pool, err := database.Connect(ctx, cfg.DBDSN)
+	pool, err := database.Connect(ctx, cfg.DBDSN, cfg.DBMaxConns, cfg.DBMinConns)
 	if err != nil {
 		slog.Error("failed to connect to database", "error", err)
 		os.Exit(1)
@@ -60,12 +60,14 @@ func main() {
 		cfg.EventBatchSize,
 		cfg.MaxWorkers,
 		time.Duration(cfg.EventFlushMs)*time.Millisecond,
+		time.Duration(cfg.WriteTimeoutMs)*time.Millisecond,
 	)
 	eventProc.Start(ctx)
 
 	statsAgg := stats.NewAggregator(
 		queries,
 		time.Duration(cfg.StatsFlushMs)*time.Millisecond,
+		time.Duration(cfg.WriteTimeoutMs)*time.Millisecond,
 		cfg.MaxWorkers,
 	)
 	statsAgg.Start(ctx)
@@ -78,6 +80,9 @@ func main() {
 	})
 
 	mux.HandleFunc("POST /track", func(w http.ResponseWriter, r *http.Request) {
+		requestID := uuid.New().String()
+		l := slog.With("request_id", requestID)
+
 		var req struct {
 			CampaignID uuid.UUID       `json:"campaign_id"`
 			Type       string          `json:"type"`
@@ -85,16 +90,17 @@ func main() {
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			l.Warn("invalid request body", "error", err)
 			http.Error(w, "invalid request", http.StatusBadRequest)
 			return
 		}
 
 		if !registry.Exists(req.CampaignID) {
+			l.Warn("campaign not found", "campaign_id", req.CampaignID)
 			http.Error(w, "campaign not found", http.StatusNotFound)
 			return
 		}
 
-		// Fast path: push to in-memory buffers
 		err := eventProc.Process(event.Event{
 			CampaignID: req.CampaignID,
 			Type:       req.Type,
@@ -105,15 +111,16 @@ func main() {
 
 		if err != nil {
 			if errors.Is(err, event.ErrBufferFull) {
+				l.Error("processor buffer full")
 				http.Error(w, "server overloaded", http.StatusTooManyRequests)
 				return
 			}
+			l.Error("failed to process event", "error", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
 
 		statsAgg.Increment(req.CampaignID, req.Type)
-
 		w.WriteHeader(http.StatusAccepted)
 	})
 
@@ -137,7 +144,7 @@ func main() {
 
 	slog.Info("shutting down server...")
 	
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), time.Duration(cfg.ShutdownTimeoutMs)*time.Millisecond)
 	defer shutdownCancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
