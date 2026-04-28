@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/mykhailov-ua/ad-event-processor/internal/campaign"
 	"github.com/mykhailov-ua/ad-event-processor/internal/config"
 	"github.com/mykhailov-ua/ad-event-processor/internal/database"
 	"github.com/mykhailov-ua/ad-event-processor/internal/database/db"
@@ -29,7 +30,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 1. Database connection
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -40,18 +40,36 @@ func main() {
 	}
 	defer pool.Close()
 
-	// 2. Initialize repository and workers
 	queries := db.New(pool)
-	
-	// Batch events: 1000 events or 500ms
-	eventProc := event.NewProcessor(pool, 1000, 500*time.Millisecond)
+
+	// Partition Manager: use retention settings from config
+	partManager := database.NewPartitionManager(pool, cfg.LogRetentionDays, 2)
+	partManager.StartBackground(ctx)
+
+	registry := campaign.NewRegistry(queries)
+	count, err := registry.Sync(ctx)
+	if err != nil {
+		slog.Warn("initial campaign registry sync failed", "error", err)
+	} else {
+		slog.Info("campaign registry loaded", "campaigns", count)
+	}
+	registry.StartSync(ctx, 1*time.Minute)
+
+	eventProc := event.NewProcessor(
+		pool,
+		cfg.EventBatchSize,
+		cfg.MaxWorkers,
+		time.Duration(cfg.EventFlushMs)*time.Millisecond,
+	)
 	eventProc.Start(ctx)
 
-	// Aggregate stats: flush every 5s
-	statsAgg := stats.NewAggregator(queries, 5*time.Second)
+	statsAgg := stats.NewAggregator(
+		queries,
+		time.Duration(cfg.StatsFlushMs)*time.Millisecond,
+		cfg.MaxWorkers,
+	)
 	statsAgg.Start(ctx)
 
-	// 3. Setup router
 	mux := http.NewServeMux()
 	
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -68,6 +86,11 @@ func main() {
 
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+
+		if !registry.Exists(req.CampaignID) {
+			http.Error(w, "campaign not found", http.StatusNotFound)
 			return
 		}
 
@@ -96,7 +119,6 @@ func main() {
 
 	slog.Info("starting ad-event-processor", "port", cfg.ServerPort)
 
-	// 4. Graceful Shutdown
 	server := &http.Server{
 		Addr:    ":" + cfg.ServerPort,
 		Handler: mux,
@@ -109,28 +131,29 @@ func main() {
 		}
 	}()
 
-	// Wait for interrupt signal
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
 
 	slog.Info("shutting down server...")
 	
-	// 1. Stop accepting new HTTP requests
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shutdownCancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		slog.Error("server shutdown failed", "error", err)
 	}
-	
-	// 2. Signal background workers to flush and stop
-	cancel() 
 
-	// 3. Wait for workers to finish
+	slog.Info("draining event processor queues...")
+	eventProc.Close()
+
 	done := make(chan struct{})
 	go func() {
+		registry.Wait()
 		eventProc.Wait()
+		
+		// Signal aggregator to flush remaining in-memory stats
+		cancel() 
 		statsAgg.Wait()
 		close(done)
 	}()
