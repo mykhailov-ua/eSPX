@@ -128,6 +128,30 @@ func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) (Event
 	return i, err
 }
 
+const listCampaignIDs = `-- name: ListCampaignIDs :many
+SELECT id FROM campaigns WHERE status = 'active'
+`
+
+func (q *Queries) ListCampaignIDs(ctx context.Context) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listCampaignIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateCampaignStats = `-- name: UpdateCampaignStats :exec
 INSERT INTO campaign_stats (campaign_id, date, impressions_count, clicks_count, conversions_count)
 VALUES ($1, CURRENT_DATE, $2, $3, $4)
@@ -150,6 +174,37 @@ func (q *Queries) UpdateCampaignStats(ctx context.Context, arg UpdateCampaignSta
 		arg.ImpressionsCount,
 		arg.ClicksCount,
 		arg.ConversionsCount,
+	)
+	return err
+}
+
+const updateCampaignStatsBatch = `-- name: UpdateCampaignStatsBatch :exec
+INSERT INTO campaign_stats (campaign_id, date, impressions_count, clicks_count, conversions_count)
+SELECT 
+    unnest($1::uuid[]),
+    CURRENT_DATE,
+    unnest($2::bigint[]),
+    unnest($3::bigint[]),
+    unnest($4::bigint[])
+ON CONFLICT (campaign_id, date) DO UPDATE SET
+    impressions_count = campaign_stats.impressions_count + EXCLUDED.impressions_count,
+    clicks_count = campaign_stats.clicks_count + EXCLUDED.clicks_count,
+    conversions_count = campaign_stats.conversions_count + EXCLUDED.conversions_count
+`
+
+type UpdateCampaignStatsBatchParams struct {
+	CampaignIds []pgtype.UUID `json:"campaign_ids"`
+	Impressions []int64       `json:"impressions"`
+	Clicks      []int64       `json:"clicks"`
+	Conversions []int64       `json:"conversions"`
+}
+
+func (q *Queries) UpdateCampaignStatsBatch(ctx context.Context, arg UpdateCampaignStatsBatchParams) error {
+	_, err := q.db.Exec(ctx, updateCampaignStatsBatch,
+		arg.CampaignIds,
+		arg.Impressions,
+		arg.Clicks,
+		arg.Conversions,
 	)
 	return err
 }

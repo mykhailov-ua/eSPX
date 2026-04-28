@@ -15,7 +15,9 @@ type Querier interface {
 	GetCampaign(ctx context.Context, id pgtype.UUID) (Campaign, error)
 	GetCampaignStats(ctx context.Context, campaignID pgtype.UUID) ([]CampaignStat, error)
 	InsertEvent(ctx context.Context, arg InsertEventParams) (Event, error)
+	ListCampaignIDs(ctx context.Context) ([]pgtype.UUID, error)
 	UpdateCampaignStats(ctx context.Context, arg UpdateCampaignStatsParams) error
+	UpdateCampaignStatsBatch(ctx context.Context, arg UpdateCampaignStatsBatchParams) error
 }
 
 var _ Querier = (*Queries)(nil)

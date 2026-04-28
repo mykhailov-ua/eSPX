@@ -23,3 +23,19 @@ ON CONFLICT (campaign_id, date) DO UPDATE SET
 SELECT * FROM campaign_stats 
 WHERE campaign_id = $1 
 ORDER BY date DESC;
+
+-- name: ListCampaignIDs :many
+SELECT id FROM campaigns WHERE status = 'active';
+
+-- name: UpdateCampaignStatsBatch :exec
+INSERT INTO campaign_stats (campaign_id, date, impressions_count, clicks_count, conversions_count)
+SELECT 
+    unnest(@campaign_ids::uuid[]),
+    CURRENT_DATE,
+    unnest(@impressions::bigint[]),
+    unnest(@clicks::bigint[]),
+    unnest(@conversions::bigint[])
+ON CONFLICT (campaign_id, date) DO UPDATE SET
+    impressions_count = campaign_stats.impressions_count + EXCLUDED.impressions_count,
+    clicks_count = campaign_stats.clicks_count + EXCLUDED.clicks_count,
+    conversions_count = campaign_stats.conversions_count + EXCLUDED.conversions_count;
