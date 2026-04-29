@@ -10,10 +10,9 @@ import (
 	"time"
 
 	"github.com/mykhailov-ua/ad-event-processor/internal/ads"
+	"github.com/mykhailov-ua/ad-event-processor/internal/ads/repository"
 	"github.com/mykhailov-ua/ad-event-processor/internal/config"
 	"github.com/mykhailov-ua/ad-event-processor/internal/database"
-	"github.com/mykhailov-ua/ad-event-processor/internal/ads/repository"
-
 )
 
 func main() {
@@ -52,7 +51,7 @@ func main() {
 	registry.StartSync(ctx, 1*time.Minute)
 
 	eventProc := ads.NewProcessor(
-		pool,
+		queries,
 		cfg.EventBatchSize,
 		cfg.MaxWorkers,
 		time.Duration(cfg.EventFlushMs)*time.Millisecond,

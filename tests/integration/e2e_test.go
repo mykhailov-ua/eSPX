@@ -53,7 +53,7 @@ func TestE2EFlow(t *testing.T) {
 	registry := ads.NewRegistry(queries)
 	_, _ = registry.Sync(ctx)
 
-	eventProc := ads.NewProcessor(pool, cfg.EventBatchSize, cfg.MaxWorkers, 100*time.Millisecond, 1*time.Second)
+	eventProc := ads.NewProcessor(queries, cfg.EventBatchSize, cfg.MaxWorkers, 100*time.Millisecond, 1*time.Second)
 	eventProc.Start(ctx)
 	defer eventProc.Close()
 
@@ -113,7 +113,7 @@ func TestE2EFlow_Protobuf(t *testing.T) {
 	registry := ads.NewRegistry(queries)
 	_, _ = registry.Sync(ctx)
 
-	eventProc := ads.NewProcessor(pool, cfg.EventBatchSize, cfg.MaxWorkers, 100*time.Millisecond, 1*time.Second)
+	eventProc := ads.NewProcessor(queries, cfg.EventBatchSize, cfg.MaxWorkers, 100*time.Millisecond, 1*time.Second)
 	eventProc.Start(ctx)
 	defer eventProc.Close()
 
