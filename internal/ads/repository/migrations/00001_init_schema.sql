@@ -9,16 +9,23 @@ CREATE TABLE campaigns (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Partitioned table for high-volume tracking events.
+-- We use RANGE partitioning by created_at for efficient data retention.
 CREATE TABLE events (
-    id UUID NOT NULL,
+    click_id TEXT NOT NULL,
     campaign_id UUID NOT NULL,
     event_type TEXT NOT NULL CHECK (event_type IN ('impression', 'click', 'conversion')),
     payload JSONB NOT NULL DEFAULT '{}',
     ip_address TEXT,
     user_agent TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (id, created_at)
+    -- Primary key must include the partition key (created_at).
+    -- click_id is used for deduplication/idempotency.
+    PRIMARY KEY (click_id, created_at)
 ) PARTITION BY RANGE (created_at);
+
+-- Default partition prevents insert failures if a specific range partition is missing.
+CREATE TABLE events_default PARTITION OF events DEFAULT;
 
 CREATE TABLE campaign_stats (
     campaign_id UUID NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,

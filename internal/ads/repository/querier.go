@@ -14,7 +14,10 @@ type Querier interface {
 	CreateCampaign(ctx context.Context, arg CreateCampaignParams) (Campaign, error)
 	GetCampaign(ctx context.Context, id pgtype.UUID) (Campaign, error)
 	GetCampaignStats(ctx context.Context, campaignID pgtype.UUID) ([]CampaignStat, error)
-	InsertEvent(ctx context.Context, arg InsertEventParams) (Event, error)
+	// Inserts a single event with ON CONFLICT for idempotency.
+	InsertEvent(ctx context.Context, arg InsertEventParams) error
+	// Performs a high-performance batch insert with ON CONFLICT for idempotency.
+	InsertEventsBatch(ctx context.Context, arg InsertEventsBatchParams) error
 	ListCampaignIDs(ctx context.Context) ([]pgtype.UUID, error)
 	UpdateCampaignStats(ctx context.Context, arg UpdateCampaignStatsParams) error
 	UpdateCampaignStatsBatch(ctx context.Context, arg UpdateCampaignStatsBatchParams) error

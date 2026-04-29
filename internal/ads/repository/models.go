@@ -26,7 +26,17 @@ type CampaignStat struct {
 }
 
 type Event struct {
-	ID         pgtype.UUID        `json:"id"`
+	ClickID    string             `json:"click_id"`
+	CampaignID pgtype.UUID        `json:"campaign_id"`
+	EventType  string             `json:"event_type"`
+	Payload    []byte             `json:"payload"`
+	IpAddress  pgtype.Text        `json:"ip_address"`
+	UserAgent  pgtype.Text        `json:"user_agent"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+}
+
+type EventsDefault struct {
+	ClickID    string             `json:"click_id"`
 	CampaignID pgtype.UUID        `json:"campaign_id"`
 	EventType  string             `json:"event_type"`
 	Payload    []byte             `json:"payload"`

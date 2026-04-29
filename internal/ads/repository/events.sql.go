@@ -93,39 +93,71 @@ func (q *Queries) GetCampaignStats(ctx context.Context, campaignID pgtype.UUID) 
 	return items, nil
 }
 
-const insertEvent = `-- name: InsertEvent :one
-INSERT INTO events (campaign_id, event_type, payload, ip_address, user_agent)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING id, campaign_id, event_type, payload, ip_address, user_agent, created_at
+const insertEvent = `-- name: InsertEvent :exec
+INSERT INTO events (click_id, campaign_id, event_type, payload, ip_address, user_agent, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (click_id, created_at) DO NOTHING
 `
 
 type InsertEventParams struct {
-	CampaignID pgtype.UUID `json:"campaign_id"`
-	EventType  string      `json:"event_type"`
-	Payload    []byte      `json:"payload"`
-	IpAddress  pgtype.Text `json:"ip_address"`
-	UserAgent  pgtype.Text `json:"user_agent"`
+	ClickID    string             `json:"click_id"`
+	CampaignID pgtype.UUID        `json:"campaign_id"`
+	EventType  string             `json:"event_type"`
+	Payload    []byte             `json:"payload"`
+	IpAddress  pgtype.Text        `json:"ip_address"`
+	UserAgent  pgtype.Text        `json:"user_agent"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 }
 
-func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) (Event, error) {
-	row := q.db.QueryRow(ctx, insertEvent,
+// Inserts a single event with ON CONFLICT for idempotency.
+func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) error {
+	_, err := q.db.Exec(ctx, insertEvent,
+		arg.ClickID,
 		arg.CampaignID,
 		arg.EventType,
 		arg.Payload,
 		arg.IpAddress,
 		arg.UserAgent,
+		arg.CreatedAt,
 	)
-	var i Event
-	err := row.Scan(
-		&i.ID,
-		&i.CampaignID,
-		&i.EventType,
-		&i.Payload,
-		&i.IpAddress,
-		&i.UserAgent,
-		&i.CreatedAt,
+	return err
+}
+
+const insertEventsBatch = `-- name: InsertEventsBatch :exec
+INSERT INTO events (click_id, campaign_id, event_type, payload, ip_address, user_agent, created_at)
+SELECT 
+    unnest($1::text[]),
+    unnest($2::uuid[]),
+    unnest($3::text[]),
+    unnest($4::jsonb[]),
+    unnest($5::text[]),
+    unnest($6::text[]),
+    unnest($7::timestamptz[])
+ON CONFLICT (click_id, created_at) DO NOTHING
+`
+
+type InsertEventsBatchParams struct {
+	ClickIds    []string             `json:"click_ids"`
+	CampaignIds []pgtype.UUID        `json:"campaign_ids"`
+	EventTypes  []string             `json:"event_types"`
+	Payloads    [][]byte             `json:"payloads"`
+	IpAddresses []string             `json:"ip_addresses"`
+	UserAgents  []string             `json:"user_agents"`
+	CreatedAt   []pgtype.Timestamptz `json:"created_at"`
+}
+
+// Performs a high-performance batch insert with ON CONFLICT for idempotency.
+func (q *Queries) InsertEventsBatch(ctx context.Context, arg InsertEventsBatchParams) error {
+	_, err := q.db.Exec(ctx, insertEventsBatch,
+		arg.ClickIds,
+		arg.CampaignIds,
+		arg.EventTypes,
+		arg.Payloads,
+		arg.IpAddresses,
+		arg.UserAgents,
+		arg.CreatedAt,
 	)
-	return i, err
+	return err
 }
 
 const listCampaignIDs = `-- name: ListCampaignIDs :many
