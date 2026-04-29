@@ -84,7 +84,7 @@ func (pm *PartitionManager) dropOldPartitions(ctx context.Context, olderThan tim
 
 	var partitionsToDrop []string
 	prefix := "events_p"
-	
+
 	// Format of partition name is events_pYYYY_MM_DD
 	thresholdStr := olderThan.Format("2006_01_02")
 

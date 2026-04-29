@@ -14,9 +14,9 @@ import (
 )
 
 const (
-	maxRetries    = 3
-	initialWait   = 100 * time.Millisecond
-	maxWait       = 2 * time.Second
+	maxRetries  = 3
+	initialWait = 100 * time.Millisecond
+	maxWait     = 2 * time.Second
 )
 
 const (
@@ -38,7 +38,7 @@ type flushTask struct {
 }
 
 type Aggregator struct {
-	repo     db.Querier
+	repo         db.Querier
 	data         sync.Map
 	flushInt     time.Duration
 	writeTimeout time.Duration
@@ -104,10 +104,10 @@ func (a *Aggregator) Start(ctx context.Context) {
 
 func (a *Aggregator) worker() {
 	defer a.wg.Done()
-	
+
 	const batchSize = 1000
 	const maxWait = 100 * time.Millisecond
-	
+
 	batch := make([]flushTask, 0, batchSize)
 	timer := time.NewTimer(maxWait)
 	defer timer.Stop()
@@ -157,7 +157,7 @@ func (a *Aggregator) doBatchFlush(batch []flushTask) {
 
 	for i := 0; i <= maxRetries; i++ {
 		dbCtx, cancel := context.WithTimeout(context.Background(), a.writeTimeout)
-		
+
 		start := time.Now()
 		err = a.repo.UpdateCampaignStatsBatch(dbCtx, db.UpdateCampaignStatsBatchParams{
 			CampaignIds: campaignIDs,
@@ -171,8 +171,8 @@ func (a *Aggregator) doBatchFlush(batch []flushTask) {
 		if err == nil {
 			metrics.DbWriteDuration.WithLabelValues("batch_upsert").Observe(duration)
 			if i > 0 {
-				slog.Info("successfully updated campaign stats batch after retry", 
-					"size", len(batch), 
+				slog.Info("successfully updated campaign stats batch after retry",
+					"size", len(batch),
 					"attempts", i+1)
 			}
 			return
@@ -193,8 +193,8 @@ func (a *Aggregator) doBatchFlush(batch []flushTask) {
 	}
 
 	metrics.DbWriteErrors.WithLabelValues("batch_upsert").Inc()
-	slog.Error("all retries failed for campaign stats batch, data lost", 
-		"size", len(batch), 
+	slog.Error("all retries failed for campaign stats batch, data lost",
+		"size", len(batch),
 		"error", err,
 	)
 }

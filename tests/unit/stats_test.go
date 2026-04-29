@@ -29,7 +29,7 @@ func TestAggregator_Flow(t *testing.T) {
 	mock := &MockStatsRepo{}
 	// Short flush interval for testing
 	agg := stats.NewAggregator(mock, 50*time.Millisecond, 1*time.Second, 1)
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
 	agg.Start(ctx)
 

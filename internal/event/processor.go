@@ -106,7 +106,13 @@ func (p *Processor) worker(ctx context.Context) {
 				p.flush(batch)
 			}
 			return
-		case evt := <-p.ch:
+		case evt, ok := <-p.ch:
+			if !ok {
+				if len(batch) > 0 {
+					p.flush(batch)
+				}
+				return
+			}
 			batch = append(batch, evt)
 			if len(batch) >= p.batchSize {
 				p.flush(batch)

@@ -61,6 +61,6 @@ func setupTestDB(t *testing.T) (*pgxpool.Pool, func()) {
 
 	return pool, func() {
 		pool.Close()
-		pgContainer.Terminate(ctx)
+		_ = pgContainer.Terminate(ctx)
 	}
 }

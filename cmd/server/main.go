@@ -91,7 +91,7 @@ func main() {
 	<-stop
 
 	slog.Info("shutting down server...")
-	
+
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), time.Duration(cfg.ShutdownTimeoutMs)*time.Millisecond)
 	defer shutdownCancel()
 
@@ -106,9 +106,9 @@ func main() {
 	go func() {
 		registry.Wait()
 		eventProc.Wait()
-		
+
 		// Signal aggregator to flush remaining in-memory stats
-		cancel() 
+		cancel()
 		statsAgg.Wait()
 		close(done)
 	}()

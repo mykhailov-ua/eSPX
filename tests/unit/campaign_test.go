@@ -51,9 +51,9 @@ func TestRegistry_StartSync(t *testing.T) {
 
 	r := campaign.NewRegistry(mock)
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
 	r.StartSync(ctx, 10*time.Millisecond)
-	
+
 	assert.Eventually(t, func() bool {
 		return r.Exists(id1)
 	}, 200*time.Millisecond, 20*time.Millisecond)

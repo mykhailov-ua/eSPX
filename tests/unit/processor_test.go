@@ -33,7 +33,7 @@ func (m *MockBatchWriter) CopyFrom(ctx context.Context, tableName pgx.Identifier
 		vals, _ := rowSrc.Values()
 		id := vals[0].(pgtype.UUID).Bytes
 		cid := vals[1].(pgtype.UUID).Bytes
-		
+
 		batch = append(batch, event.Event{
 			ID:         uuid.UUID(id),
 			CampaignID: uuid.UUID(cid),
@@ -66,13 +66,14 @@ func TestProcessor_Batching(t *testing.T) {
 	mock := &MockBatchWriter{}
 	batchSize := 5
 	p := event.NewProcessor(mock, batchSize, 1, 1*time.Minute, 1*time.Second)
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	p.Start(ctx)
 
 	for i := 0; i < batchSize; i++ {
-		_ = p.Process(event.Event{CampaignID: uuid.New(), Type: "imp"})
+		err := p.Process(event.Event{CampaignID: uuid.New(), Type: "imp"})
+		assert.NoError(t, err)
 	}
 
 	assert.Eventually(t, func() bool {
@@ -88,12 +89,13 @@ func TestProcessor_Ticker(t *testing.T) {
 	mock := &MockBatchWriter{}
 	flushInt := 100 * time.Millisecond
 	p := event.NewProcessor(mock, 100, 1, flushInt, 1*time.Second)
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	p.Start(ctx)
 
-	_ = p.Process(event.Event{CampaignID: uuid.New(), Type: "click"})
+	err := p.Process(event.Event{CampaignID: uuid.New(), Type: "click"})
+	assert.NoError(t, err)
 
 	time.Sleep(flushInt + 50*time.Millisecond)
 
@@ -106,12 +108,13 @@ func TestProcessor_Ticker(t *testing.T) {
 func TestProcessor_DrainOnClose(t *testing.T) {
 	mock := &MockBatchWriter{}
 	p := event.NewProcessor(mock, 100, 1, 1*time.Minute, 1*time.Second)
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
 	p.Start(ctx)
 
-	_ = p.Process(event.Event{CampaignID: uuid.New(), Type: "conv"})
-	
+	err := p.Process(event.Event{CampaignID: uuid.New(), Type: "conv"})
+	assert.NoError(t, err)
+
 	p.Close()
 	p.Wait()
 	cancel()
@@ -131,7 +134,7 @@ func TestProcessor_ClearBatch(t *testing.T) {
 	p.ClearBatch(&batch)
 
 	assert.Len(t, batch, 0)
-	
+
 	reclaimed := batch[:2]
 	assert.Nil(t, reclaimed[0].Payload)
 	assert.Empty(t, reclaimed[0].IP)

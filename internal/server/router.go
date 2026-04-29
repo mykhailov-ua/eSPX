@@ -24,7 +24,7 @@ func NewRouter(cfg *config.Config, registry *campaign.Registry, proc *event.Proc
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	})
 
 	mux.HandleFunc("POST /track", func(w http.ResponseWriter, r *http.Request) {
