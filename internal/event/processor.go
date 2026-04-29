@@ -10,7 +10,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/mykhailov-ua/ad-event-processor/internal/metrics"
 )
 
@@ -29,8 +28,12 @@ type Event struct {
 	UA         string
 }
 
+type BatchWriter interface {
+	CopyFrom(ctx context.Context, tableName pgx.Identifier, columnNames []string, rowSrc pgx.CopyFromSource) (int64, error)
+}
+
 type Processor struct {
-	pool         *pgxpool.Pool
+	writer       BatchWriter
 	ch           chan Event
 	batchSize    int
 	flushInt     time.Duration
@@ -39,9 +42,9 @@ type Processor struct {
 	wg           sync.WaitGroup
 }
 
-func NewProcessor(pool *pgxpool.Pool, batchSize int, maxWorkers int, flushInt, writeTimeout time.Duration) *Processor {
+func NewProcessor(writer BatchWriter, batchSize int, maxWorkers int, flushInt, writeTimeout time.Duration) *Processor {
 	return &Processor{
-		pool:         pool,
+		writer:       writer,
 		ch:           make(chan Event, batchSize*maxWorkers),
 		batchSize:    batchSize,
 		flushInt:     flushInt,
@@ -93,7 +96,7 @@ func (p *Processor) worker(ctx context.Context) {
 					batch = append(batch, evt)
 					if len(batch) >= p.batchSize {
 						p.flush(batch)
-						p.clearBatch(&batch)
+						p.ClearBatch(&batch)
 					}
 				default:
 					break drainLoop
@@ -107,13 +110,13 @@ func (p *Processor) worker(ctx context.Context) {
 			batch = append(batch, evt)
 			if len(batch) >= p.batchSize {
 				p.flush(batch)
-				p.clearBatch(&batch)
+				p.ClearBatch(&batch)
 				ticker.Reset(p.flushInt)
 			}
 		case <-ticker.C:
 			if len(batch) > 0 {
 				p.flush(batch)
-				p.clearBatch(&batch)
+				p.ClearBatch(&batch)
 			}
 		}
 	}
@@ -128,7 +131,7 @@ func (p *Processor) Wait() {
 	p.wg.Wait()
 }
 
-func (p *Processor) clearBatch(batch *[]Event) {
+func (p *Processor) ClearBatch(batch *[]Event) {
 	for i := range *batch {
 		(*batch)[i].Payload = nil
 		(*batch)[i].IP = ""
@@ -183,7 +186,7 @@ func (p *Processor) flush(batch []Event) {
 		}
 
 		start := time.Now()
-		_, err = p.pool.CopyFrom(
+		_, err = p.writer.CopyFrom(
 			dbCtx,
 			pgx.Identifier{"events"},
 			[]string{"id", "campaign_id", "event_type", "payload", "ip_address", "user_agent", "created_at"},
