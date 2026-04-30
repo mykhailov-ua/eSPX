@@ -7,19 +7,24 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+type dbExecutor interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
 
 // PartitionManager automates the creation of future partitions and the cleanup
 // of old partitions for the 'events' table to maintain high performance and
 // bounded disk usage.
 type PartitionManager struct {
-	pool      *pgxpool.Pool
+	pool      dbExecutor
 	retention int
 	preCreate int
 }
 
-func NewPartitionManager(pool *pgxpool.Pool, retentionDays int, preCreateDays int) *PartitionManager {
+func NewPartitionManager(pool dbExecutor, retentionDays int, preCreateDays int) *PartitionManager {
 	return &PartitionManager{
 		pool:      pool,
 		retention: retentionDays,
@@ -42,9 +47,9 @@ func (pm *PartitionManager) Run(ctx context.Context) error {
 	}
 
 	dropDate := now.AddDate(0, 0, -pm.retention)
-	err := pm.dropOldPartitions(ctx, dropDate)
+	err := pm.dropPartitions(ctx, now, dropDate)
 	if err != nil {
-		return fmt.Errorf("failed to drop old partitions before %s: %w", dropDate.Format("2006-01-02"), err)
+		return fmt.Errorf("failed to drop partitions: %w", err)
 	}
 
 	return nil
@@ -69,16 +74,14 @@ func (pm *PartitionManager) createPartition(ctx context.Context, date time.Time)
 	return err
 }
 
-// dropOldPartitions identifies and deletes tables that fall outside the retention window.
-// This is significantly faster and more resource-efficient than DELETE statements.
-func (pm *PartitionManager) dropOldPartitions(ctx context.Context, olderThan time.Time) error {
+// dropPartitions identifies and deletes tables that fall outside the retention window
+// or are too far in the future.
+func (pm *PartitionManager) dropPartitions(ctx context.Context, now time.Time, olderThan time.Time) error {
 	query := `
 		SELECT child.relname
 		FROM pg_inherits
 		JOIN pg_class parent ON pg_inherits.inhparent = parent.oid
 		JOIN pg_class child ON pg_inherits.inhrelid = child.oid
-		JOIN pg_namespace nmsp_parent ON nmsp_parent.oid = parent.relnamespace
-		JOIN pg_namespace nmsp_child ON nmsp_child.oid = child.relnamespace
 		WHERE parent.relname = 'events';
 	`
 
@@ -91,8 +94,8 @@ func (pm *PartitionManager) dropOldPartitions(ctx context.Context, olderThan tim
 	var partitionsToDrop []string
 	prefix := "events_p"
 
-	// Format of partition name is events_pYYYY_MM_DD
 	thresholdStr := olderThan.Format("2006_01_02")
+	futureThresholdStr := now.AddDate(0, 0, pm.preCreate).Format("2006_01_02")
 
 	for rows.Next() {
 		var partitionName string
@@ -100,21 +103,21 @@ func (pm *PartitionManager) dropOldPartitions(ctx context.Context, olderThan tim
 			return err
 		}
 
-		if len(partitionName) > len(prefix) && partitionName[:len(prefix)] == prefix {
+		if len(partitionName) == 18 && partitionName[:len(prefix)] == prefix {
 			dateStr := partitionName[len(prefix):]
-			if dateStr < thresholdStr {
+			// Drop if older than retention or too far in the future
+			if dateStr < thresholdStr || dateStr > futureThresholdStr {
 				partitionsToDrop = append(partitionsToDrop, partitionName)
 			}
 		}
 	}
 
 	for _, p := range partitionsToDrop {
-		slog.Info("dropping old partition", "partition", p)
+		slog.Info("dropping partition", "partition", p)
 		safeTableName := pgx.Identifier{p}.Sanitize()
 		dropQuery := fmt.Sprintf("DROP TABLE IF EXISTS %s;", safeTableName)
 		if _, err := pm.pool.Exec(ctx, dropQuery); err != nil {
 			slog.Error("failed to drop partition", "partition", p, "error", err)
-			// Continue trying to drop others even if one fails
 		}
 	}
 
@@ -126,8 +129,6 @@ func (pm *PartitionManager) StartBackground(ctx context.Context) {
 	go func() {
 		if err := pm.Run(ctx); err != nil {
 			slog.Error("initial partition maintenance failed", "error", err)
-		} else {
-			slog.Info("initial partition maintenance completed")
 		}
 
 		ticker := time.NewTicker(1 * time.Hour)
