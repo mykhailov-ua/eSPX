@@ -124,16 +124,34 @@ func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) error 
 }
 
 const insertEventsBatch = `-- name: InsertEventsBatch :exec
-INSERT INTO events (click_id, campaign_id, event_type, payload, ip_address, user_agent, created_at)
-SELECT 
-    unnest($1::text[]),
-    unnest($2::uuid[]),
-    unnest($3::text[]),
-    unnest($4::jsonb[]),
-    unnest($5::text[]),
-    unnest($6::text[]),
-    unnest($7::timestamptz[])
-ON CONFLICT (click_id, created_at) DO NOTHING
+WITH inserted AS (
+    INSERT INTO events (click_id, campaign_id, event_type, payload, ip_address, user_agent, created_at)
+    SELECT 
+        unnest($1::text[]),
+        unnest($2::uuid[]),
+        unnest($3::text[]),
+        unnest($4::jsonb[]),
+        unnest($5::text[]),
+        unnest($6::text[]),
+        unnest($7::timestamptz[])
+    ON CONFLICT (click_id, created_at) DO NOTHING
+    RETURNING campaign_id, event_type
+),
+stats AS (
+    SELECT campaign_id,
+           COUNT(*) FILTER (WHERE event_type = 'impression') as imps,
+           COUNT(*) FILTER (WHERE event_type = 'click') as clicks,
+           COUNT(*) FILTER (WHERE event_type = 'conversion') as convs
+    FROM inserted
+    GROUP BY campaign_id
+)
+INSERT INTO campaign_stats (campaign_id, date, impressions_count, clicks_count, conversions_count)
+SELECT campaign_id, CURRENT_DATE, imps, clicks, convs
+FROM stats
+ON CONFLICT (campaign_id, date) DO UPDATE SET
+    impressions_count = campaign_stats.impressions_count + EXCLUDED.impressions_count,
+    clicks_count = campaign_stats.clicks_count + EXCLUDED.clicks_count,
+    conversions_count = campaign_stats.conversions_count + EXCLUDED.conversions_count
 `
 
 type InsertEventsBatchParams struct {
@@ -146,7 +164,8 @@ type InsertEventsBatchParams struct {
 	CreatedAt   []pgtype.Timestamptz `json:"created_at"`
 }
 
-// Performs a high-performance batch insert with ON CONFLICT for idempotency.
+// Performs a high-performance batch insert and atomically updates campaign stats.
+// Exactly-once aggregation is guaranteed because only newly inserted rows are counted.
 func (q *Queries) InsertEventsBatch(ctx context.Context, arg InsertEventsBatchParams) error {
 	_, err := q.db.Exec(ctx, insertEventsBatch,
 		arg.ClickIds,

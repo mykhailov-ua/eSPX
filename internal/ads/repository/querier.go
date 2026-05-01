@@ -16,7 +16,8 @@ type Querier interface {
 	GetCampaignStats(ctx context.Context, campaignID pgtype.UUID) ([]CampaignStat, error)
 	// Inserts a single event with ON CONFLICT for idempotency.
 	InsertEvent(ctx context.Context, arg InsertEventParams) error
-	// Performs a high-performance batch insert with ON CONFLICT for idempotency.
+	// Performs a high-performance batch insert and atomically updates campaign stats.
+	// Exactly-once aggregation is guaranteed because only newly inserted rows are counted.
 	InsertEventsBatch(ctx context.Context, arg InsertEventsBatchParams) error
 	ListCampaignIDs(ctx context.Context) ([]pgtype.UUID, error)
 	UpdateCampaignStats(ctx context.Context, arg UpdateCampaignStatsParams) error
