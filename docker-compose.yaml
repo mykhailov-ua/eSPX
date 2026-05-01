@@ -84,6 +84,7 @@ services:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
       - '--web.listen-address=:${PROMETHEUS_PORT}'
+      - '--web.enable-remote-write-receiver'
     ports:
       - "${PROMETHEUS_PORT}:${PROMETHEUS_PORT}"
     networks:
@@ -119,6 +120,20 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+
+  k6:
+    image: grafana/k6:latest
+    networks:
+      - monitoring
+      - frontend
+    volumes:
+      - ./load_tests:/scripts
+    environment:
+      - K6_PROMETHEUS_RW_SERVER_URL=http://prometheus:${PROMETHEUS_PORT}/api/v1/write
+      - K6_PROMETHEUS_RW_TREND_STATS=p(95),p(99),min,max,avg
+    depends_on:
+      prometheus:
+        condition: service_healthy
 
 networks:
   frontend:

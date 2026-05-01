@@ -20,6 +20,9 @@ test-int: fmt
 
 test: test-unit test-int
 
+load-test:
+	docker compose run --rm k6 run /scripts/smoke.js
+
 build: fmt
 	docker build -t ad-event-processor:latest .
 
