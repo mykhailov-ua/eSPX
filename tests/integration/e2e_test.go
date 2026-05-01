@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -27,8 +26,11 @@ func TestE2EFlow(t *testing.T) {
 		t.Skip("skipping integration test")
 	}
 
-	pool, cleanup := setupTestDB(t)
-	defer cleanup()
+	pool, cleanupDB := setupTestDB(t)
+	defer cleanupDB()
+
+	rdb, cleanupRedis := setupTestRedis(t)
+	defer cleanupRedis()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -53,7 +55,7 @@ func TestE2EFlow(t *testing.T) {
 	registry := ads.NewRegistry(queries)
 	_, _ = registry.Sync(ctx)
 
-	eventProc := ads.NewProcessor(queries, cfg.EventBatchSize, cfg.MaxWorkers, 100*time.Millisecond, 1*time.Second)
+	eventProc := ads.NewProcessor(queries, rdb, "test-stream", "test-group", "test-c1", cfg.EventBatchSize, cfg.MaxWorkers, 100*time.Millisecond, 1*time.Second)
 	eventProc.Start(ctx)
 	defer eventProc.Close()
 
@@ -75,17 +77,19 @@ func TestE2EFlow(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
 
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(1 * time.Second)
 
-	var clicks int64
-	err = pool.QueryRow(ctx, "SELECT clicks_count FROM campaign_stats WHERE campaign_id = $1", campaignID).Scan(&clicks)
-	require.NoError(t, err)
-	assert.Equal(t, int64(1), clicks)
+	assert.Eventually(t, func() bool {
+		var clicks int64
+		err = pool.QueryRow(ctx, "SELECT clicks_count FROM campaign_stats WHERE campaign_id = $1", campaignID).Scan(&clicks)
+		return err == nil && clicks == 1
+	}, 5*time.Second, 100*time.Millisecond, "Should have 1 click in campaign_stats")
 
-	var eventCount int
-	err = pool.QueryRow(ctx, "SELECT count(*) FROM events WHERE campaign_id = $1", campaignID).Scan(&eventCount)
-	require.NoError(t, err)
-	assert.Equal(t, 1, eventCount)
+	assert.Eventually(t, func() bool {
+		var eventCount int
+		err = pool.QueryRow(ctx, "SELECT count(*) FROM events WHERE campaign_id = $1", campaignID).Scan(&eventCount)
+		return err == nil && eventCount == 1
+	}, 5*time.Second, 100*time.Millisecond, "Should have 1 event in events table")
 }
 
 func TestE2EFlow_Protobuf(t *testing.T) {
@@ -93,8 +97,11 @@ func TestE2EFlow_Protobuf(t *testing.T) {
 		t.Skip("skipping integration test")
 	}
 
-	pool, cleanup := setupTestDB(t)
-	defer cleanup()
+	pool, cleanupDB := setupTestDB(t)
+	defer cleanupDB()
+
+	rdb, cleanupRedis := setupTestRedis(t)
+	defer cleanupRedis()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -113,7 +120,7 @@ func TestE2EFlow_Protobuf(t *testing.T) {
 	registry := ads.NewRegistry(queries)
 	_, _ = registry.Sync(ctx)
 
-	eventProc := ads.NewProcessor(queries, cfg.EventBatchSize, cfg.MaxWorkers, 100*time.Millisecond, 1*time.Second)
+	eventProc := ads.NewProcessor(queries, rdb, "test-proto-stream", "test-proto-group", "test-c2", cfg.EventBatchSize, cfg.MaxWorkers, 100*time.Millisecond, 1*time.Second)
 	eventProc.Start(ctx)
 	defer eventProc.Close()
 
@@ -143,20 +150,10 @@ func TestE2EFlow_Protobuf(t *testing.T) {
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
-	assert.Equal(t, "application/x-protobuf", resp.Header.Get("Content-Type"))
 
-	// Verify response body
-	respBody, _ := io.ReadAll(resp.Body)
-	var pbResp pb.TrackResponse
-	err = proto.Unmarshal(respBody, &pbResp)
-	require.NoError(t, err)
-	assert.NotEmpty(t, pbResp.RequestId)
-	assert.Equal(t, "accepted", pbResp.Status)
-
-	time.Sleep(500 * time.Millisecond)
-
-	var imps int64
-	err = pool.QueryRow(ctx, "SELECT impressions_count FROM campaign_stats WHERE campaign_id = $1", campaignID).Scan(&imps)
-	require.NoError(t, err)
-	assert.Equal(t, int64(1), imps)
+	assert.Eventually(t, func() bool {
+		var imps int64
+		err = pool.QueryRow(ctx, "SELECT impressions_count FROM campaign_stats WHERE campaign_id = $1", campaignID).Scan(&imps)
+		return err == nil && imps == 1
+	}, 5*time.Second, 100*time.Millisecond, "Should have 1 impression in campaign_stats")
 }

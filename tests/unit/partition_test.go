@@ -47,14 +47,14 @@ func (m *MockRows) Scan(dest ...any) error {
 	return nil
 }
 
-func (m *MockRows) Close() {}
+func (m *MockRows) Close()     {}
 func (m *MockRows) Err() error { return nil }
 
 func TestPartitionManager_Cleanup(t *testing.T) {
 	mockDB := new(MockDB)
 	// Retention: 7 days, PreCreate: 2 days
 	pm := database.NewPartitionManager(mockDB, 7, 2)
-	
+
 	now := time.Now().UTC()
 
 	testCases := []struct {
@@ -65,7 +65,7 @@ func TestPartitionManager_Cleanup(t *testing.T) {
 		{
 			name: "Retention and future cleanup",
 			existingTabs: []string{
-				"events_p2020_01_01",                                     // Old
+				"events_p2020_01_01", // Old
 				"events_p" + now.AddDate(0, 0, -10).Format("2006_01_02"), // Past retention
 				"events_p" + now.Format("2006_01_02"),                    // Today (keep)
 				"events_p" + now.AddDate(0, 0, 2).Format("2006_01_02"),   // PreCreate limit (keep)
@@ -82,9 +82,9 @@ func TestPartitionManager_Cleanup(t *testing.T) {
 		{
 			name: "Strict format and edge cases",
 			existingTabs: []string{
-				"events_p_broken",  // Wrong format (ASCII '_' > '2', keep)
-				"events_p",         // Prefix only (keep)
-				"random_table",     // Wrong prefix (keep)
+				"events_p_broken",    // Wrong format (ASCII '_' > '2', keep)
+				"events_p",           // Prefix only (keep)
+				"random_table",       // Wrong prefix (keep)
 				"events_p9999_12_31", // Extreme future (drop)
 			},
 			expectedDrops: []string{
@@ -96,7 +96,7 @@ func TestPartitionManager_Cleanup(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			mockDB.ExpectedCalls = nil
-			
+
 			rows := &MockRows{data: tc.existingTabs}
 			mockDB.On("Query", mock.Anything, mock.MatchedBy(func(s string) bool {
 				return true

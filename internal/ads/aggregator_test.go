@@ -41,7 +41,7 @@ func TestAggregator_TTL_Cleanup(t *testing.T) {
 
 	// Manually age the campaign by setting LastSeen to 2 seconds ago
 	counters.LastSeen.Store(time.Now().Add(-2 * time.Second).Unix())
-	
+
 	// Reset impressions/clicks/convs to 0 so it's eligible for deletion
 	// (flush normally swaps them to 0 anyway)
 	counters.Impressions.Store(0)
@@ -61,7 +61,7 @@ func TestAggregator_Concurrency_Stress(t *testing.T) {
 	// Track flushes
 	var mu sync.Mutex
 	totalImps := int64(0)
-	
+
 	mockRepo.On("UpdateCampaignStatsBatch", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
 		arg := args.Get(1).(repository.UpdateCampaignStatsBatchParams)
 		mu.Lock()
@@ -93,7 +93,7 @@ func TestAggregator_Concurrency_Stress(t *testing.T) {
 
 	wg.Wait()
 	time.Sleep(100 * time.Millisecond) // Wait for flush ticker
-	
+
 	cancel()
 	agg.Stop()
 

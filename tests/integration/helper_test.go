@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
+	rediscontainer "github.com/testcontainers/testcontainers-go/modules/redis"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
@@ -41,7 +43,6 @@ func setupTestDB(t *testing.T) (*pgxpool.Pool, func()) {
 		t.Fatalf("failed to connect to db: %s", err)
 	}
 
-	// Read migration from internal/ads/repository/migrations
 	path := filepath.Join("..", "..", "internal/ads/repository", "migrations", "00001_init_schema.sql")
 	sqlBytes, err := os.ReadFile(path)
 	if err != nil {
@@ -62,5 +63,28 @@ func setupTestDB(t *testing.T) (*pgxpool.Pool, func()) {
 	return pool, func() {
 		pool.Close()
 		_ = pgContainer.Terminate(ctx)
+	}
+}
+
+func setupTestRedis(t *testing.T) (redis.UniversalClient, func()) {
+	ctx := context.Background()
+
+	redisContainer, err := rediscontainer.Run(ctx, "redis:7-alpine")
+	if err != nil {
+		t.Fatalf("failed to start redis container: %s", err)
+	}
+
+	endpoint, err := redisContainer.Endpoint(ctx, "")
+	if err != nil {
+		t.Fatalf("failed to get redis endpoint: %s", err)
+	}
+
+	rdb := redis.NewUniversalClient(&redis.UniversalOptions{
+		Addrs: []string{endpoint},
+	})
+
+	return rdb, func() {
+		_ = rdb.Close()
+		_ = redisContainer.Terminate(ctx)
 	}
 }

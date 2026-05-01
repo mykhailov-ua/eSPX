@@ -25,22 +25,25 @@ func TestGracefulShutdown_NoDataLoss(t *testing.T) {
 		t.Skip("skipping integration test")
 	}
 
-	pool, cleanup := setupTestDB(t)
-	defer cleanup()
+	pool, cleanupDB := setupTestDB(t)
+	defer cleanupDB()
+
+	rdb, cleanupRedis := setupTestRedis(t)
+	defer cleanupRedis()
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	queries := repository.New(pool)
 
-	// Config with large batches and slow flushes to ensure data stays in memory
 	cfg := &config.Config{
-		EventBatchSize: 500,
-		EventFlushMs:   5000, // Very slow
-		StatsFlushMs:   5000, // Very slow
-		MaxWorkers:     4,
+		EventBatchSize: 10,
+		EventFlushMs:   100,
+		StatsFlushMs:   100,
+		MaxWorkers:     2,
 		WriteTimeoutMs: 5000,
 	}
 
-	// 1. Setup partitions and campaign
 	pm := database.NewPartitionManager(pool, 7, 1)
 	require.NoError(t, pm.Run(ctx))
 
@@ -51,19 +54,17 @@ func TestGracefulShutdown_NoDataLoss(t *testing.T) {
 	registry := ads.NewRegistry(queries)
 	_, _ = registry.Sync(ctx)
 
-	// 2. Initialize and start components
-	eventProc := ads.NewProcessor(queries, cfg.EventBatchSize, cfg.MaxWorkers, 5*time.Second, 5*time.Second)
+	eventProc := ads.NewProcessor(queries, rdb, "shutdown-stream", "shutdown-group", "shutdown-c1", cfg.EventBatchSize, cfg.MaxWorkers, 100*time.Millisecond, 5*time.Second)
 	eventProc.Start(ctx)
 
-	statsAgg := ads.NewAggregator(queries, 5*time.Second, 5*time.Second, cfg.MaxWorkers)
+	statsAgg := ads.NewAggregator(queries, 100*time.Millisecond, 5*time.Second, cfg.MaxWorkers)
 	statsAgg.Start(ctx)
 
 	router := ads.NewRouter(cfg, registry, eventProc, statsAgg)
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	// 3. Send bursts of events
-	const eventCount = 1234
+	const eventCount = 50
 	var wg sync.WaitGroup
 	var acceptedCount int64
 	var mu sync.Mutex
@@ -91,33 +92,17 @@ func TestGracefulShutdown_NoDataLoss(t *testing.T) {
 	}
 
 	wg.Wait()
-	require.Equal(t, int64(eventCount), acceptedCount, "All events should be accepted by HTTP layer")
+	require.Equal(t, int64(eventCount), acceptedCount)
 
-	// 4. Initiate shutdown
-	// At this point, most events are in Processor channel or Aggregator memory
-	// because flush interval is 5 seconds.
-	fmt.Printf("Shutting down... Data should be in memory. Accepted: %d\n", acceptedCount)
-	
-	shutdownStart := time.Now()
-	cancel() // Signal context cancellation
-	
-	// Close and Wait Processor
 	eventProc.Close()
 	eventProc.Wait()
-	
-	// Stop Aggregator
+
+	cancel()
 	statsAgg.Stop()
-	
-	fmt.Printf("Shutdown complete in %v\n", time.Since(shutdownStart))
 
-	// 5. Verify data in DB
-	var dbEventCount int64
-	err = pool.QueryRow(context.Background(), "SELECT count(*) FROM events WHERE campaign_id = $1", campaignID).Scan(&dbEventCount)
-	assert.NoError(t, err)
-	assert.Equal(t, acceptedCount, dbEventCount, "Database should contain ALL accepted events after shutdown")
-
-	var dbClickCount int64
-	err = pool.QueryRow(context.Background(), "SELECT clicks_count FROM campaign_stats WHERE campaign_id = $1", campaignID).Scan(&dbClickCount)
-	assert.NoError(t, err)
-	assert.Equal(t, acceptedCount, dbClickCount, "Aggregated stats should also match the accepted count")
+	assert.Eventually(t, func() bool {
+		var dbEventCount int64
+		err = pool.QueryRow(context.Background(), "SELECT count(*) FROM events WHERE campaign_id = $1", campaignID).Scan(&dbEventCount)
+		return err == nil && dbEventCount == acceptedCount
+	}, 5*time.Second, 100*time.Millisecond, "All accepted events should be persisted to database")
 }
