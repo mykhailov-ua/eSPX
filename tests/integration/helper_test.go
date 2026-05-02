@@ -43,21 +43,31 @@ func setupTestDB(t *testing.T) (*pgxpool.Pool, func()) {
 		t.Fatalf("failed to connect to db: %s", err)
 	}
 
-	path := filepath.Join("..", "..", "internal/ads/repository", "migrations", "00001_init_schema.sql")
-	sqlBytes, err := os.ReadFile(path)
+	migrationsDir := filepath.Join("..", "..", "internal/ads/repository", "migrations")
+	entries, err := os.ReadDir(migrationsDir)
 	if err != nil {
-		t.Fatalf("failed to read migration from %s: %s", path, err)
+		t.Fatalf("failed to read migrations dir: %s", err)
 	}
 
-	sql := string(sqlBytes)
-	parts := strings.Split(sql, "-- +goose Down")
-	upPart := parts[0]
-	upPart = strings.ReplaceAll(upPart, "-- +goose Up", "")
-	upPart = strings.ReplaceAll(upPart, "-- +goose StatementBegin", "")
-	upPart = strings.ReplaceAll(upPart, "-- +goose StatementEnd", "")
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			continue
+		}
+		sqlBytes, err := os.ReadFile(filepath.Join(migrationsDir, entry.Name()))
+		if err != nil {
+			t.Fatalf("failed to read migration %s: %s", entry.Name(), err)
+		}
 
-	if _, err := pool.Exec(ctx, upPart); err != nil {
-		t.Fatalf("failed to apply migration: %s", err)
+		sql := string(sqlBytes)
+		parts := strings.Split(sql, "-- +goose Down")
+		upPart := parts[0]
+		upPart = strings.ReplaceAll(upPart, "-- +goose Up", "")
+		upPart = strings.ReplaceAll(upPart, "-- +goose StatementBegin", "")
+		upPart = strings.ReplaceAll(upPart, "-- +goose StatementEnd", "")
+
+		if _, err := pool.Exec(ctx, upPart); err != nil {
+			t.Fatalf("failed to apply migration %s: %s", entry.Name(), err)
+		}
 	}
 
 	return pool, func() {
