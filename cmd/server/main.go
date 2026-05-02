@@ -28,6 +28,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// PostgreSQL
 	pool, err := database.Connect(ctx, cfg.DBDSN, cfg.DBMaxConns, cfg.DBMinConns)
 	if err != nil {
 		slog.Error("failed to connect to database", "error", err)
@@ -36,9 +37,16 @@ func main() {
 	defer pool.Close()
 
 	queries := repository.New(pool)
-
 	partManager := database.NewPartitionManager(pool, cfg.LogRetentionDays, 2)
 	partManager.StartBackground(ctx)
+
+	// ClickHouse
+	chConn, err := database.ConnectClickHouse(ctx, cfg.CHDSN)
+	if err != nil {
+		slog.Error("failed to connect to clickhouse", "error", err)
+		os.Exit(1)
+	}
+	defer chConn.Close()
 
 	registry := ads.NewRegistry(queries)
 	count, err := registry.Sync(ctx)
@@ -49,6 +57,7 @@ func main() {
 	}
 	registry.StartSync(ctx, 1*time.Minute)
 
+	// Redis
 	rdb, err := database.ConnectRedis(ctx, cfg.RedisAddr)
 	if err != nil {
 		slog.Error("failed to connect to redis", "error", err)
@@ -56,25 +65,45 @@ func main() {
 	}
 	defer rdb.Close()
 
-	eventProc := ads.NewProcessor(
-		queries,
+	// Stores
+	pgStore := ads.NewPostgresStore(queries, time.Duration(cfg.WriteTimeoutMs)*time.Millisecond)
+	chStore := ads.NewClickHouseStore(chConn, time.Duration(cfg.WriteTimeoutMs)*time.Millisecond)
+
+	// Consumers
+	pgConsumer := ads.NewStreamConsumer(
+		pgStore,
 		rdb,
 		cfg.RedisStreamName,
-		cfg.RedisGroupName,
+		cfg.RedisGroupName+"_pg", // separate group
 		cfg.RedisConsumerID,
 		cfg.EventBatchSize,
 		cfg.MaxWorkers,
 		time.Duration(cfg.EventFlushMs)*time.Millisecond,
 		time.Duration(cfg.WriteTimeoutMs)*time.Millisecond,
 	)
-	eventProc.Start(ctx)
+	pgConsumer.Start(ctx)
+
+	chConsumer := ads.NewStreamConsumer(
+		chStore,
+		rdb,
+		cfg.RedisStreamName,
+		cfg.RedisGroupName+"_ch", // separate group
+		cfg.RedisConsumerID,
+		cfg.CHBatchSize,
+		1, // ClickHouse prefers fewer concurrent massive inserts
+		time.Duration(cfg.CHFlushIntervalMs)*time.Millisecond,
+		time.Duration(cfg.WriteTimeoutMs)*time.Millisecond,
+	)
+	chConsumer.Start(ctx)
 
 	filterEngine := ads.NewFilterEngine(
 		ads.NewIPRateLimiter(rdb, cfg.RateLimitPerMin, 1*time.Minute),
 		ads.NewDuplicateEventFilter(rdb, time.Duration(cfg.DuplicateTTLSec)*time.Second),
 	)
 
-	mux := ads.NewRouter(cfg, registry, eventProc, filterEngine)
+	// Passing pgConsumer as the "Producer" to the router
+	// Process() method just calls XADD, so any consumer instance works.
+	mux := ads.NewRouter(cfg, registry, pgConsumer, filterEngine)
 
 	slog.Info("starting ad-event-processor", "port", cfg.ServerPort)
 
@@ -107,10 +136,15 @@ func main() {
 		slog.Info("http server stopped successfully")
 	}
 
-	slog.Info("draining event processor...")
-	eventProc.Close()
-	eventProc.Wait()
-	slog.Info("event processor stopped")
+	slog.Info("draining event consumers...")
+	pgConsumer.Close()
+	pgConsumer.Wait()
+	pgStore.Close()
+	
+	chConsumer.Close()
+	chConsumer.Wait()
+	chStore.Close()
+	slog.Info("event consumers stopped")
 
 	slog.Info("stopping campaign registry...")
 	registry.Wait()

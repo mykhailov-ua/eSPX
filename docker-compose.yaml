@@ -135,6 +135,24 @@ services:
       prometheus:
         condition: service_healthy
 
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    env_file:
+      - .env
+    ports:
+      - "${CH_PORT}:${CH_PORT}"
+      - "${CH_HTTP_PORT}:${CH_HTTP_PORT}"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./deploy/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
 networks:
   frontend:
     driver: bridge
@@ -149,3 +167,4 @@ volumes:
   db_data:
   grafana_data:
   prometheus_data:
+  clickhouse_data:
