@@ -1,0 +1,35 @@
+package database
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+)
+
+func ConnectClickHouse(ctx context.Context, dsn string) (driver.Conn, error) {
+	opts, err := clickhouse.ParseDSN(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse clickhouse dsn: %w", err)
+	}
+
+	// Native protocol options
+	opts.Settings = clickhouse.Settings{
+		"max_execution_time": 60,
+	}
+	opts.DialTimeout = 5 * time.Second
+	opts.ConnMaxLifetime = time.Hour
+
+	conn, err := clickhouse.Open(opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open clickhouse connection: %w", err)
+	}
+
+	if err := conn.Ping(ctx); err != nil {
+		return nil, fmt.Errorf("failed to ping clickhouse: %w", err)
+	}
+
+	return conn, nil
+}
