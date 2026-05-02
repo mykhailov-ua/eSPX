@@ -19,7 +19,7 @@ import (
 )
 
 // NewRouter initializes the HTTP router with metrics, health checks, and tracking endpoints.
-func NewRouter(cfg *config.Config, registry *Registry, proc *Processor, filterEngine *FilterEngine) http.Handler {
+func NewRouter(cfg *config.Config, registry *Registry, proc *StreamConsumer, filterEngine *FilterEngine) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.Handle("GET /metrics", promhttp.Handler())
