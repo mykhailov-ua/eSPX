@@ -54,7 +54,8 @@ func TestGracefulShutdown_NoDataLoss(t *testing.T) {
 	registry := ads.NewRegistry(queries)
 	_, _ = registry.Sync(ctx)
 
-	eventProc := ads.NewProcessor(queries, rdb, "shutdown-stream", "shutdown-group", "shutdown-c1", cfg.EventBatchSize, cfg.MaxWorkers, 100*time.Millisecond, 5*time.Second)
+	store := ads.NewPostgresStore(queries, 5*time.Second)
+	eventProc := ads.NewStreamConsumer(store, rdb, "shutdown-stream", "shutdown-group", "shutdown-c1", cfg.EventBatchSize, cfg.MaxWorkers, 100*time.Millisecond, 5*time.Second)
 	eventProc.Start(ctx)
 
 	router := ads.NewRouter(cfg, registry, eventProc, nil)

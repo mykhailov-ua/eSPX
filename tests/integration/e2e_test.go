@@ -55,7 +55,8 @@ func TestE2EFlow(t *testing.T) {
 	registry := ads.NewRegistry(queries)
 	_, _ = registry.Sync(ctx)
 
-	eventProc := ads.NewProcessor(queries, rdb, "test-stream", "test-group", "test-c1", cfg.EventBatchSize, cfg.MaxWorkers, 100*time.Millisecond, 1*time.Second)
+	store := ads.NewPostgresStore(queries, 1*time.Second)
+	eventProc := ads.NewStreamConsumer(store, rdb, "test-stream", "test-group", "test-c1", cfg.EventBatchSize, cfg.MaxWorkers, 100*time.Millisecond, 1*time.Second)
 	eventProc.Start(ctx)
 	defer eventProc.Close()
 
@@ -117,7 +118,8 @@ func TestE2EFlow_Protobuf(t *testing.T) {
 	registry := ads.NewRegistry(queries)
 	_, _ = registry.Sync(ctx)
 
-	eventProc := ads.NewProcessor(queries, rdb, "test-proto-stream", "test-proto-group", "test-c2", cfg.EventBatchSize, cfg.MaxWorkers, 100*time.Millisecond, 1*time.Second)
+	store := ads.NewPostgresStore(queries, 1*time.Second)
+	eventProc := ads.NewStreamConsumer(store, rdb, "test-proto-stream", "test-proto-group", "test-c2", cfg.EventBatchSize, cfg.MaxWorkers, 100*time.Millisecond, 1*time.Second)
 	eventProc.Start(ctx)
 	defer eventProc.Close()
 
