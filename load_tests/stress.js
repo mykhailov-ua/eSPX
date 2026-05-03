@@ -14,9 +14,11 @@ export const options = {
     },
 };
 
+const BASE_URL = __ENV.BASE_URL || 'http://app:8085';
+
 export default function () {
     const payload = JSON.stringify({
-        campaign_id: '550e8400-e29b-41d4-a716-446655440000',
+        campaign_id: '00000000-0000-0000-0000-000000000001',
         type: 'impression',
         click_id: `clk_${Math.random().toString(36).substring(7)}`,
         payload: { source: 'k6-stress-test' },
@@ -28,7 +30,7 @@ export default function () {
         },
     };
 
-    const res = http.post('http://localhost:8080/track', payload, params);
+    const res = http.post(`${BASE_URL}/track`, payload, params);
 
     check(res, {
         'status is 202': (r) => r.status === 202,

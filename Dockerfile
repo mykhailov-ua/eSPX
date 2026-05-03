@@ -1,12 +1,12 @@
 # Stage 1: Modules caching
-FROM golang:1.25-alpine AS modules
+FROM golang:alpine AS modules
 WORKDIR /src
 COPY go.mod ./
 # COPY go.sum ./ # Not present yet, but good to have in mind
 RUN go mod download
 
 # Stage 2: Build
-FROM golang:1.25-alpine AS builder
+FROM golang:alpine AS builder
 COPY --from=modules /go/pkg/mod /go/pkg/mod
 WORKDIR /src
 COPY . .
