@@ -13,9 +13,9 @@ import (
 // Registry maintains in-memory campaign IDs for O(1) validation in the hot path.
 // This prevents batch failures due to Foreign Key violations during bulk inserts.
 type Registry struct {
-	mu   sync.RWMutex
-	ids  map[uuid.UUID]struct{}
 	repo repository.Querier
+	ids  map[uuid.UUID]struct{}
+	mu   sync.RWMutex
 	wg   sync.WaitGroup
 }
 

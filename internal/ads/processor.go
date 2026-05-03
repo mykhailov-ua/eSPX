@@ -17,13 +17,13 @@ import (
 )
 
 type Event struct {
-	ClickID    string
+	ClickID   string
+	Type      string
+	Payload   []byte
+	IP        string
+	UA        string
+	CreatedAt time.Time
 	CampaignID uuid.UUID
-	Type       string
-	Payload    []byte
-	IP         string
-	UA         string
-	CreatedAt  time.Time
 }
 
 // StreamConsumer implements event ingestion from Redis Streams to EventStore.
@@ -33,12 +33,12 @@ type StreamConsumer struct {
 	streamName   string
 	groupName    string
 	consumerID   string
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
 	batchSize    int
 	flushInt     time.Duration
 	writeTimeout time.Duration
 	maxWorkers   int
-	wg           sync.WaitGroup
-	cancel       context.CancelFunc
 	drainOnce    sync.Once
 }
 

@@ -14,6 +14,7 @@ type Config struct {
 	RedisStreamName   string
 	RedisGroupName    string
 	RedisConsumerID   string
+	CHDSN             string
 	EventBatchSize    int
 	EventFlushMs      int
 	StatsFlushMs      int
@@ -25,7 +26,6 @@ type Config struct {
 	ShutdownTimeoutMs int
 	RateLimitPerMin   int
 	DuplicateTTLSec   int
-	CHDSN             string
 	CHBatchSize       int
 	CHFlushIntervalMs int
 }
@@ -51,9 +51,9 @@ func Load() (*Config, error) {
 		EventBatchSize:    getEnvInt("EVENT_BATCH_SIZE", 1000),
 		EventFlushMs:      getEnvInt("EVENT_FLUSH_MS", 500),
 		StatsFlushMs:      getEnvInt("STATS_FLUSH_MS", 5000),
-		MaxWorkers:        getEnvInt("MAX_WORKERS", 16), // Set to 16
+		MaxWorkers:        getEnvInt("MAX_WORKERS", 16),
 		LogRetentionDays:  getEnvInt("LOG_RETENTION_DAYS", 7),
-		DBMaxConns:        getEnvInt("DB_MAX_CONNS", 16), // Match with workers
+		DBMaxConns:        getEnvInt("DB_MAX_CONNS", 16),
 		DBMinConns:        getEnvInt("DB_MIN_CONNS", 2),
 		WriteTimeoutMs:    getEnvInt("WRITE_TIMEOUT_MS", 5000),
 		ShutdownTimeoutMs: getEnvInt("SHUTDOWN_TIMEOUT_MS", 15000),

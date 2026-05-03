@@ -59,11 +59,12 @@ func (s *ClickHouseStore) StoreBatch(ctx context.Context, events []Event) error 
 func (s *ClickHouseStore) insertToClickHouse(ctx context.Context, events []Event) error {
 	start := time.Now()
 
-	imps := make([]Event, 0, len(events))
-	clicks := make([]Event, 0, len(events))
-	convs := make([]Event, 0, len(events))
+	imps := make([]*Event, 0, len(events))
+	clicks := make([]*Event, 0, len(events))
+	convs := make([]*Event, 0, len(events))
 
-	for _, e := range events {
+	for i := range events {
+		e := &events[i]
 		switch e.Type {
 		case "impression":
 			imps = append(imps, e)
@@ -74,7 +75,7 @@ func (s *ClickHouseStore) insertToClickHouse(ctx context.Context, events []Event
 		}
 	}
 
-	insert := func(table string, evts []Event) error {
+	insert := func(table string, evts []*Event) error {
 		if len(evts) == 0 {
 			return nil
 		}
