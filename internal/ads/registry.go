@@ -14,14 +14,14 @@ import (
 // This prevents batch failures due to Foreign Key violations during bulk inserts.
 type Registry struct {
 	repo repository.Querier
-	ids  map[uuid.UUID]struct{}
+	ids  map[uuid.UUID]uuid.UUID
 	mu   sync.RWMutex
 	wg   sync.WaitGroup
 }
 
 func NewRegistry(repo repository.Querier) *Registry {
 	return &Registry{
-		ids:  make(map[uuid.UUID]struct{}, 100_000),
+		ids:  make(map[uuid.UUID]uuid.UUID, 100_000),
 		repo: repo,
 	}
 }
@@ -33,21 +33,28 @@ func (r *Registry) Exists(id uuid.UUID) bool {
 	return ok
 }
 
-func (r *Registry) Add(id uuid.UUID) {
+func (r *Registry) GetCustomerID(campaignID uuid.UUID) (uuid.UUID, bool) {
+	r.mu.RLock()
+	id, ok := r.ids[campaignID]
+	r.mu.RUnlock()
+	return id, ok
+}
+
+func (r *Registry) Add(id, customerID uuid.UUID) {
 	r.mu.Lock()
-	r.ids[id] = struct{}{}
+	r.ids[id] = customerID
 	r.mu.Unlock()
 }
 
 func (r *Registry) Sync(ctx context.Context) (int, error) {
-	rows, err := r.repo.ListCampaignIDs(ctx)
+	rows, err := r.repo.ListActiveCampaigns(ctx)
 	if err != nil {
 		return 0, err
 	}
 
-	fresh := make(map[uuid.UUID]struct{}, len(rows))
-	for _, pgID := range rows {
-		fresh[uuid.UUID(pgID.Bytes)] = struct{}{}
+	fresh := make(map[uuid.UUID]uuid.UUID, len(rows))
+	for _, row := range rows {
+		fresh[uuid.UUID(row.ID.Bytes)] = uuid.UUID(row.CustomerID.Bytes)
 	}
 
 	r.mu.Lock()
