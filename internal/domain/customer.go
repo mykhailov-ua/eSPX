@@ -6,10 +6,10 @@ import (
 )
 
 type Customer struct {
-	ID        uuid.UUID
-	Name      string
-	Balance   float64
-	Currency  string
+	ID       uuid.UUID
+	Name     string
+	Balance  float64
+	Currency string
 }
 
 type CustomerRepository interface {

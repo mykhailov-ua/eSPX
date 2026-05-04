@@ -13,8 +13,8 @@ import (
 	"github.com/mykhailov-ua/ad-event-processor/internal/ads/repository"
 	"github.com/mykhailov-ua/ad-event-processor/internal/config"
 	"github.com/mykhailov-ua/ad-event-processor/internal/database"
-	infra_repo "github.com/mykhailov-ua/ad-event-processor/internal/infra/repository"
 	"github.com/mykhailov-ua/ad-event-processor/internal/infra/budget"
+	infra_repo "github.com/mykhailov-ua/ad-event-processor/internal/infra/repository"
 )
 
 func main() {
@@ -96,7 +96,7 @@ func main() {
 		cfg.RedisGroupName+"_ch",
 		cfg.RedisConsumerID,
 		cfg.CHBatchSize,
-		1, 
+		1,
 		time.Duration(cfg.CHFlushIntervalMs)*time.Millisecond,
 		time.Duration(cfg.WriteTimeoutMs)*time.Millisecond,
 	)
@@ -145,7 +145,7 @@ func main() {
 	pgConsumer.Close()
 	pgConsumer.Wait()
 	pgStore.Close()
-	
+
 	chConsumer.Close()
 	chConsumer.Wait()
 	chStore.Close()

@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
 	"github.com/mykhailov-ua/ad-event-processor/internal/domain"
+	"github.com/redis/go-redis/v9"
 )
 
 const budgetLuaScript = `
@@ -70,7 +70,7 @@ func (m *RedisBudgetManager) CheckAndSpend(ctx context.Context, customerID, camp
 		if err != nil {
 			return false, fmt.Errorf("failed to load campaign from db on cache miss: %w", err)
 		}
-		
+
 		remaining := camp.BudgetLimit - camp.CurrentSpend
 		if remaining < 0 {
 			remaining = 0

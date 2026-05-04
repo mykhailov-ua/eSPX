@@ -13,10 +13,9 @@ import (
 	"unsafe"
 
 	"github.com/google/uuid"
-	redis "github.com/redis/go-redis/v9"
 	"github.com/mykhailov-ua/ad-event-processor/internal/domain"
+	redis "github.com/redis/go-redis/v9"
 )
-
 
 type StreamConsumer struct {
 	store        domain.EventStore
@@ -31,8 +30,8 @@ type StreamConsumer struct {
 	writeTimeout time.Duration
 	maxWorkers   int
 	drainOnce    sync.Once
-	started    bool
-	startMu    sync.Mutex
+	started      bool
+	startMu      sync.Mutex
 }
 
 func NewStreamConsumer(
@@ -216,7 +215,7 @@ func (p *StreamConsumer) worker(ctx context.Context, workerIdx int) {
 						pipe.XAck(context.Background(), p.streamName, p.groupName, msgIDs...)
 						pipe.XDel(context.Background(), p.streamName, msgIDs...)
 						_, _ = pipe.Exec(context.Background())
-						
+
 						for _, e := range batch {
 							domain.EventPool.Put(e)
 						}

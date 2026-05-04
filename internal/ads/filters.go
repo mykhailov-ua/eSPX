@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	redis "github.com/redis/go-redis/v9"
 	"github.com/mykhailov-ua/ad-event-processor/internal/domain"
+	redis "github.com/redis/go-redis/v9"
 )
 
 var builderPool = sync.Pool{

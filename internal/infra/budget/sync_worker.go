@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
 	"github.com/mykhailov-ua/ad-event-processor/internal/domain"
+	"github.com/redis/go-redis/v9"
 )
 
 type SyncWorker struct {

@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mykhailov-ua/ad-event-processor/internal/domain"
 	"github.com/google/uuid"
 	"github.com/mykhailov-ua/ad-event-processor/internal/ads"
+	"github.com/mykhailov-ua/ad-event-processor/internal/domain"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	rediscontainer "github.com/testcontainers/testcontainers-go/modules/redis"

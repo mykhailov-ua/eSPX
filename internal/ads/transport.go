@@ -15,8 +15,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/mykhailov-ua/ad-event-processor/internal/ads/pb"
 	"github.com/mykhailov-ua/ad-event-processor/internal/config"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/mykhailov-ua/ad-event-processor/internal/domain"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -146,7 +146,7 @@ func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, proc *Strea
 					http.Error(w, "budget exhausted", http.StatusPaymentRequired)
 					return
 				}
-				
+
 				// Fail-open for infrastructure errors (e.g., Redis down)
 				l.Error("filter engine degraded (fail-open)", "error", err)
 			}

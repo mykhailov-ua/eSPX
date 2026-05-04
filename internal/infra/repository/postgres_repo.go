@@ -37,7 +37,7 @@ func (r *CampaignRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Campa
 }
 
 func (r *CampaignRepo) UpdateStatus(ctx context.Context, id uuid.UUID, status domain.CampaignStatus) error {
-	return nil 
+	return nil
 }
 
 func (r *CampaignRepo) UpdateSpend(ctx context.Context, id uuid.UUID, amount float64) error {
