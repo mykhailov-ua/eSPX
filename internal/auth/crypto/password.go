@@ -17,7 +17,7 @@ var (
 	ErrInvalidPassword      = errors.New("password cannot be empty or exceeds maximum length")
 )
 
-const MaxPasswordLength = 32
+const MaxPasswordLength = 72
 
 var DummyHash string
 
