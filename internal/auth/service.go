@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/mykhailov-ua/ad-event-processor/internal/auth/crypto"
 	"github.com/mykhailov-ua/ad-event-processor/internal/auth/repository"
 	"github.com/mykhailov-ua/ad-event-processor/internal/auth/token"
@@ -131,4 +132,19 @@ func (s *Service) Login(ctx context.Context, email, password string, duration ti
 		AccessToken: accessToken,
 		User:        user,
 	}, nil
+}
+
+func (s *Service) VerifyToken(ctx context.Context, accessToken string) (repository.User, error) {
+	payload, err := s.tokenMaker.VerifyToken(accessToken)
+	if err != nil {
+		s.metrics.TokenErrors.Add(1)
+		return repository.User{}, err
+	}
+
+	user, err := s.repo.GetUserByID(ctx, pgtype.UUID{Bytes: payload.UserID, Valid: true})
+	if err != nil {
+		return repository.User{}, err
+	}
+
+	return user, nil
 }
