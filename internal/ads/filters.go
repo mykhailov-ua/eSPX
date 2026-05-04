@@ -24,14 +24,18 @@ var (
 )
 
 type BudgetFilter struct {
-	manager  domain.BudgetManager
-	registry domain.CampaignRegistry
+	manager          domain.BudgetManager
+	registry         domain.CampaignRegistry
+	clickAmount      float64
+	impressionAmount float64
 }
 
-func NewBudgetFilter(manager domain.BudgetManager, registry domain.CampaignRegistry) *BudgetFilter {
+func NewBudgetFilter(manager domain.BudgetManager, registry domain.CampaignRegistry, clickAmount, impressionAmount float64) *BudgetFilter {
 	return &BudgetFilter{
-		manager:  manager,
-		registry: registry,
+		manager:          manager,
+		registry:         registry,
+		clickAmount:      clickAmount,
+		impressionAmount: impressionAmount,
 	}
 }
 
@@ -41,9 +45,9 @@ func (f *BudgetFilter) Check(ctx context.Context, evt *domain.Event) error {
 		return errors.New("campaign not found in registry")
 	}
 
-	amount := 0.10
+	amount := f.clickAmount
 	if evt.Type == "impression" {
-		amount = 0.01
+		amount = f.impressionAmount
 	}
 
 	allowed, err := f.manager.CheckAndSpend(ctx, customerID, evt.CampaignID, evt.ClickID, amount)
@@ -56,13 +60,10 @@ func (f *BudgetFilter) Check(ctx context.Context, evt *domain.Event) error {
 	return nil
 }
 
-// EventFilter defines an interface for filtering incoming events.
-// If Check returns an error, the event should be rejected.
 type EventFilter interface {
 	Check(ctx context.Context, evt *domain.Event) error
 }
 
-// FilterEngine executes a chain of EventFilters.
 type FilterEngine struct {
 	filters []EventFilter
 }
@@ -80,8 +81,6 @@ func (e *FilterEngine) Check(ctx context.Context, evt *domain.Event) error {
 	return nil
 }
 
-// IPRateLimiter restricts the number of events from a single IP address
-// within a fixed time window using Redis.
 type IPRateLimiter struct {
 	rdb    redis.Cmdable
 	limit  int
@@ -96,7 +95,6 @@ func NewIPRateLimiter(rdb redis.Cmdable, limit int, window time.Duration) *IPRat
 	}
 }
 
-// Lua script for atomic fixed-window rate limiting.
 const rateLimitScript = `
 local current = redis.call("INCR", KEYS[1])
 if current == 1 then
@@ -110,7 +108,7 @@ return 0 -- allowed
 
 func (l *IPRateLimiter) Check(ctx context.Context, evt *domain.Event) error {
 	if evt.IP == "" {
-		return nil // skip if no IP
+		return nil
 	}
 
 	sb := builderPool.Get().(*strings.Builder)

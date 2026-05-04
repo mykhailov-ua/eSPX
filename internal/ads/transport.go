@@ -1,6 +1,7 @@
 package ads
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"net/http/pprof"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,7 +22,18 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// NewRouter initializes the HTTP router with metrics, health checks, and tracking endpoints.
+var (
+	adEventPool = sync.Pool{
+		New: func() any { return &pb.AdEvent{} },
+	}
+	trackResponsePool = sync.Pool{
+		New: func() any { return &pb.TrackResponse{} },
+	}
+	bufferPool = sync.Pool{
+		New: func() any { return new(bytes.Buffer) },
+	}
+)
+
 func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, proc *StreamConsumer, filterEngine *FilterEngine) http.Handler {
 	mux := http.NewServeMux()
 
@@ -31,7 +44,6 @@ func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, proc *Strea
 		_, _ = w.Write([]byte("OK"))
 	})
 
-	// Debugging & Profiling (pprof)
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
 	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
 	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
@@ -49,7 +61,7 @@ func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, proc *Strea
 		}()
 
 		// Prevent OOM by limiting request body size to 1MB
-		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		r.Body = http.MaxBytesReader(w, r.Body, cfg.MaxRequestBodySize)
 
 		requestID := uuid.New().String()
 		l := slog.With("request_id", requestID)
@@ -70,8 +82,12 @@ func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, proc *Strea
 				http.Error(w, "invalid body", status)
 				return
 			}
-			var pbReq pb.AdEvent
-			if err := proto.Unmarshal(body, &pbReq); err != nil {
+
+			pbReq := adEventPool.Get().(*pb.AdEvent)
+			pbReq.Reset()
+			defer adEventPool.Put(pbReq)
+
+			if err := proto.Unmarshal(body, pbReq); err != nil {
 				l.Warn("invalid protobuf body", "error", err)
 				status = http.StatusBadRequest
 				http.Error(w, "invalid protobuf", status)
@@ -91,7 +107,18 @@ func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, proc *Strea
 				if pbReq.Metadata.ClickId != "" {
 					clickID = pbReq.Metadata.ClickId
 				}
-				payload, _ = json.Marshal(pbReq.Metadata)
+				buf := bufferPool.Get().(*bytes.Buffer)
+				buf.Reset()
+				defer func() {
+					if buf.Cap() <= 64*1024 {
+						bufferPool.Put(buf)
+					}
+				}()
+				
+				enc := json.NewEncoder(buf)
+				_ = enc.Encode(pbReq.Metadata)
+				payload = make([]byte, buf.Len())
+				copy(payload, buf.Bytes())
 			}
 		} else {
 			var req struct {
@@ -163,10 +190,13 @@ func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, proc *Strea
 		}
 
 		if r.Header.Get("Accept") == "application/x-protobuf" {
-			resp := &pb.TrackResponse{
-				RequestId: requestID,
-				Status:    "accepted",
-			}
+			resp := trackResponsePool.Get().(*pb.TrackResponse)
+			resp.Reset()
+			defer trackResponsePool.Put(resp)
+			
+			resp.RequestId = requestID
+			resp.Status = "accepted"
+
 			out, _ := proto.Marshal(resp)
 			w.Header().Set("Content-Type", "application/x-protobuf")
 			w.WriteHeader(status)
@@ -174,49 +204,51 @@ func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, proc *Strea
 		} else {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"request_id": requestID,
-				"status":     "accepted",
-			})
+			
+			buf := bufferPool.Get().(*bytes.Buffer)
+			buf.Reset()
+			defer func() {
+				if buf.Cap() <= 64*1024 {
+					bufferPool.Put(buf)
+				}
+			}()
+			
+			_, _ = buf.WriteString(`{"request_id":"`)
+			_, _ = buf.WriteString(requestID)
+			_, _ = buf.WriteString(`","status":"accepted"}`)
+			_, _ = w.Write(buf.Bytes())
 		}
 	})
 
 	return mux
 }
 
-// extractClientIP returns the client's real IP address.
-// When behind a trusted reverse proxy (Caddy, Nginx), the proxy sets
-// X-Forwarded-For or X-Real-IP headers. Without these headers, falls
-// back to the TCP connection's RemoteAddr.
 func extractClientIP(r *http.Request) string {
 	remoteIP, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		remoteIP = r.RemoteAddr
 	}
 
-	clientIP := remoteIP
-
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		ips := strings.Split(xff, ",")
-		for i := len(ips) - 1; i >= 0; i-- {
-			ipStr := strings.TrimSpace(ips[i])
-			parsedIP := net.ParseIP(ipStr)
-			if parsedIP == nil {
-				continue
+		// Optimization: avoid strings.Split. Parse from right to left to find first non-private IP.
+		last := len(xff)
+		for i := len(xff) - 1; i >= -1; i-- {
+			if i == -1 || xff[i] == ',' {
+				ipStr := strings.TrimSpace(xff[i+1 : last])
+				parsedIP := net.ParseIP(ipStr)
+				if parsedIP != nil && !parsedIP.IsPrivate() && !parsedIP.IsLoopback() && !parsedIP.IsLinkLocalUnicast() {
+					return ipStr
+				}
+				last = i
 			}
-			if parsedIP.IsPrivate() || parsedIP.IsLoopback() || parsedIP.IsLinkLocalUnicast() {
-				continue
-			}
-			clientIP = ipStr
-			break
 		}
 	} else if xri := r.Header.Get("X-Real-IP"); xri != "" {
 		ipStr := strings.TrimSpace(xri)
 		parsedIP := net.ParseIP(ipStr)
 		if parsedIP != nil && !parsedIP.IsPrivate() && !parsedIP.IsLoopback() && !parsedIP.IsLinkLocalUnicast() {
-			clientIP = ipStr
+			return ipStr
 		}
 	}
 
-	return clientIP
+	return remoteIP
 }
