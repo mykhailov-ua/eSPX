@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unsafe"
 
 	"github.com/google/uuid"
 	"github.com/mykhailov-ua/ad-event-processor/internal/domain"
@@ -18,30 +17,38 @@ import (
 )
 
 type StreamConsumer struct {
-	store        domain.EventStore
-	rdb          redis.UniversalClient
-	streamName   string
-	groupName    string
-	consumerID   string
-	cancel       context.CancelFunc
-	wg           sync.WaitGroup
-	batchSize    int
-	flushInt     time.Duration
-	writeTimeout time.Duration
-	maxWorkers   int
-	drainOnce    sync.Once
-	started      bool
-	startMu      sync.Mutex
+	store         domain.EventStore
+	rdb           redis.UniversalClient
+	streamName    string
+	groupName     string
+	consumerID    string
+	cancel        context.CancelFunc
+	wg            sync.WaitGroup
+	startMu       sync.Mutex
+	maxStreamLen  int64
+	flushInt      time.Duration
+	writeTimeout  time.Duration
+	retryInitWait time.Duration
+	retryMaxWait  time.Duration
+	streamMinIdle time.Duration
+	batchSize     int
+	maxWorkers    int
+	maxRetries    int
+	drainOnce     sync.Once
+	started       bool
 }
 
 func NewStreamConsumer(
-
 	store domain.EventStore,
 	rdb redis.UniversalClient,
 	streamName, groupName, consumerID string,
 	batchSize int,
 	maxWorkers int,
 	flushInt, writeTimeout time.Duration,
+	maxStreamLen int,
+	retryInitWait, retryMaxWait time.Duration,
+	maxRetries int,
+	streamMinIdle time.Duration,
 ) *StreamConsumer {
 	hostname, err := os.Hostname()
 	if err != nil {
@@ -55,10 +62,15 @@ func NewStreamConsumer(
 		streamName:   streamName,
 		groupName:    groupName,
 		consumerID:   uniqueConsumerID,
-		batchSize:    batchSize,
-		flushInt:     flushInt,
-		writeTimeout: writeTimeout,
-		maxWorkers:   maxWorkers,
+		batchSize:      batchSize,
+		flushInt:       flushInt,
+		writeTimeout:   writeTimeout,
+		maxWorkers:     maxWorkers,
+		maxStreamLen:   int64(maxStreamLen),
+		retryInitWait:  retryInitWait,
+		retryMaxWait:   retryMaxWait,
+		maxRetries:     maxRetries,
+		streamMinIdle:  streamMinIdle,
 	}
 }
 
@@ -76,7 +88,7 @@ func (p *StreamConsumer) Process(evt *domain.Event) error {
 
 	_, err := p.rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: p.streamName,
-		MaxLen: 100000,
+		MaxLen: p.maxStreamLen,
 		Approx: true,
 		Values: map[string]interface{}{
 			"click_id":    evt.ClickID,
@@ -159,10 +171,10 @@ func (p *StreamConsumer) worker(ctx context.Context, workerIdx int) {
 
 	// Backoff state for flush retries when DB is unavailable.
 	// Prevents a hot loop of 10 retries/sec per worker.
-	retryWait := 100 * time.Millisecond
-	const maxRetryWait = 5 * time.Second
+	retryWait := p.retryInitWait
+	maxRetryWait := p.retryMaxWait
 	retryCount := 0
-	const maxRetries = 5
+	maxRetries := p.maxRetries
 
 	for {
 		select {
@@ -332,10 +344,7 @@ func (p *StreamConsumer) parseMessage(id string, values map[string]interface{}) 
 		evt.Type = v
 	}
 	if v, ok := values["payload"].(string); ok {
-		// Zero-copy string→[]byte. Safe: the source string from go-redis is
-		// a heap-allocated copy, and downstream consumers (pgx, clickhouse-go)
-		// only read the slice.
-		evt.Payload = unsafe.Slice(unsafe.StringData(v), len(v))
+		evt.Payload = append(evt.Payload[:0], v...)
 	}
 	if v, ok := values["ip"].(string); ok {
 		evt.IP = v
@@ -424,7 +433,7 @@ func (p *StreamConsumer) recoverPending(ctx context.Context, consumerID string) 
 }
 
 func (p *StreamConsumer) janitor(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Minute)
+	ticker := time.NewTicker(p.streamMinIdle)
 	defer ticker.Stop()
 
 	for {
@@ -444,7 +453,7 @@ func (p *StreamConsumer) claimStuckMessages(ctx context.Context) {
 			Stream:   p.streamName,
 			Group:    p.groupName,
 			Consumer: p.consumerID,
-			MinIdle:  5 * time.Minute,
+			MinIdle:  p.streamMinIdle,
 			Start:    startID,
 			Count:    int64(p.batchSize),
 		}).Result()
