@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mykhailov-ua/ad-event-processor/internal/ads"
+	ads_delivery "github.com/mykhailov-ua/ad-event-processor/internal/ads/delivery"
 	"github.com/mykhailov-ua/ad-event-processor/internal/ads/repository"
 	"github.com/mykhailov-ua/ad-event-processor/internal/config"
 	"github.com/mykhailov-ua/ad-event-processor/internal/database"
@@ -30,7 +31,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	pool, err := database.Connect(ctx, cfg.DBDSN, cfg.DBMaxConns, cfg.DBMinConns)
+	pool, err := database.Connect(ctx, string(cfg.DBDSN), cfg.DBMaxConns, cfg.DBMinConns)
 	if err != nil {
 		slog.Error("failed to connect to database", "error", err)
 		os.Exit(1)
@@ -41,7 +42,7 @@ func main() {
 	partManager := database.NewPartitionManager(pool, cfg.LogRetentionDays, cfg.PartitionPreCreateDays)
 	partManager.StartBackground(ctx)
 
-	chConn, err := database.ConnectClickHouse(ctx, cfg.CHDSN)
+	chConn, err := database.ConnectClickHouse(ctx, string(cfg.CHDSN))
 	if err != nil {
 		slog.Error("failed to connect to clickhouse", "error", err)
 		os.Exit(1)
@@ -57,7 +58,7 @@ func main() {
 	}
 	registry.StartSync(ctx, time.Duration(cfg.RegistrySyncIntervalMs)*time.Millisecond)
 
-	rdb, err := database.ConnectRedis(ctx, cfg.RedisAddr, cfg.RedisPassword)
+	rdb, err := database.ConnectRedis(ctx, cfg.RedisAddr, string(cfg.RedisPassword))
 	if err != nil {
 		slog.Error("failed to connect to redis", "error", err)
 		os.Exit(1)
@@ -116,7 +117,7 @@ func main() {
 		ads.NewBudgetFilter(budgetManager, registry, cfg.ClickAmount, cfg.ImpressionAmount),
 	)
 
-	mux := ads.NewRouter(cfg, registry, pgConsumer, filterEngine)
+	mux := ads_delivery.NewRouter(cfg, registry, pgConsumer, filterEngine)
 
 	slog.Info("starting ad-event-processor", "port", cfg.ServerPort)
 

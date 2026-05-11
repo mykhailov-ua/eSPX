@@ -1,22 +1,29 @@
 package config
 
 import (
-	"fmt"
+	"errors"
+	"log/slog"
 	"os"
 	"strconv"
 )
 
+type Secret string
+
+func (s Secret) LogValue() slog.Value {
+	return slog.StringValue("**********")
+}
+
 type Config struct {
 	ServerPort              string
-	DBDSN                   string
+	DBDSN                   Secret
 	RedisAddr               string
-	RedisPassword           string
+	RedisPassword           Secret
 	RedisStreamName         string
 	RedisGroupName          string
 	RedisConsumerID         string
-	CHDSN                   string
+	CHDSN                   Secret
 	AuthServerPort          string
-	TokenSymmetricKey       string
+	TokenSymmetricKey       Secret
 	MaxRequestBodySize      int64
 	ClickAmount             float64
 	ImpressionAmount        float64
@@ -84,9 +91,9 @@ func getEnvInt64(key string, fallback int64) int64 {
 func Load() (*Config, error) {
 	cfg := &Config{
 		ServerPort:              os.Getenv("SERVER_PORT"),
-		DBDSN:                   os.Getenv("DB_DSN"),
+		DBDSN:                   Secret(os.Getenv("DB_DSN")),
 		RedisAddr:               os.Getenv("REDIS_ADDR"),
-		RedisPassword:           os.Getenv("REDIS_PASSWORD"),
+		RedisPassword:           Secret(os.Getenv("REDIS_PASSWORD")),
 		RedisStreamName:         os.Getenv("REDIS_STREAM_NAME"),
 		RedisGroupName:          os.Getenv("REDIS_GROUP_NAME"),
 		RedisConsumerID:         os.Getenv("REDIS_CONSUMER_ID"),
@@ -105,11 +112,11 @@ func Load() (*Config, error) {
 		RateLimitWindowMs:       getEnvInt("RATE_LIMIT_WINDOW_MS", 60000),
 		MaxRequestBodySize:      getEnvInt64("MAX_REQUEST_BODY_SIZE", 1048576),
 		DuplicateTTLSec:         getEnvInt("DUPLICATE_TTL_SEC", 10),
-		CHDSN:                   os.Getenv("CH_DSN"),
+		CHDSN:                   Secret(os.Getenv("CH_DSN")),
 		CHBatchSize:             getEnvInt("CH_BATCH_SIZE", 50000),
 		CHFlushIntervalMs:       getEnvInt("CH_FLUSH_INTERVAL_MS", 10000),
 		AuthServerPort:          os.Getenv("AUTH_SERVER_PORT"),
-		TokenSymmetricKey:       os.Getenv("TOKEN_SYMMETRIC_KEY"),
+		TokenSymmetricKey:       Secret(os.Getenv("TOKEN_SYMMETRIC_KEY")),
 		PartitionPreCreateDays:  getEnvInt("PARTITION_PRECREATE_DAYS", 2),
 		RegistrySyncIntervalMs:  getEnvInt("REGISTRY_SYNC_INTERVAL_MS", 60000),
 		BudgetSyncIntervalMs:    getEnvInt("BUDGET_SYNC_INTERVAL_MS", 5000),
@@ -131,13 +138,13 @@ func Load() (*Config, error) {
 	}
 
 	if cfg.ServerPort == "" {
-		return nil, fmt.Errorf("SERVER_PORT is required")
+		return nil, errors.New("SERVER_PORT is required")
 	}
 	if cfg.DBDSN == "" {
-		return nil, fmt.Errorf("DB_DSN is required")
+		return nil, errors.New("DB_DSN is required")
 	}
 	if cfg.RedisAddr == "" {
-		return nil, fmt.Errorf("REDIS_ADDR is required")
+		return nil, errors.New("REDIS_ADDR is required")
 	}
 
 	if cfg.RedisStreamName == "" {
@@ -151,14 +158,14 @@ func Load() (*Config, error) {
 		if hostname == "" {
 			hostname = "unknown"
 		}
-		cfg.RedisConsumerID = fmt.Sprintf("%s:%d", hostname, os.Getpid())
+		cfg.RedisConsumerID = hostname + ":" + strconv.Itoa(os.Getpid())
 	}
 
 	if cfg.AuthServerPort == "" {
 		cfg.AuthServerPort = "50051"
 	}
 	if cfg.TokenSymmetricKey == "" {
-		cfg.TokenSymmetricKey = "01234567890123456789012345678901"
+		return nil, errors.New("TOKEN_SYMMETRIC_KEY is required")
 	}
 
 	return cfg, nil
