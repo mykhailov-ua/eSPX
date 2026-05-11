@@ -1,4 +1,4 @@
-package integration
+package tests
 
 import (
 	"context"
@@ -43,7 +43,7 @@ func setupTestDB(t *testing.T) (*pgxpool.Pool, func()) {
 		t.Fatalf("failed to connect to db: %s", err)
 	}
 
-	migrationsDir := filepath.Join("..", "..", "internal/ads/repository", "migrations")
+	migrationsDir := filepath.Join("..", "internal/ads/repository", "migrations")
 	entries, err := os.ReadDir(migrationsDir)
 	if err != nil {
 		t.Fatalf("failed to read migrations dir: %s", err)

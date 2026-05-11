@@ -146,7 +146,7 @@ services:
       - monitoring
       - frontend
     volumes:
-      - ./load_tests:/scripts
+      - ./tests/load:/scripts
     environment:
       - K6_PROMETHEUS_RW_SERVER_URL=http://prometheus:${PROMETHEUS_PORT}/api/v1/write
       - K6_PROMETHEUS_RW_TREND_STATS=p(95),p(99),min,max,avg
