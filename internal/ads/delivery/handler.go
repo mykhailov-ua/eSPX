@@ -35,7 +35,7 @@ var (
 	}
 )
 
-func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, proc *ads.StreamConsumer, filterEngine *ads.FilterEngine) http.Handler {
+func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, proc *ads.StreamProducer, filterEngine *ads.FilterEngine) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.Handle("GET /metrics", promhttp.Handler())

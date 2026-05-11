@@ -40,7 +40,7 @@ func BenchmarkTrackHandlerJSON(b *testing.B) {
 		MaxRequestBodySize: 1024 * 1024,
 	}
 	registry := &mockRegistry{}
-	proc := ads.NewStreamConsumer(nil, &mockRedis{}, "s", "g", "c", 10, 1, 100*time.Millisecond, 1*time.Second, 1000, 10*time.Millisecond, 100*time.Millisecond, 3, 1*time.Minute)
+	proc := ads.NewStreamProducer(&mockRedis{}, "s", 1000, 1*time.Second)
 	handler := NewRouter(cfg, registry, proc, nil)
 
 	payload := map[string]interface{}{
@@ -67,7 +67,7 @@ func BenchmarkTrackHandlerProto(b *testing.B) {
 		MaxRequestBodySize: 1024 * 1024,
 	}
 	registry := &mockRegistry{}
-	proc := ads.NewStreamConsumer(nil, &mockRedis{}, "s", "g", "c", 10, 1, 100*time.Millisecond, 1*time.Second, 1000, 10*time.Millisecond, 100*time.Millisecond, 3, 1*time.Minute)
+	proc := ads.NewStreamProducer(&mockRedis{}, "s", 1000, 1*time.Second)
 	handler := NewRouter(cfg, registry, proc, nil)
 
 	pbPayload := &pb.AdEvent{

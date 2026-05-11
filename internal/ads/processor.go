@@ -25,7 +25,6 @@ type StreamConsumer struct {
 	cancel        context.CancelFunc
 	wg            sync.WaitGroup
 	startMu       sync.Mutex
-	maxStreamLen  int64
 	flushInt      time.Duration
 	writeTimeout  time.Duration
 	retryInitWait time.Duration
@@ -45,7 +44,6 @@ func NewStreamConsumer(
 	batchSize int,
 	maxWorkers int,
 	flushInt, writeTimeout time.Duration,
-	maxStreamLen int,
 	retryInitWait, retryMaxWait time.Duration,
 	maxRetries int,
 	streamMinIdle time.Duration,
@@ -66,47 +64,11 @@ func NewStreamConsumer(
 		flushInt:      flushInt,
 		writeTimeout:  writeTimeout,
 		maxWorkers:    maxWorkers,
-		maxStreamLen:  int64(maxStreamLen),
 		retryInitWait: retryInitWait,
 		retryMaxWait:  retryMaxWait,
 		maxRetries:    maxRetries,
 		streamMinIdle: streamMinIdle,
 	}
-}
-
-func (p *StreamConsumer) Process(evt *domain.Event) error {
-	if evt.ClickID == "" {
-		id, err := uuid.NewV7()
-		if err != nil {
-			return err
-		}
-		evt.ClickID = id.String()
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), p.writeTimeout)
-	defer cancel()
-
-	_, err := p.rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: p.streamName,
-		MaxLen: p.maxStreamLen,
-		Approx: true,
-		Values: map[string]interface{}{
-			"click_id":    evt.ClickID,
-			"campaign_id": evt.CampaignID.String(),
-			"type":        evt.Type,
-			"payload":     evt.Payload,
-			"ip":          evt.IP,
-			"ua":          evt.UA,
-		},
-	}).Result()
-
-	if err != nil {
-		EventsDropped.Inc()
-		return err
-	}
-
-	EventsProcessed.Inc()
-	return nil
 }
 
 func (p *StreamConsumer) Start(ctx context.Context) {
@@ -222,8 +184,25 @@ func (p *StreamConsumer) worker(ctx context.Context, workerIdx int) {
 				} else {
 					retryCount++
 					if retryCount > maxRetries {
-						slog.Error("poison pill detected, dropping batch", "error", err, "group", p.groupName, "worker", workerID)
+						slog.Error("poison pill detected, moving to DLQ", "error", err, "group", p.groupName, "worker", workerID)
 						pipe := p.rdb.Pipeline()
+						
+						for i, e := range batch {
+							pipe.XAdd(context.Background(), &redis.XAddArgs{
+								Stream: "ad:events:dead_letter",
+								Values: map[string]interface{}{
+									"click_id":    e.ClickID,
+									"campaign_id": e.CampaignID.String(),
+									"type":        e.Type,
+									"payload":     e.Payload,
+									"ip":          e.IP,
+									"ua":          e.UA,
+									"error":       err.Error(),
+									"original_id": msgIDs[i],
+								},
+							})
+						}
+						
 						pipe.XAck(context.Background(), p.streamName, p.groupName, msgIDs...)
 						pipe.XDel(context.Background(), p.streamName, msgIDs...)
 						_, _ = pipe.Exec(context.Background())

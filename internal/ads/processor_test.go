@@ -61,10 +61,9 @@ func TestStreamConsumer_Ingestion(t *testing.T) {
 	rdb, cleanup := setupTestRedis(t)
 	defer cleanup()
 
-	mockStore := &MockEventStore{}
-	proc := NewStreamConsumer(mockStore, rdb, "s1", "g1", "c1", 5, 1, 100*time.Millisecond, 1*time.Second, 1000, 10*time.Millisecond, 100*time.Millisecond, 3, 1*time.Minute)
+	producer := NewStreamProducer(rdb, "s1", 1000, 1*time.Second)
 
-	err := proc.Process(&domain.Event{CampaignID: uuid.New(), Type: "click"})
+	err := producer.Process(&domain.Event{CampaignID: uuid.New(), Type: "click"})
 	assert.NoError(t, err)
 }
 
@@ -76,12 +75,14 @@ func TestStreamConsumer_BatchFlushing(t *testing.T) {
 	defer cleanup()
 
 	mockStore := &MockEventStore{}
-	proc := NewStreamConsumer(mockStore, rdb, "s2", "g2", "c2", 2, 1, 10*time.Second, 1*time.Second, 1000, 10*time.Millisecond, 100*time.Millisecond, 3, 1*time.Minute)
+	producer := NewStreamProducer(rdb, "s2", 1000, 1*time.Second)
+	proc := NewStreamConsumer(mockStore, rdb, "s2", "g2", "c2", 2, 1, 10*time.Second, 1*time.Second, 10*time.Millisecond, 100*time.Millisecond, 3, 1*time.Minute)
+	
 	proc.Start(context.Background())
 	time.Sleep(100 * time.Millisecond)
 
 	for i := 0; i < 3; i++ {
-		_ = proc.Process(&domain.Event{CampaignID: uuid.New(), Type: "click"})
+		_ = producer.Process(&domain.Event{CampaignID: uuid.New(), Type: "click"})
 	}
 
 	time.Sleep(200 * time.Millisecond)
