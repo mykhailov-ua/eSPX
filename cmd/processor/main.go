@@ -16,6 +16,8 @@ import (
 	"github.com/mykhailov-ua/ad-event-processor/internal/infra/budget"
 	infra_repo "github.com/mykhailov-ua/ad-event-processor/internal/infra/repository"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/redis/go-redis/v9"
+	"fmt"
 )
 
 func main() {
@@ -31,7 +33,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Operational DB (Postgres)
+	// Establishes a connection pool to the transactional database for persistence and budget metadata.
 	pool, err := database.Connect(ctx, string(cfg.DBDSN), cfg.DBProcessorMaxConns, cfg.DBMinConns)
 	if err != nil {
 		slog.Error("failed to connect to database", "error", err)
@@ -43,7 +45,7 @@ func main() {
 	partManager := database.NewPartitionManager(pool, cfg.LogRetentionDays, cfg.PartitionPreCreateDays)
 	partManager.StartBackground(ctx)
 
-	// Analytics DB (ClickHouse)
+	// Connects to the analytical store for high-volume event logging.
 	chConn, err := database.ConnectClickHouse(ctx, string(cfg.CHDSN))
 	if err != nil {
 		slog.Error("failed to connect to clickhouse", "error", err)
@@ -51,12 +53,29 @@ func main() {
 	}
 	defer chConn.Close()
 
-	rdb, err := database.ConnectRedis(ctx, cfg.RedisAddr, string(cfg.RedisPassword))
-	if err != nil {
-		slog.Error("failed to connect to redis", "error", err)
-		os.Exit(1)
+	var rdbs []redis.UniversalClient
+	for _, addr := range cfg.RedisAddrs {
+		rdb := redis.NewUniversalClient(&redis.UniversalOptions{
+			Addrs:    []string{addr},
+			Password: string(cfg.RedisPassword),
+			PoolSize: cfg.RedisPoolSize,
+		})
+
+		var rdbErr error
+		for i := 0; i < 30; i++ {
+			if rdbErr = rdb.Ping(ctx).Err(); rdbErr == nil {
+				break
+			}
+			slog.Warn("waiting for redis...", "addr", addr, "error", rdbErr)
+			time.Sleep(time.Second)
+		}
+
+		if rdbErr != nil {
+			slog.Error("failed to connect to redis shard", "addr", addr, "error", rdbErr)
+			os.Exit(1)
+		}
+		rdbs = append(rdbs, rdb)
 	}
-	defer rdb.Close()
 
 	pgStore := ads.NewPostgresStore(queries, time.Duration(cfg.WriteTimeoutMs)*time.Millisecond)
 	chStore := ads.NewClickHouseStore(chConn, time.Duration(cfg.WriteTimeoutMs)*time.Millisecond)
@@ -64,42 +83,51 @@ func main() {
 	campaignRepo := infra_repo.NewCampaignRepo(queries)
 	customerRepo := infra_repo.NewCustomerRepo(queries)
 
-	syncWorker := budget.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond)
-	go syncWorker.Start(ctx)
+	var pgConsumers []*ads.StreamConsumer
+	var chConsumers []*ads.StreamConsumer
 
-	pgConsumer := ads.NewStreamConsumer(
-		pgStore,
-		rdb,
-		cfg.RedisStreamName,
-		cfg.RedisGroupName+"_pg",
-		cfg.RedisConsumerID,
-		cfg.EventBatchSize,
-		cfg.MaxWorkers,
-		time.Duration(cfg.EventFlushMs)*time.Millisecond,
-		time.Duration(cfg.WriteTimeoutMs)*time.Millisecond,
-		time.Duration(cfg.RetryInitialWaitMs)*time.Millisecond,
-		time.Duration(cfg.RetryMaxWaitMs)*time.Millisecond,
-		cfg.MaxRetries,
-		time.Duration(cfg.StreamMinIdleMs)*time.Millisecond,
-	)
-	pgConsumer.Start(ctx)
+	for i, rdb := range rdbs {
+		shardID := fmt.Sprintf("shard_%d", i)
+		
+		sw := budget.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond)
+		go sw.Start(ctx)
 
-	chConsumer := ads.NewStreamConsumer(
-		chStore,
-		rdb,
-		cfg.RedisStreamName,
-		cfg.RedisGroupName+"_ch",
-		cfg.RedisConsumerID,
-		cfg.CHBatchSize,
-		cfg.CHMaxWorkers,
-		time.Duration(cfg.CHFlushIntervalMs)*time.Millisecond,
-		time.Duration(cfg.WriteTimeoutMs)*time.Millisecond,
-		time.Duration(cfg.RetryInitialWaitMs)*time.Millisecond,
-		time.Duration(cfg.RetryMaxWaitMs)*time.Millisecond,
-		cfg.MaxRetries,
-		time.Duration(cfg.StreamMinIdleMs)*time.Millisecond,
-	)
-	chConsumer.Start(ctx)
+		pc := ads.NewStreamConsumer(
+			pgStore,
+			rdb,
+			cfg.RedisStreamName,
+			cfg.RedisGroupName+"_pg",
+			cfg.RedisConsumerID+"_"+shardID,
+			cfg.EventBatchSize,
+			cfg.MaxWorkers,
+			time.Duration(cfg.EventFlushMs)*time.Millisecond,
+			time.Duration(cfg.WriteTimeoutMs)*time.Millisecond,
+			time.Duration(cfg.RetryInitialWaitMs)*time.Millisecond,
+			time.Duration(cfg.RetryMaxWaitMs)*time.Millisecond,
+			cfg.MaxRetries,
+			time.Duration(cfg.StreamMinIdleMs)*time.Millisecond,
+		)
+		pgConsumers = append(pgConsumers, pc)
+		// pc.Start(ctx) 
+
+		cc := ads.NewStreamConsumer(
+			chStore,
+			rdb,
+			cfg.RedisStreamName,
+			cfg.RedisGroupName+"_ch",
+			cfg.RedisConsumerID+"_"+shardID,
+			cfg.CHBatchSize,
+			cfg.CHMaxWorkers,
+			time.Duration(cfg.CHFlushIntervalMs)*time.Millisecond,
+			time.Duration(cfg.WriteTimeoutMs)*time.Millisecond,
+			time.Duration(cfg.RetryInitialWaitMs)*time.Millisecond,
+			time.Duration(cfg.RetryMaxWaitMs)*time.Millisecond,
+			cfg.MaxRetries,
+			time.Duration(cfg.StreamMinIdleMs)*time.Millisecond,
+		)
+		chConsumers = append(chConsumers, cc)
+		cc.Start(ctx)
+	}
 
 	slog.Info("starting ad-event-processor worker",
 		"stream", cfg.RedisStreamName,
@@ -111,6 +139,32 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", promhttp.Handler())
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+
+		// Verifies PostgreSQL connectivity to ensure the transactional metadata store is reachable.
+		if err := pool.Ping(ctx); err != nil {
+			slog.Error("processor health check failed: postgres", "error", err)
+			http.Error(w, "postgres unreachable", http.StatusServiceUnavailable)
+			return
+		}
+
+		// Verifies ClickHouse connectivity to ensure the analytical log sink is operational.
+		if err := chConn.Ping(ctx); err != nil {
+			slog.Error("processor health check failed: clickhouse", "error", err)
+			http.Error(w, "clickhouse unreachable", http.StatusServiceUnavailable)
+			return
+		}
+
+		// Iterates through all Redis shards to validate distributed state and budget reservation availability.
+		for i, rdb := range rdbs {
+			if err := rdb.Ping(ctx).Err(); err != nil {
+				slog.Error("processor health check failed: redis shard", "shard", i, "error", err)
+				http.Error(w, "redis shard unreachable", http.StatusServiceUnavailable)
+				return
+			}
+		}
+
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("OK"))
 	})
@@ -142,11 +196,23 @@ func main() {
 		slog.Error("processor server shutdown failed", "error", err)
 	}
 
-	pgConsumer.Close()
-	pgConsumer.Wait()
+	for _, pc := range pgConsumers {
+		pc.Close()
+		pc.Wait()
+	}
 	pgStore.Close()
 
-	chConsumer.Close()
-	chConsumer.Wait()
+	for _, cc := range chConsumers {
+		cc.Close()
+		cc.Wait()
+	}
 	chStore.Close()
+
+	// Sequentially terminates connections to all Redis shards to ensure clean resource release.
+	for i, rdb := range rdbs {
+		if err := rdb.Close(); err != nil {
+			slog.Error("failed to close redis shard", "shard", i, "error", err)
+		}
+	}
+	slog.Info("processor shutdown complete")
 }

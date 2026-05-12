@@ -14,8 +14,8 @@ import (
 	"github.com/mykhailov-ua/ad-event-processor/internal/ads/repository"
 	"github.com/mykhailov-ua/ad-event-processor/internal/config"
 	"github.com/mykhailov-ua/ad-event-processor/internal/database"
-	"github.com/mykhailov-ua/ad-event-processor/internal/infra/budget"
 	infra_repo "github.com/mykhailov-ua/ad-event-processor/internal/infra/repository"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -31,7 +31,6 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Pool is required for Registry sync and loading campaign data on budget cache miss.
 	pool, err := database.Connect(ctx, string(cfg.DBDSN), cfg.DBTrackerMaxConns, cfg.DBMinConns)
 	if err != nil {
 		slog.Error("failed to connect to database", "error", err)
@@ -49,30 +48,49 @@ func main() {
 	}
 	registry.StartSync(ctx, time.Duration(cfg.RegistrySyncIntervalMs)*time.Millisecond)
 
-	rdb, err := database.ConnectRedis(ctx, cfg.RedisAddr, string(cfg.RedisPassword))
-	if err != nil {
-		slog.Error("failed to connect to redis", "error", err)
-		os.Exit(1)
+	var rdbs []redis.UniversalClient
+	for _, addr := range cfg.RedisAddrs {
+		rdb := redis.NewUniversalClient(&redis.UniversalOptions{
+			Addrs:    []string{addr},
+			Password: string(cfg.RedisPassword),
+			PoolSize: cfg.RedisPoolSize,
+		})
+
+		var rdbErr error
+		for i := 0; i < 30; i++ {
+			if rdbErr = rdb.Ping(ctx).Err(); rdbErr == nil {
+				break
+			}
+			slog.Warn("waiting for redis...", "addr", addr, "error", rdbErr)
+			time.Sleep(time.Second)
+		}
+
+		if rdbErr != nil {
+			slog.Error("failed to connect to redis shard", "addr", addr, "error", rdbErr)
+			os.Exit(1)
+		}
+		rdbs = append(rdbs, rdb)
 	}
-	defer rdb.Close()
 
 	campaignRepo := infra_repo.NewCampaignRepo(queries)
-	budgetManager := budget.NewRedisBudgetManager(rdb, campaignRepo, time.Duration(cfg.IdempotencyTTLHrs)*time.Hour)
 
-	producer := ads.NewStreamProducer(
-		rdb,
+	unifiedFilter := ads.NewUnifiedFilter(
+		rdbs,
+		registry,
+		campaignRepo,
+		cfg.RateLimitPerMin,
+		time.Duration(cfg.RateLimitWindowMs)*time.Millisecond,
+		time.Duration(cfg.DuplicateTTLSec)*time.Second,
+		time.Duration(cfg.IdempotencyTTLHrs)*time.Hour,
+		cfg.ClickAmount,
+		cfg.ImpressionAmount,
 		cfg.RedisStreamName,
 		cfg.StreamMaxLen,
-		time.Duration(cfg.WriteTimeoutMs)*time.Millisecond,
 	)
 
-	filterEngine := ads.NewFilterEngine(
-		ads.NewIPRateLimiter(rdb, cfg.RateLimitPerMin, time.Duration(cfg.RateLimitWindowMs)*time.Millisecond),
-		ads.NewDuplicateEventFilter(rdb, time.Duration(cfg.DuplicateTTLSec)*time.Second),
-		ads.NewBudgetFilter(budgetManager, registry, cfg.ClickAmount, cfg.ImpressionAmount),
-	)
+	filterEngine := ads.NewFilterEngine(unifiedFilter)
 
-	mux := ads_delivery.NewRouter(cfg, registry, producer, filterEngine)
+	mux := ads_delivery.NewRouter(cfg, registry, filterEngine, pool, rdbs)
 
 	slog.Info("starting ad-event-tracker", "port", cfg.ServerPort)
 
@@ -100,11 +118,19 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), time.Duration(cfg.ShutdownTimeoutMs)*time.Millisecond)
 	defer shutdownCancel()
 
-	cancel()
+	cancel() // Triggers the shutdown of background synchronization tasks and cancels the global context.
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		slog.Error("server shutdown failed", "error", err)
 	}
 
+	// Sequentially terminates connections to all Redis shards to ensure clean resource release and prevent socket leakage.
+	for i, rdb := range rdbs {
+		if err := rdb.Close(); err != nil {
+			slog.Error("failed to close redis shard", "shard", i, "error", err)
+		}
+	}
+
 	registry.Wait()
+	slog.Info("ad-event-tracker shutdown complete")
 }

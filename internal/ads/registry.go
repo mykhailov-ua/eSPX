@@ -12,37 +12,45 @@ import (
 
 // Registry maintains in-memory campaign IDs for O(1) validation in the hot path.
 // This prevents batch failures due to Foreign Key violations during bulk inserts.
+type campaignInfo struct {
+	customerID uuid.UUID
+	status     repository.CampaignStatusType
+}
+
 type Registry struct {
 	repo repository.Querier
-	ids  map[uuid.UUID]uuid.UUID
+	data map[uuid.UUID]campaignInfo
 	mu   sync.RWMutex
 	wg   sync.WaitGroup
 }
 
 func NewRegistry(repo repository.Querier) *Registry {
 	return &Registry{
-		ids:  make(map[uuid.UUID]uuid.UUID, 100_000),
+		data: make(map[uuid.UUID]campaignInfo, 100_000),
 		repo: repo,
 	}
 }
 
 func (r *Registry) Exists(id uuid.UUID) bool {
 	r.mu.RLock()
-	_, ok := r.ids[id]
+	info, ok := r.data[id]
 	r.mu.RUnlock()
-	return ok
+	return ok && info.status == repository.CampaignStatusTypeACTIVE
 }
 
 func (r *Registry) GetCustomerID(campaignID uuid.UUID) (uuid.UUID, bool) {
 	r.mu.RLock()
-	id, ok := r.ids[campaignID]
+	info, ok := r.data[campaignID]
 	r.mu.RUnlock()
-	return id, ok
+	if !ok {
+		return uuid.Nil, false
+	}
+	return info.customerID, true
 }
 
 func (r *Registry) Add(id, customerID uuid.UUID) {
 	r.mu.Lock()
-	r.ids[id] = customerID
+	r.data[id] = campaignInfo{customerID: customerID, status: repository.CampaignStatusTypeACTIVE}
 	r.mu.Unlock()
 }
 
@@ -52,13 +60,16 @@ func (r *Registry) Sync(ctx context.Context) (int, error) {
 		return 0, err
 	}
 
-	fresh := make(map[uuid.UUID]uuid.UUID, len(rows))
+	fresh := make(map[uuid.UUID]campaignInfo, len(rows))
 	for _, row := range rows {
-		fresh[uuid.UUID(row.ID.Bytes)] = uuid.UUID(row.CustomerID.Bytes)
+		fresh[uuid.UUID(row.ID.Bytes)] = campaignInfo{
+			customerID: uuid.UUID(row.CustomerID.Bytes),
+			status:     row.Status,
+		}
 	}
 
 	r.mu.Lock()
-	r.ids = fresh
+	r.data = fresh
 	r.mu.Unlock()
 
 	return len(fresh), nil
