@@ -1,56 +1,131 @@
-version: '3.8'
-
 services:
-  tracker:
+  tracker-0:
     build:
       context: .
       dockerfile: Dockerfile
     entrypoint: ["/tracker"]
+    network_mode: host
     env_file:
       - .env
-    ports:
-      - "${SERVER_PORT}:${SERVER_PORT}"
     environment:
-      - DB_DSN=${DB_DSN}
-      - REDIS_ADDR=${REDIS_ADDR}
-      - DB_TRACKER_MAX_CONNS=4
-      - GOMEMLIMIT=450MiB
-      - GOGC=200
+      - SERVER_PORT=8081
+      - GOMEMLIMIT=700MiB
+      - GOGC=50
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
     deploy:
       resources:
         limits:
-          memory: 512M
-    ulimits:
-      nproc: 65535
-      nofile:
-        soft: 65535
-        hard: 65535
-    sysctls:
-      - net.core.somaxconn=8192
-      - net.ipv4.tcp_max_syn_backlog=8192
-      - net.ipv4.ip_local_port_range=1024 65535
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-    tmpfs:
-      - /tmp
-    networks:
-      - frontend
-      - backend
-      - database
-      - monitoring
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+          memory: 1G
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:${SERVER_PORT}/health"]
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
+    restart: always
+
+  tracker-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/tracker"]
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      - SERVER_PORT=8082
+      - GOMEMLIMIT=700MiB
+      - GOGC=50
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8082/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: always
+
+  tracker-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/tracker"]
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      - SERVER_PORT=8083
+      - GOMEMLIMIT=700MiB
+      - GOGC=50
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8083/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: always
+
+  tracker-3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/tracker"]
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      - SERVER_PORT=8084
+      - GOMEMLIMIT=700MiB
+      - GOGC=50
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8084/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: always
+
+  nginx:
+    image: nginx:stable-alpine
+    network_mode: host
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - tracker-0
+      - tracker-1
+      - tracker-2
+      - tracker-3
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    restart: always
 
   processor:
     build:
@@ -63,31 +138,31 @@ services:
       - "${PROCESSOR_PORT}:${PROCESSOR_PORT}"
     environment:
       - DB_DSN=${DB_DSN}
-      - REDIS_ADDR=${REDIS_ADDR}
+      - REDIS_ADDRS=localhost:6379,localhost:6380,localhost:6381,localhost:6382,localhost:6383,localhost:6384
       - CH_DSN=${CH_DSN}
       - PROCESSOR_PORT=${PROCESSOR_PORT}
       - DB_PROCESSOR_MAX_CONNS=16
-      - GOMEMLIMIT=450MiB
-      - GOGC=200
+      - GOMEMLIMIT=1500MiB
+      - GOGC=100
     deploy:
       resources:
         limits:
-          memory: 512M
+          memory: 2G
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8086/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     networks:
       - database
       - monitoring
     depends_on:
       db:
         condition: service_healthy
-      redis:
+      redis-0:
         condition: service_healthy
       clickhouse:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:${PROCESSOR_PORT}/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+        condition: service_started
 
   db:
     image: postgres:${POSTGRES_VERSION}
@@ -97,7 +172,6 @@ services:
       - POSTGRES_USER=${DB_USER}
       - POSTGRES_PASSWORD=${DB_PASSWORD}
       - POSTGRES_DB=${DB_NAME}
-    # No host port exposure — accessible only within 'database' network.
     ports:
       - "${DB_PORT}:${DB_PORT}"
     command: ["postgres", "-p", "${DB_PORT}"]
@@ -106,122 +180,193 @@ services:
     networks:
       - database
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} -p ${DB_PORT}"]
+      test: ["CMD-SHELL", "pg_isready -p ${DB_PORT} -U ${DB_USER}"]
       interval: ${HEALTHCHECK_INTERVAL}
       timeout: ${HEALTHCHECK_TIMEOUT}
       retries: ${HEALTHCHECK_RETRIES}
+    deploy:
+      resources:
+        limits:
+          memory: 1G
 
-  redis:
+  redis-0:
     image: redis:${REDIS_VERSION}
     env_file:
       - .env
     ports:
-      - "${REDIS_PORT}:${REDIS_PORT}"
-    command: ["redis-server", "--port", "${REDIS_PORT}", "--requirepass", "${REDIS_PASSWORD}"]
+      - "6379:6379"
+    command: ["redis-server", "--port", "6379", "--requirepass", "${REDIS_PASSWORD}", "--save", ""]
     deploy:
       resources:
         limits:
-          memory: 256M
+          memory: 768M
     networks:
       - database
     healthcheck:
-      test: ["CMD", "redis-cli", "-p", "${REDIS_PORT}", "-a", "${REDIS_PASSWORD}", "ping"]
+      test: ["CMD", "redis-cli", "-p", "6379", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: ${HEALTHCHECK_INTERVAL}
       timeout: ${HEALTHCHECK_TIMEOUT}
       retries: ${HEALTHCHECK_RETRIES}
 
-  prometheus:
-    image: prom/prometheus:${PROMETHEUS_VERSION}
+  redis-1:
+    image: redis:${REDIS_VERSION}
     env_file:
       - .env
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./prometheus_rules.yml:/etc/prometheus/prometheus_rules.yml:ro
-      - prometheus_data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.listen-address=:${PROMETHEUS_PORT}'
-    # Removed --web.enable-remote-write-receiver to prevent metric injection.
-    # No host port exposure — accessible only within 'monitoring' network.
-    networks:
-      - monitoring
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:${PROMETHEUS_PORT}/-/healthy"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
-  grafana:
-    image: grafana/grafana:${GRAFANA_VERSION}
-    env_file:
-      - .env
-    environment:
-      - GF_SERVER_HTTP_PORT=${GRAFANA_PORT}
-      - GF_AUTH_ANONYMOUS_ENABLED=false
     ports:
-      - "${GRAFANA_PORT}:${GRAFANA_PORT}"
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./deploy/grafana/dashboards:/etc/grafana/dashboards:ro
-    networks:
-      - monitoring
-      - frontend
-    depends_on:
-      prometheus:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:${GRAFANA_PORT}/api/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
-  k6:
-    image: grafana/k6:latest
-    networks:
-      - monitoring
-      - frontend
-    volumes:
-      - ./tests/load:/scripts
-    environment:
-      - K6_PROMETHEUS_RW_SERVER_URL=http://prometheus:${PROMETHEUS_PORT}/api/v1/write
-      - K6_PROMETHEUS_RW_TREND_STATS=p(95),p(99),min,max,avg
-    depends_on:
-      prometheus:
-        condition: service_healthy
-
-  clickhouse:
-    image: clickhouse/clickhouse-server:latest
-    environment:
-      - CLICKHOUSE_DB=${CH_DB}
-      - CLICKHOUSE_PASSWORD=${CH_PASSWORD}
-    # No host port exposure — accessible only within 'database' network.
-    volumes:
-      - clickhouse_data:/var/lib/clickhouse
-      - ./deploy/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - "6380:6379"
+    command: ["redis-server", "--port", "6379", "--requirepass", "${REDIS_PASSWORD}", "--save", ""]
+    deploy:
+      resources:
+        limits:
+          memory: 768M
     networks:
       - database
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8123/ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      test: ["CMD", "redis-cli", "-p", "6379", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: ${HEALTHCHECK_INTERVAL}
+      timeout: ${HEALTHCHECK_TIMEOUT}
+      retries: ${HEALTHCHECK_RETRIES}
+
+  redis-2:
+    image: redis:${REDIS_VERSION}
+    env_file:
+      - .env
+    ports:
+      - "6381:6379"
+    command: ["redis-server", "--port", "6379", "--requirepass", "${REDIS_PASSWORD}", "--save", ""]
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: ${HEALTHCHECK_INTERVAL}
+      timeout: ${HEALTHCHECK_TIMEOUT}
+      retries: ${HEALTHCHECK_RETRIES}
+
+  redis-3:
+    image: redis:${REDIS_VERSION}
+    env_file:
+      - .env
+    ports:
+      - "6382:6379"
+    command: ["redis-server", "--port", "6379", "--requirepass", "${REDIS_PASSWORD}", "--save", ""]
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: ${HEALTHCHECK_INTERVAL}
+      timeout: ${HEALTHCHECK_TIMEOUT}
+      retries: ${HEALTHCHECK_RETRIES}
+
+  redis-4:
+    image: redis:${REDIS_VERSION}
+    env_file:
+      - .env
+    ports:
+      - "6383:6379"
+    command: ["redis-server", "--port", "6379", "--requirepass", "${REDIS_PASSWORD}", "--save", ""]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: ${HEALTHCHECK_INTERVAL}
+      timeout: ${HEALTHCHECK_TIMEOUT}
+      retries: ${HEALTHCHECK_RETRIES}
+
+  redis-5:
+    image: redis:${REDIS_VERSION}
+    env_file:
+      - .env
+    ports:
+      - "6384:6379"
+    command: ["redis-server", "--port", "6379", "--requirepass", "${REDIS_PASSWORD}", "--save", ""]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: ${HEALTHCHECK_INTERVAL}
+      timeout: ${HEALTHCHECK_TIMEOUT}
+      retries: ${HEALTHCHECK_RETRIES}
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    env_file:
+      - .env
+    ports:
+      - "${CH_PORT}:${CH_PORT}"
+      - "8123:8123"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./deploy/clickhouse/config.xml:/etc/clickhouse-server/config.d/memory_limit.xml:ro
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+    networks:
+      - database
+      - monitoring
+    environment:
+      - CLICKHOUSE_DB=${CH_NAME}
+      - CLICKHOUSE_USER=${CH_USER}
+      - CLICKHOUSE_PASSWORD=${CH_PASSWORD}
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+    healthcheck:
+      disable: true
+
+  prometheus:
+    image: prom/prometheus:latest
+    network_mode: host
+    volumes:
+      - ./deploy/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  grafana:
+    image: grafana/grafana:latest
+    network_mode: host
+    volumes:
+      - ./deploy/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  k6:
+    image: grafana/k6:latest
+    volumes:
+      - ./tests/load:/scripts
+    network_mode: host
 
 networks:
   frontend:
-    driver: bridge
   backend:
-    driver: bridge
   database:
-    driver: bridge
-    internal: false
   monitoring:
-    driver: bridge
-    internal: true
 
 volumes:
   db_data:
-  grafana_data:
-  prometheus_data:
   clickhouse_data:
