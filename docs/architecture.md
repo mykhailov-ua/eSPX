@@ -1,78 +1,65 @@
-# Ad Event Processor Architecture Specification
+# AdPulse Event Processor Architecture Specification
 
-Technical overview of the ad event ingestion pipeline and storage architecture.
+Technical overview of the sharded ad event ingestion pipeline and storage architecture.
 
 ## System Design
 
-The system is partitioned into two functional domains to isolate network ingestion from intensive database I/O:
-1.  **Tracker (Ingress)**: Stateless HTTP server that validates and persists events to Redis Streams.
-2.  **Processor (Egress)**: Stateful consumer workers that read from Redis Streams and write to PostgreSQL and ClickHouse.
+The system utilizes a distributed, horizontally scaled architecture to isolate network-bound ingestion from compute-intensive persistence.
+1.  **Tracker Pool (Ingress)**: Cluster of 4+ stateless Go replicas in `network_mode: host`.
+2.  **Redis Shard Cluster (State)**: 6 independent Redis instances for atomic budget and frequency validation.
+3.  **Processor Pool (Egress)**: Decoupled consumer workers reading from the shard cluster and sinking to PostgreSQL and ClickHouse.
 
 ## Ingestion Pipeline (Tracker)
 
 ### HTTP Ingress
-*   **Protocol**: HTTP/1.1 or HTTP/3 (via Caddy).
-*   **Format**: JSON or Protobuf (application/x-protobuf).
-*   **IP Extraction**: Right-to-Left parsing of `X-Forwarded-For` to bypass private network spoofing.
-*   **Filtering**: 
-    *   IP-based rate limiting (Redis).
-    *   Deduplication via LUA-based idempotency checks.
-    *   **Fail-Open Policy**: Infrastructure errors (e.g. Redis outage) trigger a fail-open state where events are logged but accepted to prevent data loss.
-*   **Validation**: Synchronous check against in-memory Campaign Registry.
+*   **Networking**: Operates in **Host Network Mode** to eliminate Docker bridge overhead and NAT translation, significantly reducing `softirq` and context switching at 100k+ RPS.
+*   **Protocol**: HTTP/1.1 with persistent keepalive connections.
+*   **Format**: Priority support for **Protobuf** (`application/x-protobuf`). Zero-copy reading from request bodies with object pooling to minimize GC pressure.
+*   **Load Balancing**: Nginx upstream distributes traffic across 4 local ports (8081-8084).
 
-### Budget Management
-*   **Atomic Checks**: LUA script performs atomic budget verification and reservation in Redis.
-*   **Cold Start Logic**: Automatic PostgreSQL fallback seeds Redis cache on cache-miss to prevent false budget exhaustion errors.
-*   **Synchronization**: Periodic `SyncWorker` reconciles spent amounts from Redis to PostgreSQL using a non-blocking `SSCAN` and atomic `Read-Update-Decrement` pattern to eliminate data loss during worker crashes.
+### Sharding & State Validation
+*   **Consistent Hashing**: Trackers route events to one of 6 Redis shards based on `CampaignID`. This ensures that all events for a specific campaign are processed by the same shard, maintaining budget atomicity.
+*   **Atomic LUA Filter**: A single LUA script execution per event handles:
+    1.  ClickID Deduplication (45s window).
+    2.  Real-time Budget Reservation.
+    3.  Campaign Frequency Capping.
+    4.  Append to local shard Redis Stream.
+*   **GOMEMLIMIT Hardening**: Each Tracker replica is constrained with `GOMEMLIMIT=700MiB` and `GOGC=50` to ensure predictable memory behavior and prevent OOM-induced cascading failures.
 
 ### Message Backbone (Redis Streams)
-*   **Stream**: `ad:events:stream`.
-*   **Retention**: `MAXLEN ~100000`.
-*   **Consumer Groups**: Separate groups (`group_pg`, `group_ch`) for PostgreSQL and ClickHouse sinks to allow independent scaling and failure isolation.
+*   **Sharded Streams**: Events are distributed across 6 streams (one per shard).
+*   **Independent Consumers**: Processor workers scale linearly with the number of shards.
 
-## Processing Strategy (Processor)
-
-Events are consumed by `StreamConsumer` instances using separate Redis Consumer Groups.
+## Persistence Strategy (Processor)
 
 ### PostgreSQL Sink (`group_pg`)
-*   **Data**: Event logs and real-time statistics.
-*   **Partitioning**: Daily time-based partitioning on `created_date`.
-*   **Aggregation**: Atomic "Insert + Update" via SQL CTEs with explicit `ORDER BY` to prevent database deadlocks.
-*   **Worker Count**: Configurable (default 16).
+*   **Data**: Transactional aggregates and budget state.
+*   **Batching**: 20,000 events per write.
+*   **Partitioning**: Daily time-based partitioning on `created_date` for efficient log rotation.
 
 ### ClickHouse Sink (`group_ch`)
-*   **Data**: Long-term analytical logs.
-*   **Retention**: 180 days via TTL.
-*   **Table Engine**: `ReplacingMergeTree`.
+*   **Data**: High-volume analytical logs.
 *   **Batch Size**: 50,000 events.
+*   **Memory Management**: ClickHouse server constrained to 4GB RAM to prevent competition with Redis/Trackers on the same host.
 
 ## Reliability and Fault Tolerance
 
-### Circuit Breaker
-Each `StreamConsumer` implements a lock-free state machine (Circuit Breaker) to protect downstream databases from cascading failures.
-*   **Trigger**: Trips to `Open` state after `failThreshold` consecutive failures.
-*   **Behavior**: When `Open`, the consumer pauses `XReadGroup` calls for a `openTimeout` duration.
-*   **Recovery**: Transitions to `HalfOpen` for a single probe request. If successful, it returns to `Closed`.
+### Circuit Breaker & DLQ
+*   **Circuit Breaker**: Protects downstream databases by pausing consumption when failure thresholds are met.
+*   **Dead Letter Queue (DLQ)**: Failed events after 5 retries are moved to a dedicated stream for manual recovery.
 
-### Dead Letter Queue (DLQ)
-Messages that fail processing after `maxRetries` (5) are moved to the `ad:events:dlq` stream.
-*   **Metadata**: DLQ entries include original message IDs, error messages, retry counts, and timestamps.
-*   **Rationale**: Prevents "Poison Pills" from blocking the main pipeline while preserving erroneous events for manual inspection or replay.
+### Health Checks
+Services implement active health checks that perform `Ping` operations on all critical dependencies (Postgres, ClickHouse, and all 6 Redis shards) before returning a `200 OK` status.
 
-### XAutoClaim Janitor
-Background task reclaims messages from inactive consumers (>5 mins idle) to ensure processing continuity during worker crashes.
+## Deployment Topology
 
-### Memory Hardening
-`domain.Event` pool implements a safety cap on buffer capacity. Slices exceeding 4096 bytes are discarded during `Reset()` to prevent `sync.Pool` memory bloat under large-payload attacks.
+### Single-Host Capacity
+- **CPU**: 12 Cores.
+- **RAM**: 16GB (32GB recommended for headroom).
+- **Network**: Host networking required for 30k+ RPS on a single node.
 
-## Observability
-
-*   **Metrics**: Prometheus integration tracking ingestion rates, batch latencies, DLQ size, and Circuit Breaker states.
-*   **Tracing**: Trace ID propagation through `context.Context` (internal).
-
-## Shutdown Sequence
-
-1.  HTTP Server: Graceful stop (Tracker).
-2.  Consumer Shutdown: Signal workers to stop reading (Processor).
-3.  Drain Phase: Final buffer flush and PEL recovery using 15s timeout.
-4.  Connection Cleanup: Final close of Redis, PG, and CH pools.
+### Horizontal Scaling Strategy
+To achieve 100k+ RPS:
+1.  **Scale Out**: Duplicate the stack across 3 physical hosts.
+2.  **Edge Load Balancing**: Distribute traffic at the edge (Cloud LB or Hardware F5) to the host-networked Nginx instances.
+3.  **Redis Sharding**: Increase the number of Redis shards if budget validation becomes a bottleneck (requires consistent hashing update).
