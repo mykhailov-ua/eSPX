@@ -8,6 +8,7 @@
 -- KEYS[6]: Customer sync key (budget:sync:customer:{id})
 -- KEYS[7]: Dirty campaigns set
 -- KEYS[8]: Dirty customers set
+-- KEYS[9]: Stream name
 
 -- Args:
 -- ARGV[1]: Rate limit window (seconds)
@@ -17,26 +18,34 @@
 -- ARGV[5]: Idempotency TTL (seconds)
 -- ARGV[6]: Campaign ID (string)
 -- ARGV[7]: Customer ID (string)
+-- ARGV[8]: Stream MaxLen
+-- ARGV[9]: Click ID
+-- ARGV[10]: Event Type
+-- ARGV[11]: Payload
+-- ARGV[12]: IP
+-- ARGV[13]: User Agent
 
--- 1. Rate Limiting (Fastest)
+-- 1. Budget Cache Miss Check (Fastest & No state change)
+local b = redis.call("GET", KEYS[3])
+if not b then
+    return -1 -- Cache miss, need to load from DB
+end
+
+-- 2. Deduplication (Event level)
+-- We do this BEFORE rate limiting to prevent dups from burning quota.
+local is_dup = redis.call("SET", KEYS[2], "1", "NX", "EX", ARGV[3])
+if not is_dup then
+    return 2 -- Duplicate
+end
+
+-- 3. Rate Limiting (Per IP/Source)
+-- After dedup, so only unique valid requests are counted.
 local rl_count = redis.call("INCR", KEYS[1])
 if rl_count == 1 then
     redis.call("EXPIRE", KEYS[1], ARGV[1])
 end
 if rl_count > tonumber(ARGV[2]) then
     return 1 -- Rate limited
-end
-
--- 2. Budget Cache Miss Check (Must happen before setting any keys to allow Go-side retries)
-local b = redis.call("GET", KEYS[3])
-if not b then
-    return -1 -- Cache miss, need to load from DB
-end
-
--- 3. Deduplication (Event level)
-local is_dup = redis.call("SET", KEYS[2], "1", "NX", "EX", ARGV[3])
-if not is_dup then
-    return 2 -- Duplicate
 end
 
 -- 4. Budget Idempotency
@@ -52,7 +61,7 @@ if budget < amount then
     return 3 -- No budget
 end
 
--- 5. Atomic Deductions, Persistence Marking, and Ingestion
+-- 6. Atomic Deductions, Persistence Marking, and Ingestion
 redis.call("INCRBYFLOAT", KEYS[3], -amount)
 redis.call("INCRBYFLOAT", KEYS[5], amount)
 redis.call("INCRBYFLOAT", KEYS[6], amount)
@@ -60,8 +69,7 @@ redis.call("SADD", KEYS[7], ARGV[6])
 redis.call("SADD", KEYS[8], ARGV[7])
 redis.call("SET", KEYS[4], "1", "EX", ARGV[5])
 
--- 6. XADD to Stream
--- KEYS[9] should be the stream name
+-- 7. XADD to Stream
 redis.call("XADD", KEYS[9], "MAXLEN", "~", ARGV[8], "*", 
     "click_id", ARGV[9],
     "campaign_id", ARGV[6],

@@ -82,7 +82,8 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 		evt.ClickID = id.String()
 	}
 
-	rlKey := fmt.Sprintf("rl:%s:%s", evt.ClickID, evt.IP)
+	rlKey := fmt.Sprintf("rl:ip:%s", evt.IP)
+
 	dupKey := fmt.Sprintf("dup:%s:%s", evt.Type, evt.ClickID)
 	budgetSourceKey := fmt.Sprintf("budget:campaign:%s", evt.CampaignID)
 	idempotencyKey := fmt.Sprintf("idempotency:click:%s", evt.ClickID)

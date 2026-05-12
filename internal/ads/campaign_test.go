@@ -66,5 +66,5 @@ func TestRegistry_StartSync(t *testing.T) {
 	}, 200*time.Millisecond, 20*time.Millisecond)
 
 	cancel()
-	r.Wait()
+	r.Wait(ctx)
 }

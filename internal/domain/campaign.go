@@ -37,5 +37,5 @@ type CampaignRegistry interface {
 	GetCustomerID(id uuid.UUID) (uuid.UUID, bool)
 	Sync(ctx context.Context) (int, error)
 	StartSync(ctx context.Context, interval time.Duration)
-	Wait()
+	Wait(ctx context.Context) error
 }
