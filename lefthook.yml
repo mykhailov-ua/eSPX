@@ -1,0 +1,5 @@
+pre-push:
+  commands:
+    ci-emulation:
+      tags: backend ci
+      run: act -j all-in-one

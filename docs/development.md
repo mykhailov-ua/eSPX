@@ -14,9 +14,27 @@ Tooling, testing, and maintenance workflow for the sharded ingestion pipeline.
 | :--- | :--- |
 | `make fmt` | Format code via `go fmt`. |
 | `make proto` | Generate Go code from Protobuf definitions using `buf`. |
+| `make test` | Run all tests (unit + integration). |
 | `make build` | Build production Docker image. |
-| `make test-unit` | Run fast unit tests in `internal/`. |
-| `make test-int` | Run integration tests (requires docker compose up). |
+
+## Local CI Emulation (Pre-push)
+
+To prevent CI/CD failures due to resource constraints (e.g., deadlocks under low CPU/RAM), the project uses `act` and `Lefthook` to simulate the GitHub Actions environment locally before code is pushed.
+
+### Hardware Simulation
+- **CPU**: 2 Cores
+- **RAM**: 7 GB
+- **Environment**: `catthehacker/ubuntu:act-latest` (Docker-in-Docker enabled)
+
+### Commands
+| Action | Command |
+| :--- | :--- |
+| **Manual CI Run** | `act -j all-in-one` |
+| **Install Hooks** | `lefthook install` |
+
+### Configuration
+- `.actrc`: Configures resource limits and Docker socket mapping.
+- `lefthook.yml`: Configures the `pre-push` gatekeeper.
 
 ## Local Infrastructure
 The system uses a sharded infrastructure to handle 100k+ RPS.
