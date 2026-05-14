@@ -13,7 +13,7 @@ import (
 )
 
 // AuditLog records an administrative action to the persistent audit trail.
-func (s *Service) AuditLog(ctx context.Context, adminID uuid.UUID, action string, targetType string, targetID *uuid.UUID, changes any, metadata any) {
+func (s *Service) AuditLog(ctx context.Context, q db.Querier, adminID uuid.UUID, action string, targetType string, targetID *uuid.UUID, changes any, metadata any) {
 	changesJSON, _ := json.Marshal(changes)
 	metadataJSON, _ := json.Marshal(metadata)
 
@@ -22,7 +22,11 @@ func (s *Service) AuditLog(ctx context.Context, adminID uuid.UUID, action string
 		tid = ads.ToUUID(*targetID)
 	}
 
-	_, err := db.New(s.pool).CreateAuditLog(ctx, db.CreateAuditLogParams{
+	if q == nil {
+		q = db.New(s.pool)
+	}
+
+	_, err := q.CreateAuditLog(ctx, db.CreateAuditLogParams{
 		AdminID:    ads.ToUUID(adminID),
 		Action:     action,
 		TargetType: targetType,

@@ -10,12 +10,9 @@ import (
 	"time"
 
 	"github.com/mykhailov-ua/ad-event-processor/internal/ads"
-	ads_delivery "github.com/mykhailov-ua/ad-event-processor/internal/ads/delivery"
-	"github.com/mykhailov-ua/ad-event-processor/internal/ads/repository"
-	"github.com/mykhailov-ua/ad-event-processor/internal/ads/sharding"
+	"github.com/mykhailov-ua/ad-event-processor/internal/ads/db"
 	"github.com/mykhailov-ua/ad-event-processor/internal/config"
 	"github.com/mykhailov-ua/ad-event-processor/internal/database"
-	infra_repo "github.com/mykhailov-ua/ad-event-processor/internal/infra/repository"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -39,7 +36,7 @@ func main() {
 	}
 	defer pool.Close()
 
-	queries := repository.New(pool)
+	queries := db.New(pool)
 	registry := ads.NewRegistry(queries)
 	count, err := registry.Sync(ctx)
 	if err != nil {
@@ -73,8 +70,8 @@ func main() {
 		rdbs = append(rdbs, rdb)
 	}
 
-	campaignRepo := infra_repo.NewCampaignRepo(queries)
-	sharder := sharding.NewJumpHashSharder(len(rdbs))
+	campaignRepo := ads.NewCampaignRepo(queries)
+	sharder := ads.NewJumpHashSharder(len(rdbs))
 
 	unifiedFilter := ads.NewUnifiedFilter(
 		rdbs,
@@ -93,7 +90,7 @@ func main() {
 
 	filterEngine := ads.NewFilterEngine(unifiedFilter)
 
-	mux := ads_delivery.NewRouter(cfg, registry, filterEngine, pool, rdbs)
+	mux := ads.NewRouter(cfg, registry, filterEngine, pool, rdbs)
 
 	slog.Info("starting ad-event-tracker", "port", cfg.ServerPort)
 

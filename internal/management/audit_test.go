@@ -26,7 +26,7 @@ func TestAuditLog(t *testing.T) {
 	campaignID := uuid.New()
 
 	t.Run("CreateLog", func(t *testing.T) {
-		svc.AuditLog(ctx, adminID, "TEST_ACTION", "campaign", &campaignID, map[string]string{"foo": "bar"}, map[string]string{"ip": "127.0.0.1"})
+		svc.AuditLog(ctx, nil, adminID, "TEST_ACTION", "campaign", &campaignID, map[string]string{"foo": "bar"}, map[string]string{"ip": "127.0.0.1"})
 
 		var count int
 		err := pool.QueryRow(ctx, "SELECT count(*) FROM admin_audit_log WHERE admin_id = $1", adminID).Scan(&count)

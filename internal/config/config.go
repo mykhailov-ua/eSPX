@@ -62,6 +62,12 @@ type Config struct {
 	Argon2Iterations        int
 	Argon2Parallelism       int
 	RedisPoolSize           int
+	AdminAPIKey             Secret
+	Management              struct {
+		RetentionDays          int
+		CancellationFeePercent float64
+	}
+	CampaignUpdateChannel string
 
 	Lifecycle struct {
 		ShutdownTimeoutMs int
@@ -145,8 +151,13 @@ func Load() (*Config, error) {
 		Argon2Memory:            getEnvInt("ARGON2_MEMORY", 65536),
 		Argon2Iterations:        getEnvInt("ARGON2_ITERATIONS", 3),
 		Argon2Parallelism:       getEnvInt("ARGON2_PARALLELISM", 4),
-		RedisPoolSize:           getEnvInt("REDIS_POOL_SIZE", 0), // 0 means default
+		RedisPoolSize:           getEnvInt("REDIS_POOL_SIZE", 0),
+		AdminAPIKey:             Secret(os.Getenv("ADMIN_API_KEY")),
+		CampaignUpdateChannel:   os.Getenv("CAMPAIGN_UPDATE_CHANNEL"),
 	}
+
+	cfg.Management.RetentionDays = getEnvInt("MANAGEMENT_RETENTION_DAYS", 90)
+	cfg.Management.CancellationFeePercent = getEnvFloat("MANAGEMENT_CANCELLATION_FEE_PERCENT", 5.0)
 
 	cfg.Lifecycle.ShutdownTimeoutMs = getEnvInt("SHUTDOWN_TIMEOUT_MS", 15000)
 	cfg.Lifecycle.DrainTimeoutMs = getEnvInt("DRAIN_TIMEOUT_MS", 10000)

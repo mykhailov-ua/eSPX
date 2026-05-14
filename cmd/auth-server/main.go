@@ -9,12 +9,8 @@ import (
 	"syscall"
 
 	"github.com/mykhailov-ua/ad-event-processor/internal/auth"
-	"github.com/mykhailov-ua/ad-event-processor/internal/auth/crypto"
-	"github.com/mykhailov-ua/ad-event-processor/internal/auth/delivery/grpc"
-	"github.com/mykhailov-ua/ad-event-processor/internal/auth/limiter"
+	"github.com/mykhailov-ua/ad-event-processor/internal/auth/db"
 	"github.com/mykhailov-ua/ad-event-processor/internal/auth/pb"
-	"github.com/mykhailov-ua/ad-event-processor/internal/auth/repository"
-	"github.com/mykhailov-ua/ad-event-processor/internal/auth/token"
 	"github.com/mykhailov-ua/ad-event-processor/internal/config"
 	"github.com/mykhailov-ua/ad-event-processor/internal/database"
 	google_grpc "google.golang.org/grpc"
@@ -48,22 +44,22 @@ func main() {
 	}
 	defer rdb.Close()
 
-	repo := repository.NewStore(pool)
-	tokenMaker, err := token.NewPasetoMaker(string(cfg.TokenSymmetricKey))
+	repo := db.NewStore(pool)
+	tokenMaker, err := auth.NewPasetoMaker(string(cfg.TokenSymmetricKey))
 	if err != nil {
 		slog.Error("failed to create token maker", "error", err)
 		os.Exit(1)
 	}
 
-	lockoutLimiter := limiter.NewLockoutLimiter(rdb)
+	lockoutLimiter := auth.NewLockoutLimiter(rdb)
 
-	hasher := crypto.NewPasswordHasher(
+	hasher := auth.NewPasswordHasher(
 		uint32(cfg.Argon2Memory),
 		uint32(cfg.Argon2Iterations),
 		uint8(cfg.Argon2Parallelism),
 	)
 	authService := auth.NewService(repo, tokenMaker, hasher, lockoutLimiter, rdb)
-	grpcHandler := grpc.NewHandler(authService, cfg)
+	grpcHandler := auth.NewHandler(authService, cfg)
 
 	lis, err := net.Listen("tcp", ":"+cfg.AuthServerPort)
 	if err != nil {

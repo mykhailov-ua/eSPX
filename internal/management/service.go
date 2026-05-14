@@ -44,7 +44,7 @@ func (s *Service) CreateCustomer(ctx context.Context, id uuid.UUID, name string,
 		Currency: currency,
 	})
 	if err == nil {
-		s.AuditLog(ctx, uuid.Nil, "CREATE_CUSTOMER", "customer", &id, map[string]any{"name": name, "balance": balance}, nil)
+		s.AuditLog(ctx, nil, uuid.Nil, "CREATE_CUSTOMER", "customer", &id, map[string]any{"name": name, "balance": balance}, nil)
 	}
 	return err
 }
@@ -79,7 +79,7 @@ func (s *Service) TopUpBalance(ctx context.Context, customerID uuid.UUID, amount
 		})
 		if err == nil {
 			metrics.BalanceTopupsTotal.WithLabelValues("USD").Add(amount.InexactFloat64())
-			s.AuditLog(ctx, uuid.Nil, "TOPUP_BALANCE", "customer", &customerID, map[string]any{"amount": amount}, map[string]any{"idempotency_key": idempotencyKey})
+			s.AuditLog(ctx, q, uuid.Nil, "TOPUP_BALANCE", "customer", &customerID, map[string]any{"amount": amount}, map[string]any{"idempotency_key": idempotencyKey})
 		}
 		return err
 	})
@@ -135,7 +135,7 @@ func (s *Service) CreateCampaign(ctx context.Context, customerID uuid.UUID, name
 			Reason:     pgtype.Text{String: "db.Campaign Creation", Valid: true},
 		})
 		if err == nil {
-			s.AuditLog(ctx, uuid.Nil, "CREATE_CAMPAIGN", "campaign", &campaignID, map[string]any{"name": name, "budget_limit": budgetLimit, "customer_id": customerID}, map[string]any{"idempotency_key": idempotencyKey})
+			s.AuditLog(ctx, q, uuid.Nil, "CREATE_CAMPAIGN", "campaign", &campaignID, map[string]any{"name": name, "budget_limit": budgetLimit, "customer_id": customerID}, map[string]any{"idempotency_key": idempotencyKey})
 		}
 		return err
 	})
@@ -234,16 +234,18 @@ func (s *Service) CancelCampaign(ctx context.Context, campaignID uuid.UUID, reas
 		if err != nil {
 			return err
 		}
-		return q.CreateStatusHistory(ctx, db.CreateStatusHistoryParams{
+		err = q.CreateStatusHistory(ctx, db.CreateStatusHistoryParams{
 			CampaignID: ads.ToUUID(campaignID),
 			OldStatus:  db.NullCampaignStatusType{CampaignStatusType: db.CampaignStatusTypeDRAINING, Valid: true},
 			NewStatus:  db.CampaignStatusTypeDELETED,
 			Reason:     pgtype.Text{String: "Finalized", Valid: true},
 		})
+		if err != nil {
+			return err
+		}
+		s.AuditLog(ctx, q, uuid.Nil, "CANCEL_CAMPAIGN", "campaign", &campaignID, map[string]any{"reason": reason}, nil)
+		return nil
 	})
-	if err == nil {
-		s.AuditLog(ctx, uuid.Nil, "CANCEL_CAMPAIGN", "campaign", &campaignID, map[string]any{"reason": reason}, nil)
-	}
 	return err
 }
 
@@ -265,7 +267,7 @@ func (s *Service) getRDB(campaignID uuid.UUID) redis.UniversalClient {
 
 func (s *Service) UpdateSettings(ctx context.Context, settings map[string]string) error {
 	// 1. Log to Audit
-	s.AuditLog(ctx, uuid.Nil, "UPDATE_SETTINGS", "system", nil, settings, nil)
+	s.AuditLog(ctx, nil, uuid.Nil, "UPDATE_SETTINGS", "system", nil, settings, nil)
 
 	// 2. Update Redis
 	// We use the first Redis shard as the source of truth for global config
@@ -283,7 +285,7 @@ func (s *Service) UpdateSettings(ctx context.Context, settings map[string]string
 }
 
 func (s *Service) BlockIP(ctx context.Context, ip string, source string) error {
-	s.AuditLog(ctx, uuid.Nil, "BLOCK_IP", "system", nil, map[string]string{"ip": ip, "source": source}, nil)
+	s.AuditLog(ctx, nil, uuid.Nil, "BLOCK_IP", "system", nil, map[string]string{"ip": ip, "source": source}, nil)
 
 	rdb := s.rdbs[0]
 	key := "blacklist:" + source
@@ -295,7 +297,7 @@ func (s *Service) BlockIP(ctx context.Context, ip string, source string) error {
 }
 
 func (s *Service) UnblockIP(ctx context.Context, ip string, source string) error {
-	s.AuditLog(ctx, uuid.Nil, "UNBLOCK_IP", "system", nil, map[string]string{"ip": ip, "source": source}, nil)
+	s.AuditLog(ctx, nil, uuid.Nil, "UNBLOCK_IP", "system", nil, map[string]string{"ip": ip, "source": source}, nil)
 
 	rdb := s.rdbs[0]
 	key := "blacklist:" + source
