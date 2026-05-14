@@ -1,4 +1,6 @@
-package middleware
+package auth
+
+import ()
 
 import (
 	"context"
@@ -6,8 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-
-	"github.com/mykhailov-ua/ad-event-processor/internal/auth/token"
 )
 
 type contextKey string
@@ -21,7 +21,7 @@ const (
 	authorizationTypeBearer = "bearer"
 )
 
-func AuthMiddleware(tokenMaker token.Maker, allowedRoles ...string) func(http.Handler) http.Handler {
+func AuthMiddleware(tokenMaker Maker, allowedRoles ...string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authorizationHeader := r.Header.Get(authorizationHeaderKey)
@@ -72,8 +72,8 @@ func AuthMiddleware(tokenMaker token.Maker, allowedRoles ...string) func(http.Ha
 	}
 }
 
-func GetPayload(ctx context.Context) (*token.Payload, error) {
-	payload, ok := ctx.Value(AuthorizationPayloadKey).(*token.Payload)
+func GetPayload(ctx context.Context) (*Payload, error) {
+	payload, ok := ctx.Value(AuthorizationPayloadKey).(*Payload)
 	if !ok {
 		return nil, errors.New("context does not contain authorization payload")
 	}

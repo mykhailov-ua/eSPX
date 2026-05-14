@@ -1,4 +1,6 @@
-package middleware
+package auth
+
+import ()
 
 import (
 	"fmt"
@@ -8,14 +10,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/mykhailov-ua/ad-event-processor/internal/auth/token"
 	"github.com/stretchr/testify/require"
 )
 
 func addAuthorization(
 	t *testing.T,
 	request *http.Request,
-	tokenMaker token.Maker,
+	tokenMaker Maker,
 	authorizationType string,
 	userID uuid.UUID,
 	role string,
@@ -32,13 +33,13 @@ func addAuthorization(
 func TestAuthMiddleware(t *testing.T) {
 	testCases := []struct {
 		name          string
-		setupAuth     func(t *testing.T, request *http.Request, tokenMaker token.Maker)
+		setupAuth     func(t *testing.T, request *http.Request, tokenMaker Maker)
 		allowedRoles  []string
 		checkResponse func(t *testing.T, recorder *httptest.ResponseRecorder)
 	}{
 		{
 			name: "OK",
-			setupAuth: func(t *testing.T, request *http.Request, tokenMaker token.Maker) {
+			setupAuth: func(t *testing.T, request *http.Request, tokenMaker Maker) {
 				addAuthorization(t, request, tokenMaker, authorizationTypeBearer, uuid.New(), "admin", uuid.New(), time.Minute)
 			},
 			allowedRoles: []string{"admin"},
@@ -48,7 +49,7 @@ func TestAuthMiddleware(t *testing.T) {
 		},
 		{
 			name: "NoAuthorization",
-			setupAuth: func(t *testing.T, request *http.Request, tokenMaker token.Maker) {
+			setupAuth: func(t *testing.T, request *http.Request, tokenMaker Maker) {
 			},
 			allowedRoles: []string{"admin"},
 			checkResponse: func(t *testing.T, recorder *httptest.ResponseRecorder) {
@@ -57,7 +58,7 @@ func TestAuthMiddleware(t *testing.T) {
 		},
 		{
 			name: "UnsupportedAuthorization",
-			setupAuth: func(t *testing.T, request *http.Request, tokenMaker token.Maker) {
+			setupAuth: func(t *testing.T, request *http.Request, tokenMaker Maker) {
 				addAuthorization(t, request, tokenMaker, "unsupported", uuid.New(), "admin", uuid.New(), time.Minute)
 			},
 			allowedRoles: []string{"admin"},
@@ -67,7 +68,7 @@ func TestAuthMiddleware(t *testing.T) {
 		},
 		{
 			name: "InvalidAuthorizationFormat",
-			setupAuth: func(t *testing.T, request *http.Request, tokenMaker token.Maker) {
+			setupAuth: func(t *testing.T, request *http.Request, tokenMaker Maker) {
 				request.Header.Set(authorizationHeaderKey, "invalid")
 			},
 			allowedRoles: []string{"admin"},
@@ -77,7 +78,7 @@ func TestAuthMiddleware(t *testing.T) {
 		},
 		{
 			name: "ExpiredToken",
-			setupAuth: func(t *testing.T, request *http.Request, tokenMaker token.Maker) {
+			setupAuth: func(t *testing.T, request *http.Request, tokenMaker Maker) {
 				addAuthorization(t, request, tokenMaker, authorizationTypeBearer, uuid.New(), "admin", uuid.New(), -time.Minute)
 			},
 			allowedRoles: []string{"admin"},
@@ -87,7 +88,7 @@ func TestAuthMiddleware(t *testing.T) {
 		},
 		{
 			name: "PermissionDenied",
-			setupAuth: func(t *testing.T, request *http.Request, tokenMaker token.Maker) {
+			setupAuth: func(t *testing.T, request *http.Request, tokenMaker Maker) {
 				addAuthorization(t, request, tokenMaker, authorizationTypeBearer, uuid.New(), "customer", uuid.New(), time.Minute)
 			},
 			allowedRoles: []string{"admin"},
@@ -101,7 +102,7 @@ func TestAuthMiddleware(t *testing.T) {
 		tc := testCases[i]
 
 		t.Run(tc.name, func(t *testing.T) {
-			tokenMaker, err := token.NewPasetoMaker("12345678901234567890123456789012")
+			tokenMaker, err := NewPasetoMaker("12345678901234567890123456789012")
 			require.NoError(t, err)
 
 			authPath := "/auth"

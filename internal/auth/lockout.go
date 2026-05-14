@@ -1,4 +1,8 @@
-package limiter
+package auth
+
+import (
+// "github.com/mykhailov-ua/ad-event-processor/internal/auth/db"
+)
 
 import (
 	"context"

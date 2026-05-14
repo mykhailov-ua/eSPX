@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/mykhailov-ua/ad-event-processor/internal/auth/pb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"regexp"
 	"strings"
 	"sync/atomic"
@@ -11,10 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/mykhailov-ua/ad-event-processor/internal/auth/crypto"
-	"github.com/mykhailov-ua/ad-event-processor/internal/auth/limiter"
-	"github.com/mykhailov-ua/ad-event-processor/internal/auth/repository"
-	"github.com/mykhailov-ua/ad-event-processor/internal/auth/token"
+	"github.com/mykhailov-ua/ad-event-processor/internal/auth/db"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -52,15 +51,15 @@ type MetricsSnapshot struct {
 }
 
 type Service struct {
-	repo       repository.Store
-	tokenMaker token.Maker
-	hasher     *crypto.PasswordHasher
-	lockout    *limiter.LockoutLimiter
+	repo       db.Store
+	tokenMaker Maker
+	hasher     *PasswordHasher
+	lockout    *LockoutLimiter
 	rdb        redis.UniversalClient
 	metrics    Metrics
 }
 
-func NewService(repo repository.Store, tokenMaker token.Maker, hasher *crypto.PasswordHasher, lockout *limiter.LockoutLimiter, rdb redis.UniversalClient) *Service {
+func NewService(repo db.Store, tokenMaker Maker, hasher *PasswordHasher, lockout *LockoutLimiter, rdb redis.UniversalClient) *Service {
 	return &Service{
 		repo:       repo,
 		tokenMaker: tokenMaker,
@@ -75,14 +74,14 @@ func (s *Service) GetMetrics() MetricsSnapshot {
 	return s.metrics.Snapshot()
 }
 
-type RegisterRequest struct {
+type RegisterDTO struct {
 	Email      string
 	Password   string
 	Role       string
 	CustomerID uuid.UUID
 }
 
-func (s *Service) Register(ctx context.Context, req RegisterRequest) (uuid.UUID, error) {
+func (s *Service) Register(ctx context.Context, req RegisterDTO) (uuid.UUID, error) {
 	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
 	if !emailRegex.MatchString(req.Email) {
 		return uuid.Nil, fmt.Errorf("%w: invalid email format", ErrValidation)
@@ -96,7 +95,7 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (uuid.UUID,
 		return uuid.Nil, err
 	}
 
-	arg := repository.CreateUserParams{
+	arg := db.CreateUserParams{
 		Email:        req.Email,
 		PasswordHash: hashedPassword,
 		Role:         "user", // Prevent privilege escalation, force role to user
@@ -119,26 +118,26 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (uuid.UUID,
 	return uuid.UUID(user.ID.Bytes), nil
 }
 
-type LoginResponse struct {
+type LoginDTO struct {
 	AccessToken  string
 	RefreshToken string
-	User         repository.User
+	User         db.User
 }
 
-func (s *Service) Login(ctx context.Context, email, password, userAgent, clientIP string, duration time.Duration) (LoginResponse, error) {
+func (s *Service) Login(ctx context.Context, email, password, userAgent, clientIP string, duration time.Duration) (pb.LoginResponse, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if !emailRegex.MatchString(email) {
-		return LoginResponse{}, fmt.Errorf("%w: invalid email format", ErrValidation)
+		return pb.LoginResponse{}, fmt.Errorf("%w: invalid email format", ErrValidation)
 	}
 
 	if s.lockout != nil {
 		allowed, err := s.lockout.Allow(ctx, email, 5, 15*time.Minute, 10*time.Minute)
 		if err == nil && !allowed {
-			return LoginResponse{}, ErrAccountLocked
+			return pb.LoginResponse{}, ErrAccountLocked
 		}
 	}
 
-	var user repository.User
+	var user db.User
 	var userFound bool
 
 	// Get user hash first (outside TX to keep TX short)
@@ -149,11 +148,11 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, clientI
 		userFound = true
 		user = u
 	} else {
-		hashToVerify = crypto.DummyHash
+		hashToVerify = DummyHash
 		userFound = false
 	}
 
-	match, err := crypto.VerifyPassword(password, hashToVerify)
+	match, err := VerifyPassword(password, hashToVerify)
 
 	if !userFound || err != nil || !match {
 		s.metrics.InvalidCredentials.Add(1)
@@ -161,7 +160,7 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, clientI
 		if s.lockout != nil {
 			_ = s.lockout.Increment(ctx, email, 5, 15*time.Minute, 10*time.Minute)
 		}
-		return LoginResponse{}, ErrInvalidCredentials
+		return pb.LoginResponse{}, ErrInvalidCredentials
 	}
 
 	if s.lockout != nil {
@@ -177,15 +176,15 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, clientI
 	if err != nil {
 		s.metrics.TokenErrors.Add(1)
 		s.metrics.FailedLoginsTotal.Add(1)
-		return LoginResponse{}, err
+		return pb.LoginResponse{}, err
 	}
 
 	refreshTokenId, _ := uuid.NewV7()
 	refreshTokenStr := uuid.NewString()
 	expiresAt := time.Now().Add(7 * 24 * time.Hour)
 
-	err = s.repo.ExecTx(ctx, func(q repository.Querier) error {
-		_, err = q.CreateSession(ctx, repository.CreateSessionParams{
+	err = s.repo.ExecTx(ctx, func(q db.Querier) error {
+		_, err = q.CreateSession(ctx, db.CreateSessionParams{
 			ID:           pgtype.UUID{Bytes: refreshTokenId, Valid: true},
 			UserID:       user.ID,
 			RefreshToken: refreshTokenStr,
@@ -198,26 +197,32 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, clientI
 	})
 
 	if err != nil {
-		return LoginResponse{}, fmt.Errorf("failed to create session: %w", err)
+		return pb.LoginResponse{}, fmt.Errorf("failed to create session: %w", err)
 	}
 
-	return LoginResponse{
+	return pb.LoginResponse{
 		AccessToken:  accessToken,
 		RefreshToken: refreshTokenStr,
-		User:         user,
+		User: &pb.User{
+			ID:         uuid.UUID(user.ID.Bytes).String(),
+			Email:      user.Email,
+			Role:       user.Role,
+			CustomerID: uuid.UUID(user.CustomerID.Bytes).String(),
+			CreatedAt:  timestamppb.New(user.CreatedAt.Time),
+		},
 	}, nil
 }
 
-func (s *Service) VerifyToken(ctx context.Context, accessToken string) (repository.User, error) {
+func (s *Service) VerifyToken(ctx context.Context, accessToken string) (db.User, error) {
 	payload, err := s.tokenMaker.VerifyToken(accessToken)
 	if err != nil {
 		s.metrics.TokenErrors.Add(1)
-		return repository.User{}, err
+		return db.User{}, err
 	}
 
 	user, err := s.repo.GetUserByID(ctx, pgtype.UUID{Bytes: payload.UserID, Valid: true})
 	if err != nil {
-		return repository.User{}, err
+		return db.User{}, err
 	}
 
 	return user, nil
@@ -238,7 +243,7 @@ func (s *Service) RefreshToken(ctx context.Context, refreshTokenStr string, dura
 	var accessToken string
 	var newRefreshTokenStr string
 
-	err := s.repo.ExecTx(ctx, func(q repository.Querier) error {
+	err := s.repo.ExecTx(ctx, func(q db.Querier) error {
 		session, err := q.GetSessionByRefreshTokenForUpdate(ctx, refreshTokenStr)
 		if err != nil {
 			return fmt.Errorf("invalid refresh token: %w", err)
@@ -277,7 +282,7 @@ func (s *Service) RefreshToken(ctx context.Context, refreshTokenStr string, dura
 		newRefreshTokenStr = uuid.NewString()
 		expiresAt := time.Now().Add(7 * 24 * time.Hour)
 
-		_, err = q.CreateSession(ctx, repository.CreateSessionParams{
+		_, err = q.CreateSession(ctx, db.CreateSessionParams{
 			ID:           pgtype.UUID{Bytes: newRefreshTokenId, Valid: true},
 			UserID:       user.ID,
 			RefreshToken: newRefreshTokenStr,

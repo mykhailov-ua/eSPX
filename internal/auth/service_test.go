@@ -8,46 +8,44 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/mykhailov-ua/ad-event-processor/internal/auth/crypto"
-	"github.com/mykhailov-ua/ad-event-processor/internal/auth/repository"
-	"github.com/mykhailov-ua/ad-event-processor/internal/auth/token"
+	"github.com/mykhailov-ua/ad-event-processor/internal/auth/db"
 	"github.com/stretchr/testify/assert"
 )
 
 type mockRepo struct {
-	repository.Querier
-	user             repository.User
-	session          repository.Session
+	db.Querier
+	user             db.User
+	session          db.Session
 	err              error
 	createUserErr    error
-	getUserByID      repository.User
+	getUserByID      db.User
 	getUserByIDErr   error
 	createSessionErr error
 }
 
-func (m *mockRepo) GetUserByEmail(ctx context.Context, email string) (repository.User, error) {
+func (m *mockRepo) GetUserByEmail(ctx context.Context, email string) (db.User, error) {
 	return m.user, m.err
 }
 
-func (m *mockRepo) GetUserByID(ctx context.Context, id pgtype.UUID) (repository.User, error) {
+func (m *mockRepo) GetUserByID(ctx context.Context, id pgtype.UUID) (db.User, error) {
 	return m.getUserByID, m.getUserByIDErr
 }
 
-func (m *mockRepo) CreateUser(ctx context.Context, arg repository.CreateUserParams) (repository.CreateUserRow, error) {
+func (m *mockRepo) CreateUser(ctx context.Context, arg db.CreateUserParams) (db.CreateUserRow, error) {
 	if m.createUserErr != nil {
-		return repository.CreateUserRow{}, m.createUserErr
+		return db.CreateUserRow{}, m.createUserErr
 	}
-	return repository.CreateUserRow{ID: pgtype.UUID{Bytes: uuid.New(), Valid: true}}, nil
+	return db.CreateUserRow{ID: pgtype.UUID{Bytes: uuid.New(), Valid: true}}, nil
 }
 
-func (m *mockRepo) CreateSession(ctx context.Context, arg repository.CreateSessionParams) (repository.Session, error) {
+func (m *mockRepo) CreateSession(ctx context.Context, arg db.CreateSessionParams) (db.Session, error) {
 	if m.createSessionErr != nil {
-		return repository.Session{}, m.createSessionErr
+		return db.Session{}, m.createSessionErr
 	}
 	return m.session, m.err
 }
 
-func (m *mockRepo) GetSessionByRefreshTokenForUpdate(ctx context.Context, refreshToken string) (repository.Session, error) {
+func (m *mockRepo) GetSessionByRefreshTokenForUpdate(ctx context.Context, refreshToken string) (db.Session, error) {
 	return m.session, m.err
 }
 
@@ -59,12 +57,12 @@ func (m *mockRepo) BlockSessionByRefreshToken(ctx context.Context, refreshToken 
 	return m.err
 }
 
-func (m *mockRepo) ExecTx(ctx context.Context, fn func(repository.Querier) error) error {
+func (m *mockRepo) ExecTx(ctx context.Context, fn func(db.Querier) error) error {
 	return fn(m)
 }
 
 type mockTokenMaker struct {
-	token.Maker
+	Maker
 	createErr error
 	verifyErr error
 }
@@ -73,18 +71,18 @@ func (m *mockTokenMaker) CreateToken(userID uuid.UUID, role string, customerID u
 	return "token", m.createErr
 }
 
-func (m *mockTokenMaker) VerifyToken(t string) (*token.Payload, error) {
-	return &token.Payload{UserID: uuid.New()}, m.verifyErr
+func (m *mockTokenMaker) VerifyToken(t string) (*Payload, error) {
+	return &Payload{UserID: uuid.New()}, m.verifyErr
 }
 
 func TestRegister(t *testing.T) {
 	repo := &mockRepo{}
-	hasher := crypto.NewPasswordHasher(65536, 3, 4)
+	hasher := NewPasswordHasher(65536, 3, 4)
 	service := NewService(repo, nil, hasher, nil, nil)
 
 	t.Run("Success", func(t *testing.T) {
 		repo.createUserErr = nil
-		_, err := service.Register(context.Background(), RegisterRequest{
+		_, err := service.Register(context.Background(), RegisterDTO{
 			Email:    "valid@example.com",
 			Password: "Password123!",
 		})
@@ -92,7 +90,7 @@ func TestRegister(t *testing.T) {
 	})
 
 	t.Run("InvalidEmail", func(t *testing.T) {
-		_, err := service.Register(context.Background(), RegisterRequest{
+		_, err := service.Register(context.Background(), RegisterDTO{
 			Email:    "invalid",
 			Password: "Password123!",
 		})
@@ -100,7 +98,7 @@ func TestRegister(t *testing.T) {
 	})
 
 	t.Run("InvalidPassword", func(t *testing.T) {
-		_, err := service.Register(context.Background(), RegisterRequest{
+		_, err := service.Register(context.Background(), RegisterDTO{
 			Email:    "valid@example.com",
 			Password: "short",
 		})
@@ -109,9 +107,9 @@ func TestRegister(t *testing.T) {
 
 	t.Run("Idempotency_AlreadyExists", func(t *testing.T) {
 		repo.createUserErr = errors.New("unique constraint")
-		repo.user = repository.User{ID: pgtype.UUID{Bytes: uuid.New(), Valid: true}}
+		repo.user = db.User{ID: pgtype.UUID{Bytes: uuid.New(), Valid: true}}
 		repo.err = nil
-		id, err := service.Register(context.Background(), RegisterRequest{
+		id, err := service.Register(context.Background(), RegisterDTO{
 			Email:    "exists@example.com",
 			Password: "Password123!",
 		})
@@ -122,7 +120,7 @@ func TestRegister(t *testing.T) {
 	t.Run("CreateUserError", func(t *testing.T) {
 		repo.createUserErr = errors.New("db error")
 		repo.err = errors.New("not found")
-		_, err := service.Register(context.Background(), RegisterRequest{
+		_, err := service.Register(context.Background(), RegisterDTO{
 			Email:    "new@example.com",
 			Password: "Password123!",
 		})
@@ -133,14 +131,14 @@ func TestRegister(t *testing.T) {
 func TestLogin(t *testing.T) {
 	repo := &mockRepo{}
 	tokenMaker := &mockTokenMaker{}
-	hasher := crypto.NewPasswordHasher(65536, 3, 4)
+	hasher := NewPasswordHasher(65536, 3, 4)
 	service := NewService(repo, tokenMaker, hasher, nil, nil)
 
 	password := "Password123!"
 	hash, _ := hasher.HashPassword(password)
 
 	t.Run("Success", func(t *testing.T) {
-		repo.user = repository.User{
+		repo.user = db.User{
 			ID:           pgtype.UUID{Bytes: uuid.New(), Valid: true},
 			PasswordHash: hash,
 		}
@@ -158,7 +156,7 @@ func TestLogin(t *testing.T) {
 	})
 
 	t.Run("InvalidCredentials", func(t *testing.T) {
-		repo.user = repository.User{PasswordHash: hash}
+		repo.user = db.User{PasswordHash: hash}
 		_, err := service.Login(context.Background(), "user@example.com", "wrong", "ua", "ip", time.Hour)
 		assert.ErrorIs(t, err, ErrInvalidCredentials)
 	})
@@ -170,7 +168,7 @@ func TestLogin(t *testing.T) {
 	})
 
 	t.Run("TokenMakerError", func(t *testing.T) {
-		repo.user = repository.User{PasswordHash: hash, ID: pgtype.UUID{Bytes: uuid.New(), Valid: true}}
+		repo.user = db.User{PasswordHash: hash, ID: pgtype.UUID{Bytes: uuid.New(), Valid: true}}
 		repo.err = nil
 		tokenMaker.createErr = errors.New("token error")
 		_, err := service.Login(context.Background(), "user@example.com", password, "ua", "ip", time.Hour)
@@ -178,7 +176,7 @@ func TestLogin(t *testing.T) {
 	})
 
 	t.Run("CreateSessionError", func(t *testing.T) {
-		repo.user = repository.User{PasswordHash: hash, ID: pgtype.UUID{Bytes: uuid.New(), Valid: true}}
+		repo.user = db.User{PasswordHash: hash, ID: pgtype.UUID{Bytes: uuid.New(), Valid: true}}
 		repo.err = nil
 		tokenMaker.createErr = nil
 		repo.createSessionErr = errors.New("session error")
@@ -193,7 +191,7 @@ func TestVerifyToken(t *testing.T) {
 	service := NewService(repo, tokenMaker, nil, nil, nil)
 
 	t.Run("Success", func(t *testing.T) {
-		repo.getUserByID = repository.User{Email: "user@example.com"}
+		repo.getUserByID = db.User{Email: "user@example.com"}
 		repo.getUserByIDErr = nil
 		tokenMaker.verifyErr = nil
 		user, err := service.VerifyToken(context.Background(), "valid-token")
@@ -214,12 +212,12 @@ func TestRefreshToken(t *testing.T) {
 	service := NewService(repo, tokenMaker, nil, nil, nil)
 
 	t.Run("Success", func(t *testing.T) {
-		repo.session = repository.Session{
+		repo.session = db.Session{
 			UserID:    pgtype.UUID{Bytes: uuid.New(), Valid: true},
 			ExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
 			IsBlocked: false,
 		}
-		repo.getUserByID = repository.User{ID: repo.session.UserID}
+		repo.getUserByID = db.User{ID: repo.session.UserID}
 		repo.err = nil
 		repo.getUserByIDErr = nil
 		repo.createSessionErr = nil
@@ -231,14 +229,14 @@ func TestRefreshToken(t *testing.T) {
 	})
 
 	t.Run("BlockedSession", func(t *testing.T) {
-		repo.session = repository.Session{IsBlocked: true}
+		repo.session = db.Session{IsBlocked: true}
 		repo.err = nil
 		_, _, err := service.RefreshToken(context.Background(), "blocked-token", time.Hour)
 		assert.ErrorIs(t, err, ErrSessionBlocked)
 	})
 
 	t.Run("TokenExpired", func(t *testing.T) {
-		repo.session = repository.Session{
+		repo.session = db.Session{
 			ExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(-time.Hour), Valid: true},
 			IsBlocked: false,
 		}
@@ -248,7 +246,7 @@ func TestRefreshToken(t *testing.T) {
 	})
 
 	t.Run("UserNotFound", func(t *testing.T) {
-		repo.session = repository.Session{
+		repo.session = db.Session{
 			ExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
 		}
 		repo.getUserByIDErr = errors.New("user not found")
@@ -257,22 +255,22 @@ func TestRefreshToken(t *testing.T) {
 	})
 
 	t.Run("TokenMakerError", func(t *testing.T) {
-		repo.session = repository.Session{
+		repo.session = db.Session{
 			UserID:    pgtype.UUID{Bytes: uuid.New(), Valid: true},
 			ExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
 		}
-		repo.getUserByID = repository.User{ID: repo.session.UserID}
+		repo.getUserByID = db.User{ID: repo.session.UserID}
 		tokenMaker.createErr = errors.New("token error")
 		_, _, err := service.RefreshToken(context.Background(), "token", time.Hour)
 		assert.Error(t, err)
 	})
 
 	t.Run("CreateSessionError", func(t *testing.T) {
-		repo.session = repository.Session{
+		repo.session = db.Session{
 			UserID:    pgtype.UUID{Bytes: uuid.New(), Valid: true},
 			ExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
 		}
-		repo.getUserByID = repository.User{ID: repo.session.UserID}
+		repo.getUserByID = db.User{ID: repo.session.UserID}
 		tokenMaker.createErr = nil
 		repo.createSessionErr = errors.New("session error")
 		_, _, err := service.RefreshToken(context.Background(), "token", time.Hour)
@@ -292,7 +290,7 @@ func TestRevokeToken(t *testing.T) {
 func TestServiceMetrics(t *testing.T) {
 	repo := &mockRepo{}
 	tokenMaker := &mockTokenMaker{}
-	hasher := crypto.NewPasswordHasher(65536, 3, 4)
+	hasher := NewPasswordHasher(65536, 3, 4)
 	service := NewService(repo, tokenMaker, hasher, nil, nil)
 
 	repo.err = errors.New("not found")

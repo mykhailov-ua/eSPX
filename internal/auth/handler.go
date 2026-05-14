@@ -1,4 +1,8 @@
-package grpc
+package auth
+
+import (
+	"github.com/mykhailov-ua/ad-event-processor/internal/auth/pb"
+)
 
 import (
 	"context"
@@ -11,9 +15,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/mykhailov-ua/ad-event-processor/internal/auth"
-	"github.com/mykhailov-ua/ad-event-processor/internal/auth/pb"
-	"github.com/mykhailov-ua/ad-event-processor/internal/auth/token"
 	"github.com/mykhailov-ua/ad-event-processor/internal/config"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -22,11 +23,11 @@ import (
 
 type Handler struct {
 	pb.UnimplementedAuthServiceServer
-	service *auth.Service
+	service *Service
 	cfg     *config.Config
 }
 
-func NewHandler(service *auth.Service, cfg *config.Config) *Handler {
+func NewHandler(service *Service, cfg *config.Config) *Handler {
 	return &Handler{
 		service: service,
 		cfg:     cfg,
@@ -54,8 +55,8 @@ func extractClientIP(ctx context.Context) string {
 }
 
 func (h *Handler) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.RegisterResponse, error) {
-	customerID, _ := uuid.Parse(req.CustomerId)
-	id, err := h.service.Register(ctx, auth.RegisterRequest{
+	customerID, _ := uuid.Parse(req.CustomerID)
+	id, err := h.service.Register(ctx, RegisterDTO{
 		Email:      req.Email,
 		Password:   req.Password,
 		Role:       req.Role,
@@ -90,17 +91,7 @@ func (h *Handler) Login(ctx context.Context, req *pb.LoginRequest) (*pb.LoginRes
 		return nil, mapError(err)
 	}
 
-	return &pb.LoginResponse{
-		AccessToken:  resp.AccessToken,
-		RefreshToken: resp.RefreshToken,
-		User: &pb.User{
-			Id:         resp.User.ID.String(),
-			Email:      resp.User.Email,
-			Role:       resp.User.Role,
-			CustomerId: resp.User.CustomerID.String(),
-			CreatedAt:  timestamppb.New(resp.User.CreatedAt.Time),
-		},
-	}, nil
+	return &resp, nil
 }
 
 func (h *Handler) VerifyToken(ctx context.Context, req *pb.VerifyTokenRequest) (*pb.VerifyTokenResponse, error) {
@@ -111,10 +102,10 @@ func (h *Handler) VerifyToken(ctx context.Context, req *pb.VerifyTokenRequest) (
 
 	return &pb.VerifyTokenResponse{
 		User: &pb.User{
-			Id:         user.ID.String(),
+			ID:         uuid.UUID(user.ID.Bytes).String(),
 			Email:      user.Email,
 			Role:       user.Role,
-			CustomerId: user.CustomerID.String(),
+			CustomerID: uuid.UUID(user.CustomerID.Bytes).String(),
 			CreatedAt:  timestamppb.New(user.CreatedAt.Time),
 		},
 	}, nil
@@ -144,16 +135,16 @@ func mapError(err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, auth.ErrInvalidCredentials) || errors.Is(err, token.ErrInvalidToken) || errors.Is(err, token.ErrExpiredToken) || errors.Is(err, auth.ErrAccountLocked) || errors.Is(err, auth.ErrSessionBlocked) {
+	if errors.Is(err, ErrInvalidCredentials) || errors.Is(err, ErrInvalidToken) || errors.Is(err, ErrExpiredToken) || errors.Is(err, ErrAccountLocked) || errors.Is(err, ErrSessionBlocked) {
 		return status.Errorf(codes.Unauthenticated, "%v", err)
 	}
-	if errors.Is(err, auth.ErrUserAlreadyExists) {
+	if errors.Is(err, ErrUserAlreadyExists) {
 		return status.Errorf(codes.AlreadyExists, "%v", err)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return status.Errorf(codes.NotFound, "user not found")
 	}
-	if errors.Is(err, auth.ErrValidation) {
+	if errors.Is(err, ErrValidation) {
 		return status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 	return status.Errorf(codes.Internal, "internal server error: %v", err)
