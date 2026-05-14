@@ -7,6 +7,7 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/mykhailov-ua/ad-event-processor/internal/domain"
+	"github.com/mykhailov-ua/ad-event-processor/internal/metrics"
 )
 
 type ClickHouseStore struct {
@@ -51,7 +52,7 @@ func (s *ClickHouseStore) StoreBatch(ctx context.Context, events []*domain.Event
 		}
 	}
 
-	DbWriteErrors.WithLabelValues("clickhouse").Inc()
+	metrics.DbWriteErrors.WithLabelValues("clickhouse").Inc()
 	return err
 }
 
@@ -115,7 +116,7 @@ func (s *ClickHouseStore) insertToClickHouse(ctx context.Context, events []*doma
 	}
 
 	duration := time.Since(start).Seconds()
-	DbWriteDuration.WithLabelValues("clickhouse").Observe(duration)
+	metrics.DbWriteDuration.WithLabelValues("clickhouse").Observe(duration)
 
 	return nil
 }

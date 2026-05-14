@@ -2,7 +2,7 @@
 // versions:
 //   sqlc v1.31.1
 
-package repository
+package db
 
 import (
 	"context"
@@ -11,11 +11,19 @@ import (
 )
 
 type Querier interface {
+	CleanupAuditLogs(ctx context.Context, createdAt pgtype.Timestamptz) error
+	CreateAuditLog(ctx context.Context, arg CreateAuditLogParams) (AdminAuditLog, error)
 	CreateCampaign(ctx context.Context, arg CreateCampaignParams) (Campaign, error)
+	CreateCustomer(ctx context.Context, arg CreateCustomerParams) (Customer, error)
+	CreateLedgerEntry(ctx context.Context, arg CreateLedgerEntryParams) (BalanceLedger, error)
+	CreateStatusHistory(ctx context.Context, arg CreateStatusHistoryParams) error
 	GetCampaign(ctx context.Context, id pgtype.UUID) (Campaign, error)
 	GetCampaignBudget(ctx context.Context, id pgtype.UUID) (GetCampaignBudgetRow, error)
+	GetCampaignFull(ctx context.Context, id pgtype.UUID) (Campaign, error)
 	GetCampaignStats(ctx context.Context, campaignID pgtype.UUID) ([]CampaignStat, error)
 	GetCustomerByID(ctx context.Context, id pgtype.UUID) (Customer, error)
+	GetCustomerForUpdate(ctx context.Context, id pgtype.UUID) (Customer, error)
+	GetLedgerByHash(ctx context.Context, idempotencyHash pgtype.Text) (BalanceLedger, error)
 	// Inserts a single event with ON CONFLICT for idempotency.
 	// created_date is set explicitly for correct dedup within daily partitions.
 	InsertEvent(ctx context.Context, arg InsertEventParams) error
@@ -26,11 +34,15 @@ type Querier interface {
 	// from rolling back the entire batch.
 	InsertEventsBatch(ctx context.Context, arg InsertEventsBatchParams) error
 	ListActiveCampaigns(ctx context.Context) ([]Campaign, error)
+	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AdminAuditLog, error)
 	ListCampaignIDs(ctx context.Context) ([]pgtype.UUID, error)
+	SoftDeleteCampaign(ctx context.Context, id pgtype.UUID) error
 	UpdateCampaignSpend(ctx context.Context, arg UpdateCampaignSpendParams) error
 	UpdateCampaignStats(ctx context.Context, arg UpdateCampaignStatsParams) error
 	UpdateCampaignStatsBatch(ctx context.Context, arg UpdateCampaignStatsBatchParams) error
+	UpdateCampaignStatus(ctx context.Context, arg UpdateCampaignStatusParams) (Campaign, error)
 	UpdateCustomerBalance(ctx context.Context, arg UpdateCustomerBalanceParams) error
+	UpdateCustomerBalanceManagement(ctx context.Context, arg UpdateCustomerBalanceManagementParams) (Customer, error)
 }
 
 var _ Querier = (*Queries)(nil)

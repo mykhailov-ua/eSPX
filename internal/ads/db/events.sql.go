@@ -3,7 +3,7 @@
 //   sqlc v1.31.1
 // source: events.sql
 
-package repository
+package db
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 const createCampaign = `-- name: CreateCampaign :one
 INSERT INTO campaigns (id, name, budget_limit, status, customer_id)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend
+RETURNING id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend, deleted_at
 `
 
 type CreateCampaignParams struct {
@@ -43,12 +43,13 @@ func (q *Queries) CreateCampaign(ctx context.Context, arg CreateCampaignParams) 
 		&i.UpdatedAt,
 		&i.CustomerID,
 		&i.CurrentSpend,
+		&i.DeletedAt,
 	)
 	return i, err
 }
 
 const getCampaign = `-- name: GetCampaign :one
-SELECT id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend FROM campaigns WHERE id = $1 LIMIT 1
+SELECT id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend, deleted_at FROM campaigns WHERE id = $1 LIMIT 1
 `
 
 func (q *Queries) GetCampaign(ctx context.Context, id pgtype.UUID) (Campaign, error) {
@@ -63,6 +64,7 @@ func (q *Queries) GetCampaign(ctx context.Context, id pgtype.UUID) (Campaign, er
 		&i.UpdatedAt,
 		&i.CustomerID,
 		&i.CurrentSpend,
+		&i.DeletedAt,
 	)
 	return i, err
 }

@@ -5,16 +5,17 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/mykhailov-ua/ad-event-processor/internal/ads/repository"
+	"github.com/mykhailov-ua/ad-event-processor/internal/ads/db"
 	"github.com/mykhailov-ua/ad-event-processor/internal/domain"
+	"github.com/mykhailov-ua/ad-event-processor/internal/metrics"
 )
 
 type PostgresStore struct {
-	queries      repository.Querier
+	queries      db.Querier
 	writeTimeout time.Duration
 }
 
-func NewPostgresStore(queries repository.Querier, writeTimeout time.Duration) *PostgresStore {
+func NewPostgresStore(queries db.Querier, writeTimeout time.Duration) *PostgresStore {
 	return &PostgresStore{
 		queries:      queries,
 		writeTimeout: writeTimeout,
@@ -65,7 +66,7 @@ func (s *PostgresStore) StoreBatch(ctx context.Context, events []*domain.Event) 
 		dbCtx, cancel := context.WithTimeout(ctx, s.writeTimeout)
 		start := time.Now()
 
-		err = s.queries.InsertEventsBatch(dbCtx, repository.InsertEventsBatchParams{
+		err = s.queries.InsertEventsBatch(dbCtx, db.InsertEventsBatchParams{
 			ClickIds:     clickIDs,
 			CampaignIds:  campaignIDs,
 			EventTypes:   eventTypes,
@@ -80,7 +81,7 @@ func (s *PostgresStore) StoreBatch(ctx context.Context, events []*domain.Event) 
 		cancel()
 
 		if err == nil {
-			DbWriteDuration.WithLabelValues("postgres").Observe(duration)
+			metrics.DbWriteDuration.WithLabelValues("postgres").Observe(duration)
 			return nil
 		}
 
@@ -97,7 +98,7 @@ func (s *PostgresStore) StoreBatch(ctx context.Context, events []*domain.Event) 
 		}
 	}
 
-	DbWriteErrors.WithLabelValues("postgres").Inc()
+	metrics.DbWriteErrors.WithLabelValues("postgres").Inc()
 	return err
 }
 

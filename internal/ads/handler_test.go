@@ -1,4 +1,8 @@
-package delivery
+package ads
+
+import (
+	"github.com/mykhailov-ua/ad-event-processor/internal/ads/pb"
+)
 
 import (
 	"bytes"
@@ -9,7 +13,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/mykhailov-ua/ad-event-processor/internal/ads/pb"
 	"github.com/mykhailov-ua/ad-event-processor/internal/config"
 	"google.golang.org/protobuf/proto"
 )

@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/mykhailov-ua/ad-event-processor/internal/domain"
+	"github.com/mykhailov-ua/ad-event-processor/internal/metrics"
 	redis "github.com/redis/go-redis/v9"
 )
 
@@ -57,10 +58,10 @@ func (p *StreamProducer) Process(evt *domain.Event) error {
 	}).Result()
 
 	if err != nil {
-		EventsDropped.Inc()
+		metrics.EventsDropped.Inc()
 		return err
 	}
 
-	EventsProcessed.Inc()
+	metrics.EventsProcessed.Inc()
 	return nil
 }

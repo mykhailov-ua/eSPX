@@ -7,18 +7,19 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/mykhailov-ua/ad-event-processor/internal/ads/repository"
+	"github.com/mykhailov-ua/ad-event-processor/internal/ads/db"
+	redis "github.com/redis/go-redis/v9"
 )
 
 // Registry maintains an in-memory map of active campaigns for high-performance lookups.
 // Chosen to eliminate database round-trips for campaign validation in the hot path.
 type campaignInfo struct {
 	customerID uuid.UUID
-	status     repository.CampaignStatusType
+	status     db.CampaignStatusType
 }
 
 type Registry struct {
-	repo          repository.Querier
+	repo          db.Querier
 	data          map[uuid.UUID]campaignInfo
 	manuallyAdded map[uuid.UUID]bool // Tracks IDs added via Add() that haven't been seen in DB yet
 	mu            sync.RWMutex
@@ -26,7 +27,7 @@ type Registry struct {
 }
 
 // NewRegistry initializes the registry with optimized initial capacities.
-func NewRegistry(repo repository.Querier) *Registry {
+func NewRegistry(repo db.Querier) *Registry {
 	return &Registry{
 		data:          make(map[uuid.UUID]campaignInfo, 100_000),
 		manuallyAdded: make(map[uuid.UUID]bool),
@@ -39,7 +40,7 @@ func (r *Registry) Exists(id uuid.UUID) bool {
 	r.mu.RLock()
 	info, ok := r.data[id]
 	r.mu.RUnlock()
-	return ok && info.status == repository.CampaignStatusTypeACTIVE
+	return ok && info.status == db.CampaignStatusTypeACTIVE
 }
 
 // GetCustomerID retrieves the customer ID associated with a specific campaign.
@@ -58,7 +59,7 @@ func (r *Registry) GetCustomerID(campaignID uuid.UUID) (uuid.UUID, bool) {
 func (r *Registry) Add(id, customerID uuid.UUID) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	info := campaignInfo{customerID: customerID, status: repository.CampaignStatusTypeACTIVE}
+	info := campaignInfo{customerID: customerID, status: db.CampaignStatusTypeACTIVE}
 	r.data[id] = info
 	r.manuallyAdded[id] = true
 }
@@ -123,7 +124,34 @@ func (r *Registry) StartSync(ctx context.Context, interval time.Duration) {
 	}()
 }
 
-// Wait blocks until the synchronization goroutine has exited gracefully.
+// StartWatch initiates a background goroutine to listen for real-time campaign updates via Redis PubSub.
+func (r *Registry) StartWatch(ctx context.Context, rdb redis.UniversalClient, channel string) {
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		pubsub := rdb.Subscribe(ctx, channel)
+		defer pubsub.Close()
+
+		ch := pubsub.Channel()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case msg := <-ch:
+				id, err := uuid.Parse(msg.Payload)
+				if err != nil {
+					slog.Warn("received invalid campaign id in pubsub", "payload", msg.Payload)
+					continue
+				}
+				// Immediate sync for the specific campaign or global sync
+				_, _ = r.Sync(ctx)
+				slog.Debug("registry synced via pubsub", "campaign_id", id)
+			}
+		}
+	}()
+}
+
+// Wait blocks until all background goroutines have exited.
 func (r *Registry) Wait(ctx context.Context) error {
 	done := make(chan struct{})
 	go func() {

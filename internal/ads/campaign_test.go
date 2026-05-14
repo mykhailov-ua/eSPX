@@ -7,24 +7,24 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/mykhailov-ua/ad-event-processor/internal/ads/repository"
+	"github.com/mykhailov-ua/ad-event-processor/internal/ads/db"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 type MockRepo struct {
-	repository.Querier
+	db.Querier
 	ids []pgtype.UUID
 	err error
 }
 
-func (m *MockRepo) ListActiveCampaigns(ctx context.Context) ([]repository.Campaign, error) {
-	var res []repository.Campaign
+func (m *MockRepo) ListActiveCampaigns(ctx context.Context) ([]db.Campaign, error) {
+	var res []db.Campaign
 	for _, id := range m.ids {
-		res = append(res, repository.Campaign{
+		res = append(res, db.Campaign{
 			ID:         id,
 			CustomerID: id, // Mock customer ID
-			Status:     repository.CampaignStatusTypeACTIVE,
+			Status:     db.CampaignStatusTypeACTIVE,
 		})
 	}
 	return res, m.err

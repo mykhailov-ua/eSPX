@@ -1,4 +1,4 @@
-package delivery
+package ads
 
 import (
 	"bytes"
@@ -37,7 +37,7 @@ func TestTrackHandlerMalformed(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, w.Code)
 	})
 
-	t.Run("Invalid Campaign ID", func(t *testing.T) {
+	t.Run("Invalid db.Campaign ID", func(t *testing.T) {
 		// Constructs a valid Protobuf structure containing a malformed UUID string to validate secondary logic-level checks.
 		body := []byte{10, 3, 104, 105, 33} // tag 1 (CampaignId), len 3, val "hi!"
 		req := httptest.NewRequest("POST", "/track", bytes.NewReader(body))

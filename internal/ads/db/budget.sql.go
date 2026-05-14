@@ -3,7 +3,7 @@
 //   sqlc v1.31.1
 // source: budget.sql
 
-package repository
+package db
 
 import (
 	"context"
@@ -62,7 +62,7 @@ func (q *Queries) GetCustomerByID(ctx context.Context, id pgtype.UUID) (Customer
 }
 
 const listActiveCampaigns = `-- name: ListActiveCampaigns :many
-SELECT id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend FROM campaigns WHERE status = 'ACTIVE'
+SELECT id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend, deleted_at FROM campaigns WHERE status = 'ACTIVE'
 `
 
 func (q *Queries) ListActiveCampaigns(ctx context.Context) ([]Campaign, error) {
@@ -83,6 +83,7 @@ func (q *Queries) ListActiveCampaigns(ctx context.Context) ([]Campaign, error) {
 			&i.UpdatedAt,
 			&i.CustomerID,
 			&i.CurrentSpend,
+			&i.DeletedAt,
 		); err != nil {
 			return nil, err
 		}

@@ -2,7 +2,7 @@
 // versions:
 //   sqlc v1.31.1
 
-package repository
+package db
 
 import (
 	"database/sql/driver"
@@ -17,6 +17,8 @@ const (
 	CampaignStatusTypeACTIVE    CampaignStatusType = "ACTIVE"
 	CampaignStatusTypePAUSED    CampaignStatusType = "PAUSED"
 	CampaignStatusTypeEXHAUSTED CampaignStatusType = "EXHAUSTED"
+	CampaignStatusTypeDRAINING  CampaignStatusType = "DRAINING"
+	CampaignStatusTypeDELETED   CampaignStatusType = "DELETED"
 )
 
 func (e *CampaignStatusType) Scan(src interface{}) error {
@@ -54,6 +56,72 @@ func (ns NullCampaignStatusType) Value() (driver.Value, error) {
 	return string(ns.CampaignStatusType), nil
 }
 
+type LedgerType string
+
+const (
+	LedgerTypeTOPUP   LedgerType = "TOPUP"
+	LedgerTypeFREEZE  LedgerType = "FREEZE"
+	LedgerTypeRELEASE LedgerType = "RELEASE"
+	LedgerTypeFEE     LedgerType = "FEE"
+	LedgerTypeREFUND  LedgerType = "REFUND"
+)
+
+func (e *LedgerType) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = LedgerType(s)
+	case string:
+		*e = LedgerType(s)
+	default:
+		return fmt.Errorf("unsupported scan type for LedgerType: %T", src)
+	}
+	return nil
+}
+
+type NullLedgerType struct {
+	LedgerType LedgerType `json:"ledger_type"`
+	Valid      bool       `json:"valid"` // Valid is true if LedgerType is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullLedgerType) Scan(value interface{}) error {
+	if value == nil {
+		ns.LedgerType, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.LedgerType.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullLedgerType) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.LedgerType), nil
+}
+
+type AdminAuditLog struct {
+	ID         int64              `json:"id"`
+	AdminID    pgtype.UUID        `json:"admin_id"`
+	Action     string             `json:"action"`
+	TargetType string             `json:"target_type"`
+	TargetID   pgtype.UUID        `json:"target_id"`
+	Changes    []byte             `json:"changes"`
+	Metadata   []byte             `json:"metadata"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+}
+
+type BalanceLedger struct {
+	ID              int64            `json:"id"`
+	CustomerID      pgtype.UUID      `json:"customer_id"`
+	CampaignID      pgtype.UUID      `json:"campaign_id"`
+	Amount          pgtype.Numeric   `json:"amount"`
+	Type            LedgerType       `json:"type"`
+	IdempotencyHash pgtype.Text      `json:"idempotency_hash"`
+	CreatedAt       pgtype.Timestamp `json:"created_at"`
+}
+
 type Campaign struct {
 	ID           pgtype.UUID        `json:"id"`
 	Name         string             `json:"name"`
@@ -63,6 +131,7 @@ type Campaign struct {
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 	CustomerID   pgtype.UUID        `json:"customer_id"`
 	CurrentSpend pgtype.Numeric     `json:"current_spend"`
+	DeletedAt    pgtype.Timestamptz `json:"deleted_at"`
 }
 
 type CampaignStat struct {
@@ -71,6 +140,15 @@ type CampaignStat struct {
 	ImpressionsCount int64       `json:"impressions_count"`
 	ClicksCount      int64       `json:"clicks_count"`
 	ConversionsCount int64       `json:"conversions_count"`
+}
+
+type CampaignStatusHistory struct {
+	ID         int64                  `json:"id"`
+	CampaignID pgtype.UUID            `json:"campaign_id"`
+	OldStatus  NullCampaignStatusType `json:"old_status"`
+	NewStatus  CampaignStatusType     `json:"new_status"`
+	Reason     pgtype.Text            `json:"reason"`
+	CreatedAt  pgtype.Timestamp       `json:"created_at"`
 }
 
 type Customer struct {

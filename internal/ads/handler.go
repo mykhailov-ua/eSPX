@@ -1,4 +1,9 @@
-package delivery
+package ads
+
+import (
+	"github.com/mykhailov-ua/ad-event-processor/internal/ads/pb"
+	// "github.com/mykhailov-ua/ad-event-processor/internal/ads/db"
+)
 
 import (
 	"bytes"
@@ -16,10 +21,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/mykhailov-ua/ad-event-processor/internal/ads"
-	"github.com/mykhailov-ua/ad-event-processor/internal/ads/pb"
 	"github.com/mykhailov-ua/ad-event-processor/internal/config"
 	"github.com/mykhailov-ua/ad-event-processor/internal/domain"
+	"github.com/mykhailov-ua/ad-event-processor/internal/metrics"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/proto"
@@ -35,7 +39,7 @@ var (
 	bufferPool = sync.Pool{
 		New: func() any { return new(bytes.Buffer) },
 	}
-	// Pre-allocate status code strings to avoid strconv.Itoa allocations in metrics.
+	// Reduces heap churn by using pre-allocated strings for common HTTP status codes in metrics reporting.
 	statusStrings     [600]string
 	maxPoolObjectSize = 64 * 1024 // 64KB
 )
@@ -46,7 +50,7 @@ func init() {
 	}
 }
 
-// putBuffer returns a buffer to the pool only if its capacity is within safe limits.
+// putBuffer prevents memory fragmentation by capping the size of buffers retained in the pool.
 func putBuffer(buf *bytes.Buffer) {
 	if buf == nil || buf.Cap() > maxPoolObjectSize {
 		return
@@ -55,7 +59,7 @@ func putBuffer(buf *bytes.Buffer) {
 	bufferPool.Put(buf)
 }
 
-// putAdEvent ensures that AdEvent objects with oversized metadata maps are discarded.
+// putAdEvent discards objects with bloated internal maps to prevent long-term memory accumulation.
 func putAdEvent(evt *pb.AdEvent) {
 	if evt == nil {
 		return
@@ -68,7 +72,7 @@ func putAdEvent(evt *pb.AdEvent) {
 	adEventPool.Put(evt)
 }
 
-// putTrackResponse returns the response object to the pool after resetting its fields.
+// putTrackResponse recycles response objects to minimize GC pressure on the ingestion hot path.
 func putTrackResponse(resp *pb.TrackResponse) {
 	if resp == nil {
 		return
@@ -77,14 +81,14 @@ func putTrackResponse(resp *pb.TrackResponse) {
 	trackResponsePool.Put(resp)
 }
 
-// Pinger defines the interface for checking component connectivity.
+// Pinger abstracts health check probes for heterogeneous downstream dependencies.
 type Pinger interface {
 	Ping(ctx context.Context) error
 }
 
-// NewRouter initializes the HTTP transport layer and registers health, metrics, and tracking endpoints.
+// NewRouter constructs the multiplexer for the tracking API, integrating telemetry and profiling.
 // Chosen to isolate routing logic and provide a central entry point for external requests.
-func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, filterEngine *ads.FilterEngine, pool Pinger, rdbs []redis.UniversalClient) http.Handler {
+func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, filterEngine *FilterEngine, pool Pinger, rdbs []redis.UniversalClient) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.Handle("GET /metrics", promhttp.Handler())
@@ -127,8 +131,8 @@ func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, filterEngin
 			if status >= 0 && status < len(statusStrings) {
 				statusStr = statusStrings[status]
 			}
-			ads.HttpRequestsTotal.WithLabelValues("POST", "/track", statusStr).Inc()
-			ads.HttpRequestDuration.WithLabelValues("POST", "/track").Observe(duration)
+			metrics.HttpRequestsTotal.WithLabelValues("POST", "/track", statusStr).Inc()
+			metrics.HttpRequestDuration.WithLabelValues("POST", "/track").Observe(duration)
 		}()
 
 		r.Body = http.MaxBytesReader(w, r.Body, cfg.MaxRequestBodySize)
@@ -225,16 +229,19 @@ func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, filterEngin
 		if filterEngine != nil {
 			if err := filterEngine.Check(r.Context(), evt); err != nil {
 				domain.EventPool.Put(evt)
-				if errors.Is(err, ads.ErrRateLimitExceeded) {
+				if errors.Is(err, ErrRateLimitExceeded) {
 					slog.Warn("event rejected: rate limit", "error", err, "request_id", id)
+					metrics.FilterBlockedTotal.WithLabelValues("rate_limit").Inc()
 					http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 					return
-				} else if errors.Is(err, ads.ErrDuplicateEvent) {
+				} else if errors.Is(err, ErrDuplicateEvent) {
 					slog.Warn("event rejected: duplicate", "error", err, "request_id", id)
+					metrics.FilterBlockedTotal.WithLabelValues("duplicate").Inc()
 					http.Error(w, "duplicate event", http.StatusConflict)
 					return
-				} else if errors.Is(err, ads.ErrBudgetExhausted) {
+				} else if errors.Is(err, ErrBudgetExhausted) {
 					slog.Warn("event rejected: budget exhausted", "error", err, "request_id", id)
+					metrics.FilterBlockedTotal.WithLabelValues("budget").Inc()
 					http.Error(w, "budget exhausted", http.StatusPaymentRequired)
 					return
 				}
@@ -277,7 +284,7 @@ func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, filterEngin
 	return mux
 }
 
-// extractClientIP retrieves the real client IP from standard HTTP headers or the remote address.
+// extractClientIP parses the remote address, prioritizing upstream proxy headers for audit trails.
 // Chosen to prioritize transparency via X-Forwarded-For while providing fallbacks for local requests.
 func extractClientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
