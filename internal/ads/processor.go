@@ -17,8 +17,6 @@ import (
 	redis "github.com/redis/go-redis/v9"
 )
 
-// StreamConsumer manages distributed event processing from Redis Streams.
-// Chosen to provide a robust, concurrent worker pool with DLQ and circuit breaker support.
 type StreamConsumer struct {
 	store         domain.EventStore
 	rdb           redis.UniversalClient
@@ -42,7 +40,6 @@ type StreamConsumer struct {
 	cb            *CircuitBreaker
 }
 
-// NewStreamConsumer initializes the consumer with a unique ID and resiliency parameters.
 func NewStreamConsumer(
 	store domain.EventStore,
 	rdb redis.UniversalClient,
@@ -80,8 +77,6 @@ func NewStreamConsumer(
 	}
 }
 
-// Start spawns background workers, janitors, and DLQ monitors for the consumer group.
-// Chosen to parallelize I/O operations while maintaining strict group-level message affinity.
 func (p *StreamConsumer) Start(ctx context.Context) {
 	p.startMu.Lock()
 	defer p.startMu.Unlock()
@@ -118,14 +113,12 @@ func (p *StreamConsumer) Start(ctx context.Context) {
 	}()
 }
 
-// Close initiates the shutdown sequence by canceling the internal context.
 func (p *StreamConsumer) Close() {
 	if p.cancel != nil {
 		p.cancel()
 	}
 }
 
-// Wait blocks until all background workers have completed their final flush and exited.
 func (p *StreamConsumer) Wait(ctx context.Context) error {
 	done := make(chan struct{})
 	go func() {
@@ -145,8 +138,6 @@ func (p *StreamConsumer) workerConsumerID(workerIdx int) string {
 	return fmt.Sprintf("%s-w%d", p.consumerID, workerIdx)
 }
 
-// worker implements the primary message consumption loop with batching and retry logic.
-// Chosen to ensure reliable message delivery even during transient persistence failures.
 func (p *StreamConsumer) worker(ctx context.Context, workerIdx int) {
 	workerID := p.workerConsumerID(workerIdx)
 	defer func() {
@@ -228,7 +219,6 @@ func (p *StreamConsumer) worker(ctx context.Context, workerIdx int) {
 	}
 }
 
-// tryFlush attempts to persist a batch of events and updates the circuit breaker state.
 func (p *StreamConsumer) tryFlush(ctx context.Context, batch *[]*domain.Event, msgIDs *[]string, retryCount *int, workerID string, ticker *time.Ticker, retryWait *time.Duration) {
 	if !p.cb.Allow() {
 		wait := p.cb.WaitDuration()
@@ -307,8 +297,6 @@ func (p *StreamConsumer) tryFlush(ctx context.Context, batch *[]*domain.Event, m
 	}
 }
 
-// drainNewMessages fetches any remaining messages from the stream after context cancellation.
-// Chosen to ensure zero data loss during graceful shutdown of consumer nodes.
 func (p *StreamConsumer) drainNewMessages(workerID string) {
 	drainCtx, cancel := context.WithTimeout(context.Background(), p.drainTimeout)
 	defer cancel()
@@ -355,7 +343,6 @@ func (p *StreamConsumer) drainNewMessages(workerID string) {
 	}
 }
 
-// parseMessage converts a Redis Stream message into a domain event object.
 func (p *StreamConsumer) parseMessage(id string, values map[string]interface{}) *domain.Event {
 	evt := domain.EventPool.Get().(*domain.Event)
 	evt.Reset()
@@ -397,7 +384,6 @@ func (p *StreamConsumer) parseMessage(id string, values map[string]interface{}) 
 	return evt
 }
 
-// flushBatch writes a collection of events to the persistent store and acknowledges them in Redis.
 func (p *StreamConsumer) flushBatch(ctx context.Context, batch []*domain.Event, msgIDs []string) error {
 	if len(batch) == 0 {
 		return nil
@@ -421,7 +407,6 @@ func (p *StreamConsumer) flushBatch(ctx context.Context, batch []*domain.Event, 
 	return nil
 }
 
-// recoverPending identifies and re-processes messages that were claimed but not acknowledged by this consumer.
 func (p *StreamConsumer) recoverPending(ctx context.Context, consumerID string) {
 	for {
 		select {
@@ -463,7 +448,6 @@ func (p *StreamConsumer) recoverPending(ctx context.Context, consumerID string) 
 	}
 }
 
-// janitor periodically scans for and claims messages that have been idle beyond the configured threshold.
 func (p *StreamConsumer) janitor(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -483,7 +467,6 @@ func (p *StreamConsumer) janitor(ctx context.Context) {
 	}
 }
 
-// claimStuckMessages uses XAutoClaim to transition ownership of long-idle messages to this consumer.
 func (p *StreamConsumer) claimStuckMessages(ctx context.Context) {
 	startID := "0-0"
 	for {
@@ -524,7 +507,6 @@ func (p *StreamConsumer) claimStuckMessages(ctx context.Context) {
 	}
 }
 
-// dlqMonitor tracks the growth of the Dead Letter Queue to provide visibility into recurring processing failures.
 func (p *StreamConsumer) dlqMonitor(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {

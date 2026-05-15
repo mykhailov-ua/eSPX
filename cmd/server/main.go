@@ -73,7 +73,6 @@ func main() {
 	campaignRepo := ads.NewCampaignRepo(queries)
 	sharder := ads.NewJumpHashSharder(len(rdbs))
 
-	// Geo & Fraud setup
 	var geoProvider ads.GeoProvider
 	geoProvider, err = ads.NewMaxMindProvider("deploy/geoip/GeoLite2-Country.mmdb")
 	if err != nil {
@@ -83,7 +82,7 @@ func main() {
 	defer geoProvider.Close()
 
 	geoFilter := ads.NewGeoFilter(geoProvider, registry)
-	fraudFilter := ads.NewFraudFilter(geoProvider, rdbs[0], time.Duration(cfg.TTCMinMs)*time.Millisecond) // Simplified shard for global fraud
+	fraudFilter := ads.NewFraudFilter(geoProvider, rdbs[0], time.Duration(cfg.TTCMinMs)*time.Millisecond)
 
 	unifiedFilter := ads.NewUnifiedFilter(
 		rdbs,

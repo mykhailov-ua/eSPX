@@ -39,7 +39,6 @@ var (
 	bufferPool = sync.Pool{
 		New: func() any { return new(bytes.Buffer) },
 	}
-	// Reduces heap churn by using pre-allocated strings for common HTTP status codes in metrics reporting.
 	statusStrings     [600]string
 	maxPoolObjectSize = 64 * 1024 // 64KB
 )
@@ -50,7 +49,6 @@ func init() {
 	}
 }
 
-// putBuffer prevents memory fragmentation by capping the size of buffers retained in the pool.
 func putBuffer(buf *bytes.Buffer) {
 	if buf == nil || buf.Cap() > maxPoolObjectSize {
 		return
@@ -59,12 +57,10 @@ func putBuffer(buf *bytes.Buffer) {
 	bufferPool.Put(buf)
 }
 
-// putAdEvent discards objects with bloated internal maps to prevent long-term memory accumulation.
 func putAdEvent(evt *pb.AdEvent) {
 	if evt == nil {
 		return
 	}
-	// Go maps do not shrink after elements are removed; discard if extra metadata is too large.
 	if evt.Metadata != nil && len(evt.Metadata.Extra) > 100 {
 		return
 	}
@@ -72,7 +68,6 @@ func putAdEvent(evt *pb.AdEvent) {
 	adEventPool.Put(evt)
 }
 
-// putTrackResponse recycles response objects to minimize GC pressure on the ingestion hot path.
 func putTrackResponse(resp *pb.TrackResponse) {
 	if resp == nil {
 		return
@@ -81,13 +76,10 @@ func putTrackResponse(resp *pb.TrackResponse) {
 	trackResponsePool.Put(resp)
 }
 
-// Pinger abstracts health check probes for heterogeneous downstream dependencies.
 type Pinger interface {
 	Ping(ctx context.Context) error
 }
 
-// NewRouter constructs the multiplexer for the tracking API, integrating telemetry and profiling.
-// Chosen to isolate routing logic and provide a central entry point for external requests.
 func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, filterEngine *FilterEngine, pool Pinger, rdbs []redis.UniversalClient, sharder Sharder, fraudStream string) http.Handler {
 	mux := http.NewServeMux()
 
@@ -184,7 +176,6 @@ func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, filterEngin
 				if pbReq.Metadata.ClickId != "" {
 					clickID = pbReq.Metadata.ClickId
 				}
-				// Map extra to payload for persistence if desired
 				if pbReq.Metadata.Extra != nil {
 					payload, _ = json.Marshal(pbReq.Metadata.Extra)
 				}
@@ -269,7 +260,6 @@ func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, filterEngin
 					slog.Warn("fraud detected: silent drop", "reason", evt.FraudReason, "request_id", id)
 					metrics.FilterBlockedTotal.WithLabelValues("fraud").Inc()
 					
-					// Push to fraud stream for analytical logging
 					shard := sharder.GetShard(evt.CampaignID)
 					rdb := rdbs[shard]
 					
@@ -290,7 +280,7 @@ func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, filterEngin
 						},
 					}).Result()
 
-					// Fallthrough to return StatusAccepted for silent drop
+					// Silent drop
 				} else {
 					slog.Error("filter engine failure", "error", err, "request_id", id)
 					http.Error(w, "internal error", http.StatusInternalServerError)
@@ -332,8 +322,6 @@ func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, filterEngin
 	return mux
 }
 
-// extractClientIP parses the remote address, prioritizing upstream proxy headers for audit trails.
-// Chosen to prioritize transparency via X-Forwarded-For while providing fallbacks for local requests.
 func extractClientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		last := len(xff)

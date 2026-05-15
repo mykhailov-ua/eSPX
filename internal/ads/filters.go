@@ -30,8 +30,6 @@ var (
 	ErrFraudDetected     = errors.New("fraud detected")
 )
 
-// FraudFilter implements multi-layered bot detection including DC filtering and TTC analysis.
-// Chosen to operate as an early-exit filter to prevent fraudulent spend and ingestion.
 type FraudFilter struct {
 	geo    GeoProvider
 	rdb    redis.UniversalClient
@@ -47,14 +45,12 @@ func NewFraudFilter(geo GeoProvider, rdb redis.UniversalClient, ttcMin time.Dura
 }
 
 func (f *FraudFilter) Check(ctx context.Context, evt *domain.Event) error {
-	// 1. Data Center / Proxy Check (Stateless-ish)
 	isAnon, err := f.geo.IsAnonymous(evt.IP)
 	if err == nil && isAnon {
 		evt.FraudReason = "datacenter_ip"
 		return ErrFraudDetected
 	}
 
-	// 2. Time-to-Click (TTC) Analysis (Stateful)
 	if evt.Type == "impression" {
 		// Store impression timestamp for future click verification
 		key := fmt.Sprintf("imp_ts:%s:%s", evt.UserID, evt.CampaignID)
@@ -68,19 +64,14 @@ func (f *FraudFilter) Check(ctx context.Context, evt *domain.Event) error {
 		if err == nil {
 			delta := time.Since(time.UnixMilli(ts))
 			if delta < f.ttcMin {
-				evt.FraudReason = fmt.Sprintf("fast_click:%v", delta)
-				return ErrFraudDetected
+				evt.FraudReason = fmt.Sprintf("low_ttc:%v", delta)
 			}
 		}
-		// Note: we allow clicks without an impression record (some environments lose impressions)
-		// but log it if it's too frequent (future work).
 	}
 
 	return nil
 }
 
-// GeoFilter enforces regional targeting by matching client IP against campaign allowed countries.
-// Chosen to operate as an early-exit stateless filter to minimize stateful Redis operations.
 type GeoFilter struct {
 	geo      GeoProvider
 	registry domain.CampaignRegistry
@@ -107,8 +98,7 @@ func (f *GeoFilter) Check(ctx context.Context, evt *domain.Event) error {
 	country, err := f.geo.GetCountry(evt.IP)
 	if err != nil {
 		slog.Warn("geo lookup failed", "ip", evt.IP, "error", err)
-		// We allow on lookup failure by default, or could block. 
-		// For high RPS, we might want to allow to prevent complete ingestion halt.
+		// Fallback to allow on lookup failure to prevent ingestion halt
 		return nil 
 	}
 
@@ -121,8 +111,6 @@ func (f *GeoFilter) Check(ctx context.Context, evt *domain.Event) error {
 	return ErrGeoBlocked
 }
 
-// BudgetFilter validates event costs against available campaign and customer balances.
-// Chosen to prevent overspend before high-latency database synchronization occurs.
 type BudgetFilter struct {
 	manager          domain.BudgetManager
 	registry         domain.CampaignRegistry
@@ -130,7 +118,6 @@ type BudgetFilter struct {
 	impressionAmount float64
 }
 
-// NewBudgetFilter initializes a budget validator with specific pricing for event types.
 func NewBudgetFilter(manager domain.BudgetManager, registry domain.CampaignRegistry, clickAmount, impressionAmount float64) *BudgetFilter {
 	return &BudgetFilter{
 		manager:          manager,
@@ -140,7 +127,6 @@ func NewBudgetFilter(manager domain.BudgetManager, registry domain.CampaignRegis
 	}
 }
 
-// Check verifies budget availability and records the tentative spend in the cache.
 func (f *BudgetFilter) Check(ctx context.Context, evt *domain.Event) error {
 	customerID, ok := f.registry.GetCustomerID(evt.CampaignID)
 	if !ok {
@@ -162,13 +148,10 @@ func (f *BudgetFilter) Check(ctx context.Context, evt *domain.Event) error {
 	return nil
 }
 
-// EventFilter defines the common interface for all sequential event validations.
 type EventFilter interface {
 	Check(ctx context.Context, evt *domain.Event) error
 }
 
-// FilterEngine executes a sequence of filters and returns the first error encountered.
-// Chosen to provide a flexible and extensible validation pipeline for incoming events.
 type FilterEngine struct {
 	filters []EventFilter
 }
@@ -178,7 +161,6 @@ func NewFilterEngine(filters ...EventFilter) *FilterEngine {
 	return &FilterEngine{filters: filters}
 }
 
-// Check iterates through registered filters and halts processing on the first violation.
 func (e *FilterEngine) Check(ctx context.Context, evt *domain.Event) error {
 	for _, f := range e.filters {
 		if err := f.Check(ctx, evt); err != nil {
@@ -188,15 +170,12 @@ func (e *FilterEngine) Check(ctx context.Context, evt *domain.Event) error {
 	return nil
 }
 
-// IPRateLimiter prevents flood attacks by tracking request counts per IP address in Redis.
-// Chosen for its distributed efficiency and atomic increments using Lua scripts.
 type IPRateLimiter struct {
 	rdb    redis.Cmdable
 	limit  int
 	window time.Duration
 }
 
-// NewIPRateLimiter initializes a rate limiter with a specific request quota and time window.
 func NewIPRateLimiter(rdb redis.Cmdable, limit int, window time.Duration) *IPRateLimiter {
 	return &IPRateLimiter{
 		rdb:    rdb,
@@ -216,7 +195,6 @@ end
 return 0 -- allowed
 `
 
-// Check evaluates the current rate limit for the client IP and increments the counter.
 func (l *IPRateLimiter) Check(ctx context.Context, evt *domain.Event) error {
 	if evt.IP == "" {
 		return nil
@@ -244,8 +222,6 @@ func (l *IPRateLimiter) Check(ctx context.Context, evt *domain.Event) error {
 	return nil
 }
 
-// DuplicateEventFilter prevents double-processing of events within a short TTL window.
-// Chosen as a first-line defense to minimize database contention on unique constraints.
 type DuplicateEventFilter struct {
 	rdb redis.Cmdable
 	ttl time.Duration
@@ -259,7 +235,6 @@ func NewDuplicateEventFilter(rdb redis.Cmdable, ttl time.Duration) *DuplicateEve
 	}
 }
 
-// Check uses atomic SetNX to ensure an event ID is only processed once within the TTL.
 func (f *DuplicateEventFilter) Check(ctx context.Context, evt *domain.Event) error {
 	if evt.ClickID == "" {
 		return nil

@@ -17,9 +17,6 @@ type dbExecutor interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// PartitionManager automates the creation of future partitions and the cleanup
-// of old partitions for the 'events' table to maintain high performance and
-// bounded disk usage.
 type PartitionManager struct {
 	pool      dbExecutor
 	retention int
@@ -35,9 +32,6 @@ func NewPartitionManager(pool dbExecutor, retentionDays int, preCreateDays int) 
 	}
 }
 
-// Run executes the partition maintenance routine.
-// It creates future partitions to ensure data can always be inserted and
-// drops partitions older than the retention period to reclaim disk space.
 func (pm *PartitionManager) Run(ctx context.Context) error {
 	now := time.Now().UTC()
 
@@ -62,14 +56,11 @@ func (pm *PartitionManager) Run(ctx context.Context) error {
 	return nil
 }
 
-// createPartition generates a new hourly/daily partition for the events table.
-// It uses IF NOT EXISTS to be idempotent and safe for concurrent execution.
 func (pm *PartitionManager) createPartition(ctx context.Context, date time.Time) error {
 	tableName := fmt.Sprintf("events_p%s", date.Format("2006_01_02"))
 	startDate := date.Format("2006-01-02")
 	endDate := date.AddDate(0, 0, 1).Format("2006-01-02")
 
-	// Sanitize table name to prevent SQL injection
 	safeTableName := pgx.Identifier{tableName}.Sanitize()
 
 	query := fmt.Sprintf(`
@@ -81,8 +72,6 @@ func (pm *PartitionManager) createPartition(ctx context.Context, date time.Time)
 	return err
 }
 
-// dropPartitions identifies and deletes tables that fall outside the retention window
-// or are too far in the future.
 func (pm *PartitionManager) dropPartitions(ctx context.Context, now time.Time, olderThan time.Time) error {
 	query := `
 		SELECT child.relname
@@ -130,9 +119,6 @@ func (pm *PartitionManager) dropPartitions(ctx context.Context, now time.Time, o
 	return nil
 }
 
-// truncateDefault clears the default partition that catches events not matching
-// any date-based partition. It logs a critical error if data is found, as this
-// indicates a failure in the partition creation logic or severe clock drift.
 func (pm *PartitionManager) truncateDefault(ctx context.Context) error {
 	var count int64
 	err := pm.pool.QueryRow(ctx, "SELECT count(*) FROM events_default").Scan(&count)

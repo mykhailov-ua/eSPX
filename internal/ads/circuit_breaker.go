@@ -26,8 +26,6 @@ func (s CircuitState) String() string {
 	}
 }
 
-// CircuitBreaker implements a thread-safe state machine to prevent cascading failures.
-// Chosen to protect downstream dependencies (e.g., PostgreSQL) from overload during partial outages.
 type CircuitBreaker struct {
 	state         atomic.Int32
 	failures      atomic.Int32
@@ -36,7 +34,6 @@ type CircuitBreaker struct {
 	openTimeout   time.Duration
 }
 
-// NewCircuitBreaker initializes the breaker with a failure threshold and reset timeout.
 func NewCircuitBreaker(failThreshold int, openTimeout time.Duration) *CircuitBreaker {
 	return &CircuitBreaker{
 		failThreshold: int32(failThreshold),
@@ -44,8 +41,6 @@ func NewCircuitBreaker(failThreshold int, openTimeout time.Duration) *CircuitBre
 	}
 }
 
-// Allow determines if a request should be processed based on the current breaker state.
-// Uses atomic CAS to safely transition from Open to HalfOpen for probing.
 func (cb *CircuitBreaker) Allow() bool {
 	state := CircuitState(cb.state.Load())
 
@@ -70,14 +65,11 @@ func (cb *CircuitBreaker) Allow() bool {
 	}
 }
 
-// RecordSuccess resets failure counts and returns the breaker to the Closed state.
 func (cb *CircuitBreaker) RecordSuccess() {
 	cb.failures.Store(0)
 	cb.state.Store(int32(CircuitClosed))
 }
 
-// RecordFailure increments the failure count and trips the breaker if the threshold is reached.
-// Updates the timestamp only on transition to ensure a stable open window.
 func (cb *CircuitBreaker) RecordFailure() {
 	newCount := cb.failures.Add(1)
 
@@ -88,17 +80,14 @@ func (cb *CircuitBreaker) RecordFailure() {
 	}
 }
 
-// State returns the current internal state of the breaker.
 func (cb *CircuitBreaker) State() CircuitState {
 	return CircuitState(cb.state.Load())
 }
 
-// Failures returns the total number of consecutive failures recorded.
 func (cb *CircuitBreaker) Failures() int {
 	return int(cb.failures.Load())
 }
 
-// WaitDuration calculates the time remaining until the breaker can transition to HalfOpen.
 func (cb *CircuitBreaker) WaitDuration() time.Duration {
 	if CircuitState(cb.state.Load()) != CircuitOpen {
 		return 0

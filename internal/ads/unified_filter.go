@@ -13,13 +13,9 @@ import (
 	redis "github.com/redis/go-redis/v9"
 )
 
-// Errors are imported from filters.go
-
 //go:embed unified_filter.lua
 var unifiedFilterLua string
 
-// UnifiedFilter coordinates multi-stage event validation using Redis Lua scripts.
-// It integrates rate limiting, deduplication, and budget tracking in a single atomic operation.
 type UnifiedFilter struct {
 	rdbs             []redis.UniversalClient
 	sharder          Sharder
@@ -36,8 +32,6 @@ type UnifiedFilter struct {
 	maxStreamLen     int
 }
 
-// NewUnifiedFilter initializes the filter with sharded Redis clients and persistence repositories.
-// Chosen to centralize validation logic and ensure atomic state transitions across shards.
 func NewUnifiedFilter(
 	rdbs []redis.UniversalClient,
 	sharder Sharder,
@@ -69,8 +63,6 @@ func NewUnifiedFilter(
 	}
 }
 
-// getRDB selects the appropriate Redis shard based on the campaign ID.
-// Uses a consistent sharder to minimize key migration during cluster resizing.
 func (f *UnifiedFilter) getRDB(campaignID uuid.UUID) redis.UniversalClient {
 	if len(f.rdbs) <= 1 {
 		return f.rdbs[0]
@@ -79,8 +71,6 @@ func (f *UnifiedFilter) getRDB(campaignID uuid.UUID) redis.UniversalClient {
 	return f.rdbs[idx%len(f.rdbs)]
 }
 
-// Check executes the validation script and handles budget cache misses via PostgreSQL.
-// Implements an iterative retry loop to prevent recursion while ensuring ingestion availability.
 func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 	campInfo, ok := f.registry.GetCampaign(evt.CampaignID)
 	if !ok {
@@ -141,7 +131,6 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 	dirtyCustomersKey := "budget:dirty_customers"
 	streamKey := f.streamName
 
-	// Pacing related calculations
 	now := time.Now().In(campInfo.Location)
 	currentDate := now.Format("20060102")
 	currentHour := now.Hour() + 1 // 1-24
@@ -153,7 +142,6 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 	sb.WriteString(currentDate)
 	dailySpendKey := sb.String()
 
-	// Frequency capping key
 	var fcapKey string
 	if evt.UserID != "" {
 		sb.Reset()
@@ -163,7 +151,7 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 		sb.WriteString(evt.UserID)
 		fcapKey = sb.String()
 	} else {
-		fcapKey = "fcap:ignored" // Dummy key if user_id is missing
+		fcapKey = "fcap:ignored"
 	}
 
 	isEven := 0

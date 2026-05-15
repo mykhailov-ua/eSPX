@@ -44,7 +44,6 @@ func (w *NginxConfigWorker) Start(ctx context.Context, interval time.Duration) {
 func (w *NginxConfigWorker) ExportAndReload(ctx context.Context) error {
 	rdb := w.svc.rdbs[0]
 
-	// 1. Export Manual Blacklist
 	manual, err := rdb.SMembers(ctx, "blacklist:manual").Result()
 	if err != nil {
 		return fmt.Errorf("failed to fetch manual blacklist: %w", err)
@@ -53,7 +52,6 @@ func (w *NginxConfigWorker) ExportAndReload(ctx context.Context) error {
 		return err
 	}
 
-	// 2. Export Auto Blacklist
 	auto, err := rdb.SMembers(ctx, "blacklist:auto").Result()
 	if err != nil {
 		return fmt.Errorf("failed to fetch auto blacklist: %w", err)
@@ -62,7 +60,6 @@ func (w *NginxConfigWorker) ExportAndReload(ctx context.Context) error {
 		return err
 	}
 
-	// 3. Reload Nginx
 	cmd := exec.CommandContext(ctx, "sh", "-c", w.reloadCmd)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to reload nginx: %w, output: %s", err, string(out))

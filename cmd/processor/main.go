@@ -31,7 +31,6 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Establishes a connection pool to the transactional database for persistence and budget metadata.
 	pool, err := database.Connect(ctx, string(cfg.DBDSN), cfg.DBProcessorMaxConns, cfg.DBMinConns)
 	if err != nil {
 		slog.Error("failed to connect to database", "error", err)
@@ -43,7 +42,6 @@ func main() {
 	partManager := database.NewPartitionManager(pool, cfg.LogRetentionDays, cfg.PartitionPreCreateDays)
 	partManager.StartBackground(ctx)
 
-	// Connects to the analytical store for high-volume event logging.
 	chConn, err := database.ConnectClickHouse(ctx, string(cfg.CHDSN))
 	if err != nil {
 		slog.Error("failed to connect to clickhouse", "error", err)
@@ -163,21 +161,18 @@ func main() {
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
 
-		// Verifies PostgreSQL connectivity to ensure the transactional metadata store is reachable.
 		if err := pool.Ping(ctx); err != nil {
 			slog.Error("processor health check failed: postgres", "error", err)
 			http.Error(w, "postgres unreachable", http.StatusServiceUnavailable)
 			return
 		}
 
-		// Verifies ClickHouse connectivity to ensure the analytical log sink is operational.
 		if err := chConn.Ping(ctx); err != nil {
 			slog.Error("processor health check failed: clickhouse", "error", err)
 			http.Error(w, "clickhouse unreachable", http.StatusServiceUnavailable)
 			return
 		}
 
-		// Iterates through all Redis shards to validate distributed state and budget reservation availability.
 		for i, rdb := range rdbs {
 			if err := rdb.Ping(ctx).Err(); err != nil {
 				slog.Error("processor health check failed: redis shard", "shard", i, "error", err)
@@ -246,7 +241,6 @@ func main() {
 		slog.Error("partition manager wait failed", "error", err)
 	}
 
-	// Sequentially terminates connections to all Redis shards to ensure clean resource release.
 	for i, rdb := range rdbs {
 		if err := rdb.Close(); err != nil {
 			slog.Error("failed to close redis shard", "shard", i, "error", err)

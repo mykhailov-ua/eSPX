@@ -124,7 +124,6 @@ func (w *SyncWorker) syncEntity(ctx context.Context, prefix string, idStr string
 	amountStr, err := w.rdb.Eval(ctx, prepareSyncScript, []string{syncKey, inFlightKey, lockKey}, 60).Result()
 	if err != nil || amountStr == "0" {
 		if amountStr == "0" {
-			// Clean up if somehow it's empty but still in dirty set
 			w.rdb.SRem(ctx, dirtySet, idStr)
 		}
 		return
@@ -138,7 +137,6 @@ func (w *SyncWorker) syncEntity(ctx context.Context, prefix string, idStr string
 	if err := updateFn(ctx, id, amount); err == nil {
 		w.rdb.Eval(ctx, commitSyncScript, []string{inFlightKey, dirtySet, lockKey}, amount, idStr)
 	} else {
-		// Unlock so it can be retried
 		w.rdb.Del(ctx, lockKey)
 	}
 }

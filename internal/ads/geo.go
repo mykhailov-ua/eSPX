@@ -9,8 +9,6 @@ import (
 	"github.com/oschwald/geoip2-golang"
 )
 
-// GeoProvider abstracts country-level IP lookups.
-// Chosen to isolate 3rd-party geo-data dependencies from business logic.
 type GeoProvider interface {
 	GetCountry(ip string) (string, error)
 	IsAnonymous(ip string) (bool, error)
@@ -56,10 +54,6 @@ func (p *MaxMindProvider) IsAnonymous(ipStr string) (bool, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	// MaxMind Anonymous IP database provides this.
-	// If the user is using the standard Country/City DB, this might not be available.
-	// We'll try to cast to appropriate method if available or use a heuristic.
-	// For now, let's assume we have the Anonymous IP DB or a combined one.
 	record, err := p.reader.AnonymousIP(ip)
 	if err != nil {
 		return false, err
@@ -72,7 +66,6 @@ func (p *MaxMindProvider) Close() error {
 	return p.reader.Close()
 }
 
-// MockGeoProvider used for testing or when DB is not available.
 type MockGeoProvider struct {
 	Countries map[string]string
 }
@@ -85,11 +78,6 @@ func (p *MockGeoProvider) GetCountry(ip string) (string, error) {
 }
 
 func (p *MockGeoProvider) IsAnonymous(ip string) (bool, error) {
-	// Heuristic: common cloud IPs for testing
-	if strings.HasPrefix(ip, "10.0.") || strings.HasPrefix(ip, "192.168.") {
-		return false, nil
-	}
-	// Assume some IPs are bots for testing
 	return strings.HasSuffix(ip, ".66") || strings.HasSuffix(ip, ".77"), nil
 }
 

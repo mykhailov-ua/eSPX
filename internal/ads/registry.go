@@ -12,8 +12,6 @@ import (
 	redis "github.com/redis/go-redis/v9"
 )
 
-// Registry maintains an in-memory map of active campaigns for high-performance lookups.
-// Chosen to eliminate database round-trips for campaign validation in the hot path.
 type campaignInfo struct {
 	customerID      uuid.UUID
 	status          db.CampaignStatusType
@@ -67,7 +65,6 @@ func (r *Registry) GetCampaign(id uuid.UUID) (*domain.Campaign, bool) {
 		return nil, false
 	}
 	
-	// Copy slice to prevent race conditions if the caller modifies it.
 	var countries []string
 	if info.targetCountries != nil {
 		countries = make([]string, len(info.targetCountries))
@@ -94,7 +91,6 @@ func (r *Registry) Add(id, customerID uuid.UUID, pacingMode domain.PacingMode, d
 		loc = time.UTC
 	}
 
-	// Copy input slice
 	var countries []string
 	if targetCountries != nil {
 		countries = make([]string, len(targetCountries))
@@ -134,7 +130,6 @@ func (r *Registry) Sync(ctx context.Context) (int, error) {
 			loc = time.UTC
 		}
 
-		// pgx returns a slice, we keep it as it's fresh for this sync cycle.
 		fresh[id] = campaignInfo{
 			customerID:      uuid.UUID(row.CustomerID.Bytes),
 			status:          row.Status,
@@ -162,7 +157,6 @@ func (r *Registry) Sync(ctx context.Context) (int, error) {
 	return len(fresh), nil
 }
 
-// StartSync initiates a background goroutine to periodically synchronize with the database.
 func (r *Registry) StartSync(ctx context.Context, interval time.Duration) {
 	r.wg.Add(1)
 	go func() {
@@ -186,7 +180,6 @@ func (r *Registry) StartSync(ctx context.Context, interval time.Duration) {
 	}()
 }
 
-// StartWatch initiates a background goroutine to listen for real-time campaign updates via Redis PubSub.
 func (r *Registry) StartWatch(ctx context.Context, rdb redis.UniversalClient, channel string) {
 	r.wg.Add(1)
 	go func() {
@@ -205,7 +198,6 @@ func (r *Registry) StartWatch(ctx context.Context, rdb redis.UniversalClient, ch
 					slog.Warn("received invalid campaign id in pubsub", "payload", msg.Payload)
 					continue
 				}
-				// Immediate sync for the specific campaign or global sync
 				_, _ = r.Sync(ctx)
 				slog.Debug("registry synced via pubsub", "campaign_id", id)
 			}
@@ -213,7 +205,6 @@ func (r *Registry) StartWatch(ctx context.Context, rdb redis.UniversalClient, ch
 	}()
 }
 
-// Wait blocks until all background goroutines have exited.
 func (r *Registry) Wait(ctx context.Context) error {
 	done := make(chan struct{})
 	go func() {

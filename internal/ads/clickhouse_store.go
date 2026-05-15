@@ -105,7 +105,6 @@ func (s *ClickHouseStore) insertToClickHouse(ctx context.Context, events []*doma
 		}
 	}
 	
-	// Update pointers back since append might have reallocated
 	*pImps, *pClicks, *pConvs, *pFraud = imps, clicks, convs, fraud
 
 	insert := func(table string, evts []*domain.Event, isFraud bool) error {
