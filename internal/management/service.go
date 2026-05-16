@@ -36,6 +36,10 @@ func NewService(pool *pgxpool.Pool, rdbs []redis.UniversalClient, sharder ads.Sh
 	}
 }
 
+func (s *Service) GetCampaign(ctx context.Context, id uuid.UUID) (db.Campaign, error) {
+	return db.New(s.pool).GetCampaignFull(ctx, ads.ToUUID(id))
+}
+
 func (s *Service) CreateCustomer(ctx context.Context, id uuid.UUID, name string, balance decimal.Decimal, currency string) error {
 	_, err := db.New(s.pool).CreateCustomer(ctx, db.CreateCustomerParams{
 		ID:       ads.ToUUID(id),
@@ -57,6 +61,8 @@ func (s *Service) GenerateIdempotencyHash(customerID uuid.UUID, params any) stri
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// TopUpBalance executes an atomic deposit into a customer ledger.
+// It verifies idempotency against existing hashes within the same transaction to prevent double-crediting during network retries.
 func (s *Service) TopUpBalance(ctx context.Context, customerID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error {
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
@@ -85,6 +91,8 @@ func (s *Service) TopUpBalance(ctx context.Context, customerID uuid.UUID, amount
 	})
 }
 
+// CreateCampaign validates customer solvency and freezes the initial campaign budget within a single ACID transaction.
+// The budget limit is subsequently synchronized to the sharded Redis cluster to enable low-latency pacing evaluation at the edge.
 func (s *Service) CreateCampaign(ctx context.Context, customerID uuid.UUID, name string, budgetLimit decimal.Decimal, pacingMode db.PacingModeType, dailyBudget decimal.Decimal, timezone string, freqLimit, freqWindow int32, targetCountries []string, idempotencyKey string) (uuid.UUID, error) {
 	campaignID, _ := uuid.NewV7()
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
@@ -168,6 +176,8 @@ func (s *Service) CreateCampaign(ctx context.Context, customerID uuid.UUID, name
 	return campaignID, nil
 }
 
+// CancelCampaign transitions a campaign through a two-stage draining lifecycle to ensure inflight ad impressions complete before final budget reconciliation.
+// Remaining funds are refunded to the customer balance minus a configured cancellation fee.
 func (s *Service) CancelCampaign(ctx context.Context, campaignID uuid.UUID, reason string) error {
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
@@ -281,48 +291,6 @@ func (s *Service) getRDB(campaignID uuid.UUID) redis.UniversalClient {
 	return s.rdbs[idx%len(s.rdbs)]
 }
 
-func (s *Service) UpdateSettings(ctx context.Context, settings map[string]string) error {
-	// 1. Log to Audit
-	s.AuditLog(ctx, nil, uuid.Nil, "UPDATE_SETTINGS", "system", nil, settings, nil)
-
-	// 2. Update Redis
-	// We use the first Redis shard as the source of truth for global config
-	rdb := s.rdbs[0]
-
-	_, err := rdb.Pipelined(ctx, func(pipe redis.Pipeliner) error {
-		if len(settings) > 0 {
-			pipe.HSet(ctx, "config:values", settings)
-		}
-		pipe.Incr(ctx, "config:version")
-		return nil
-	})
-
-	return err
-}
-
-func (s *Service) BlockIP(ctx context.Context, ip string, source string) error {
-	s.AuditLog(ctx, nil, uuid.Nil, "BLOCK_IP", "system", nil, map[string]string{"ip": ip, "source": source}, nil)
-
-	rdb := s.rdbs[0]
-	key := "blacklist:" + source
-	if source == "" {
-		key = "blacklist:manual"
-	}
-
-	return rdb.SAdd(ctx, key, ip).Err()
-}
-
-func (s *Service) UnblockIP(ctx context.Context, ip string, source string) error {
-	s.AuditLog(ctx, nil, uuid.Nil, "UNBLOCK_IP", "system", nil, map[string]string{"ip": ip, "source": source}, nil)
-
-	rdb := s.rdbs[0]
-	key := "blacklist:" + source
-	if source == "" {
-		key = "blacklist:manual"
-	}
-
-	return rdb.SRem(ctx, key, ip).Err()
-}
 
 func (s *Service) ListAuditLogs(ctx context.Context, limit, offset int32) ([]db.AdminAuditLog, error) {
 	return db.New(s.pool).ListAuditLogs(ctx, db.ListAuditLogsParams{
