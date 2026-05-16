@@ -233,3 +233,16 @@ type EventsDefault struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	CreatedDate pgtype.Date        `json:"created_date"`
 }
+
+type IpBlacklist struct {
+	ID        int64              `json:"id"`
+	Ip        string             `json:"ip"`
+	Reason    string             `json:"reason"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type SystemSetting struct {
+	Key       string             `json:"key"`
+	Value     string             `json:"value"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}

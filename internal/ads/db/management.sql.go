@@ -21,6 +21,70 @@ func (q *Queries) CleanupAuditLogs(ctx context.Context, createdAt pgtype.Timesta
 	return err
 }
 
+const countBlacklist = `-- name: CountBlacklist :one
+SELECT COUNT(*) FROM ip_blacklist
+`
+
+func (q *Queries) CountBlacklist(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countBlacklist)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countCampaigns = `-- name: CountCampaigns :one
+SELECT COUNT(*) FROM campaigns
+WHERE ($1::uuid IS NULL OR customer_id = $1::uuid)
+  AND ($2::text IS NULL OR status::text = $2::text)
+`
+
+type CountCampaignsParams struct {
+	CustomerID pgtype.UUID `json:"customer_id"`
+	Status     pgtype.Text `json:"status"`
+}
+
+func (q *Queries) CountCampaigns(ctx context.Context, arg CountCampaignsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countCampaigns, arg.CustomerID, arg.Status)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countCustomerLedger = `-- name: CountCustomerLedger :one
+SELECT COUNT(*) FROM balance_ledger
+WHERE customer_id = $1
+`
+
+func (q *Queries) CountCustomerLedger(ctx context.Context, customerID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countCustomerLedger, customerID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countCustomers = `-- name: CountCustomers :one
+SELECT COUNT(*) FROM customers
+`
+
+func (q *Queries) CountCustomers(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countCustomers)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countStatusHistory = `-- name: CountStatusHistory :one
+SELECT COUNT(*) FROM campaign_status_history
+WHERE campaign_id = $1
+`
+
+func (q *Queries) CountStatusHistory(ctx context.Context, campaignID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countStatusHistory, campaignID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createAuditLog = `-- name: CreateAuditLog :one
 INSERT INTO admin_audit_log (admin_id, action, target_type, target_id, changes, metadata)
 VALUES ($1, $2, $3, $4, $5, $6)
@@ -54,6 +118,30 @@ func (q *Queries) CreateAuditLog(ctx context.Context, arg CreateAuditLogParams) 
 		&i.TargetID,
 		&i.Changes,
 		&i.Metadata,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const createBlacklistIP = `-- name: CreateBlacklistIP :one
+INSERT INTO ip_blacklist (ip, reason)
+VALUES ($1, $2)
+ON CONFLICT (ip) DO UPDATE SET reason = EXCLUDED.reason, created_at = CURRENT_TIMESTAMP
+RETURNING id, ip, reason, created_at
+`
+
+type CreateBlacklistIPParams struct {
+	Ip     string `json:"ip"`
+	Reason string `json:"reason"`
+}
+
+func (q *Queries) CreateBlacklistIP(ctx context.Context, arg CreateBlacklistIPParams) (IpBlacklist, error) {
+	row := q.db.QueryRow(ctx, createBlacklistIP, arg.Ip, arg.Reason)
+	var i IpBlacklist
+	err := row.Scan(
+		&i.ID,
+		&i.Ip,
+		&i.Reason,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -148,6 +236,74 @@ func (q *Queries) CreateStatusHistory(ctx context.Context, arg CreateStatusHisto
 	return err
 }
 
+const deleteBlacklistIP = `-- name: DeleteBlacklistIP :exec
+DELETE FROM ip_blacklist
+WHERE ip = $1
+`
+
+func (q *Queries) DeleteBlacklistIP(ctx context.Context, ip string) error {
+	_, err := q.db.Exec(ctx, deleteBlacklistIP, ip)
+	return err
+}
+
+const getAllBlacklist = `-- name: GetAllBlacklist :many
+SELECT ip, reason FROM ip_blacklist
+`
+
+type GetAllBlacklistRow struct {
+	Ip     string `json:"ip"`
+	Reason string `json:"reason"`
+}
+
+func (q *Queries) GetAllBlacklist(ctx context.Context) ([]GetAllBlacklistRow, error) {
+	rows, err := q.db.Query(ctx, getAllBlacklist)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetAllBlacklistRow
+	for rows.Next() {
+		var i GetAllBlacklistRow
+		if err := rows.Scan(&i.Ip, &i.Reason); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getAllSystemSettings = `-- name: GetAllSystemSettings :many
+SELECT key, value FROM system_settings
+`
+
+type GetAllSystemSettingsRow struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+func (q *Queries) GetAllSystemSettings(ctx context.Context) ([]GetAllSystemSettingsRow, error) {
+	rows, err := q.db.Query(ctx, getAllSystemSettings)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetAllSystemSettingsRow
+	for rows.Next() {
+		var i GetAllSystemSettingsRow
+		if err := rows.Scan(&i.Key, &i.Value); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getCampaignFull = `-- name: GetCampaignFull :one
 SELECT id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend, deleted_at, pacing_mode, daily_budget, timezone, freq_limit, freq_window, target_countries FROM campaigns
 WHERE id = $1
@@ -194,6 +350,39 @@ func (q *Queries) GetCustomerForUpdate(ctx context.Context, id pgtype.UUID) (Cus
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const getCustomerStats = `-- name: GetCustomerStats :many
+SELECT customer_id, COUNT(*) as active_campaigns, COALESCE(SUM(current_spend), 0)::numeric as total_spend
+FROM campaigns
+WHERE customer_id = ANY($1::uuid[]) AND status = 'ACTIVE'
+GROUP BY customer_id
+`
+
+type GetCustomerStatsRow struct {
+	CustomerID      pgtype.UUID    `json:"customer_id"`
+	ActiveCampaigns int64          `json:"active_campaigns"`
+	TotalSpend      pgtype.Numeric `json:"total_spend"`
+}
+
+func (q *Queries) GetCustomerStats(ctx context.Context, customerIds []pgtype.UUID) ([]GetCustomerStatsRow, error) {
+	rows, err := q.db.Query(ctx, getCustomerStats, customerIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetCustomerStatsRow
+	for rows.Next() {
+		var i GetCustomerStatsRow
+		if err := rows.Scan(&i.CustomerID, &i.ActiveCampaigns, &i.TotalSpend); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getLedgerByHash = `-- name: GetLedgerByHash :one
@@ -254,6 +443,233 @@ func (q *Queries) ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([
 		return nil, err
 	}
 	return items, nil
+}
+
+const listBlacklist = `-- name: ListBlacklist :many
+SELECT id, ip, reason, created_at FROM ip_blacklist
+ORDER BY created_at DESC
+LIMIT $1 OFFSET $2
+`
+
+type ListBlacklistParams struct {
+	Limit  int32 `json:"limit"`
+	Offset int32 `json:"offset"`
+}
+
+func (q *Queries) ListBlacklist(ctx context.Context, arg ListBlacklistParams) ([]IpBlacklist, error) {
+	rows, err := q.db.Query(ctx, listBlacklist, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []IpBlacklist
+	for rows.Next() {
+		var i IpBlacklist
+		if err := rows.Scan(
+			&i.ID,
+			&i.Ip,
+			&i.Reason,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCampaigns = `-- name: ListCampaigns :many
+SELECT id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend, deleted_at, pacing_mode, daily_budget, timezone, freq_limit, freq_window, target_countries FROM campaigns
+WHERE ($3::uuid IS NULL OR customer_id = $3::uuid)
+  AND ($4::text IS NULL OR status::text = $4::text)
+ORDER BY created_at DESC
+LIMIT $1 OFFSET $2
+`
+
+type ListCampaignsParams struct {
+	Limit      int32       `json:"limit"`
+	Offset     int32       `json:"offset"`
+	CustomerID pgtype.UUID `json:"customer_id"`
+	Status     pgtype.Text `json:"status"`
+}
+
+func (q *Queries) ListCampaigns(ctx context.Context, arg ListCampaignsParams) ([]Campaign, error) {
+	rows, err := q.db.Query(ctx, listCampaigns,
+		arg.Limit,
+		arg.Offset,
+		arg.CustomerID,
+		arg.Status,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Campaign
+	for rows.Next() {
+		var i Campaign
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Status,
+			&i.BudgetLimit,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.CustomerID,
+			&i.CurrentSpend,
+			&i.DeletedAt,
+			&i.PacingMode,
+			&i.DailyBudget,
+			&i.Timezone,
+			&i.FreqLimit,
+			&i.FreqWindow,
+			&i.TargetCountries,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCustomerLedger = `-- name: ListCustomerLedger :many
+SELECT id, customer_id, campaign_id, amount, type, idempotency_hash, created_at FROM balance_ledger
+WHERE customer_id = $1
+ORDER BY created_at DESC
+LIMIT $2 OFFSET $3
+`
+
+type ListCustomerLedgerParams struct {
+	CustomerID pgtype.UUID `json:"customer_id"`
+	Limit      int32       `json:"limit"`
+	Offset     int32       `json:"offset"`
+}
+
+func (q *Queries) ListCustomerLedger(ctx context.Context, arg ListCustomerLedgerParams) ([]BalanceLedger, error) {
+	rows, err := q.db.Query(ctx, listCustomerLedger, arg.CustomerID, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []BalanceLedger
+	for rows.Next() {
+		var i BalanceLedger
+		if err := rows.Scan(
+			&i.ID,
+			&i.CustomerID,
+			&i.CampaignID,
+			&i.Amount,
+			&i.Type,
+			&i.IdempotencyHash,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCustomers = `-- name: ListCustomers :many
+SELECT id, name, balance, currency, created_at, updated_at FROM customers
+ORDER BY created_at DESC
+LIMIT $1 OFFSET $2
+`
+
+type ListCustomersParams struct {
+	Limit  int32 `json:"limit"`
+	Offset int32 `json:"offset"`
+}
+
+func (q *Queries) ListCustomers(ctx context.Context, arg ListCustomersParams) ([]Customer, error) {
+	rows, err := q.db.Query(ctx, listCustomers, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Customer
+	for rows.Next() {
+		var i Customer
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Balance,
+			&i.Currency,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStatusHistory = `-- name: ListStatusHistory :many
+SELECT id, campaign_id, old_status, new_status, reason, created_at FROM campaign_status_history
+WHERE campaign_id = $1
+ORDER BY created_at DESC
+LIMIT $2 OFFSET $3
+`
+
+type ListStatusHistoryParams struct {
+	CampaignID pgtype.UUID `json:"campaign_id"`
+	Limit      int32       `json:"limit"`
+	Offset     int32       `json:"offset"`
+}
+
+func (q *Queries) ListStatusHistory(ctx context.Context, arg ListStatusHistoryParams) ([]CampaignStatusHistory, error) {
+	rows, err := q.db.Query(ctx, listStatusHistory, arg.CampaignID, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CampaignStatusHistory
+	for rows.Next() {
+		var i CampaignStatusHistory
+		if err := rows.Scan(
+			&i.ID,
+			&i.CampaignID,
+			&i.OldStatus,
+			&i.NewStatus,
+			&i.Reason,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const setSystemSetting = `-- name: SetSystemSetting :exec
+INSERT INTO system_settings (key, value, updated_at)
+VALUES ($1, $2, CURRENT_TIMESTAMP)
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+`
+
+type SetSystemSettingParams struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+func (q *Queries) SetSystemSetting(ctx context.Context, arg SetSystemSettingParams) error {
+	_, err := q.db.Exec(ctx, setSystemSetting, arg.Key, arg.Value)
+	return err
 }
 
 const softDeleteCampaign = `-- name: SoftDeleteCampaign :exec

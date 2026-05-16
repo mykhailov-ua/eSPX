@@ -12,17 +12,27 @@ import (
 
 type Querier interface {
 	CleanupAuditLogs(ctx context.Context, createdAt pgtype.Timestamptz) error
+	CountBlacklist(ctx context.Context) (int64, error)
+	CountCampaigns(ctx context.Context, arg CountCampaignsParams) (int64, error)
+	CountCustomerLedger(ctx context.Context, customerID pgtype.UUID) (int64, error)
+	CountCustomers(ctx context.Context) (int64, error)
+	CountStatusHistory(ctx context.Context, campaignID pgtype.UUID) (int64, error)
 	CreateAuditLog(ctx context.Context, arg CreateAuditLogParams) (AdminAuditLog, error)
+	CreateBlacklistIP(ctx context.Context, arg CreateBlacklistIPParams) (IpBlacklist, error)
 	CreateCampaign(ctx context.Context, arg CreateCampaignParams) (Campaign, error)
 	CreateCustomer(ctx context.Context, arg CreateCustomerParams) (Customer, error)
 	CreateLedgerEntry(ctx context.Context, arg CreateLedgerEntryParams) (BalanceLedger, error)
 	CreateStatusHistory(ctx context.Context, arg CreateStatusHistoryParams) error
+	DeleteBlacklistIP(ctx context.Context, ip string) error
+	GetAllBlacklist(ctx context.Context) ([]GetAllBlacklistRow, error)
+	GetAllSystemSettings(ctx context.Context) ([]GetAllSystemSettingsRow, error)
 	GetCampaign(ctx context.Context, id pgtype.UUID) (Campaign, error)
 	GetCampaignBudget(ctx context.Context, id pgtype.UUID) (GetCampaignBudgetRow, error)
 	GetCampaignFull(ctx context.Context, id pgtype.UUID) (Campaign, error)
 	GetCampaignStats(ctx context.Context, campaignID pgtype.UUID) ([]CampaignStat, error)
 	GetCustomerByID(ctx context.Context, id pgtype.UUID) (Customer, error)
 	GetCustomerForUpdate(ctx context.Context, id pgtype.UUID) (Customer, error)
+	GetCustomerStats(ctx context.Context, customerIds []pgtype.UUID) ([]GetCustomerStatsRow, error)
 	GetLedgerByHash(ctx context.Context, idempotencyHash pgtype.Text) (BalanceLedger, error)
 	// Inserts a single event with ON CONFLICT for idempotency.
 	// created_date is set explicitly for correct dedup within daily partitions.
@@ -35,7 +45,13 @@ type Querier interface {
 	InsertEventsBatch(ctx context.Context, arg InsertEventsBatchParams) error
 	ListActiveCampaigns(ctx context.Context) ([]Campaign, error)
 	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AdminAuditLog, error)
+	ListBlacklist(ctx context.Context, arg ListBlacklistParams) ([]IpBlacklist, error)
 	ListCampaignIDs(ctx context.Context) ([]pgtype.UUID, error)
+	ListCampaigns(ctx context.Context, arg ListCampaignsParams) ([]Campaign, error)
+	ListCustomerLedger(ctx context.Context, arg ListCustomerLedgerParams) ([]BalanceLedger, error)
+	ListCustomers(ctx context.Context, arg ListCustomersParams) ([]Customer, error)
+	ListStatusHistory(ctx context.Context, arg ListStatusHistoryParams) ([]CampaignStatusHistory, error)
+	SetSystemSetting(ctx context.Context, arg SetSystemSettingParams) error
 	SoftDeleteCampaign(ctx context.Context, id pgtype.UUID) error
 	UpdateCampaignSpend(ctx context.Context, arg UpdateCampaignSpendParams) error
 	UpdateCampaignStats(ctx context.Context, arg UpdateCampaignStatsParams) error
