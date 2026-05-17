@@ -27,6 +27,9 @@ type Config struct {
 	RedisConsumerID         string
 	CHDSN                   Secret
 	AuthServerPort          string
+	AuthMetricsPort         string
+	Env                     string
+	TrustedProxies          []string
 	TokenSymmetricKey       Secret
 	MaxRequestBodySize      int64
 	ClickAmount             float64
@@ -66,6 +69,7 @@ type Config struct {
 	Argon2Parallelism       int
 	RedisPoolSize           int
 	AdminAPIKey             Secret
+	AllowedOrigins          []string
 	Management              struct {
 		RetentionDays          int
 		CancellationFeePercent float64
@@ -159,7 +163,15 @@ func Load() (*Config, error) {
 		Argon2Parallelism:       getEnvInt("ARGON2_PARALLELISM", 4),
 		RedisPoolSize:           getEnvInt("REDIS_POOL_SIZE", 0),
 		AdminAPIKey:             Secret(os.Getenv("ADMIN_API_KEY")),
+		AllowedOrigins:          strings.Split(os.Getenv("ALLOWED_ORIGINS"), ","),
+		TrustedProxies:          strings.Split(os.Getenv("TRUSTED_PROXIES"), ","),
+		Env:                     os.Getenv("ENV"),
+		AuthMetricsPort:         os.Getenv("AUTH_METRICS_PORT"),
 		CampaignUpdateChannel:   os.Getenv("CAMPAIGN_UPDATE_CHANNEL"),
+	}
+
+	if len(cfg.AllowedOrigins) == 1 && cfg.AllowedOrigins[0] == "" {
+		cfg.AllowedOrigins = []string{"https://dashboard.example.com", "http://localhost:8188"}
 	}
 
 	cfg.Management.RetentionDays = getEnvInt("MANAGEMENT_RETENTION_DAYS", 90)
@@ -204,6 +216,12 @@ func Load() (*Config, error) {
 
 	if cfg.AuthServerPort == "" {
 		cfg.AuthServerPort = "51051"
+	}
+	if cfg.AuthMetricsPort == "" {
+		cfg.AuthMetricsPort = "9091"
+	}
+	if cfg.Env == "" {
+		cfg.Env = "development"
 	}
 	if cfg.TokenSymmetricKey == "" {
 		return nil, errors.New("TOKEN_SYMMETRIC_KEY is required")
