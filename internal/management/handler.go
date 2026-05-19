@@ -14,7 +14,7 @@ import (
 	"github.com/shopspring/decimal"
 	"golang.org/x/time/rate"
 )
-
+// Handler routes administrative and customer management API endpoints. Encapsulating rate limiting, RBAC validation middleware, and service delegation in a single multiplexer handler ensures consistent boundary enforcement.
 type Handler struct {
 	svc            *Service
 	cfg            *config.Config
@@ -37,19 +37,23 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/campaigns", h.limit(h.auth(h.createCampaign, "SA", "M", "C")))
 	mux.HandleFunc("DELETE /admin/campaigns/{id}", h.limit(h.auth(h.cancelCampaign, "SA", "M", "C")))
 
+	// New routes
 	mux.HandleFunc("POST /admin/settings", h.limit(h.auth(h.updateSettings, "SA")))
 	mux.HandleFunc("POST /admin/blacklist", h.limit(h.auth(h.blockIP, "SA")))
 	mux.HandleFunc("DELETE /admin/blacklist", h.limit(h.auth(h.unblockIP, "SA")))
 	mux.HandleFunc("GET /admin/audit", h.limit(h.auth(h.listAudit, "SA", "M")))
 
+	// Customer GET routes
 	mux.HandleFunc("GET /admin/customers", h.limit(h.auth(h.listCustomers, "SA", "M")))
 	mux.HandleFunc("GET /admin/customers/{id}", h.limit(h.auth(h.getCustomer, "SA", "M", "C")))
 	mux.HandleFunc("GET /admin/customers/{id}/ledger", h.limit(h.auth(h.getCustomerLedger, "SA", "M", "C")))
 
+	// Campaign GET routes
 	mux.HandleFunc("GET /admin/campaigns", h.limit(h.auth(h.listCampaigns, "SA", "M", "C")))
 	mux.HandleFunc("GET /admin/campaigns/{id}", h.limit(h.auth(h.getCampaign, "SA", "M", "C")))
 	mux.HandleFunc("GET /admin/campaigns/{id}/history", h.limit(h.auth(h.getCampaignHistory, "SA", "M", "C")))
 
+	// System GET routes
 	mux.HandleFunc("GET /admin/blacklist", h.limit(h.auth(h.listBlacklist, "SA")))
 	mux.HandleFunc("GET /admin/settings", h.limit(h.auth(h.getSettings, "SA")))
 }
@@ -165,6 +169,7 @@ func (h *Handler) createCampaign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Defaults
 	pacing := db.PacingModeTypeASAP
 	if req.PacingMode == "EVEN" {
 		pacing = db.PacingModeTypeEVEN
