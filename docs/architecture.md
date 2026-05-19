@@ -27,6 +27,11 @@ The architecture is structured into five distinct operational layers communicati
    - **PostgreSQL 16**: Primary relational storage for ACID transactions, ledger balances (`balance_ledger`), and daily table partitions.
    - **ClickHouse**: Columnar analytical data warehouse storing raw ad telemetry and anti-fraud anomaly logs.
 
+6. **Observability & Alerting**
+   - **Prometheus (`:9190`)**: Scrapes real-time metrics from trackers, gateways, and processors. Evaluates alerting rules (`prometheus.rules.yml`).
+   - **Alertmanager (`:9093`)**: Group and route fired rules to targets.
+   - **Telegram Alert Proxy (`:8222`)**: Webhook endpoint transforming Prometheus JSON payloads into HTML and routing them to the Telegram Bot API.
+
 ## Core Subsystems & Request Lifecycles
 
 ### 1. Management Control Plane Lifecycle
@@ -51,3 +56,16 @@ The architecture is structured into five distinct operational layers communicati
 ### Scalability Strategy
 * **Horizontal Scaling**: All ingestion trackers, batch processors, and management gateways are stateless and scale horizontally across container nodes.
 * **Sharding Architecture**: In-memory state is sharded across multiple Redis instances using consistent JumpHash indexing, ensuring uniform load distribution without cross-node lock contention.
+
+## Anti-Fraud & Geo-Targeting Execution
+* **Geo-IP Verification**: Tracker replicas load MaxMind `GeoLite2-Country.mmdb` into memory. Incoming click/impression IPs are mapped to ISO country codes. If a campaign configures geo-targeting, non-matching countries trigger direct `ErrGeoBlocked` failures.
+* **Datacenter/VPN Identification**: IPs are verified against MaxMind `GeoLite2-Anonymous.mmdb`. Telemetry originating from datacenters, public proxies, VPNs, or Tor exit nodes is tagged as fraud (`datacenter_ip`) and silently dropped from the main flow into the clickfraud analytics stream.
+* **Time-To-Click (TTC) Velocity Capping**: Impressions write an expiration key `imp_ts:{UserID}:{CampaignID}` in Redis. Clicking within a time delta shorter than `ttcMin` (e.g. 500ms) flags the request as bot-generated (`low_ttc`).
+
+## Observability & SLA Thresholds
+* **Prometheus Alerting Rules**: Evaluated against the following metric thresholds:
+  * `CircuitBreakerOpen`: Fired if downstream database pressure forces the Redis-to-database consumer group circuit breaker open for >5 minutes.
+  * `DatabaseWriteErrors`: Triggers on failed batch persistence/ledger updates.
+  * `DeadLetterQueueSpike`: Triggers if the unprocessable event dead-letter queue (DLQ) length exceeds 100 messages.
+  * `HighRequestLatency`: Alerts if p99 ingestion tracker latency climbs above 15ms.
+* **Telegram Routing Proxy**: When alerts transition to `firing`, Alertmanager posts JSON payloads to `/webhook`. The custom `alertmanager-telegram` daemon formats the event details into HTML and forwards them via the Telegram Bot API.

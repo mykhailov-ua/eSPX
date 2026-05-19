@@ -56,7 +56,23 @@ docker compose up -d
 | **PostgreSQL** | 5440 | Transactional Database |
 | **ClickHouse** | 9100, 8223 | Analytical Database |
 | **Prometheus** | 9190 | Metrics Storage (Host Mode) |
+| **Alertmanager** | 9093 | Alert Routing Engine |
+| **Telegram Alert Proxy** | 8222 | Telegram Webhook Gateway |
 | **Grafana** | 3100 | Visualization (Host Mode) |
+
+## Staging Setup & GeoIP Database Preparation
+
+To run country and VPN detection, MaxMind GeoIP databases must be downloaded manually and placed in the project directory before starting the services:
+
+1. Create the GeoIP storage directory:
+   ```bash
+   mkdir -p deploy/geoip
+   ```
+2. Place the following binary databases into `deploy/geoip/`:
+   * `GeoLite2-Country.mmdb` (Country targeting)
+   * `GeoLite2-Anonymous.mmdb` (Proxy/VPN/Hosting identification)
+
+The docker-compose volumes mount `deploy/geoip` onto the stateless tracker replicas. If these files are missing, the GeoIP module will default to allowing all requests to prevent blocking traffic.
 
 ## Testing & Benchmarking
 
