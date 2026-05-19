@@ -1,5 +1,5 @@
 groups:
-  - name: adpulse-alerts
+  - name: ad-event-processor-alerts
     rules:
       - alert: CircuitBreakerOpen
         expr: ad_circuit_breaker_state == 1

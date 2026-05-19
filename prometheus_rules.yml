@@ -1,5 +1,5 @@
 groups:
-  - name: adpulse_alerts
+  - name: ad-event-processor_alerts
     rules:
       # Alert for event loss (buffer overflow)
       - alert: HighEventDropRate

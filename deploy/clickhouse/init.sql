@@ -1,5 +1,5 @@
-CREATE DATABASE IF NOT EXISTS adpulse;
-USE adpulse;
+CREATE DATABASE IF NOT EXISTS ad_event_processor;
+USE ad_event_processor;
 
 -- Impressions Table
 CREATE TABLE IF NOT EXISTS impressions (

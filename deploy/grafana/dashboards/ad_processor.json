@@ -170,13 +170,13 @@
   "refresh": "5s",
   "schemaVersion": 36,
   "style": "dark",
-  "tags": ["adpulse"],
+  "tags": ["ad-event-processor"],
   "templating": { "list": [] },
   "time": { "from": "now-15m", "to": "now" },
   "timepicker": {},
   "timezone": "",
   "title": "ad-event-processor Performance Overview",
-  "uid": "adpulse_main",
+  "uid": "ad-event-processor_main",
   "version": 1,
   "weekStart": ""
 }
