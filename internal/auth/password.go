@@ -58,7 +58,11 @@ func NewPasswordHasher(memory, iterations uint32, parallelism uint8) *PasswordHa
 		saltLength:  16,
 		keyLength:   32,
 	}
-	h.dummyHash, _ = h.HashPassword("dummy-password-timing-attack")
+	var err error
+	h.dummyHash, err = h.HashPassword("dummy-password-timing-attack")
+	if err != nil {
+		panic(fmt.Sprintf("failed to pre-compute dummy hash: %v", err))
+	}
 	return h
 }
 

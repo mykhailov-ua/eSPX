@@ -7,6 +7,7 @@ import (
 import (
 	"context"
 	"errors"
+	"net"
 	"strings"
 	"time"
 
@@ -34,14 +35,14 @@ func NewHandler(service *Service, cfg *config.Config) *Handler {
 	}
 }
 
-// extractClientIP resolves the origin IP by evaluating X-Forwarded-For headers against a whitelist of trusted proxies.
-// This prevents IP spoofing attacks when the service is deployed behind edge load balancers.
 func (h *Handler) extractClientIP(ctx context.Context) string {
 	peerIP := "unknown"
 	if p, ok := peer.FromContext(ctx); ok {
-		parts := strings.Split(p.Addr.String(), ":")
-		if len(parts) > 0 {
-			peerIP = parts[0]
+		host, _, err := net.SplitHostPort(p.Addr.String())
+		if err == nil {
+			peerIP = host
+		} else {
+			peerIP = p.Addr.String()
 		}
 	}
 
@@ -53,7 +54,6 @@ func (h *Handler) extractClientIP(ctx context.Context) string {
 		}
 	}
 
-	// Trust loopback addresses to facilitate local testing and sidecar proxy deployments.
 	if peerIP == "127.0.0.1" || peerIP == "::1" || peerIP == "bufconn" {
 		isTrusted = true
 	}
@@ -76,7 +76,14 @@ func (h *Handler) extractClientIP(ctx context.Context) string {
 }
 
 func (h *Handler) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.RegisterResponse, error) {
-	customerID, _ := uuid.Parse(req.CustomerID)
+	var customerID uuid.UUID
+	var err error
+	if req.CustomerID != "" {
+		customerID, err = uuid.Parse(req.CustomerID)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid customer id: %v", err)
+		}
+	}
 	id, err := h.service.Register(ctx, RegisterDTO{
 		Email:      req.Email,
 		Password:   req.Password,
@@ -94,8 +101,10 @@ func (h *Handler) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Re
 
 func (h *Handler) Login(ctx context.Context, req *pb.LoginRequest) (*pb.LoginResponse, error) {
 	duration := time.Duration(req.DurationHours) * time.Hour
-	if duration == 0 {
+	if duration <= 0 {
 		duration = time.Duration(h.cfg.DefaultTokenDurationHrs) * time.Hour
+	} else if duration > 24*time.Hour {
+		duration = 24 * time.Hour
 	}
 
 	clientIP := h.extractClientIP(ctx)

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -57,21 +58,46 @@ func AuthMiddleware(tokenMaker Maker, rdb redis.UniversalClient, allowedRoles ..
 
 			if rdb != nil {
 				ctxRevoked, cancel := context.WithTimeout(r.Context(), 100*time.Millisecond)
-				defer cancel()
-				
 				cmds, errPipe := rdb.Pipelined(ctxRevoked, func(pipe redis.Pipeliner) error {
 					pipe.Exists(ctxRevoked, "revoked:token:"+payload.ID.String())
 					pipe.Exists(ctxRevoked, "revoked:session:"+payload.SessionID.String())
 					pipe.Exists(ctxRevoked, "revoked:user:"+payload.UserID.String())
 					return nil
 				})
+				cancel()
 
-				if errPipe == nil && len(cmds) == 3 {
-					for _, cmd := range cmds {
-						if exists, _ := cmd.(*redis.IntCmd).Result(); exists > 0 {
-							http.Error(w, "token revoked", http.StatusUnauthorized)
-							return
-						}
+				if errPipe != nil {
+					AuthTokenErrors.WithLabelValues("revocation_check_failed").Inc()
+					slog.Error("failed to check token revocation in redis (fail-closed)", slog.Any("error", errPipe))
+					http.Error(w, "authorization check failed", http.StatusUnauthorized)
+					return
+				}
+
+				if len(cmds) != 3 {
+					AuthTokenErrors.WithLabelValues("revocation_check_failed").Inc()
+					slog.Error("unexpected pipeline commands count in redis (fail-closed)", slog.Int("expected", 3), slog.Int("got", len(cmds)))
+					http.Error(w, "authorization check failed", http.StatusUnauthorized)
+					return
+				}
+
+				for _, cmd := range cmds {
+					intCmd, ok := cmd.(*redis.IntCmd)
+					if !ok {
+						AuthTokenErrors.WithLabelValues("revocation_check_failed").Inc()
+						slog.Error("unexpected command type in redis pipeline (fail-closed)")
+						http.Error(w, "authorization check failed", http.StatusUnauthorized)
+						return
+					}
+					exists, errExists := intCmd.Result()
+					if errExists != nil {
+						AuthTokenErrors.WithLabelValues("revocation_check_failed").Inc()
+						slog.Error("failed to get pipeline result in redis (fail-closed)", slog.Any("error", errExists))
+						http.Error(w, "authorization check failed", http.StatusUnauthorized)
+						return
+					}
+					if exists > 0 {
+						http.Error(w, "token revoked", http.StatusUnauthorized)
+						return
 					}
 				}
 			}
