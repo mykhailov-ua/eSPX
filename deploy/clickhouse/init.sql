@@ -1,3 +1,6 @@
+CREATE DATABASE IF NOT EXISTS adpulse;
+USE adpulse;
+
 -- Impressions Table
 CREATE TABLE IF NOT EXISTS impressions (
     click_id String,
@@ -9,7 +12,7 @@ CREATE TABLE IF NOT EXISTS impressions (
 ) ENGINE = ReplacingMergeTree(created_at)
 PARTITION BY toYYYYMM(created_at)
 ORDER BY (campaign_id, created_at, click_id)
-TTL created_at + INTERVAL 180 DAY;
+TTL toDateTime(created_at) + INTERVAL 180 DAY;
 
 -- Clicks Table
 CREATE TABLE IF NOT EXISTS clicks (
@@ -22,7 +25,7 @@ CREATE TABLE IF NOT EXISTS clicks (
 ) ENGINE = ReplacingMergeTree(created_at)
 PARTITION BY toYYYYMM(created_at)
 ORDER BY (campaign_id, created_at, click_id)
-TTL created_at + INTERVAL 180 DAY;
+TTL toDateTime(created_at) + INTERVAL 180 DAY;
 
 -- Conversions Table
 CREATE TABLE IF NOT EXISTS conversions (
@@ -35,7 +38,7 @@ CREATE TABLE IF NOT EXISTS conversions (
 ) ENGINE = ReplacingMergeTree(created_at)
 PARTITION BY toYYYYMM(created_at)
 ORDER BY (campaign_id, created_at, click_id)
-TTL created_at + INTERVAL 180 DAY;
+TTL toDateTime(created_at) + INTERVAL 180 DAY;
 
 -- Fraud Events Table
 CREATE TABLE IF NOT EXISTS fraud_events (
@@ -51,4 +54,4 @@ CREATE TABLE IF NOT EXISTS fraud_events (
 ) ENGINE = ReplacingMergeTree(created_at)
 PARTITION BY toYYYYMM(created_at)
 ORDER BY (campaign_id, created_at, click_id)
-TTL created_at + INTERVAL 90 DAY;
+TTL toDateTime(created_at) + INTERVAL 90 DAY;
