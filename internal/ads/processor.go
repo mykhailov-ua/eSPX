@@ -10,11 +10,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/google/uuid"
+	"github.com/mykhailov-ua/ad-event-processor/internal/ads/pb"
 	"github.com/mykhailov-ua/ad-event-processor/internal/domain"
 	"github.com/mykhailov-ua/ad-event-processor/internal/metrics"
 	redis "github.com/redis/go-redis/v9"
+	"google.golang.org/protobuf/proto"
 )
 
 type StreamConsumer struct {
@@ -226,7 +229,7 @@ func (p *StreamConsumer) tryFlush(ctx context.Context, batch *[]*domain.Event, m
 			if err := p.moveToDLQ(ctx, *batch, *msgIDs, workerID, *retryCount, errors.New("circuit breaker timeout")); err != nil {
 				slog.Error("failed to move batch to DLQ on circuit breaker timeout", "error", err, "group", p.groupName, "worker", workerID)
 			}
-			
+
 			for _, e := range *batch {
 				domain.EventPool.Put(e)
 			}
@@ -304,7 +307,7 @@ func (p *StreamConsumer) tryFlush(ctx context.Context, batch *[]*domain.Event, m
 				failedBatch = append(failedBatch, (*batch)[i])
 				failedMsgIDs = append(failedMsgIDs, (*msgIDs)[i])
 			}
-			
+
 			execErr := p.moveToDLQ(ctx, failedBatch, failedMsgIDs, workerID, *retryCount, fmt.Errorf("batch decomposed: %w", err))
 
 			if execErr != nil {
@@ -398,26 +401,51 @@ func (p *StreamConsumer) drainNewMessages(workerID string) {
 	}
 }
 
+var dlqEventPool = sync.Pool{
+	New: func() any {
+		return new(pb.AdDLQEvent)
+	},
+}
+
 func (p *StreamConsumer) moveToDLQ(ctx context.Context, batch []*domain.Event, msgIDs []string, workerID string, retryCount int, err error) error {
 	pipe := p.rdb.Pipeline()
+	errStr := err.Error()
+
 	for i, e := range batch {
+		pbDLQ := dlqEventPool.Get().(*pb.AdDLQEvent)
+		if pbDLQ.OriginalEvent == nil {
+			pbDLQ.OriginalEvent = new(pb.AdStreamEvent)
+		} else {
+			pbDLQ.OriginalEvent.Reset()
+		}
+		pbDLQ.Error = errStr
+		pbDLQ.OriginalId = msgIDs[i]
+		pbDLQ.FailedAtUnix = time.Now().Unix()
+		pbDLQ.WorkerId = workerID
+		pbDLQ.RetryCount = int32(retryCount)
+
+		pbDLQ.OriginalEvent.ClickId = e.ClickID
+		pbDLQ.OriginalEvent.CampaignId = e.CampaignID[:]
+		pbDLQ.OriginalEvent.EventType = e.Type
+		pbDLQ.OriginalEvent.Payload = e.Payload
+		pbDLQ.OriginalEvent.Ip = e.IP
+		pbDLQ.OriginalEvent.Ua = e.UA
+		pbDLQ.OriginalEvent.CreatedAtUnix = e.CreatedAt.Unix()
+
+		data, marshalErr := proto.Marshal(pbDLQ)
+		dlqEventPool.Put(pbDLQ)
+
+		if marshalErr != nil {
+			slog.Error("failed to marshal DLQ event", "error", marshalErr)
+			continue
+		}
+
 		pipe.XAdd(context.Background(), &redis.XAddArgs{
 			Stream: "ad:events:dlq",
 			MaxLen: 100000,
 			Approx: true,
 			Values: map[string]interface{}{
-				"click_id":    e.ClickID,
-				"campaign_id": e.CampaignID.String(),
-				"type":        e.Type,
-				"payload":     e.Payload,
-				"ip":          e.IP,
-				"ua":          e.UA,
-				"error":       err.Error(),
-				"original_id": msgIDs[i],
-				"failed_at":   time.Now().Format(time.RFC3339),
-				"service":     "ad-event-processor",
-				"worker_id":   workerID,
-				"retry_count": retryCount,
+				"d": data,
 			},
 		})
 		pipe.XAck(context.Background(), p.streamName, p.groupName, msgIDs[i])
@@ -433,35 +461,63 @@ func (p *StreamConsumer) moveToDLQ(ctx context.Context, batch []*domain.Event, m
 func (p *StreamConsumer) parseMessage(id string, values map[string]interface{}) *domain.Event {
 	evt := domain.EventPool.Get().(*domain.Event)
 	evt.Reset()
-	if v, ok := values["click_id"].(string); ok {
-		evt.ClickID = v
-	}
-	if v, ok := values["campaign_id"].(string); ok {
-		evt.CampaignID, _ = uuid.Parse(v)
-	}
-	if v, ok := values["user_id"].(string); ok {
-		evt.UserID = v
-	}
-	if v, ok := values["type"].(string); ok {
-		evt.Type = v
-	}
-	if v, ok := values["payload"].(string); ok {
-		evt.Payload = append(evt.Payload[:0], v...)
-	}
-	if v, ok := values["ip"].(string); ok {
-		evt.IP = v
-	}
-	if v, ok := values["ua"].(string); ok {
-		evt.UA = v
-	}
-	if v, ok := values["fraud_reason"].(string); ok {
-		evt.FraudReason = v
+
+	if rawBytesStr, ok := values["d"].(string); ok {
+		pbEvt := streamEventPool.Get().(*pb.AdStreamEvent)
+		pbEvt.Reset()
+
+		buf := unsafe.Slice(unsafe.StringData(rawBytesStr), len(rawBytesStr))
+		if err := proto.Unmarshal(buf, pbEvt); err == nil {
+			evt.ClickID = pbEvt.ClickId
+			if len(pbEvt.CampaignId) == 16 {
+				copy(evt.CampaignID[:], pbEvt.CampaignId)
+			} else {
+				evt.CampaignID, _ = uuid.Parse(string(pbEvt.CampaignId))
+			}
+			evt.Type = pbEvt.EventType
+			evt.Payload = append(evt.Payload[:0], pbEvt.Payload...)
+			evt.IP = pbEvt.Ip
+			evt.UA = pbEvt.Ua
+			if pbEvt.CreatedAtUnix > 0 {
+				evt.CreatedAt = time.Unix(pbEvt.CreatedAtUnix, 0)
+			}
+		} else {
+			slog.Error("failed to unmarshal stream event protobuf", "error", err)
+		}
+		streamEventPool.Put(pbEvt)
+	} else {
+		if v, ok := values["click_id"].(string); ok {
+			evt.ClickID = v
+		}
+		if v, ok := values["campaign_id"].(string); ok {
+			evt.CampaignID, _ = uuid.Parse(v)
+		}
+		if v, ok := values["user_id"].(string); ok {
+			evt.UserID = v
+		}
+		if v, ok := values["type"].(string); ok {
+			evt.Type = v
+		}
+		if v, ok := values["payload"].(string); ok {
+			evt.Payload = append(evt.Payload[:0], v...)
+		}
+		if v, ok := values["ip"].(string); ok {
+			evt.IP = v
+		}
+		if v, ok := values["ua"].(string); ok {
+			evt.UA = v
+		}
+		if v, ok := values["fraud_reason"].(string); ok {
+			evt.FraudReason = v
+		}
 	}
 
-	if idx := strings.IndexByte(id, '-'); idx > 0 {
-		ms, err := strconv.ParseInt(id[:idx], 10, 64)
-		if err == nil {
-			evt.CreatedAt = time.Unix(0, ms*int64(time.Millisecond))
+	if evt.CreatedAt.IsZero() {
+		if idx := strings.IndexByte(id, '-'); idx > 0 {
+			ms, err := strconv.ParseInt(id[:idx], 10, 64)
+			if err == nil {
+				evt.CreatedAt = time.Unix(0, ms*int64(time.Millisecond))
+			}
 		}
 	}
 	if evt.CreatedAt.IsZero() {

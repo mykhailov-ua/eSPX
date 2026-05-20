@@ -2,13 +2,22 @@ package ads
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/mykhailov-ua/ad-event-processor/internal/ads/pb"
 	"github.com/mykhailov-ua/ad-event-processor/internal/domain"
 	"github.com/mykhailov-ua/ad-event-processor/internal/metrics"
 	redis "github.com/redis/go-redis/v9"
+	"google.golang.org/protobuf/proto"
 )
+
+var streamEventPool = sync.Pool{
+	New: func() any {
+		return new(pb.AdStreamEvent)
+	},
+}
 
 type StreamProducer struct {
 	rdb          redis.UniversalClient
@@ -43,17 +52,30 @@ func (p *StreamProducer) Process(evt *domain.Event) error {
 	ctx, cancel := context.WithTimeout(context.Background(), p.writeTimeout)
 	defer cancel()
 
-	_, err := p.rdb.XAdd(ctx, &redis.XAddArgs{
+	pbEvt := streamEventPool.Get().(*pb.AdStreamEvent)
+	pbEvt.Reset()
+
+	pbEvt.ClickId = evt.ClickID
+	pbEvt.CampaignId = evt.CampaignID[:]
+	pbEvt.EventType = evt.Type
+	pbEvt.Payload = evt.Payload
+	pbEvt.Ip = evt.IP
+	pbEvt.Ua = evt.UA
+	pbEvt.CreatedAtUnix = evt.CreatedAt.Unix()
+
+	data, err := proto.Marshal(pbEvt)
+	streamEventPool.Put(pbEvt)
+	if err != nil {
+		metrics.EventsDropped.Inc()
+		return err
+	}
+
+	_, err = p.rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: p.streamName,
 		MaxLen: p.maxStreamLen,
 		Approx: true,
 		Values: map[string]interface{}{
-			"click_id":    evt.ClickID,
-			"campaign_id": evt.CampaignID.String(),
-			"type":        evt.Type,
-			"payload":     evt.Payload,
-			"ip":          evt.IP,
-			"ua":          evt.UA,
+			"d": data,
 		},
 	}).Result()
 
