@@ -16,6 +16,16 @@ func ToUUID(u uuid.UUID) pgtype.UUID {
 	return pgtype.UUID{Bytes: u, Valid: true}
 }
 
+const MicroUnitFactor = 1_000_000
+
+func DecimalToMicro(d decimal.Decimal) int64 {
+	return d.Mul(decimal.NewFromInt(MicroUnitFactor)).IntPart()
+}
+
+func MicroToDecimal(m int64) decimal.Decimal {
+	return decimal.NewFromInt(m).Div(decimal.NewFromInt(MicroUnitFactor))
+}
+
 func ToNumeric(d decimal.Decimal) pgtype.Numeric {
 	n := pgtype.Numeric{}
 	if err := n.Scan(d.StringFixed(2)); err != nil {

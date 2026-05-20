@@ -24,19 +24,22 @@ const (
 )
 
 type Campaign struct {
-	ID              uuid.UUID
-	CustomerID      uuid.UUID
-	Name            string
-	BudgetLimit     decimal.Decimal
-	CurrentSpend    decimal.Decimal
-	Status          CampaignStatus
-	PacingMode      PacingMode
-	DailyBudget     decimal.Decimal
-	Timezone        string
-	Location        *time.Location
-	FreqLimit       int32
-	FreqWindow      int32
-	TargetCountries []string
+	ID               uuid.UUID
+	IDStr            string
+	CustomerID       uuid.UUID
+	CustomerIDStr    string
+	Name             string
+	BudgetLimit      decimal.Decimal
+	CurrentSpend     decimal.Decimal
+	Status           CampaignStatus
+	PacingMode       PacingMode
+	DailyBudget      decimal.Decimal
+	DailyBudgetMicro int64
+	Timezone         string
+	Location         *time.Location
+	FreqLimit        int32
+	FreqWindow       int32
+	TargetCountries  []string
 }
 
 type CampaignRepository interface {

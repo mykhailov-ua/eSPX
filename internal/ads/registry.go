@@ -14,15 +14,8 @@ import (
 )
 
 type campaignInfo struct {
-	customerID      uuid.UUID
-	status          db.CampaignStatusType
-	pacingMode      domain.PacingMode
-	dailyBudget     decimal.Decimal
-	timezone        string
-	location        *time.Location
-	freqLimit       int32
-	freqWindow      int32
-	targetCountries []string
+	campaign *domain.Campaign
+	status   db.CampaignStatusType
 }
 
 type Registry struct {
@@ -55,7 +48,7 @@ func (r *Registry) GetCustomerID(campaignID uuid.UUID) (uuid.UUID, bool) {
 	if !ok {
 		return uuid.Nil, false
 	}
-	return info.customerID, true
+	return info.campaign.CustomerID, true
 }
 
 func (r *Registry) GetCampaign(id uuid.UUID) (*domain.Campaign, bool) {
@@ -65,24 +58,7 @@ func (r *Registry) GetCampaign(id uuid.UUID) (*domain.Campaign, bool) {
 	if !ok {
 		return nil, false
 	}
-
-	var countries []string
-	if info.targetCountries != nil {
-		countries = make([]string, len(info.targetCountries))
-		copy(countries, info.targetCountries)
-	}
-
-	return &domain.Campaign{
-		ID:              id,
-		CustomerID:      info.customerID,
-		PacingMode:      info.pacingMode,
-		DailyBudget:     info.dailyBudget,
-		Timezone:        info.timezone,
-		Location:        info.location,
-		FreqLimit:       info.freqLimit,
-		FreqWindow:      info.freqWindow,
-		TargetCountries: countries,
-	}, true
+	return info.campaign, true
 }
 
 func (r *Registry) Add(id, customerID uuid.UUID, pacingMode domain.PacingMode, dailyBudget decimal.Decimal, timezone string, freqLimit, freqWindow int32, targetCountries []string) {
@@ -101,15 +77,21 @@ func (r *Registry) Add(id, customerID uuid.UUID, pacingMode domain.PacingMode, d
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	info := campaignInfo{
-		customerID:      customerID,
-		status:          db.CampaignStatusTypeACTIVE,
-		pacingMode:      pacingMode,
-		dailyBudget:     dailyBudget,
-		timezone:        timezone,
-		location:        loc,
-		freqLimit:       freqLimit,
-		freqWindow:      freqWindow,
-		targetCountries: countries,
+		campaign: &domain.Campaign{
+			ID:               id,
+			IDStr:            id.String(),
+			CustomerID:       customerID,
+			CustomerIDStr:    customerID.String(),
+			PacingMode:       pacingMode,
+			DailyBudget:      dailyBudget,
+			DailyBudgetMicro: DecimalToMicro(dailyBudget),
+			Timezone:         timezone,
+			Location:         loc,
+			FreqLimit:        freqLimit,
+			FreqWindow:       freqWindow,
+			TargetCountries:  countries,
+		},
+		status: db.CampaignStatusTypeACTIVE,
 	}
 	r.data[id] = info
 	r.manuallyAdded[id] = true
@@ -131,16 +113,25 @@ func (r *Registry) Sync(ctx context.Context) (int, error) {
 			loc = time.UTC
 		}
 
+		customerID := uuid.UUID(row.CustomerID.Bytes)
+		dailyBudgetDec := FromNumeric(row.DailyBudget)
+
 		fresh[id] = campaignInfo{
-			customerID:      uuid.UUID(row.CustomerID.Bytes),
-			status:          row.Status,
-			pacingMode:      domain.PacingMode(row.PacingMode),
-			dailyBudget:     FromNumeric(row.DailyBudget),
-			timezone:        row.Timezone,
-			location:        loc,
-			freqLimit:       row.FreqLimit.Int32,
-			freqWindow:      row.FreqWindow.Int32,
-			targetCountries: row.TargetCountries,
+			campaign: &domain.Campaign{
+				ID:               id,
+				IDStr:            id.String(),
+				CustomerID:       customerID,
+				CustomerIDStr:    customerID.String(),
+				PacingMode:       domain.PacingMode(row.PacingMode),
+				DailyBudget:      dailyBudgetDec,
+				DailyBudgetMicro: DecimalToMicro(dailyBudgetDec),
+				Timezone:         row.Timezone,
+				Location:         loc,
+				FreqLimit:        row.FreqLimit.Int32,
+				FreqWindow:       row.FreqWindow.Int32,
+				TargetCountries:  row.TargetCountries,
+			},
+			status: row.Status,
 		}
 	}
 
