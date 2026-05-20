@@ -88,6 +88,7 @@ type EventMetadata struct {
 	DeviceType    string                 `protobuf:"bytes,3,opt,name=device_type,json=deviceType,proto3" json:"device_type,omitempty"`
 	Os            string                 `protobuf:"bytes,4,opt,name=os,proto3" json:"os,omitempty"`
 	Extra         map[string]string      `protobuf:"bytes,5,rep,name=extra,proto3" json:"extra,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	ExtraBytes    []byte                 `protobuf:"bytes,6,opt,name=extra_bytes,json=extraBytes,proto3" json:"extra_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -157,6 +158,13 @@ func (x *EventMetadata) GetExtra() map[string]string {
 	return nil
 }
 
+func (x *EventMetadata) GetExtraBytes() []byte {
+	if x != nil {
+		return x.ExtraBytes
+	}
+	return nil
+}
+
 type TrackResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RequestId     string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
@@ -209,6 +217,182 @@ func (x *TrackResponse) GetStatus() string {
 	return ""
 }
 
+type AdStreamEvent struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ClickId       string                 `protobuf:"bytes,1,opt,name=click_id,json=clickId,proto3" json:"click_id,omitempty"`
+	CampaignId    []byte                 `protobuf:"bytes,2,opt,name=campaign_id,json=campaignId,proto3" json:"campaign_id,omitempty"`
+	EventType     string                 `protobuf:"bytes,3,opt,name=event_type,json=eventType,proto3" json:"event_type,omitempty"`
+	Payload       []byte                 `protobuf:"bytes,4,opt,name=payload,proto3" json:"payload,omitempty"`
+	Ip            string                 `protobuf:"bytes,5,opt,name=ip,proto3" json:"ip,omitempty"`
+	Ua            string                 `protobuf:"bytes,6,opt,name=ua,proto3" json:"ua,omitempty"`
+	CreatedAtUnix int64                  `protobuf:"varint,7,opt,name=created_at_unix,json=createdAtUnix,proto3" json:"created_at_unix,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AdStreamEvent) Reset() {
+	*x = AdStreamEvent{}
+	mi := &file_api_proto_events_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AdStreamEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AdStreamEvent) ProtoMessage() {}
+
+func (x *AdStreamEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_events_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AdStreamEvent.ProtoReflect.Descriptor instead.
+func (*AdStreamEvent) Descriptor() ([]byte, []int) {
+	return file_api_proto_events_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *AdStreamEvent) GetClickId() string {
+	if x != nil {
+		return x.ClickId
+	}
+	return ""
+}
+
+func (x *AdStreamEvent) GetCampaignId() []byte {
+	if x != nil {
+		return x.CampaignId
+	}
+	return nil
+}
+
+func (x *AdStreamEvent) GetEventType() string {
+	if x != nil {
+		return x.EventType
+	}
+	return ""
+}
+
+func (x *AdStreamEvent) GetPayload() []byte {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+func (x *AdStreamEvent) GetIp() string {
+	if x != nil {
+		return x.Ip
+	}
+	return ""
+}
+
+func (x *AdStreamEvent) GetUa() string {
+	if x != nil {
+		return x.Ua
+	}
+	return ""
+}
+
+func (x *AdStreamEvent) GetCreatedAtUnix() int64 {
+	if x != nil {
+		return x.CreatedAtUnix
+	}
+	return 0
+}
+
+type AdDLQEvent struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	OriginalEvent *AdStreamEvent         `protobuf:"bytes,1,opt,name=original_event,json=originalEvent,proto3" json:"original_event,omitempty"`
+	Error         string                 `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	OriginalId    string                 `protobuf:"bytes,3,opt,name=original_id,json=originalId,proto3" json:"original_id,omitempty"`
+	FailedAtUnix  int64                  `protobuf:"varint,4,opt,name=failed_at_unix,json=failedAtUnix,proto3" json:"failed_at_unix,omitempty"`
+	WorkerId      string                 `protobuf:"bytes,5,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	RetryCount    int32                  `protobuf:"varint,6,opt,name=retry_count,json=retryCount,proto3" json:"retry_count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AdDLQEvent) Reset() {
+	*x = AdDLQEvent{}
+	mi := &file_api_proto_events_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AdDLQEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AdDLQEvent) ProtoMessage() {}
+
+func (x *AdDLQEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_events_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AdDLQEvent.ProtoReflect.Descriptor instead.
+func (*AdDLQEvent) Descriptor() ([]byte, []int) {
+	return file_api_proto_events_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *AdDLQEvent) GetOriginalEvent() *AdStreamEvent {
+	if x != nil {
+		return x.OriginalEvent
+	}
+	return nil
+}
+
+func (x *AdDLQEvent) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *AdDLQEvent) GetOriginalId() string {
+	if x != nil {
+		return x.OriginalId
+	}
+	return ""
+}
+
+func (x *AdDLQEvent) GetFailedAtUnix() int64 {
+	if x != nil {
+		return x.FailedAtUnix
+	}
+	return 0
+}
+
+func (x *AdDLQEvent) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *AdDLQEvent) GetRetryCount() int32 {
+	if x != nil {
+		return x.RetryCount
+	}
+	return 0
+}
+
 var File_api_proto_events_proto protoreflect.FileDescriptor
 
 const file_api_proto_events_proto_rawDesc = "" +
@@ -219,14 +403,16 @@ const file_api_proto_events_proto_rawDesc = "" +
 	"campaignId\x12\x1d\n" +
 	"\n" +
 	"event_type\x18\x02 \x01(\tR\teventType\x121\n" +
-	"\bmetadata\x18\x03 \x01(\v2\x15.ads.v1.EventMetadataR\bmetadata\"\xe6\x01\n" +
+	"\bmetadata\x18\x03 \x01(\v2\x15.ads.v1.EventMetadataR\bmetadata\"\x87\x02\n" +
 	"\rEventMetadata\x12\x19\n" +
 	"\bclick_id\x18\x01 \x01(\tR\aclickId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x1f\n" +
 	"\vdevice_type\x18\x03 \x01(\tR\n" +
 	"deviceType\x12\x0e\n" +
 	"\x02os\x18\x04 \x01(\tR\x02os\x126\n" +
-	"\x05extra\x18\x05 \x03(\v2 .ads.v1.EventMetadata.ExtraEntryR\x05extra\x1a8\n" +
+	"\x05extra\x18\x05 \x03(\v2 .ads.v1.EventMetadata.ExtraEntryR\x05extra\x12\x1f\n" +
+	"\vextra_bytes\x18\x06 \x01(\fR\n" +
+	"extraBytes\x1a8\n" +
 	"\n" +
 	"ExtraEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
@@ -234,7 +420,27 @@ const file_api_proto_events_proto_rawDesc = "" +
 	"\rTrackResponse\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06statusB<Z:github.com/mykhailov-ua/ad-event-processor/internal/ads/pbb\x06proto3"
+	"\x06status\x18\x02 \x01(\tR\x06status\"\xcc\x01\n" +
+	"\rAdStreamEvent\x12\x19\n" +
+	"\bclick_id\x18\x01 \x01(\tR\aclickId\x12\x1f\n" +
+	"\vcampaign_id\x18\x02 \x01(\fR\n" +
+	"campaignId\x12\x1d\n" +
+	"\n" +
+	"event_type\x18\x03 \x01(\tR\teventType\x12\x18\n" +
+	"\apayload\x18\x04 \x01(\fR\apayload\x12\x0e\n" +
+	"\x02ip\x18\x05 \x01(\tR\x02ip\x12\x0e\n" +
+	"\x02ua\x18\x06 \x01(\tR\x02ua\x12&\n" +
+	"\x0fcreated_at_unix\x18\a \x01(\x03R\rcreatedAtUnix\"\xe5\x01\n" +
+	"\n" +
+	"AdDLQEvent\x12<\n" +
+	"\x0eoriginal_event\x18\x01 \x01(\v2\x15.ads.v1.AdStreamEventR\roriginalEvent\x12\x14\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error\x12\x1f\n" +
+	"\voriginal_id\x18\x03 \x01(\tR\n" +
+	"originalId\x12$\n" +
+	"\x0efailed_at_unix\x18\x04 \x01(\x03R\ffailedAtUnix\x12\x1b\n" +
+	"\tworker_id\x18\x05 \x01(\tR\bworkerId\x12\x1f\n" +
+	"\vretry_count\x18\x06 \x01(\x05R\n" +
+	"retryCountB<Z:github.com/mykhailov-ua/ad-event-processor/internal/ads/pbb\x06proto3"
 
 var (
 	file_api_proto_events_proto_rawDescOnce sync.Once
@@ -248,21 +454,24 @@ func file_api_proto_events_proto_rawDescGZIP() []byte {
 	return file_api_proto_events_proto_rawDescData
 }
 
-var file_api_proto_events_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_api_proto_events_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_api_proto_events_proto_goTypes = []any{
 	(*AdEvent)(nil),       // 0: ads.v1.AdEvent
 	(*EventMetadata)(nil), // 1: ads.v1.EventMetadata
 	(*TrackResponse)(nil), // 2: ads.v1.TrackResponse
-	nil,                   // 3: ads.v1.EventMetadata.ExtraEntry
+	(*AdStreamEvent)(nil), // 3: ads.v1.AdStreamEvent
+	(*AdDLQEvent)(nil),    // 4: ads.v1.AdDLQEvent
+	nil,                   // 5: ads.v1.EventMetadata.ExtraEntry
 }
 var file_api_proto_events_proto_depIdxs = []int32{
 	1, // 0: ads.v1.AdEvent.metadata:type_name -> ads.v1.EventMetadata
-	3, // 1: ads.v1.EventMetadata.extra:type_name -> ads.v1.EventMetadata.ExtraEntry
-	2, // [2:2] is the sub-list for method output_type
-	2, // [2:2] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	5, // 1: ads.v1.EventMetadata.extra:type_name -> ads.v1.EventMetadata.ExtraEntry
+	3, // 2: ads.v1.AdDLQEvent.original_event:type_name -> ads.v1.AdStreamEvent
+	3, // [3:3] is the sub-list for method output_type
+	3, // [3:3] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_api_proto_events_proto_init() }
@@ -276,7 +485,7 @@ func file_api_proto_events_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_proto_events_proto_rawDesc), len(file_api_proto_events_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
