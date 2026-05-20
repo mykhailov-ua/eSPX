@@ -39,6 +39,9 @@ var (
 	bufferPool = sync.Pool{
 		New: func() any { return new(bytes.Buffer) },
 	}
+	fraudMapPool = sync.Pool{
+		New: func() any { return make(map[string]any, 9) },
+	}
 	statusStrings     [600]string
 	maxPoolObjectSize = 64 * 1024 // 64KB
 )
@@ -61,7 +64,7 @@ func putAdEvent(evt *pb.AdEvent) {
 	if evt == nil {
 		return
 	}
-	if evt.Metadata != nil && len(evt.Metadata.Extra) > 100 {
+	if evt.Metadata != nil && (len(evt.Metadata.Extra) > 100 || cap(evt.Metadata.ExtraBytes) > 4096) {
 		return
 	}
 	evt.Reset()
@@ -130,7 +133,11 @@ func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, filterEngin
 		r.Body = http.MaxBytesReader(w, r.Body, cfg.MaxRequestBodySize)
 
 		id, _ := uuid.NewV7()
-		requestID := id.String()
+		wReqID := bufPool.Get().(*bufWrapper)
+		wReqID.buf = wReqID.buf[:0]
+		wReqID.buf = appendUUID(wReqID.buf, id)
+		requestID := unsafeString(wReqID.buf)
+		defer bufPool.Put(wReqID)
 
 		var campaignID uuid.UUID
 		var eventType string
@@ -176,7 +183,9 @@ func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, filterEngin
 				if pbReq.Metadata.ClickId != "" {
 					clickID = pbReq.Metadata.ClickId
 				}
-				if pbReq.Metadata.Extra != nil {
+				if len(pbReq.Metadata.ExtraBytes) > 0 {
+					payload = pbReq.Metadata.ExtraBytes
+				} else if pbReq.Metadata.Extra != nil {
 					var err error
 					payload, err = json.Marshal(pbReq.Metadata.Extra)
 					if err != nil {
@@ -272,26 +281,51 @@ func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, filterEngin
 					shard := sharder.GetShard(evt.CampaignID)
 					rdb := rdbs[shard]
 
-					if err := rdb.XAdd(r.Context(), &redis.XAddArgs{
+					m := fraudMapPool.Get().(map[string]any)
+
+					wCamp := bufPool.Get().(*bufWrapper)
+					wCamp.buf = wCamp.buf[:0]
+					wCamp.buf = appendUUID(wCamp.buf, evt.CampaignID)
+					campIDStr := unsafeString(wCamp.buf)
+
+					wTime := bufPool.Get().(*bufWrapper)
+					wTime.buf = wTime.buf[:0]
+					wTime.buf = evt.CreatedAt.AppendFormat(wTime.buf, time.RFC3339Nano)
+					timeStr := unsafeString(wTime.buf)
+
+					payloadStr := unsafeString(evt.Payload)
+
+					m["click_id"] = evt.ClickID
+					m["campaign_id"] = campIDStr
+					m["user_id"] = evt.UserID
+					m["type"] = evt.Type
+					m["ip"] = evt.IP
+					m["ua"] = evt.UA
+					m["payload"] = payloadStr
+					m["fraud_reason"] = evt.FraudReason
+					m["created_at"] = timeStr
+
+					rdbErr := rdb.XAdd(r.Context(), &redis.XAddArgs{
 						Stream: fraudStream,
 						MaxLen: int64(cfg.StreamMaxLen),
 						Approx: true,
-						Values: map[string]interface{}{
-							"click_id":     evt.ClickID,
-							"campaign_id":  evt.CampaignID.String(),
-							"user_id":      evt.UserID,
-							"type":         evt.Type,
-							"ip":           evt.IP,
-							"ua":           evt.UA,
-							"payload":      string(evt.Payload),
-							"fraud_reason": evt.FraudReason,
-							"created_at":   evt.CreatedAt.Format(time.RFC3339Nano),
-						},
-					}).Err(); err != nil {
-						slog.Error("failed to write to fraud stream", "error", err, "request_id", id)
+						Values: m,
+					}).Err()
+
+					for k := range m {
+						delete(m, k)
+					}
+					fraudMapPool.Put(m)
+
+					bufPool.Put(wCamp)
+					bufPool.Put(wTime)
+
+					if rdbErr != nil {
+						slog.Error("failed to write to fraud stream", "error", rdbErr, "request_id", id)
 					}
 
-					// Silent drop
+					// Silent drop is enforced to prevent adversarial actors from discovering anti-fraud detection rules.
+					// Fraud events are acknowledged with HTTP 202 status at the tracker layer while being logged asynchronously.
 				} else {
 					domain.EventPool.Put(evt)
 					slog.Error("filter engine failure", "error", err, "request_id", id)

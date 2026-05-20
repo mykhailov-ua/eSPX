@@ -26,7 +26,7 @@ func (m *mockRegistry) Add(id, customerID uuid.UUID, pacingMode domain.PacingMod
 }
 func (m *mockRegistry) GetCustomerID(id uuid.UUID) (uuid.UUID, bool) { return uuid.Nil, true }
 func (m *mockRegistry) GetCampaign(id uuid.UUID) (*domain.Campaign, bool) {
-	return &domain.Campaign{ID: id, CustomerID: uuid.Nil}, true
+	return &domain.Campaign{ID: id, CustomerID: uuid.Nil, Location: time.UTC}, true
 }
 func (m *mockRegistry) Sync(ctx context.Context) (int, error)                 { return 0, nil }
 func (m *mockRegistry) StartSync(ctx context.Context, interval time.Duration) {}

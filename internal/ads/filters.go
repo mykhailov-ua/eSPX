@@ -4,14 +4,15 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
+	"unsafe"
 
+	"github.com/google/uuid"
 	"github.com/mykhailov-ua/ad-event-processor/internal/domain"
 	redis "github.com/redis/go-redis/v9"
 	"github.com/shopspring/decimal"
 )
-
-
 
 var (
 	ErrRateLimitExceeded = errors.New("rate limit exceeded")
@@ -23,6 +24,57 @@ var (
 	ErrGeoBlocked        = errors.New("geo-targeting blocked")
 	ErrFraudDetected     = errors.New("fraud detected")
 )
+
+type bufWrapper struct {
+	buf []byte
+}
+
+// bufPool recycles byte buffer wrappers to avoid heap allocation overhead during string key formatting.
+var bufPool = sync.Pool{
+	New: func() any {
+		return &bufWrapper{
+			buf: make([]byte, 0, 128),
+		}
+	},
+}
+
+const hexChars = "0123456789abcdef"
+
+// appendUUID performs zero-allocation hexadecimal formatting of a 16-byte UUID directly into a destination slice.
+// This bypasses the standard google/uuid.String() method, which forces heap allocations.
+func appendUUID(dst []byte, u uuid.UUID) []byte {
+	return append(dst,
+		hexChars[u[0]>>4], hexChars[u[0]&0xf],
+		hexChars[u[1]>>4], hexChars[u[1]&0xf],
+		hexChars[u[2]>>4], hexChars[u[2]&0xf],
+		hexChars[u[3]>>4], hexChars[u[3]&0xf],
+		'-',
+		hexChars[u[4]>>4], hexChars[u[4]&0xf],
+		hexChars[u[5]>>4], hexChars[u[5]&0xf],
+		'-',
+		hexChars[u[6]>>4], hexChars[u[6]&0xf],
+		hexChars[u[7]>>4], hexChars[u[7]&0xf],
+		'-',
+		hexChars[u[8]>>4], hexChars[u[8]&0xf],
+		hexChars[u[9]>>4], hexChars[u[9]&0xf],
+		'-',
+		hexChars[u[10]>>4], hexChars[u[10]&0xf],
+		hexChars[u[11]>>4], hexChars[u[11]&0xf],
+		hexChars[u[12]>>4], hexChars[u[12]&0xf],
+		hexChars[u[13]>>4], hexChars[u[13]&0xf],
+		hexChars[u[14]>>4], hexChars[u[14]&0xf],
+		hexChars[u[15]>>4], hexChars[u[15]&0xf],
+	)
+}
+
+// unsafeString performs zero-copy conversion from a byte slice to a string to eliminate heap allocation.
+// The caller must guarantee that the underlying byte slice is not mutated while the returned string is referenced.
+func unsafeString(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	return unsafe.String(&b[0], len(b))
+}
 
 type FraudFilter struct {
 	geo    GeoProvider
@@ -46,16 +98,35 @@ func (f *FraudFilter) Check(ctx context.Context, evt *domain.Event) error {
 	}
 
 	if evt.Type == "impression" {
-		key := "imp_ts:" + evt.UserID + ":" + evt.CampaignID.String()
-		if err := f.rdb.Set(ctx, key, time.Now().UnixMilli(), 10*time.Minute).Err(); err != nil {
+		w := bufPool.Get().(*bufWrapper)
+		w.buf = w.buf[:0]
+		w.buf = append(w.buf, "imp_ts:"...)
+		w.buf = append(w.buf, evt.UserID...)
+		w.buf = append(w.buf, ':')
+		w.buf = appendUUID(w.buf, evt.CampaignID)
+		key := unsafeString(w.buf)
+
+		err := f.rdb.Set(ctx, key, time.Now().UnixMilli(), 10*time.Minute).Err()
+		bufPool.Put(w)
+
+		if err != nil {
 			slog.Error("failed to store impression timestamp in redis", "error", err, "user_id", evt.UserID, "campaign_id", evt.CampaignID)
 		}
 		return nil
 	}
 
 	if evt.Type == "click" {
-		key := "imp_ts:" + evt.UserID + ":" + evt.CampaignID.String()
+		w := bufPool.Get().(*bufWrapper)
+		w.buf = w.buf[:0]
+		w.buf = append(w.buf, "imp_ts:"...)
+		w.buf = append(w.buf, evt.UserID...)
+		w.buf = append(w.buf, ':')
+		w.buf = appendUUID(w.buf, evt.CampaignID)
+		key := unsafeString(w.buf)
+
 		ts, err := f.rdb.Get(ctx, key).Int64()
+		bufPool.Put(w)
+
 		if err == nil {
 			delta := time.Since(time.UnixMilli(ts))
 			if delta < f.ttcMin {
@@ -92,7 +163,6 @@ func (f *GeoFilter) Check(ctx context.Context, evt *domain.Event) error {
 	country, err := f.geo.GetCountry(evt.IP)
 	if err != nil {
 		slog.Warn("geo lookup failed", "ip", evt.IP, "error", err)
-		// Fail-open strategy prevents geo-provider outages from halting ingestion.
 		return nil
 	}
 
@@ -150,7 +220,6 @@ type FilterEngine struct {
 	filters []EventFilter
 }
 
-// NewFilterEngine constructs a pipeline from the provided filter set.
 func NewFilterEngine(filters ...EventFilter) *FilterEngine {
 	return &FilterEngine{filters: filters}
 }
@@ -194,10 +263,17 @@ func (l *IPRateLimiter) Check(ctx context.Context, evt *domain.Event) error {
 		return nil
 	}
 
-	key := "ratelimit:ip:" + evt.IP
+	w := bufPool.Get().(*bufWrapper)
+	w.buf = w.buf[:0]
+	w.buf = append(w.buf, "ratelimit:ip:"...)
+	w.buf = append(w.buf, evt.IP...)
+	key := unsafeString(w.buf)
+
 	windowMs := int64(l.window.Milliseconds())
 
 	res, err := l.rdb.Eval(ctx, rateLimitScript, []string{key}, windowMs, l.limit).Result()
+	bufPool.Put(w)
+
 	if err != nil {
 		return err
 	}
@@ -214,7 +290,6 @@ type DuplicateEventFilter struct {
 	ttl time.Duration
 }
 
-// NewDuplicateEventFilter initializes a deduplication filter with a specific expiration TTL.
 func NewDuplicateEventFilter(rdb redis.Cmdable, ttl time.Duration) *DuplicateEventFilter {
 	return &DuplicateEventFilter{
 		rdb: rdb,
@@ -227,9 +302,17 @@ func (f *DuplicateEventFilter) Check(ctx context.Context, evt *domain.Event) err
 		return nil
 	}
 
-	key := "dup:" + evt.Type + ":" + evt.ClickID
+	w := bufPool.Get().(*bufWrapper)
+	w.buf = w.buf[:0]
+	w.buf = append(w.buf, "dup:"...)
+	w.buf = append(w.buf, evt.Type...)
+	w.buf = append(w.buf, ':')
+	w.buf = append(w.buf, evt.ClickID...)
+	key := unsafeString(w.buf)
 
 	ok, err := f.rdb.SetNX(ctx, key, "1", f.ttl).Result()
+	bufPool.Put(w)
+
 	if err != nil {
 		return err
 	}
