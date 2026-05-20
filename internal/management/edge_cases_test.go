@@ -28,6 +28,8 @@ func TestEdge_RoundingAndSmallAmounts(t *testing.T) {
 	cfg.Management.CancellationFeePercent = 10.0
 	cfg.Lifecycle.WaitTimeoutMs = 1
 	svc := NewService(pool, []redis.UniversalClient{rdb}, ads.NewJumpHashSharder(1), cfg)
+	defer svc.Close()
+
 
 	customerID := uuid.New()
 	_ = svc.CreateCustomer(context.Background(), customerID, "Small Saver", decimal.NewFromFloat(100.0), "USD")
@@ -53,6 +55,7 @@ func TestEdge_ConcurrentBalanceDepletion(t *testing.T) {
 	defer cleanupRedis()
 
 	svc := NewService(pool, []redis.UniversalClient{rdb}, ads.NewJumpHashSharder(1), &config.Config{})
+	defer svc.Close()
 
 	customerID := uuid.New()
 	_ = svc.CreateCustomer(context.Background(), customerID, "Poor db.User", decimal.NewFromFloat(500.0), "USD")
@@ -98,6 +101,7 @@ func TestEdge_ResumingStuckSettlement(t *testing.T) {
 	cfg.Management.CancellationFeePercent = 10
 	cfg.Lifecycle.WaitTimeoutMs = 1
 	svc := NewService(pool, []redis.UniversalClient{rdb}, ads.NewJumpHashSharder(1), cfg)
+	defer svc.Close()
 
 	customerID := uuid.New()
 	_ = svc.CreateCustomer(context.Background(), customerID, "Crash Test", decimal.NewFromFloat(1000.0), "USD")

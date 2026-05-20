@@ -34,6 +34,7 @@ func TestManagementService_CancelCampaign(t *testing.T) {
 
 	sharder := ads.NewJumpHashSharder(1)
 	svc := NewService(pool, []redis.UniversalClient{rdb}, sharder, cfg)
+	defer svc.Close()
 
 	ctx := context.Background()
 	customerID := uuid.New()
@@ -72,6 +73,7 @@ func TestManagementService_Idempotency(t *testing.T) {
 	defer cleanupRedis()
 
 	svc := NewService(pool, []redis.UniversalClient{rdb}, ads.NewJumpHashSharder(1), &config.Config{})
+	defer svc.Close()
 	ctx := context.Background()
 	customerID := uuid.New()
 	_ = svc.CreateCustomer(ctx, customerID, "Idem Tester", decimal.NewFromInt(1000), "USD")

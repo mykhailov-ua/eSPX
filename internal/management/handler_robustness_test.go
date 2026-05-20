@@ -31,6 +31,7 @@ func TestManagementAPI_Robustness(t *testing.T) {
 	}
 
 	svc := NewService(pool, []redis.UniversalClient{rdb}, nil, cfg)
+	defer svc.Close()
 	h := NewHandler(svc, cfg, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
@@ -84,6 +85,7 @@ func TestManagementAPI_Robustness(t *testing.T) {
 		cleanupBadDB() // immediately close it
 
 		badSvc := NewService(badPool, []redis.UniversalClient{rdb}, nil, cfg)
+		defer badSvc.Close()
 		badH := NewHandler(badSvc, cfg, nil)
 		badMux := http.NewServeMux()
 		badH.RegisterRoutes(badMux)

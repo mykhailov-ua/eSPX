@@ -24,6 +24,7 @@ func TestNginxConfigWorker(t *testing.T) {
 	defer cleanupDB()
 
 	svc := NewService(pool, []redis.UniversalClient{rdb}, nil, nil)
+	defer svc.Close()
 
 	exportPath := t.TempDir()
 	worker := NewNginxConfigWorker(svc, exportPath)

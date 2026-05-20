@@ -20,6 +20,7 @@ func TestAuditLog(t *testing.T) {
 	defer cleanup()
 
 	svc := NewService(pool, nil, nil, nil)
+	defer svc.Close()
 	ctx := context.Background()
 
 	adminID := uuid.New()

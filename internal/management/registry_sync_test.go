@@ -42,6 +42,7 @@ func TestRegistryWatch(t *testing.T) {
 	cfg.Lifecycle.WaitTimeoutMs = 1
 	sharder := ads.NewJumpHashSharder(1)
 	svc := NewService(pool, []redis.UniversalClient{rdb}, sharder, cfg)
+	defer svc.Close()
 
 	customerID := uuid.New()
 	_ = svc.CreateCustomer(ctx, customerID, "Sync db.User", decimal.NewFromInt(1000), "USD")
