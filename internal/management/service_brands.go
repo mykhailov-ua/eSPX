@@ -1,0 +1,135 @@
+package management
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/mykhailov-ua/ad-event-processor/internal/ads"
+	"github.com/mykhailov-ua/ad-event-processor/internal/ads/db"
+)
+
+type BrandDTO struct {
+	ID         string `json:"id"`
+	CustomerID string `json:"customer_id"`
+	Name       string `json:"name"`
+	CreatedAt  string `json:"created_at"`
+	UpdatedAt  string `json:"updated_at"`
+	FreqLimit  int32  `json:"freq_limit"`
+	FreqWindow int32  `json:"freq_window"`
+}
+
+func toBrandDTO(b db.AdvertiserBrand) BrandDTO {
+	return BrandDTO{
+		ID:         uuid.UUID(b.ID.Bytes).String(),
+		CustomerID: uuid.UUID(b.CustomerID.Bytes).String(),
+		Name:       b.Name,
+		CreatedAt:  b.CreatedAt.Time.Format(time.RFC3339),
+		UpdatedAt:  b.UpdatedAt.Time.Format(time.RFC3339),
+		FreqLimit:  b.FreqLimit,
+		FreqWindow: b.FreqWindow,
+	}
+}
+
+// CreateBrand registers a new brand group under a customer profile.
+func (s *Service) CreateBrand(ctx context.Context, customerID uuid.UUID, name string) (uuid.UUID, error) {
+	brandID, err := uuid.NewV7()
+	if err != nil {
+		return uuid.Nil, err
+	}
+
+	q := db.New(s.pool)
+	_, err = q.GetCustomerByID(ctx, ads.ToUUID(customerID))
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("customer not found: %w", err)
+	}
+
+	_, err = q.CreateBrand(ctx, db.CreateBrandParams{
+		ID:         ads.ToUUID(brandID),
+		CustomerID: ads.ToUUID(customerID),
+		Name:       name,
+	})
+	if err != nil {
+		return uuid.Nil, err
+	}
+
+	return brandID, nil
+}
+
+// GetBrandDTO retrieves a specific brand profile by its primary identifier.
+func (s *Service) GetBrandDTO(ctx context.Context, id uuid.UUID) (BrandDTO, error) {
+	q := db.New(s.pool)
+	b, err := q.GetBrand(ctx, ads.ToUUID(id))
+	if err != nil {
+		return BrandDTO{}, err
+	}
+	return toBrandDTO(b), nil
+}
+
+// ListBrandsByCustomer lists all brand groups belonging to a specific customer profile.
+func (s *Service) ListBrandsByCustomer(ctx context.Context, customerID uuid.UUID) ([]BrandDTO, error) {
+	q := db.New(s.pool)
+	rows, err := q.ListBrandsByCustomer(ctx, ads.ToUUID(customerID))
+	if err != nil {
+		return nil, err
+	}
+
+	res := make([]BrandDTO, len(rows))
+	for i, r := range rows {
+		res[i] = toBrandDTO(r)
+	}
+	return res, nil
+}
+
+// ConfigureBrandFcap updates the brand-level frequency capping rules.
+// It logs the administrative action and triggers an outbox event.
+func (s *Service) ConfigureBrandFcap(ctx context.Context, brandID uuid.UUID, limit, window int32) error {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		q := db.New(tx)
+
+		// GetBrandForUpdate locks the brand row to serialize modifications and avoid races.
+		// Propagating changes via CONFIGURE_BRAND_FCAP transaction outbox ensures atomic delivery of brand frequency constraints to the Redis cache.
+		brand, err := q.GetBrandForUpdate(ctx, ads.ToUUID(brandID))
+		if err != nil {
+			return fmt.Errorf("brand not found: %w", err)
+		}
+
+		err = q.ConfigureBrandFcap(ctx, db.ConfigureBrandFcapParams{
+			ID:         ads.ToUUID(brandID),
+			FreqLimit:  limit,
+			FreqWindow: window,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to update brand fcap limits: %w", err)
+		}
+
+		payloadBytes, err := json.Marshal(map[string]any{
+			"brand_id":    brandID.String(),
+			"freq_limit":  limit,
+			"freq_window": window,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to marshal outbox event payload: %w", err)
+		}
+
+		_, err = q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{
+			EventType: "CONFIGURE_BRAND_FCAP",
+			Payload:   payloadBytes,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create outbox event: %w", err)
+		}
+
+		s.AuditLog(ctx, q, uuid.Nil, "CONFIGURE_BRAND_FCAP", "brand", &brandID, map[string]any{
+			"old_freq_limit":  brand.FreqLimit,
+			"old_freq_window": brand.FreqWindow,
+			"new_freq_limit":  limit,
+			"new_freq_window": window,
+		}, nil)
+
+		return nil
+	})
+}

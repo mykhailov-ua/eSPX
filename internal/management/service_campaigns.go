@@ -2,9 +2,12 @@ package management
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/mykhailov-ua/ad-event-processor/internal/ads"
 	"github.com/mykhailov-ua/ad-event-processor/internal/ads/db"
@@ -154,3 +157,72 @@ func (s *Service) ListStatusHistory(ctx context.Context, campaignID uuid.UUID, l
 	}
 	return res, total, nil
 }
+
+// UpdateCampaignPacing updates campaign's pacing mode in Postgres with pessimistic locking,
+// creates an admin audit log, and registers a UPDATE_CAMPAIGN_PACING outbox event.
+func (s *Service) UpdateCampaignPacing(ctx context.Context, campaignID uuid.UUID, newMode string) (CampaignDTO, error) {
+	var pacing db.PacingModeType
+	switch newMode {
+	case "ASAP":
+		pacing = db.PacingModeTypeASAP
+	case "EVEN":
+		pacing = db.PacingModeTypeEVEN
+	default:
+		return CampaignDTO{}, fmt.Errorf("invalid pacing mode: %s", newMode)
+	}
+
+	var updatedCamp db.Campaign
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		q := db.New(tx)
+
+		// GetCampaignForUpdate locks the campaign row to prevent concurrent pacing/budget updates from overwriting each other.
+		// Emitting the UPDATE_CAMPAIGN_PACING outbox event within the same transaction ensures atomic replication to Redis.
+		camp, err := q.GetCampaignForUpdate(ctx, ads.ToUUID(campaignID))
+		if err != nil {
+			return fmt.Errorf("campaign not found: %w", err)
+		}
+
+		updatedCamp, err = q.UpdateCampaignPacing(ctx, db.UpdateCampaignPacingParams{
+			ID:         ads.ToUUID(campaignID),
+			PacingMode: pacing,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to update campaign pacing: %w", err)
+		}
+
+		var uid uuid.UUID
+		if u, ok := GetUser(ctx); ok {
+			uid = u.UserID
+		}
+
+		s.AuditLog(ctx, q, uid, "UPDATE_CAMPAIGN_PACING", "campaign", &campaignID, map[string]any{
+			"old_pacing_mode": string(camp.PacingMode),
+			"new_pacing_mode": string(pacing),
+		}, nil)
+
+		payloadBytes, err := json.Marshal(map[string]any{
+			"campaign_id": campaignID.String(),
+			"pacing_mode": string(pacing),
+		})
+		if err != nil {
+			return fmt.Errorf("failed to marshal outbox payload: %w", err)
+		}
+
+		_, err = q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{
+			EventType: "UPDATE_CAMPAIGN_PACING",
+			Payload:   payloadBytes,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create outbox event: %w", err)
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return CampaignDTO{}, err
+	}
+
+	return toCampaignDTO(updatedCamp), nil
+}
+
