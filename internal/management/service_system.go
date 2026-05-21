@@ -196,3 +196,46 @@ func (s *Service) RunSystemStateSyncer(ctx context.Context) {
 		}
 	}
 }
+
+// ToggleEmergencyBreaker switches the system emergency breaker flag, updates the DB, emits an outbox event and logs the audit trail.
+func (s *Service) ToggleEmergencyBreaker(ctx context.Context, active bool, reason string) error {
+	val := "false"
+	if active {
+		val = "true"
+	}
+
+	// Persisting the emergency breaker state inside a transaction and propagating it via CDC outbox ensures
+	// atomic persistence in Postgres and rapid, consistent synchronization to Redis for stateless ingestion filters.
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		q := db.New(tx)
+		err := q.SetSystemSetting(ctx, db.SetSystemSettingParams{
+			Key:   "emergency_breaker",
+			Value: val,
+		})
+		if err != nil {
+			return err
+		}
+
+		var uid uuid.UUID
+		if u, ok := GetUser(ctx); ok {
+			uid = u.UserID
+		}
+
+		s.AuditLog(ctx, q, uid, "EMERGENCY_BREAKER_TOGGLED", "system", nil, map[string]any{
+			"active": active,
+			"reason": reason,
+		}, nil)
+
+		settings := map[string]string{
+			"emergency_breaker": val,
+		}
+		payloadBytes, _ := json.Marshal(SettingsPayload{Settings: settings})
+		_, err = q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{
+			EventType: "UPDATE_SETTINGS",
+			Payload:   payloadBytes,
+		})
+		return err
+	})
+	return err
+}
+

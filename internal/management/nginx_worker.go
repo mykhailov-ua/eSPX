@@ -1,12 +1,13 @@
 package management
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -74,21 +75,66 @@ func (w *NginxConfigWorker) ExportAndReload(ctx context.Context) error {
 	return nil
 }
 
-func (w *NginxConfigWorker) writeDenyFile(filename string, ips []string) error {
+func (w *NginxConfigWorker) writeDenyFile(filename string, ips []string) (err error) {
 	if err := os.MkdirAll(w.exportPath, 0755); err != nil {
 		return err
 	}
 
 	path := filepath.Join(w.exportPath, filename)
-	var sb strings.Builder
+	tmpPath := path + ".tmp"
+
+	tmpFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open temp config file: %w", err)
+	}
+
+	defer func() {
+		if err != nil {
+			_ = tmpFile.Close()
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	bw := bufio.NewWriter(tmpFile)
 	for _, ip := range ips {
 		if ip == "" {
 			continue
 		}
-		sb.WriteString("deny ")
-		sb.WriteString(ip)
-		sb.WriteString(";\n")
+
+		// Enforce strict IP or CIDR validation to prevent Nginx configuration injection
+		if net.ParseIP(ip) == nil {
+			if _, _, errCIDR := net.ParseCIDR(ip); errCIDR != nil {
+				slog.Warn("skipping invalid blacklist IP/CIDR to prevent injection", "ip", ip)
+				continue
+			}
+		}
+
+		if _, err = bw.WriteString("deny "); err != nil {
+			return fmt.Errorf("failed to write directive prefix: %w", err)
+		}
+		if _, err = bw.WriteString(ip); err != nil {
+			return fmt.Errorf("failed to write IP: %w", err)
+		}
+		if _, err = bw.WriteString(";\n"); err != nil {
+			return fmt.Errorf("failed to write directive suffix: %w", err)
+		}
 	}
 
-	return os.WriteFile(path, []byte(sb.String()), 0644)
+	if err = bw.Flush(); err != nil {
+		return fmt.Errorf("failed to flush config buffer: %w", err)
+	}
+
+	if err = tmpFile.Sync(); err != nil {
+		return fmt.Errorf("failed to sync config file: %w", err)
+	}
+
+	if err = tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temp config file: %w", err)
+	}
+
+	if err = os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("failed to atomically replace config file: %w", err)
+	}
+
+	return nil
 }

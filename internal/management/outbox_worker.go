@@ -193,6 +193,26 @@ func (w *OutboxWorker) ProcessOutbox(ctx context.Context) error {
 					})
 				}
 			}
+		case "UPDATE_CAMPAIGN_PACING":
+			var p struct {
+				CampaignID string `json:"campaign_id"`
+				PacingMode string `json:"pacing_mode"`
+			}
+			if err := json.Unmarshal(ev.Payload, &p); err == nil {
+				campUUID, _ := uuid.Parse(p.CampaignID)
+				rdb := w.svc.getRDB(campUUID)
+				if rdb != nil {
+					_, rdbErr = rdb.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+						pipe.HSet(ctx, fmt.Sprintf("campaign:settings:%s", p.CampaignID), "pacing_mode", p.PacingMode)
+						channel := w.svc.cfg.CampaignUpdateChannel
+						if channel == "" {
+							channel = "campaigns:update"
+						}
+						pipe.Publish(ctx, channel, p.CampaignID)
+						return nil
+					})
+				}
+			}
 		case "UPDATE_SETTINGS":
 			var p SettingsPayload
 			if err := json.Unmarshal(ev.Payload, &p); err == nil {

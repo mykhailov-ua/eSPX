@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/mykhailov-ua/ad-event-processor/internal/ads/db"
@@ -35,13 +36,19 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/customers", h.limit(h.auth(h.createCustomer, "SA", "M")))
 	mux.HandleFunc("POST /admin/customers/{id}/topup", h.limit(h.auth(h.topUpBalance, "SA", "M")))
 	mux.HandleFunc("POST /admin/campaigns", h.limit(h.auth(h.createCampaign, "SA", "M", "C")))
+	mux.HandleFunc("POST /admin/brands", h.limit(h.auth(h.createBrand, "SA", "M", "C")))
+	mux.HandleFunc("GET /admin/brands", h.limit(h.auth(h.listBrands, "SA", "M", "C")))
+	mux.HandleFunc("POST /admin/brands/{id}/fcap", h.limit(h.auth(h.configureBrandFcap, "SA", "M", "C")))
 	mux.HandleFunc("DELETE /admin/campaigns/{id}", h.limit(h.auth(h.cancelCampaign, "SA", "M", "C")))
+	mux.HandleFunc("POST /admin/campaigns/{id}/pacing", h.limit(h.auth(h.updateCampaignPacing, "SA", "M", "C")))
 
 	// New routes
 	mux.HandleFunc("POST /admin/settings", h.limit(h.auth(h.updateSettings, "SA")))
 	mux.HandleFunc("POST /admin/blacklist", h.limit(h.auth(h.blockIP, "SA")))
 	mux.HandleFunc("DELETE /admin/blacklist", h.limit(h.auth(h.unblockIP, "SA")))
 	mux.HandleFunc("GET /admin/audit", h.limit(h.auth(h.listAudit, "SA", "M")))
+	mux.HandleFunc("POST /admin/system/breaker", h.limit(h.auth(h.toggleEmergencyBreaker, "SA")))
+
 
 	// Customer GET routes
 	mux.HandleFunc("GET /admin/customers", h.limit(h.auth(h.listCustomers, "SA", "M")))
@@ -83,6 +90,7 @@ func (h *Handler) auth(next http.HandlerFunc, allowedRoles ...string) http.Handl
 }
 
 func (h *Handler) createCustomer(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 65536)
 	var req struct {
 		ID       uuid.UUID       `json:"id"`
 		Name     string          `json:"name"`
@@ -116,6 +124,7 @@ func (h *Handler) topUpBalance(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid customer id")
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 65536)
 	var req struct {
 		Amount decimal.Decimal `json:"amount"`
 	}
@@ -138,8 +147,10 @@ func (h *Handler) topUpBalance(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) createCampaign(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 65536)
 	var req struct {
 		CustomerID      uuid.UUID       `json:"customer_id"`
+		BrandID         *uuid.UUID      `json:"brand_id,omitempty"`
 		Name            string          `json:"name"`
 		BudgetLimit     decimal.Decimal `json:"budget_limit"`
 		PacingMode      string          `json:"pacing_mode"`
@@ -182,7 +193,7 @@ func (h *Handler) createCampaign(w http.ResponseWriter, r *http.Request) {
 	}
 
 	hash := h.svc.GenerateIdempotencyHash(req.CustomerID, req)
-	id, err := h.svc.CreateCampaign(r.Context(), req.CustomerID, req.Name, req.BudgetLimit, pacing, req.DailyBudget, req.Timezone, req.FreqLimit, req.FreqWindow, req.TargetCountries, hash)
+	id, err := h.svc.CreateCampaign(r.Context(), req.CustomerID, req.BrandID, req.Name, req.BudgetLimit, pacing, req.DailyBudget, req.Timezone, req.FreqLimit, req.FreqWindow, req.TargetCountries, hash)
 	if err != nil {
 		slog.Error("failed to create campaign", "error", err, "customer_id", req.CustomerID)
 		httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
@@ -198,6 +209,7 @@ func (h *Handler) cancelCampaign(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid campaign id")
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 65536)
 	var req struct {
 		Reason string `json:"reason"`
 	}
@@ -222,7 +234,53 @@ func (h *Handler) cancelCampaign(w http.ResponseWriter, r *http.Request) {
 	httpresponse.JSON(w, http.StatusAccepted, nil)
 }
 
+func (h *Handler) updateCampaignPacing(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	campaignID, err := uuid.Parse(idStr)
+	if err != nil {
+		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid campaign id")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 65536)
+	var req struct {
+		PacingMode string `json:"pacing_mode"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		slog.Warn("failed to decode update campaign pacing request", "error", err)
+		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
+		return
+	}
+
+	if req.PacingMode != "ASAP" && req.PacingMode != "EVEN" {
+		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "pacing_mode must be ASAP or EVEN")
+		return
+	}
+
+	u, ok := GetUser(r.Context())
+	if ok && u.Role == "C" {
+		camp, errCamp := h.svc.GetCampaign(r.Context(), campaignID)
+		if errCamp != nil || uuid.UUID(camp.CustomerID.Bytes) != u.CustomerID {
+			httpresponse.Error(w, http.StatusForbidden, "FORBIDDEN", "forbidden: campaign belongs to another customer")
+			return
+		}
+	}
+
+	updatedCamp, err := h.svc.UpdateCampaignPacing(r.Context(), campaignID, req.PacingMode)
+	if err != nil {
+		slog.Error("failed to update campaign pacing", "error", err, "campaign_id", campaignID)
+		if strings.Contains(err.Error(), "campaign not found") {
+			httpresponse.Error(w, http.StatusNotFound, "NOT_FOUND", "campaign not found")
+		} else {
+			httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		}
+		return
+	}
+
+	httpresponse.JSON(w, http.StatusOK, updatedCamp)
+}
+
 func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 65536)
 	var settings map[string]string
 	if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
@@ -236,7 +294,27 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 	httpresponse.JSON(w, http.StatusNoContent, nil)
 }
 
+func (h *Handler) toggleEmergencyBreaker(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 65536)
+	var req struct {
+		Active bool   `json:"active"`
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
+		return
+	}
+	if err := h.svc.ToggleEmergencyBreaker(r.Context(), req.Active, req.Reason); err != nil {
+		slog.Error("failed to toggle emergency breaker", "error", err)
+		httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	httpresponse.JSON(w, http.StatusOK, nil)
+}
+
+
 func (h *Handler) blockIP(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 65536)
 	var req struct {
 		IP     string `json:"ip"`
 		Source string `json:"source"`
@@ -254,6 +332,7 @@ func (h *Handler) blockIP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) unblockIP(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 65536)
 	var req struct {
 		IP     string `json:"ip"`
 		Source string `json:"source"`
@@ -461,3 +540,114 @@ func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
 
 	httpresponse.JSON(w, http.StatusOK, settings)
 }
+
+func (h *Handler) createBrand(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 65536)
+	var req struct {
+		CustomerID uuid.UUID `json:"customer_id"`
+		Name       string    `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
+		return
+	}
+	if req.CustomerID == uuid.Nil {
+		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "customer_id is required")
+		return
+	}
+	if req.Name == "" {
+		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "name is required")
+		return
+	}
+
+	u, ok := GetUser(r.Context())
+	if ok && u.Role == "C" && req.CustomerID != u.CustomerID {
+		httpresponse.Error(w, http.StatusForbidden, "FORBIDDEN", "forbidden: cannot create brand for another customer")
+		return
+	}
+
+	id, err := h.svc.CreateBrand(r.Context(), req.CustomerID, req.Name)
+	if err != nil {
+		slog.Error("failed to create brand", "error", err, "customer_id", req.CustomerID)
+		httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	httpresponse.JSON(w, http.StatusCreated, map[string]any{"id": id})
+}
+
+func (h *Handler) listBrands(w http.ResponseWriter, r *http.Request) {
+	var custID uuid.UUID
+	if cStr := r.URL.Query().Get("customer_id"); cStr != "" {
+		if id, err := uuid.Parse(cStr); err == nil {
+			custID = id
+		}
+	}
+
+	u, ok := GetUser(r.Context())
+	if ok && u.Role == "C" {
+		custID = u.CustomerID
+	}
+
+	if custID == uuid.Nil {
+		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "customer_id is required")
+		return
+	}
+
+	brands, err := h.svc.ListBrandsByCustomer(r.Context(), custID)
+	if err != nil {
+		slog.Error("failed to list brands", "error", err, "customer_id", custID)
+		httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+ 
+	httpresponse.JSON(w, http.StatusOK, brands)
+}
+
+func (h *Handler) configureBrandFcap(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 65536)
+	idStr := r.PathValue("id")
+	brandID, err := uuid.Parse(idStr)
+	if err != nil {
+		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid brand id")
+		return
+	}
+
+	var req struct {
+		FreqLimit  int32 `json:"freq_limit"`
+		FreqWindow int32 `json:"freq_window"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
+		return
+	}
+
+	if req.FreqLimit < 0 || req.FreqWindow < 0 {
+		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "limits must be non-negative")
+		return
+	}
+
+	// For the Customer ('C') role, verifying ownership of the brand profile in Postgres
+	// prevents malicious cross-tenant frequency capping / constraint modification exploits.
+	u, ok := GetUser(r.Context())
+	if ok && u.Role == "C" {
+		brand, errBrand := h.svc.GetBrandDTO(r.Context(), brandID)
+		if errBrand != nil {
+			httpresponse.Error(w, http.StatusNotFound, "NOT_FOUND", "brand not found")
+			return
+		}
+		if brand.CustomerID != u.CustomerID.String() {
+			httpresponse.Error(w, http.StatusForbidden, "FORBIDDEN", "forbidden: cannot modify brand belonging to another customer")
+			return
+		}
+	}
+
+	err = h.svc.ConfigureBrandFcap(r.Context(), brandID, req.FreqLimit, req.FreqWindow)
+	if err != nil {
+		slog.Error("failed to configure brand fcap", "error", err, "brand_id", brandID)
+		httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
