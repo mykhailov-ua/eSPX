@@ -3,6 +3,7 @@ package ads
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -12,12 +13,28 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// keys2Pool recycles string slices to avoid array-to-slice heap allocations
-// when passing keys to go-redis Eval/Run commands.
-var keys2Pool = sync.Pool{
+type budgetArgs struct {
+	campKeyBuf [64]byte
+	idemKeyBuf [64]byte
+	campIDBuf  [36]byte
+	custIDBuf  [36]byte
+	amountBuf  [32]byte
+	ttlBuf     [32]byte
+
+	campaignKey    string
+	idempotencyKey string
+	campaignIDStr  string
+	customerIDStr  string
+	amountStr      string
+	ttlStr         string
+
+	keys [2]string
+	args [4]any
+}
+
+var budgetArgsPool = sync.Pool{
 	New: func() any {
-		s := make([]string, 2)
-		return &s
+		return &budgetArgs{}
 	},
 }
 
@@ -63,71 +80,73 @@ func NewRedisBudgetManager(rdb redis.Cmdable, repo domain.CampaignRepository, id
 }
 
 func (m *RedisBudgetManager) CheckAndSpend(ctx context.Context, customerID, campaignID uuid.UUID, clickID string, amount decimal.Decimal) (bool, error) {
-	wCampKey := bufPool.Get().(*bufWrapper)
-	wIdemKey := bufPool.Get().(*bufWrapper)
-	wCampID := bufPool.Get().(*bufWrapper)
-	wCustID := bufPool.Get().(*bufWrapper)
-	keysPtr := keys2Pool.Get().(*[]string)
+	ba := budgetArgsPool.Get().(*budgetArgs)
+	defer budgetArgsPool.Put(ba)
 
-	defer func() {
-		bufPool.Put(wCampKey)
-		bufPool.Put(wIdemKey)
-		bufPool.Put(wCampID)
-		bufPool.Put(wCustID)
-		keys2Pool.Put(keysPtr)
-	}()
+	campKeySlice := ba.campKeyBuf[:0]
+	campKeySlice = append(campKeySlice, "budget:campaign:"...)
+	campKeySlice = appendUUID(campKeySlice, campaignID)
+	ba.campaignKey = unsafeString(campKeySlice)
 
-	wCampKey.buf = wCampKey.buf[:0]
-	wCampKey.buf = append(wCampKey.buf, "budget:campaign:"...)
-	wCampKey.buf = appendUUID(wCampKey.buf, campaignID)
-	campaignKey := unsafeString(wCampKey.buf)
+	idemKeySlice := ba.idemKeyBuf[:0]
+	idemKeySlice = append(idemKeySlice, "idempotency:click:"...)
+	idemKeySlice = append(idemKeySlice, clickID...)
+	ba.idempotencyKey = unsafeString(idemKeySlice)
 
-	wIdemKey.buf = wIdemKey.buf[:0]
-	wIdemKey.buf = append(wIdemKey.buf, "idempotency:click:"...)
-	wIdemKey.buf = append(wIdemKey.buf, clickID...)
-	idempotencyKey := unsafeString(wIdemKey.buf)
+	campIDSlice := ba.campIDBuf[:0]
+	campIDSlice = appendUUID(campIDSlice, campaignID)
+	ba.campaignIDStr = unsafeString(campIDSlice)
 
-	wCampID.buf = wCampID.buf[:0]
-	wCampID.buf = appendUUID(wCampID.buf, campaignID)
-	campaignIDStr := unsafeString(wCampID.buf)
+	custIDSlice := ba.custIDBuf[:0]
+	custIDSlice = appendUUID(custIDSlice, customerID)
+	ba.customerIDStr = unsafeString(custIDSlice)
 
-	wCustID.buf = wCustID.buf[:0]
-	wCustID.buf = appendUUID(wCustID.buf, customerID)
-	customerIDStr := unsafeString(wCustID.buf)
+	amountSlice := ba.amountBuf[:0]
+	amountSlice = strconv.AppendInt(amountSlice, DecimalToMicro(amount), 10)
+	ba.amountStr = unsafeString(amountSlice)
 
-	keys := *keysPtr
-	keys[0] = campaignKey
-	keys[1] = idempotencyKey
+	ttlSlice := ba.ttlBuf[:0]
+	ttlSlice = strconv.AppendInt(ttlSlice, int64(m.idempotencyTTL.Seconds()), 10)
+	ba.ttlStr = unsafeString(ttlSlice)
 
-	amountMicro := DecimalToMicro(amount)
+	ba.keys[0] = ba.campaignKey
+	ba.keys[1] = ba.idempotencyKey
 
-	res, err := m.rdb.Eval(ctx, budgetLuaScript, keys,
-		amountMicro,
-		int(m.idempotencyTTL.Seconds()),
-		campaignIDStr,
-		customerIDStr,
-	).Int64()
-	if err != nil {
-		return false, err
-	}
+	ba.args[0] = &ba.amountStr
+	ba.args[1] = &ba.ttlStr
+	ba.args[2] = &ba.campaignIDStr
+	ba.args[3] = &ba.customerIDStr
 
-	// If res is -1, the campaign budget key does not exist in Redis.
-	// We load the remaining budget from PostgreSQL, seed the budget in Redis, and retry the script execution.
-	if res == -1 {
-		camp, err := m.campaignRepo.GetByID(ctx, campaignID)
+	for i := 0; i < 2; i++ {
+		res, err := m.rdb.Eval(ctx, budgetLuaScript, ba.keys[:], ba.args[:]...).Int64()
 		if err != nil {
-			return false, fmt.Errorf("failed to load campaign from db on cache miss: %w", err)
+			return false, err
 		}
 
-		remaining := camp.BudgetLimit.Sub(camp.CurrentSpend)
-		if remaining.IsNegative() {
-			remaining = decimal.Zero
+		// If res is -1, the campaign budget key does not exist in Redis.
+		// We load the remaining budget from PostgreSQL, seed the budget in Redis, and retry the script execution.
+		if res == -1 {
+			if i > 0 {
+				return false, fmt.Errorf("budget cache miss on retry")
+			}
+
+			camp, err := m.campaignRepo.GetByID(ctx, campaignID)
+			if err != nil {
+				return false, fmt.Errorf("failed to load campaign from db on cache miss: %w", err)
+			}
+
+			remaining := camp.BudgetLimit.Sub(camp.CurrentSpend)
+			if remaining.IsNegative() {
+				remaining = decimal.Zero
+			}
+
+			m.rdb.SetNX(ctx, ba.campaignKey, DecimalToMicro(remaining), 24*time.Hour)
+			continue
 		}
 
-		m.rdb.SetNX(ctx, campaignKey, DecimalToMicro(remaining), 24*time.Hour)
-
-		return m.CheckAndSpend(ctx, customerID, campaignID, clickID, amount)
+		return res == 1, nil
 	}
 
-	return res == 1, nil
+	return false, fmt.Errorf("budget cache miss on retry")
 }
+
