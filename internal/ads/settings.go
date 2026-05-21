@@ -23,6 +23,7 @@ type DynamicConfig struct {
 	RateLimitWindow  int             `json:"rate_limit_window_ms"`
 	ClickAmount      decimal.Decimal `json:"click_amount"`
 	ImpressionAmount decimal.Decimal `json:"impression_amount"`
+	EmergencyBreaker bool            `json:"emergency_breaker"`
 }
 
 // SettingsWatcher periodically checks Redis for configuration updates and performs atomic swaps of the local state.
@@ -44,6 +45,7 @@ func NewSettingsWatcher(rdb redis.UniversalClient, initial *config.Config) *Sett
 		RateLimitWindow:  initial.RateLimitWindowMs,
 		ClickAmount:      initial.ClickAmount,
 		ImpressionAmount: initial.ImpressionAmount,
+		EmergencyBreaker: false,
 	})
 
 	return sw
@@ -104,6 +106,7 @@ func (sw *SettingsWatcher) parseConfig(version int64, data map[string]string) *D
 	updateInt(&next.RateLimitWindow, data["rate_limit_window_ms"])
 	updateDecimal(&next.ClickAmount, data["click_amount"])
 	updateDecimal(&next.ImpressionAmount, data["impression_amount"])
+	updateBool(&next.EmergencyBreaker, data["emergency_breaker"])
 
 	return &next
 }
@@ -125,3 +128,13 @@ func updateDecimal(target *decimal.Decimal, val string) {
 		*target = d
 	}
 }
+
+func updateBool(target *bool, val string) {
+	if val == "" {
+		return
+	}
+	if b, err := strconv.ParseBool(val); err == nil {
+		*target = b
+	}
+}
+

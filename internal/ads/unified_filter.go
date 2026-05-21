@@ -43,6 +43,8 @@ func appendDate(dst []byte, t time.Time) []byte {
 	)
 }
 
+
+
 type UnifiedFilter struct {
 	rdbs                  []redis.UniversalClient
 	sharder               Sharder
@@ -57,6 +59,11 @@ type UnifiedFilter struct {
 	impressionAmountMicro int64
 	streamName            string
 	maxStreamLen          int
+	rateLimitWindowAny    any
+	rateLimitAny          any
+	dupTTLAny             any
+	idempotencyTTLAny     any
+	maxStreamLenAny       any
 }
 
 func NewUnifiedFilter(
@@ -87,6 +94,11 @@ func NewUnifiedFilter(
 		impressionAmountMicro: DecimalToMicro(impressionAmount),
 		streamName:            streamName,
 		maxStreamLen:          maxStreamLen,
+		rateLimitWindowAny:    int(rateLimitWindow.Seconds()),
+		rateLimitAny:          rateLimit,
+		dupTTLAny:             int(dupTTL.Seconds()),
+		idempotencyTTLAny:     int(idempotencyTTL.Seconds()),
+		maxStreamLenAny:       maxStreamLen,
 	}
 }
 
@@ -197,11 +209,18 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 	var fcapKey string
 	wFcap.buf = wFcap.buf[:0]
 	if evt.UserID != "" {
-		wFcap.buf = append(wFcap.buf, "fcap:c:"...)
-		wFcap.buf = append(wFcap.buf, campaignIDStr...)
-		wFcap.buf = append(wFcap.buf, ":u:"...)
-		wFcap.buf = append(wFcap.buf, evt.UserID...)
-		fcapKey = unsafeString(wFcap.buf)
+		if campInfo.BrandFcapKey != "" {
+			wFcap.buf = append(wFcap.buf, campInfo.BrandFcapKey...)
+			wFcap.buf = append(wFcap.buf, ":u:"...)
+			wFcap.buf = append(wFcap.buf, evt.UserID...)
+			fcapKey = unsafeString(wFcap.buf)
+		} else {
+			wFcap.buf = append(wFcap.buf, "fcap:c:"...)
+			wFcap.buf = append(wFcap.buf, campaignIDStr...)
+			wFcap.buf = append(wFcap.buf, ":u:"...)
+			wFcap.buf = append(wFcap.buf, evt.UserID...)
+			fcapKey = unsafeString(wFcap.buf)
+		}
 	} else {
 		fcapKey = "fcap:ignored"
 	}
@@ -228,16 +247,15 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 	// If the unified Lua script returns -1, the budget key is loaded from the primary PostgreSQL
 	// database and seeded into Redis, after which the script is re-run.
 	for i := 0; i < 2; i++ {
-		res, err := f.script.Run(ctx, rdb,
-			keys,
-			int(f.rateLimitWindow.Seconds()),
-			f.rateLimit,
-			int(f.dupTTL.Seconds()),
+		res, err := f.script.Run(ctx, rdb, keys,
+			f.rateLimitWindowAny,
+			f.rateLimitAny,
+			f.dupTTLAny,
 			amount,
-			int(f.idempotencyTTL.Seconds()),
+			f.idempotencyTTLAny,
 			campaignIDStr,
 			customerIDStr,
-			f.maxStreamLen,
+			f.maxStreamLenAny,
 			evt.ClickID,
 			evt.Type,
 			evt.Payload,

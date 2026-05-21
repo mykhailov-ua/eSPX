@@ -15,15 +15,17 @@ import (
 )
 
 var (
-	ErrRateLimitExceeded = errors.New("rate limit exceeded")
-	ErrDuplicateEvent    = errors.New("duplicate event detected")
-	ErrBudgetExhausted   = errors.New("budget exhausted")
-	ErrCampaignNotFound  = errors.New("campaign not found in registry")
-	ErrPacingExhausted   = errors.New("pacing exhausted")
-	ErrFreqLimitExceeded = errors.New("frequency limit exceeded")
-	ErrGeoBlocked        = errors.New("geo-targeting blocked")
-	ErrFraudDetected     = errors.New("fraud detected")
+	ErrRateLimitExceeded     = errors.New("rate limit exceeded")
+	ErrDuplicateEvent        = errors.New("duplicate event detected")
+	ErrBudgetExhausted       = errors.New("budget exhausted")
+	ErrCampaignNotFound      = errors.New("campaign not found in registry")
+	ErrPacingExhausted       = errors.New("pacing exhausted")
+	ErrFreqLimitExceeded     = errors.New("frequency limit exceeded")
+	ErrGeoBlocked            = errors.New("geo-targeting blocked")
+	ErrFraudDetected         = errors.New("fraud detected")
+	ErrEmergencyBreakerActive = errors.New("service temporarily unavailable (emergency breaker active)")
 )
+
 
 type bufWrapper struct {
 	buf []byte
@@ -323,3 +325,21 @@ func (f *DuplicateEventFilter) Check(ctx context.Context, evt *domain.Event) err
 
 	return nil
 }
+
+// EmergencyBreakerFilter checks the in-memory breaker status using zero-allocation atomic values from SettingsWatcher,
+// providing an instant failsafe to drop ingestion traffic without stressing the DB/Redis pool.
+type EmergencyBreakerFilter struct {
+	watcher *SettingsWatcher
+}
+
+func NewEmergencyBreakerFilter(watcher *SettingsWatcher) *EmergencyBreakerFilter {
+	return &EmergencyBreakerFilter{watcher: watcher}
+}
+
+func (f *EmergencyBreakerFilter) Check(ctx context.Context, evt *domain.Event) error {
+	if f.watcher != nil && f.watcher.Get().EmergencyBreaker {
+		return ErrEmergencyBreakerActive
+	}
+	return nil
+}
+

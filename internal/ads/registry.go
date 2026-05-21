@@ -61,7 +61,7 @@ func (r *Registry) GetCampaign(id uuid.UUID) (*domain.Campaign, bool) {
 	return info.campaign, true
 }
 
-func (r *Registry) Add(id, customerID uuid.UUID, pacingMode domain.PacingMode, dailyBudget decimal.Decimal, timezone string, freqLimit, freqWindow int32, targetCountries []string) {
+func (r *Registry) Add(id, customerID uuid.UUID, brandID *uuid.UUID, brandFcapKey string, pacingMode domain.PacingMode, dailyBudget decimal.Decimal, timezone string, freqLimit, freqWindow int32, targetCountries []string) {
 	loc, err := time.LoadLocation(timezone)
 	if err != nil {
 		slog.Error("invalid timezone in registry Add", "timezone", timezone, "error", err)
@@ -82,6 +82,8 @@ func (r *Registry) Add(id, customerID uuid.UUID, pacingMode domain.PacingMode, d
 			IDStr:            id.String(),
 			CustomerID:       customerID,
 			CustomerIDStr:    customerID.String(),
+			BrandID:          brandID,
+			BrandFcapKey:     brandFcapKey,
 			PacingMode:       pacingMode,
 			DailyBudget:      dailyBudget,
 			DailyBudgetMicro: DecimalToMicro(dailyBudget),
@@ -116,12 +118,20 @@ func (r *Registry) Sync(ctx context.Context) (int, error) {
 		customerID := uuid.UUID(row.CustomerID.Bytes)
 		dailyBudgetDec := FromNumeric(row.DailyBudget)
 
+		var brandIDPtr *uuid.UUID
+		if row.BrandID.Valid {
+			brandID := uuid.UUID(row.BrandID.Bytes)
+			brandIDPtr = &brandID
+		}
+
 		fresh[id] = campaignInfo{
 			campaign: &domain.Campaign{
 				ID:               id,
 				IDStr:            id.String(),
 				CustomerID:       customerID,
 				CustomerIDStr:    customerID.String(),
+				BrandID:          brandIDPtr,
+				BrandFcapKey:     row.BrandFcapKey,
 				PacingMode:       domain.PacingMode(row.PacingMode),
 				DailyBudget:      dailyBudgetDec,
 				DailyBudgetMicro: DecimalToMicro(dailyBudgetDec),
@@ -182,6 +192,8 @@ func (r *Registry) StartWatch(ctx context.Context, rdb redis.UniversalClient, ch
 		ch := pubsub.Channel(redis.WithChannelSize(1000))
 		syncTrigger := make(chan struct{}, 1)
 
+		// Listening to Redis PubSub and signaling syncTrigger allows instant cache invalidation.
+		// Throttling DB re-sync (100ms sleep) protects PostgreSQL from connection exhaustion during high-concurrency campaigns update storms.
 		r.wg.Add(1)
 		go func() {
 			defer r.wg.Done()

@@ -34,8 +34,6 @@ func (p *MaxMindProvider) GetCountry(ipStr string) (string, error) {
 		return "", fmt.Errorf("invalid IP: %s", ipStr)
 	}
 
-	p.mu.RLock()
-	defer p.mu.RUnlock()
 	if p.reader == nil {
 		return "", fmt.Errorf("geoip provider closed")
 	}
@@ -54,8 +52,6 @@ func (p *MaxMindProvider) IsAnonymous(ipStr string) (bool, error) {
 		return false, fmt.Errorf("invalid IP: %s", ipStr)
 	}
 
-	p.mu.RLock()
-	defer p.mu.RUnlock()
 	if p.reader == nil {
 		return false, fmt.Errorf("geoip provider closed")
 	}
