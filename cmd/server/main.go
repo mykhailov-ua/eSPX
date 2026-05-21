@@ -70,6 +70,12 @@ func main() {
 		rdbs = append(rdbs, rdb)
 	}
 
+	channel := cfg.CampaignUpdateChannel
+	if channel == "" {
+		channel = "campaigns:update"
+	}
+	registry.StartWatch(ctx, rdbs[0], channel)
+
 	campaignRepo := ads.NewCampaignRepo(queries)
 	sharder := ads.NewJumpHashSharder(len(rdbs))
 
@@ -83,6 +89,11 @@ func main() {
 
 	geoFilter := ads.NewGeoFilter(geoProvider, registry)
 	fraudFilter := ads.NewFraudFilter(geoProvider, rdbs[0], time.Duration(cfg.TTCMinMs)*time.Millisecond)
+
+	settingsWatcher := ads.NewSettingsWatcher(rdbs[0], cfg)
+	go settingsWatcher.Start(ctx, time.Second)
+
+	breakerFilter := ads.NewEmergencyBreakerFilter(settingsWatcher)
 
 	unifiedFilter := ads.NewUnifiedFilter(
 		rdbs,
@@ -99,7 +110,7 @@ func main() {
 		cfg.StreamMaxLen,
 	)
 
-	filterEngine := ads.NewFilterEngine(geoFilter, fraudFilter, unifiedFilter)
+	filterEngine := ads.NewFilterEngine(breakerFilter, geoFilter, fraudFilter, unifiedFilter)
 
 	mux := ads.NewRouter(cfg, registry, filterEngine, pool, rdbs, sharder, cfg.FraudStreamName)
 

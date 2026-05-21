@@ -103,5 +103,18 @@ func main() {
 	<-stop
 
 	slog.Info("shutting down auth gRPC server")
-	server.GracefulStop()
+	
+	stopped := make(chan struct{})
+	go func() {
+		server.GracefulStop()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+		slog.Info("gRPC server stopped cleanly")
+	case <-time.After(5 * time.Second):
+		slog.Warn("gRPC graceful shutdown timed out, force stopping")
+		server.Stop()
+	}
 }
