@@ -41,6 +41,13 @@ var (
 	trackResponsePool = sync.Pool{
 		New: func() any { return &pb.TrackResponse{} },
 	}
+	trackRequestPool = sync.Pool{
+		New: func() any {
+			return &TrackRequest{
+				Payload: make([]byte, 0, 512),
+			}
+		},
+	}
 	bufferPool = sync.Pool{
 		New: func() any { return new(bytes.Buffer) },
 	}
@@ -241,14 +248,15 @@ func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, filterEngin
 				return
 			}
 
-			var req struct {
-				CampaignID uuid.UUID       `json:"campaign_id"`
-				UserID     string          `json:"user_id"`
-				Type       string          `json:"type"`
-				ClickID    string          `json:"click_id"`
-				Payload    json.RawMessage `json:"payload"`
-			}
-			if err := json.Unmarshal(buf.Bytes(), &req); err != nil {
+			req := trackRequestPool.Get().(*TrackRequest)
+			req.CampaignID = uuid.Nil
+			req.UserID = ""
+			req.Type = ""
+			req.ClickID = ""
+			req.Payload = req.Payload[:0]
+			defer trackRequestPool.Put(req)
+
+			if err := req.UnmarshalJSON(buf.Bytes()); err != nil {
 				slog.Warn("invalid json body", "error", err, "request_id", id)
 				status = http.StatusBadRequest
 				http.Error(w, "invalid json", status)
@@ -462,7 +470,8 @@ func extractClientIP(r *http.Request) string {
 		}
 	}
 
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+	if xriSlice := r.Header["X-Real-Ip"]; len(xriSlice) > 0 {
+		xri := xriSlice[0]
 		ipStr := strings.TrimSpace(xri)
 		parsedIP := net.ParseIP(ipStr)
 		if parsedIP != nil && !parsedIP.IsPrivate() && !parsedIP.IsLoopback() && !parsedIP.IsLinkLocalUnicast() {
