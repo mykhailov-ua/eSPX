@@ -24,24 +24,29 @@ const (
 )
 
 type Campaign struct {
-	ID               uuid.UUID
-	IDStr            string
-	CustomerID       uuid.UUID
-	CustomerIDStr    string
-	BrandID          *uuid.UUID
-	BrandFcapKey     string
-	Name             string
-	BudgetLimit      decimal.Decimal
-	CurrentSpend     decimal.Decimal
-	Status           CampaignStatus
-	PacingMode       PacingMode
-	DailyBudget      decimal.Decimal
-	DailyBudgetMicro int64
-	Timezone         string
-	Location         *time.Location
-	FreqLimit        int32
-	FreqWindow       int32
-	TargetCountries  []string
+	ID                  uuid.UUID
+	IDStr               string
+	IDStrAny            any
+	CustomerID          uuid.UUID
+	CustomerIDStr       string
+	CustomerIDStrAny    any
+	BrandID             *uuid.UUID
+	BrandFcapKey        string
+	Name                string
+	BudgetLimit         decimal.Decimal
+	CurrentSpend        decimal.Decimal
+	Status              CampaignStatus
+	PacingMode          PacingMode
+	DailyBudget         decimal.Decimal
+	DailyBudgetMicro    int64
+	DailyBudgetMicroAny any
+	Timezone            string
+	Location            *time.Location
+	FreqLimit           int32
+	FreqLimitAny        any
+	FreqWindow          int32
+	FreqWindowAny       any
+	TargetCountries     map[string]struct{}
 }
 
 type Brand struct {
@@ -55,7 +60,7 @@ type Brand struct {
 type CampaignRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*Campaign, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status CampaignStatus) error
-	UpdateSpend(ctx context.Context, id uuid.UUID, amount decimal.Decimal) error
+	UpdateSpend(ctx context.Context, id uuid.UUID, amount decimal.Decimal, txID string) error
 	ListActive(ctx context.Context) ([]*Campaign, error)
 }
 

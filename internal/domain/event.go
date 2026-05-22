@@ -9,15 +9,16 @@ import (
 )
 
 type Event struct {
-	ClickID     string
-	CampaignID  uuid.UUID
-	UserID      string
-	Type        string
-	Payload     []byte
-	IP          string
-	UA          string
-	FraudReason string
-	CreatedAt   time.Time
+	ClickID      string
+	CampaignID   uuid.UUID
+	UserID       string
+	Type         string
+	Payload      []byte
+	IP           string
+	UA           string
+	FraudReason  string
+	CreatedAt    time.Time
+	InsertedToCH bool
 }
 
 func (e *Event) Reset() {
@@ -34,6 +35,7 @@ func (e *Event) Reset() {
 	e.UA = ""
 	e.FraudReason = ""
 	e.CreatedAt = time.Time{}
+	e.InsertedToCH = false
 }
 
 var EventPool = sync.Pool{

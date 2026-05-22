@@ -31,6 +31,9 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	procCtx, procCancel := context.WithCancel(context.Background())
+	defer procCancel()
+
 	pool, err := database.Connect(ctx, string(cfg.DBDSN), cfg.DBProcessorMaxConns, cfg.DBMinConns)
 	if err != nil {
 		slog.Error("failed to connect to database", "error", err)
@@ -88,7 +91,7 @@ func main() {
 
 		sw := ads.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond)
 		syncWorkers = append(syncWorkers, sw)
-		sw.Start(ctx)
+		sw.Start(procCtx)
 
 		pc := ads.NewStreamConsumer(
 			pgStore,
@@ -107,7 +110,7 @@ func main() {
 			time.Duration(cfg.Lifecycle.DrainTimeoutMs)*time.Millisecond,
 		)
 		pgConsumers = append(pgConsumers, pc)
-		pc.Start(ctx)
+		pc.Start(procCtx)
 
 		cc := ads.NewStreamConsumer(
 			chStore,
@@ -126,7 +129,7 @@ func main() {
 			time.Duration(cfg.Lifecycle.DrainTimeoutMs)*time.Millisecond,
 		)
 		chConsumers = append(chConsumers, cc)
-		cc.Start(ctx)
+		cc.Start(procCtx)
 
 		fc := ads.NewStreamConsumer(
 			chStore,
@@ -145,7 +148,7 @@ func main() {
 			time.Duration(cfg.Lifecycle.DrainTimeoutMs)*time.Millisecond,
 		)
 		chConsumers = append(chConsumers, fc)
-		fc.Start(ctx)
+		fc.Start(procCtx)
 	}
 
 	slog.Info("starting ad-event-processor worker",
@@ -206,7 +209,7 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), time.Duration(cfg.Lifecycle.ShutdownTimeoutMs)*time.Millisecond)
 	defer shutdownCancel()
 
-	cancel()
+	procCancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		slog.Error("processor server shutdown failed", "error", err)
@@ -240,6 +243,8 @@ func main() {
 	if err := partManager.Wait(waitCtx); err != nil {
 		slog.Error("partition manager wait failed", "error", err)
 	}
+
+	cancel()
 
 	for i, rdb := range rdbs {
 		if err := rdb.Close(); err != nil {

@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unsafe"
 
 	"github.com/google/uuid"
 	"github.com/mykhailov-ua/ad-event-processor/internal/ads/pb"
@@ -144,7 +143,8 @@ func (p *StreamConsumer) worker(ctx context.Context, workerIdx int) {
 	workerID := p.workerConsumerID(workerIdx)
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Error("worker panic recovered", "error", r, "worker", workerID)
+			slog.Error("worker panic recovered - exiting process", "error", r, "worker", workerID)
+			os.Exit(1)
 		}
 	}()
 
@@ -163,86 +163,25 @@ func (p *StreamConsumer) worker(ctx context.Context, workerIdx int) {
 		Group:    p.groupName,
 		Consumer: workerID,
 		Streams:  []string{p.streamName, ">"},
-		Block:    p.flushInt,
 	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			// Drain remaining events from the stream within drainTimeout to prevent data loss.
 			drainCtx, drainCancel := context.WithTimeout(context.Background(), p.drainTimeout)
 			if len(batch) > 0 {
-				if err := p.flushBatch(drainCtx, batch, msgIDs); err != nil {
-					slog.Error("drain flush of existing batch failed", "error", err, "group", p.groupName, "worker", workerID)
-				}
-				for _, e := range batch {
-					domain.EventPool.Put(e)
+				if err := p.flushBatch(drainCtx, batch, msgIDs); err == nil {
+					for _, e := range batch {
+						domain.EventPool.Put(e)
+					}
+				} else {
+					slog.Error("drain flush of existing batch failed, GC will reclaim objects", "error", err, "group", p.groupName, "worker", workerID)
 				}
 				batch = batch[:0]
 				msgIDs = msgIDs[:0]
 			}
 
-			drainArgs := &redis.XReadGroupArgs{
-				Group:    p.groupName,
-				Consumer: workerID,
-				Streams:  []string{p.streamName, ">"},
-				Block:    -1,
-			}
-
-			for {
-				if drainCtx.Err() != nil {
-					break
-				}
-
-				readCount := int64(p.batchSize - len(batch))
-				if readCount <= 0 {
-					if err := p.flushBatch(drainCtx, batch, msgIDs); err != nil {
-						slog.Error("drain batch flush failed", "error", err, "group", p.groupName, "worker", workerID)
-						break
-					}
-					for _, e := range batch {
-						domain.EventPool.Put(e)
-					}
-					batch = batch[:0]
-					msgIDs = msgIDs[:0]
-					readCount = int64(p.batchSize)
-				}
-
-				drainArgs.Count = readCount
-				streams, err := p.rdb.XReadGroup(drainCtx, drainArgs).Result()
-				if err != nil {
-					if err == redis.Nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-						break
-					}
-					slog.Error("drain read failed", "error", err)
-					break
-				}
-
-				hasNewMessages := false
-				for _, stream := range streams {
-					if len(stream.Messages) > 0 {
-						hasNewMessages = true
-					}
-					for _, msg := range stream.Messages {
-						batch = append(batch, p.parseMessage(msg.ID, msg.Values))
-						msgIDs = append(msgIDs, msg.ID)
-					}
-				}
-
-				if !hasNewMessages {
-					break
-				}
-			}
-
-			if len(batch) > 0 {
-				if err := p.flushBatch(drainCtx, batch, msgIDs); err != nil {
-					slog.Error("final drain flush failed", "error", err, "group", p.groupName, "worker", workerID)
-				}
-				for _, e := range batch {
-					domain.EventPool.Put(e)
-				}
-			}
-
+			p.drainNewMessages(drainCtx, workerID)
 			p.recoverPending(drainCtx, workerID)
 			drainCancel()
 			return
@@ -256,7 +195,24 @@ func (p *StreamConsumer) worker(ctx context.Context, workerIdx int) {
 			continue
 		}
 
+		var blockTime time.Duration
+		if len(batch) == 0 {
+			blockTime = 200 * time.Millisecond
+		} else {
+			elapsed := time.Since(lastFlush)
+			if elapsed >= p.flushInt {
+				p.tryFlush(ctx, &batch, &msgIDs, &retryCount, workerID, nil, &retryWait)
+				lastFlush = time.Now()
+				continue
+			}
+			blockTime = p.flushInt - elapsed
+			if blockTime > 200*time.Millisecond {
+				blockTime = 200 * time.Millisecond
+			}
+		}
+
 		xreadArgs.Count = readCount
+		xreadArgs.Block = blockTime
 		streams, err := p.rdb.XReadGroup(ctx, xreadArgs).Result()
 
 		if err != nil {
@@ -267,10 +223,15 @@ func (p *StreamConsumer) worker(ctx context.Context, workerIdx int) {
 				}
 			} else {
 				slog.Error("failed to read from redis stream", "error", err)
-				time.Sleep(time.Second)
+				select {
+				case <-ctx.Done():
+				case <-time.After(time.Second):
+				}
 			}
 			continue
 		}
+
+		hadEmptyBatch := len(batch) == 0
 
 		for _, stream := range streams {
 			for _, msg := range stream.Messages {
@@ -279,11 +240,30 @@ func (p *StreamConsumer) worker(ctx context.Context, workerIdx int) {
 			}
 		}
 
+		if hadEmptyBatch && len(batch) > 0 {
+			lastFlush = time.Now()
+		}
+
 		if len(batch) >= p.batchSize || time.Since(lastFlush) >= p.flushInt {
 			p.tryFlush(ctx, &batch, &msgIDs, &retryCount, workerID, nil, &retryWait)
 			lastFlush = time.Now()
 		}
 	}
+}
+
+func (p *StreamConsumer) recordSuccess(workerID string) {
+	p.cb.RecordSuccess(workerID)
+	metrics.CircuitBreakerState.WithLabelValues(p.groupName).Set(float64(p.cb.State()))
+}
+
+func (p *StreamConsumer) recordFailure(workerID string) {
+	p.cb.RecordFailure(workerID)
+	metrics.CircuitBreakerState.WithLabelValues(p.groupName).Set(float64(p.cb.State()))
+}
+
+func (p *StreamConsumer) recordCancellation(workerID string) {
+	p.cb.RecordCancellation(workerID)
+	metrics.CircuitBreakerState.WithLabelValues(p.groupName).Set(float64(p.cb.State()))
 }
 
 func (p *StreamConsumer) tryFlush(ctx context.Context, batch *[]*domain.Event, msgIDs *[]string, retryCount *int, workerID string, ticker *time.Ticker, retryWait *time.Duration) {
@@ -301,8 +281,7 @@ func (p *StreamConsumer) tryFlush(ctx context.Context, batch *[]*domain.Event, m
 	}
 	err := p.flushBatch(ctx, *batch, *msgIDs)
 	if err == nil {
-		p.cb.RecordSuccess(workerID)
-		metrics.CircuitBreakerState.WithLabelValues(p.groupName).Set(float64(p.cb.State()))
+		p.recordSuccess(workerID)
 		for _, e := range *batch {
 			domain.EventPool.Put(e)
 		}
@@ -317,12 +296,12 @@ func (p *StreamConsumer) tryFlush(ctx context.Context, batch *[]*domain.Event, m
 	}
 
 	if errors.Is(err, context.Canceled) {
+		p.recordCancellation(workerID)
 		return
 	}
 
 	*retryCount++
-	p.cb.RecordFailure(workerID)
-	metrics.CircuitBreakerState.WithLabelValues(p.groupName).Set(float64(p.cb.State()))
+	p.recordFailure(workerID)
 
 	if *retryCount > p.maxRetries {
 		slog.Error("poison pill detected, decomposing batch", "error", err, "group", p.groupName, "worker", workerID)
@@ -332,7 +311,7 @@ func (p *StreamConsumer) tryFlush(ctx context.Context, batch *[]*domain.Event, m
 
 		for i, e := range *batch {
 			singleBatch := []*domain.Event{e}
-			
+
 			select {
 			case <-ctx.Done():
 				return
@@ -402,15 +381,17 @@ func (p *StreamConsumer) tryFlush(ctx context.Context, batch *[]*domain.Event, m
 		*retryWait = 100 * time.Millisecond
 		*retryCount = 0
 	} else {
-		time.Sleep(*retryWait)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(*retryWait):
+		}
 		*retryWait *= 2
 		if *retryWait > p.retryMaxWait {
 			*retryWait = p.retryMaxWait
 		}
 	}
 }
-
-
 
 var dlqEventPool = sync.Pool{
 	New: func() any {
@@ -419,8 +400,14 @@ var dlqEventPool = sync.Pool{
 }
 
 func (p *StreamConsumer) moveToDLQ(ctx context.Context, batch []*domain.Event, msgIDs []string, workerID string, retryCount int, err error) error {
-	pipe := p.rdb.Pipeline()
 	errStr := err.Error()
+
+	pipeWrite := p.rdb.Pipeline()
+
+	writtenMsgIDs := make([]string, 0, len(batch))
+
+	execCtx, execCancel := context.WithTimeout(ctx, p.writeTimeout)
+	defer execCancel()
 
 	for i, e := range batch {
 		pbDLQ := dlqEventPool.Get().(*pb.AdDLQEvent)
@@ -444,14 +431,16 @@ func (p *StreamConsumer) moveToDLQ(ctx context.Context, batch []*domain.Event, m
 		pbDLQ.OriginalEvent.CreatedAtUnix = e.CreatedAt.Unix()
 
 		data, marshalErr := proto.Marshal(pbDLQ)
-		dlqEventPool.Put(pbDLQ)
-
 		if marshalErr != nil {
 			slog.Error("failed to marshal DLQ event", "error", marshalErr)
+			dlqEventPool.Put(pbDLQ)
 			continue
 		}
 
-		pipe.XAdd(ctx, &redis.XAddArgs{
+		dlqEventPool.Put(pbDLQ)
+		writtenMsgIDs = append(writtenMsgIDs, msgIDs[i])
+
+		pipeWrite.XAdd(execCtx, &redis.XAddArgs{
 			Stream: "ad:events:dlq",
 			MaxLen: 100000,
 			Approx: true,
@@ -459,14 +448,52 @@ func (p *StreamConsumer) moveToDLQ(ctx context.Context, batch []*domain.Event, m
 				"d": data,
 			},
 		})
-		pipe.XAck(ctx, p.streamName, p.groupName, msgIDs[i])
-		pipe.XDel(ctx, p.streamName, msgIDs[i])
 	}
 
-	execCtx, execCancel := context.WithTimeout(ctx, p.writeTimeout)
-	_, execErr := pipe.Exec(execCtx)
-	execCancel()
-	return execErr
+	if len(writtenMsgIDs) == 0 {
+		return nil
+	}
+
+	cmders, execErr := pipeWrite.Exec(execCtx)
+
+	var hasError bool
+	if execErr != nil && !errors.Is(execErr, redis.Nil) {
+		slog.Error("DLQ write pipeline returned error", "error", execErr)
+		hasError = true
+	}
+
+	// Step 2: For every successfully written message, send XAck and XDel to clean up the main stream
+	pipeAck := p.rdb.Pipeline()
+	var ackedMsgIDs []string
+
+	ackCtx, ackCancel := context.WithTimeout(ctx, p.writeTimeout)
+	defer ackCancel()
+
+	for i, cmder := range cmders {
+		if cmder.Err() == nil {
+			msgID := writtenMsgIDs[i]
+			pipeAck.XAck(ackCtx, p.streamName, p.groupName, msgID)
+			pipeAck.XDel(ackCtx, p.streamName, msgID)
+			ackedMsgIDs = append(ackedMsgIDs, msgID)
+		} else {
+			slog.Error("individual DLQ write failed", "error", cmder.Err(), "msgID", writtenMsgIDs[i])
+			hasError = true
+		}
+	}
+
+	if len(ackedMsgIDs) > 0 {
+		_, ackErr := pipeAck.Exec(ackCtx)
+		if ackErr != nil {
+			slog.Error("DLQ ack/del pipeline failed", "error", ackErr)
+			return ackErr
+		}
+	}
+
+	if hasError || len(ackedMsgIDs) < len(writtenMsgIDs) {
+		return fmt.Errorf("DLQ write partial failure: wrote %d of %d messages", len(ackedMsgIDs), len(writtenMsgIDs))
+	}
+
+	return nil
 }
 
 func (p *StreamConsumer) parseMessage(id string, values map[string]interface{}) *domain.Event {
@@ -477,18 +504,18 @@ func (p *StreamConsumer) parseMessage(id string, values map[string]interface{}) 
 		pbEvt := streamEventPool.Get().(*pb.AdStreamEvent)
 		pbEvt.Reset()
 
-		buf := unsafe.Slice(unsafe.StringData(rawBytesStr), len(rawBytesStr))
+		buf := []byte(rawBytesStr)
 		if err := proto.Unmarshal(buf, pbEvt); err == nil {
-			evt.ClickID = pbEvt.ClickId
+			evt.ClickID = strings.Clone(pbEvt.ClickId)
 			if len(pbEvt.CampaignId) == 16 {
 				copy(evt.CampaignID[:], pbEvt.CampaignId)
 			} else {
 				evt.CampaignID, _ = uuid.Parse(string(pbEvt.CampaignId))
 			}
-			evt.Type = pbEvt.EventType
+			evt.Type = strings.Clone(pbEvt.EventType)
 			evt.Payload = append(evt.Payload[:0], pbEvt.Payload...)
-			evt.IP = pbEvt.Ip
-			evt.UA = pbEvt.Ua
+			evt.IP = strings.Clone(pbEvt.Ip)
+			evt.UA = strings.Clone(pbEvt.Ua)
 			if pbEvt.CreatedAtUnix > 0 {
 				evt.CreatedAt = time.Unix(pbEvt.CreatedAtUnix, 0)
 			}
@@ -543,7 +570,10 @@ func (p *StreamConsumer) flushBatch(ctx context.Context, batch []*domain.Event, 
 		return nil
 	}
 
-	err := p.store.StoreBatch(ctx, batch)
+	storeCtx, storeCancel := context.WithTimeout(ctx, p.writeTimeout)
+	defer storeCancel()
+
+	err := p.store.StoreBatch(storeCtx, batch)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			slog.Error("store failed, NOT ACKING", "error", err, "group", p.groupName, "size", len(batch))
@@ -588,7 +618,7 @@ func (p *StreamConsumer) recoverPending(ctx context.Context, consumerID string) 
 
 			if err := p.flushBatch(ctx, batch, msgIDs); err != nil {
 				if !errors.Is(err, context.Canceled) {
-					p.cb.RecordFailure(consumerID)
+					p.recordFailure(consumerID)
 					slog.Error("recovery flush failed, moving to DLQ", "error", err, "group", p.groupName)
 					_ = p.moveToDLQ(ctx, batch, msgIDs, consumerID, 1, fmt.Errorf("recovery flush failed: %w", err))
 				}
@@ -597,7 +627,58 @@ func (p *StreamConsumer) recoverPending(ctx context.Context, consumerID string) 
 				}
 				return
 			}
-			p.cb.RecordSuccess(consumerID)
+			p.recordSuccess(consumerID)
+			for _, e := range batch {
+				domain.EventPool.Put(e)
+			}
+		}
+	}
+}
+
+func (p *StreamConsumer) drainNewMessages(ctx context.Context, consumerID string) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			streams, err := p.rdb.XReadGroup(ctx, &redis.XReadGroupArgs{
+				Group:    p.groupName,
+				Consumer: consumerID,
+				Streams:  []string{p.streamName, ">"},
+				Count:    int64(p.batchSize),
+				Block:    50 * time.Millisecond,
+			}).Result()
+
+			if err != nil {
+				if err == redis.Nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, redis.ErrClosed) || strings.Contains(err.Error(), "client is closed") {
+					return
+				}
+				slog.Error("drain: failed to read from stream", "error", err, "group", p.groupName, "worker", consumerID)
+				return
+			}
+
+			if len(streams) == 0 || len(streams[0].Messages) == 0 {
+				return
+			}
+
+			batch := make([]*domain.Event, 0, len(streams[0].Messages))
+			msgIDs := make([]string, 0, len(streams[0].Messages))
+
+			for _, msg := range streams[0].Messages {
+				batch = append(batch, p.parseMessage(msg.ID, msg.Values))
+				msgIDs = append(msgIDs, msg.ID)
+			}
+
+			if err := p.flushBatch(ctx, batch, msgIDs); err != nil {
+				if !errors.Is(err, context.Canceled) {
+					slog.Error("drain: failed to flush batch", "error", err, "group", p.groupName, "worker", consumerID)
+				}
+				for _, e := range batch {
+					domain.EventPool.Put(e)
+				}
+				return
+			}
+
 			for _, e := range batch {
 				domain.EventPool.Put(e)
 			}
@@ -608,7 +689,8 @@ func (p *StreamConsumer) recoverPending(ctx context.Context, consumerID string) 
 func (p *StreamConsumer) janitor(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Error("janitor panic recovered", "error", r)
+			slog.Error("janitor panic recovered - exiting process", "error", r)
+			os.Exit(1)
 		}
 	}()
 	ticker := time.NewTicker(p.streamMinIdle)
@@ -644,18 +726,26 @@ func (p *StreamConsumer) claimStuckMessages(ctx context.Context) {
 		}
 
 		if len(entries) > 0 {
+			pipe := p.rdb.Pipeline()
+			incrCmds := make([]*redis.IntCmd, len(entries))
+			for i, msg := range entries {
+				incrCmds[i] = pipe.HIncrBy(ctx, "ad:events:retries", msg.ID, 1)
+			}
+			_, _ = pipe.Exec(ctx)
+
 			batch := make([]*domain.Event, 0, len(entries))
 			msgIDs := make([]string, 0, len(entries))
 			var dlqBatch []*domain.Event
 			var dlqMsgIDs []string
+			var delMsgIDs []string
 
-			for _, msg := range entries {
+			for i, msg := range entries {
 				evt := p.parseMessage(msg.ID, msg.Values)
-				count, _ := p.rdb.HIncrBy(ctx, "ad:events:retries", msg.ID, 1).Result()
+				count, _ := incrCmds[i].Result()
 				if count > int64(p.maxRetries) {
 					dlqBatch = append(dlqBatch, evt)
 					dlqMsgIDs = append(dlqMsgIDs, msg.ID)
-					_ = p.rdb.HDel(ctx, "ad:events:retries", msg.ID).Err()
+					delMsgIDs = append(delMsgIDs, msg.ID)
 				} else {
 					batch = append(batch, evt)
 					msgIDs = append(msgIDs, msg.ID)
@@ -668,19 +758,20 @@ func (p *StreamConsumer) claimStuckMessages(ctx context.Context) {
 				for _, e := range dlqBatch {
 					domain.EventPool.Put(e)
 				}
+				if len(delMsgIDs) > 0 {
+					_ = p.rdb.HDel(ctx, "ad:events:retries", delMsgIDs...).Err()
+				}
 			}
-
+			
 			if len(batch) > 0 {
 				if err := p.flushBatch(ctx, batch, msgIDs); err != nil {
-					p.cb.RecordFailure("janitor")
+					p.recordFailure("janitor")
 					if !errors.Is(err, context.Canceled) {
 						slog.Error("janitor flush failed", "error", err, "group", p.groupName)
 					}
 				} else {
-					p.cb.RecordSuccess("janitor")
-					for _, id := range msgIDs {
-						_ = p.rdb.HDel(ctx, "ad:events:retries", id).Err()
-					}
+					p.recordSuccess("janitor")
+					_ = p.rdb.HDel(ctx, "ad:events:retries", msgIDs...).Err()
 				}
 				for _, e := range batch {
 					domain.EventPool.Put(e)
@@ -698,7 +789,8 @@ func (p *StreamConsumer) claimStuckMessages(ctx context.Context) {
 func (p *StreamConsumer) dlqMonitor(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Error("dlq monitor panic recovered", "error", r)
+			slog.Error("dlq monitor panic recovered - exiting process", "error", r)
+			os.Exit(1)
 		}
 	}()
 	ticker := time.NewTicker(15 * time.Second)

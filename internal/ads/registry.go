@@ -68,30 +68,40 @@ func (r *Registry) Add(id, customerID uuid.UUID, brandID *uuid.UUID, brandFcapKe
 		loc = time.UTC
 	}
 
-	var countries []string
+	var countries map[string]struct{}
 	if targetCountries != nil {
-		countries = make([]string, len(targetCountries))
-		copy(countries, targetCountries)
+		countries = make(map[string]struct{}, len(targetCountries))
+		for _, c := range targetCountries {
+			countries[c] = struct{}{}
+		}
 	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	idStr := id.String()
+	customerIDStr := customerID.String()
+	dailyBudgetMicro := DecimalToMicro(dailyBudget)
 	info := campaignInfo{
 		campaign: &domain.Campaign{
-			ID:               id,
-			IDStr:            id.String(),
-			CustomerID:       customerID,
-			CustomerIDStr:    customerID.String(),
-			BrandID:          brandID,
-			BrandFcapKey:     brandFcapKey,
-			PacingMode:       pacingMode,
-			DailyBudget:      dailyBudget,
-			DailyBudgetMicro: DecimalToMicro(dailyBudget),
-			Timezone:         timezone,
-			Location:         loc,
-			FreqLimit:        freqLimit,
-			FreqWindow:       freqWindow,
-			TargetCountries:  countries,
+			ID:                  id,
+			IDStr:               idStr,
+			IDStrAny:            idStr,
+			CustomerID:          customerID,
+			CustomerIDStr:       customerIDStr,
+			CustomerIDStrAny:    customerIDStr,
+			BrandID:             brandID,
+			BrandFcapKey:        brandFcapKey,
+			PacingMode:          pacingMode,
+			DailyBudget:         dailyBudget,
+			DailyBudgetMicro:    dailyBudgetMicro,
+			DailyBudgetMicroAny: dailyBudgetMicro,
+			Timezone:            timezone,
+			Location:            loc,
+			FreqLimit:           freqLimit,
+			FreqLimitAny:        freqLimit,
+			FreqWindow:          freqWindow,
+			FreqWindowAny:       freqWindow,
+			TargetCountries:     countries,
 		},
 		status: db.CampaignStatusTypeACTIVE,
 	}
@@ -124,22 +134,30 @@ func (r *Registry) Sync(ctx context.Context) (int, error) {
 			brandIDPtr = &brandID
 		}
 
+		idStr := id.String()
+		customerIDStr := customerID.String()
+		dailyBudgetMicro := DecimalToMicro(dailyBudgetDec)
 		fresh[id] = campaignInfo{
 			campaign: &domain.Campaign{
-				ID:               id,
-				IDStr:            id.String(),
-				CustomerID:       customerID,
-				CustomerIDStr:    customerID.String(),
-				BrandID:          brandIDPtr,
-				BrandFcapKey:     row.BrandFcapKey,
-				PacingMode:       domain.PacingMode(row.PacingMode),
-				DailyBudget:      dailyBudgetDec,
-				DailyBudgetMicro: DecimalToMicro(dailyBudgetDec),
-				Timezone:         row.Timezone,
-				Location:         loc,
-				FreqLimit:        row.FreqLimit.Int32,
-				FreqWindow:       row.FreqWindow.Int32,
-				TargetCountries:  row.TargetCountries,
+				ID:                  id,
+				IDStr:               idStr,
+				IDStrAny:            idStr,
+				CustomerID:          customerID,
+				CustomerIDStr:       customerIDStr,
+				CustomerIDStrAny:    customerIDStr,
+				BrandID:             brandIDPtr,
+				BrandFcapKey:        row.BrandFcapKey,
+				PacingMode:          domain.PacingMode(row.PacingMode),
+				DailyBudget:         dailyBudgetDec,
+				DailyBudgetMicro:    dailyBudgetMicro,
+				DailyBudgetMicroAny: dailyBudgetMicro,
+				Timezone:            row.Timezone,
+				Location:            loc,
+				FreqLimit:           row.FreqLimit.Int32,
+				FreqLimitAny:        row.FreqLimit.Int32,
+				FreqWindow:          row.FreqWindow.Int32,
+				FreqWindowAny:       row.FreqWindow.Int32,
+				TargetCountries:     SliceToMap(row.TargetCountries),
 			},
 			status: row.Status,
 		}

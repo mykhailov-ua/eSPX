@@ -15,5 +15,5 @@ type Customer struct {
 
 type CustomerRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*Customer, error)
-	UpdateBalance(ctx context.Context, id uuid.UUID, amount decimal.Decimal) error
+	UpdateBalance(ctx context.Context, id uuid.UUID, amount decimal.Decimal, txID string) error
 }

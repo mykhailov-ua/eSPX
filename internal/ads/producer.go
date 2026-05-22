@@ -13,11 +13,19 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-var streamEventPool = sync.Pool{
-	New: func() any {
-		return new(pb.AdStreamEvent)
-	},
-}
+var (
+	streamEventPool = sync.Pool{
+		New: func() any {
+			return new(pb.AdStreamEvent)
+		},
+	}
+	byteBufPool = sync.Pool{
+		New: func() any {
+			b := make([]byte, 0, 512)
+			return &b
+		},
+	}
+)
 
 type StreamProducer struct {
 	rdb          redis.UniversalClient
@@ -63,9 +71,13 @@ func (p *StreamProducer) Process(evt *domain.Event) error {
 	pbEvt.Ua = evt.UA
 	pbEvt.CreatedAtUnix = evt.CreatedAt.Unix()
 
-	data, err := proto.Marshal(pbEvt)
-	streamEventPool.Put(pbEvt)
+	bufPtr := byteBufPool.Get().(*[]byte)
+	buf := (*bufPtr)[:0]
+
+	data, err := proto.MarshalOptions{}.MarshalAppend(buf, pbEvt)
 	if err != nil {
+		streamEventPool.Put(pbEvt)
+		byteBufPool.Put(bufPtr)
 		metrics.EventsDropped.Inc()
 		return err
 	}
@@ -76,6 +88,10 @@ func (p *StreamProducer) Process(evt *domain.Event) error {
 		Approx: true,
 		Values: []interface{}{"d", data},
 	}).Result()
+
+	streamEventPool.Put(pbEvt)
+	*bufPtr = data
+	byteBufPool.Put(bufPtr)
 
 	if err != nil {
 		metrics.EventsDropped.Inc()
