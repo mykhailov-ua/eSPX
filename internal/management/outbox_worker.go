@@ -227,6 +227,52 @@ func (w *OutboxWorker) ProcessOutbox(ctx context.Context) error {
 					})
 				}
 			}
+		case "CONFIGURE_BRAND_FCAP":
+			// Select active campaigns linked to this brand and publish invalidation signals to Redis.
+			// This triggers the real-time cache sync in active trackers to immediately apply new brand constraints.
+			var p struct {
+				BrandID    string `json:"brand_id"`
+				FreqLimit  int32  `json:"freq_limit"`
+				FreqWindow int32  `json:"freq_window"`
+			}
+			if err := json.Unmarshal(ev.Payload, &p); err == nil {
+				brandUUID, parseErr := uuid.Parse(p.BrandID)
+				if parseErr == nil {
+					rows, dbErr := w.svc.pool.Query(ctx, "SELECT id FROM campaigns WHERE brand_id = $1 AND status = 'ACTIVE'", ads.ToUUID(brandUUID))
+					if dbErr == nil {
+						var campIDs []string
+						for rows.Next() {
+							var cid uuid.UUID
+							if scanErr := rows.Scan(&cid); scanErr == nil {
+								campIDs = append(campIDs, cid.String())
+							}
+						}
+						rows.Close()
+
+						if len(campIDs) > 0 {
+							channel := w.svc.cfg.CampaignUpdateChannel
+							if channel == "" {
+								channel = "campaigns:update"
+							}
+							if len(w.svc.rdbs) > 0 && w.svc.rdbs[0] != nil {
+								rdb := w.svc.rdbs[0]
+								_, rdbErr = rdb.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+									for _, cidStr := range campIDs {
+										pipe.Publish(ctx, channel, cidStr)
+									}
+									return nil
+								})
+							}
+						}
+					} else {
+						rdbErr = dbErr
+					}
+				} else {
+					rdbErr = parseErr
+				}
+			} else {
+				rdbErr = err
+			}
 		}
 
 		if rdbErr == nil {
