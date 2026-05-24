@@ -8,14 +8,24 @@ import (
 )
 
 func ConnectRedis(ctx context.Context, addr string, password string) (redis.UniversalClient, error) {
+	return ConnectRedisWithBreaker(ctx, addr, password, nil)
+}
+
+func ConnectRedisWithBreaker(ctx context.Context, addr string, password string, breaker *RedisBreaker) (redis.UniversalClient, error) {
 	rdb := redis.NewUniversalClient(&redis.UniversalOptions{
 		Addrs:    []string{addr},
 		Password: password,
 	})
 
 	if err := rdb.Ping(ctx).Err(); err != nil {
+		_ = rdb.Close()
 		return nil, fmt.Errorf("failed to connect to redis: %w", err)
+	}
+
+	if breaker != nil {
+		rdb.AddHook(NewRedisCircuitBreakerHook(breaker))
 	}
 
 	return rdb, nil
 }
+
