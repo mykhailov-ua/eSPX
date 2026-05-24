@@ -159,7 +159,7 @@ func (s *ClickHouseStore) insertToClickHouse(ctx context.Context, events []*doma
 					e.Type,
 					e.IP,
 					e.UA,
-					string(e.Payload),
+					unsafeString(e.Payload),
 					e.FraudReason,
 					e.CreatedAt,
 				)
@@ -169,7 +169,7 @@ func (s *ClickHouseStore) insertToClickHouse(ctx context.Context, events []*doma
 					e.CampaignID,
 					e.IP,
 					e.UA,
-					string(e.Payload),
+					unsafeString(e.Payload),
 					e.CreatedAt,
 				)
 			}
