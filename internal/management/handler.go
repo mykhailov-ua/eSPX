@@ -12,9 +12,9 @@ import (
 	"github.com/mykhailov-ua/ad-event-processor/internal/ads/db"
 	"github.com/mykhailov-ua/ad-event-processor/internal/config"
 	"github.com/mykhailov-ua/ad-event-processor/pkg/httpresponse"
-	"github.com/shopspring/decimal"
 	"golang.org/x/time/rate"
 )
+
 // Handler routes administrative and customer management API endpoints. Encapsulating rate limiting, RBAC validation middleware, and service delegation in a single multiplexer handler ensures consistent boundary enforcement.
 type Handler struct {
 	svc            *Service
@@ -42,25 +42,20 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /admin/campaigns/{id}", h.limit(h.auth(h.cancelCampaign, "SA", "M", "C")))
 	mux.HandleFunc("POST /admin/campaigns/{id}/pacing", h.limit(h.auth(h.updateCampaignPacing, "SA", "M", "C")))
 
-	// New routes
 	mux.HandleFunc("POST /admin/settings", h.limit(h.auth(h.updateSettings, "SA")))
 	mux.HandleFunc("POST /admin/blacklist", h.limit(h.auth(h.blockIP, "SA")))
 	mux.HandleFunc("DELETE /admin/blacklist", h.limit(h.auth(h.unblockIP, "SA")))
 	mux.HandleFunc("GET /admin/audit", h.limit(h.auth(h.listAudit, "SA", "M")))
 	mux.HandleFunc("POST /admin/system/breaker", h.limit(h.auth(h.toggleEmergencyBreaker, "SA")))
 
-
-	// Customer GET routes
 	mux.HandleFunc("GET /admin/customers", h.limit(h.auth(h.listCustomers, "SA", "M")))
 	mux.HandleFunc("GET /admin/customers/{id}", h.limit(h.auth(h.getCustomer, "SA", "M", "C")))
 	mux.HandleFunc("GET /admin/customers/{id}/ledger", h.limit(h.auth(h.getCustomerLedger, "SA", "M", "C")))
 
-	// Campaign GET routes
 	mux.HandleFunc("GET /admin/campaigns", h.limit(h.auth(h.listCampaigns, "SA", "M", "C")))
 	mux.HandleFunc("GET /admin/campaigns/{id}", h.limit(h.auth(h.getCampaign, "SA", "M", "C")))
 	mux.HandleFunc("GET /admin/campaigns/{id}/history", h.limit(h.auth(h.getCampaignHistory, "SA", "M", "C")))
 
-	// System GET routes
 	mux.HandleFunc("GET /admin/blacklist", h.limit(h.auth(h.listBlacklist, "SA")))
 	mux.HandleFunc("GET /admin/settings", h.limit(h.auth(h.getSettings, "SA")))
 }
@@ -92,10 +87,10 @@ func (h *Handler) auth(next http.HandlerFunc, allowedRoles ...string) http.Handl
 func (h *Handler) createCustomer(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 65536)
 	var req struct {
-		ID       uuid.UUID       `json:"id"`
-		Name     string          `json:"name"`
-		Balance  decimal.Decimal `json:"balance"`
-		Currency string          `json:"currency"`
+		ID       uuid.UUID `json:"id"`
+		Name     string    `json:"name"`
+		Balance  float64   `json:"balance"`
+		Currency string    `json:"currency"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
@@ -109,7 +104,8 @@ func (h *Handler) createCustomer(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := h.svc.CreateCustomer(r.Context(), req.ID, req.Name, req.Balance, req.Currency); err != nil {
+	balanceMicro := int64(req.Balance * 1_000_000)
+	if err := h.svc.CreateCustomer(r.Context(), req.ID, req.Name, balanceMicro, req.Currency); err != nil {
 		slog.Error("failed to create customer", "error", err)
 		httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
@@ -126,7 +122,7 @@ func (h *Handler) topUpBalance(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 65536)
 	var req struct {
-		Amount decimal.Decimal `json:"amount"`
+		Amount float64 `json:"amount"`
 	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -138,27 +134,28 @@ func (h *Handler) topUpBalance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hash := h.svc.GenerateIdempotencyHash(customerID, req)
-	if err := h.svc.TopUpBalance(r.Context(), customerID, req.Amount, hash); err != nil {
+	amountMicro := int64(req.Amount * 1_000_000)
+	if err := h.svc.TopUpBalance(r.Context(), customerID, amountMicro, hash); err != nil {
 		slog.Error("failed to top up balance", "error", err, "customer_id", customerID)
 		httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	httpresponse.JSON(w, http.StatusNoContent, nil)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) createCampaign(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 65536)
 	var req struct {
-		CustomerID      uuid.UUID       `json:"customer_id"`
-		BrandID         *uuid.UUID      `json:"brand_id,omitempty"`
-		Name            string          `json:"name"`
-		BudgetLimit     decimal.Decimal `json:"budget_limit"`
-		PacingMode      string          `json:"pacing_mode"`
-		DailyBudget     decimal.Decimal `json:"daily_budget"`
-		Timezone        string          `json:"timezone"`
-		FreqLimit       int32           `json:"freq_limit"`
-		FreqWindow      int32           `json:"freq_window"`
-		TargetCountries []string        `json:"target_countries"`
+		CustomerID      uuid.UUID  `json:"customer_id"`
+		BrandID         *uuid.UUID `json:"brand_id,omitempty"`
+		Name            string     `json:"name"`
+		BudgetLimit     float64    `json:"budget_limit"`
+		PacingMode      string     `json:"pacing_mode"`
+		DailyBudget     float64    `json:"daily_budget"`
+		Timezone        string     `json:"timezone"`
+		FreqLimit       int32      `json:"freq_limit"`
+		FreqWindow      int32      `json:"freq_window"`
+		TargetCountries []string   `json:"target_countries"`
 	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -193,7 +190,10 @@ func (h *Handler) createCampaign(w http.ResponseWriter, r *http.Request) {
 	}
 
 	hash := h.svc.GenerateIdempotencyHash(req.CustomerID, req)
-	id, err := h.svc.CreateCampaign(r.Context(), req.CustomerID, req.BrandID, req.Name, req.BudgetLimit, pacing, req.DailyBudget, req.Timezone, req.FreqLimit, req.FreqWindow, req.TargetCountries, hash)
+	budgetLimitMicro := int64(req.BudgetLimit * 1_000_000)
+	dailyBudgetMicro := int64(req.DailyBudget * 1_000_000)
+
+	id, err := h.svc.CreateCampaign(r.Context(), req.CustomerID, req.BrandID, req.Name, budgetLimitMicro, pacing, dailyBudgetMicro, req.Timezone, req.FreqLimit, req.FreqWindow, req.TargetCountries, hash)
 	if err != nil {
 		slog.Error("failed to create campaign", "error", err, "customer_id", req.CustomerID)
 		httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
@@ -231,7 +231,7 @@ func (h *Handler) cancelCampaign(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	httpresponse.JSON(w, http.StatusAccepted, nil)
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func (h *Handler) updateCampaignPacing(w http.ResponseWriter, r *http.Request) {
@@ -291,7 +291,7 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	httpresponse.JSON(w, http.StatusNoContent, nil)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) toggleEmergencyBreaker(w http.ResponseWriter, r *http.Request) {
@@ -309,9 +309,8 @@ func (h *Handler) toggleEmergencyBreaker(w http.ResponseWriter, r *http.Request)
 		httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	httpresponse.JSON(w, http.StatusOK, nil)
+	w.WriteHeader(http.StatusOK)
 }
-
 
 func (h *Handler) blockIP(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 65536)
@@ -328,7 +327,7 @@ func (h *Handler) blockIP(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	httpresponse.JSON(w, http.StatusCreated, nil)
+	w.WriteHeader(http.StatusCreated)
 }
 
 func (h *Handler) unblockIP(w http.ResponseWriter, r *http.Request) {
@@ -346,7 +345,7 @@ func (h *Handler) unblockIP(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	httpresponse.JSON(w, http.StatusNoContent, nil)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) listAudit(w http.ResponseWriter, r *http.Request) {
@@ -599,7 +598,7 @@ func (h *Handler) listBrands(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
- 
+
 	httpresponse.JSON(w, http.StatusOK, brands)
 }
 
@@ -650,4 +649,3 @@ func (h *Handler) configureBrandFcap(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 }
-
