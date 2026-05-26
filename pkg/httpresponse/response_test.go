@@ -59,4 +59,3 @@ func BenchmarkError(b *testing.B) {
 		rec.Body.Reset()
 	}
 }
-

@@ -155,4 +155,3 @@ func BenchmarkAuthMiddleware(b *testing.B) {
 		rec.Body.Reset()
 	}
 }
-

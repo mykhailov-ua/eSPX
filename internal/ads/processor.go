@@ -786,7 +786,7 @@ func (p *StreamConsumer) claimStuckMessages(ctx context.Context) {
 					_ = p.rdb.HDel(ctx, "ad:events:retries", delMsgIDs...).Err()
 				}
 			}
-			
+
 			if len(batch) > 0 {
 				if err := p.flushBatch(ctx, batch, msgIDs); err != nil {
 					p.recordFailure("janitor")

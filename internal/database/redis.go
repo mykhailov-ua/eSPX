@@ -28,4 +28,3 @@ func ConnectRedisWithBreaker(ctx context.Context, addr string, password string, 
 
 	return rdb, nil
 }
-

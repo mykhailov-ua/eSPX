@@ -144,7 +144,7 @@ func (s *Service) GetSettings(ctx context.Context) (map[string]string, error) {
 
 func (s *Service) SyncSystemState(ctx context.Context) error {
 	q := db.New(s.pool)
-	
+
 	// 1. Sync blacklist
 	bl, err := q.GetAllBlacklist(ctx)
 	if err != nil {
@@ -238,4 +238,3 @@ func (s *Service) ToggleEmergencyBreaker(ctx context.Context, active bool, reaso
 	})
 	return err
 }
-

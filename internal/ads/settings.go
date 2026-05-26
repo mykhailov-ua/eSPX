@@ -13,12 +13,12 @@ import (
 
 // DynamicConfig represents settings that can be updated at runtime via the Management API.
 type DynamicConfig struct {
-	Version          int64  `json:"version"`
-	RateLimitPerMin  int    `json:"rate_limit_per_min"`
-	RateLimitWindow  int    `json:"rate_limit_window_ms"`
-	ClickAmount      int64  `json:"click_amount"`
-	ImpressionAmount int64  `json:"impression_amount"`
-	EmergencyBreaker bool   `json:"emergency_breaker"`
+	Version          int64 `json:"version"`
+	RateLimitPerMin  int   `json:"rate_limit_per_min"`
+	RateLimitWindow  int   `json:"rate_limit_window_ms"`
+	ClickAmount      int64 `json:"click_amount"`
+	ImpressionAmount int64 `json:"impression_amount"`
+	EmergencyBreaker bool  `json:"emergency_breaker"`
 }
 
 // SettingsWatcher periodically checks Redis for configuration updates and performs atomic swaps of the local state.
@@ -75,7 +75,7 @@ func (sw *SettingsWatcher) sync(ctx context.Context) {
 		return
 	}
 
-	if v <= sw.currentVersion {
+	if v <= atomic.LoadInt64(&sw.currentVersion) {
 		return
 	}
 
@@ -87,7 +87,7 @@ func (sw *SettingsWatcher) sync(ctx context.Context) {
 
 	newCfg := sw.parseConfig(v, data)
 	sw.snapshot.Store(newCfg)
-	sw.currentVersion = v
+	atomic.StoreInt64(&sw.currentVersion, v)
 
 	slog.Info("dynamic settings updated", "version", v)
 }
@@ -132,4 +132,3 @@ func updateBool(target *bool, val string) {
 		*target = b
 	}
 }
-

@@ -31,8 +31,8 @@ func TestEmergencyCircuitBreaker(t *testing.T) {
 	defer cleanupRedis()
 
 	cfg := &config.Config{
-		AdminAPIKey: "test-secret",
-		RateLimitPerMin: 100,
+		AdminAPIKey:       "test-secret",
+		RateLimitPerMin:   100,
 		RateLimitWindowMs: 60000,
 	}
 

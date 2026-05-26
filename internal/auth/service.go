@@ -6,17 +6,17 @@ import (
 	"fmt"
 	"github.com/mykhailov-ua/ad-event-processor/internal/auth/pb"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"log/slog"
 	"regexp"
 	"runtime"
 	"strings"
 	"time"
-	"log/slog"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/mykhailov-ua/ad-event-processor/internal/auth/db"
-	"github.com/redis/go-redis/v9"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/redis/go-redis/v9"
 )
 
 var (
@@ -345,7 +345,7 @@ func (s *Service) VerifyToken(ctx context.Context, accessToken string) (db.User,
 			return nil
 		})
 		cancel()
-		
+
 		if errPipe != nil {
 			AuthTokenErrors.WithLabelValues("revocation_check_failed").Inc()
 			slog.Error("failed to check token revocation in redis (fail-closed)", slog.Any("error", errPipe))

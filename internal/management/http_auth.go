@@ -196,7 +196,7 @@ func (h *AuthHandler) me(w http.ResponseWriter, r *http.Request) {
 	if h.rdb != nil {
 		ctxRevoked, cancel := context.WithTimeout(r.Context(), 100*time.Millisecond)
 		defer cancel()
-		
+
 		cmds, errPipe := h.rdb.Pipelined(ctxRevoked, func(pipe redis.Pipeliner) error {
 			pipe.Exists(ctxRevoked, "revoked:token:"+payload.ID.String())
 			pipe.Exists(ctxRevoked, "revoked:session:"+payload.SessionID.String())

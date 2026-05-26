@@ -77,10 +77,10 @@ func TestUnifiedFilter_LatencySLA(t *testing.T) {
 
 	// Configure short SLA latency targets for fast, deterministic testing
 	f.SetSLATargets(
-		200.0,                 // p95 threshold = 200ms
-		100.0,                 // recovery EMA = 100ms
-		100*time.Millisecond,  // recovery stable duration = 100ms
-		0.5,                   // alpha = 0.5 (fast reaction)
+		200.0,                // p95 threshold = 200ms
+		100.0,                // recovery EMA = 100ms
+		100*time.Millisecond, // recovery stable duration = 100ms
+		0.5,                  // alpha = 0.5 (fast reaction)
 	)
 	f.ResizeTrackers(10)
 
@@ -145,7 +145,7 @@ func TestUnifiedFilter_LatencySLA(t *testing.T) {
 	assert.False(t, f.slaPenaltyActive.Load(), "SLA penalty should deactivate automatically once latency stabilizes")
 
 	// Redis flag must be cleared/deleted or false
-	redisVal, err = rdb.Get(ctx, "sla:penalty:active").Bool()
+	_, err = rdb.Get(ctx, "sla:penalty:active").Bool()
 	assert.ErrorIs(t, err, redis.Nil, "Redis key should be cleared after recovery")
 
 	evt3 := &domain.Event{

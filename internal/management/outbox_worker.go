@@ -49,7 +49,7 @@ func (w *OutboxWorker) Start(ctx context.Context, interval time.Duration) {
 			case <-ctx.Done():
 				return
 			default:
-				}
+			}
 
 			// Acquire a dedicated connection for LISTEN
 			conn, err := w.svc.pool.Acquire(ctx)

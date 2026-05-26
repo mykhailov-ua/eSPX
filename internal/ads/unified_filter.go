@@ -80,8 +80,6 @@ func appendDate(dst []byte, t time.Time) []byte {
 	)
 }
 
-
-
 var (
 	zeroAny any = 0
 	oneAny  any = 1
@@ -161,7 +159,7 @@ func parseBidMicro(payload []byte) int64 {
 	if n < kLen {
 		return 0
 	}
-	
+
 	// Scan the payload for the raw key occurrence
 	for i := 0; i <= n-kLen; i++ {
 		if payload[i] == '"' && string(payload[i:i+kLen]) == key {
@@ -174,12 +172,12 @@ func parseBidMicro(payload []byte) int64 {
 				}
 				idx++
 			}
-			
+
 			// Skip any whitespace before the number
 			for idx < n && (payload[idx] == ' ' || payload[idx] == '\t') {
 				idx++
 			}
-			
+
 			// Parse the raw integer value directly
 			var val int64
 			hasDigit := false
@@ -311,31 +309,27 @@ func (f *UnifiedFilter) StartSLASentinel(ctx context.Context, interval time.Dura
 
 				if !isActive && p95 > f.p95ThresholdMs {
 					// Breach detected
-					f.slaPenaltyActive.Store(true)
 					for _, rdb := range f.rdbs {
 						_ = rdb.Set(ctx, "sla:penalty:active", true, 0).Err()
 					}
+					f.slaPenaltyActive.Store(true)
 				} else if isActive {
 					// Check for recovery: EMA below threshold and stable for duration
 					if f.currentEma < f.recoveryEmaMs {
 						if f.recoveryStartTime.IsZero() {
 							f.recoveryStartTime = time.Now()
 						} else if time.Since(f.recoveryStartTime) >= f.recoveryStableDuration {
-							f.slaPenaltyActive.Store(false)
-							f.recoveryStartTime = time.Time{}
 							for _, rdb := range f.rdbs {
 								_ = rdb.Del(ctx, "sla:penalty:active").Err()
 							}
+							f.slaPenaltyActive.Store(false)
+							f.recoveryStartTime = time.Time{}
 						}
 					} else {
 						f.recoveryStartTime = time.Time{}
 					}
 				}
 				f.latencyMu.Unlock()
-
-				if err != nil {
-					// Optional: log or handle ping error
-				}
 			}
 		}
 	}()
@@ -605,4 +599,3 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 
 	return nil
 }
-

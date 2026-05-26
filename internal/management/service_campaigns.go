@@ -225,4 +225,3 @@ func (s *Service) UpdateCampaignPacing(ctx context.Context, campaignID uuid.UUID
 
 	return toCampaignDTO(updatedCamp), nil
 }
-

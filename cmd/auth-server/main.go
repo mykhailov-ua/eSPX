@@ -4,11 +4,11 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
-	"net/http"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
@@ -79,7 +79,7 @@ func main() {
 
 	server := google_grpc.NewServer()
 	pb.RegisterAuthServiceServer(server, grpcHandler)
-	
+
 	if cfg.Env != "production" {
 		reflection.Register(server)
 	}
@@ -107,7 +107,7 @@ func main() {
 	<-stop
 
 	slog.Info("shutting down auth gRPC server")
-	
+
 	stopped := make(chan struct{})
 	go func() {
 		server.GracefulStop()

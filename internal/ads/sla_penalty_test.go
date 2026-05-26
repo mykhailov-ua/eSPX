@@ -168,7 +168,7 @@ func TestUnifiedFilter_SLASentinel_AutoDetection(t *testing.T) {
 	assert.False(t, f.slaPenaltyActive.Load())
 
 	// Redis flag must be cleared/deleted or false
-	redisVal, err = rdb.Get(ctx, "sla:penalty:active").Bool()
+	_, err = rdb.Get(ctx, "sla:penalty:active").Bool()
 	assert.ErrorIs(t, err, redis.Nil)
 }
 

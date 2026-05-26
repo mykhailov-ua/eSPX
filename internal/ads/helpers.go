@@ -86,7 +86,9 @@ func (r *CampaignRepo) UpdateSpend(ctx context.Context, id uuid.UUID, amount int
 
 	var tx pgx.Tx
 	var err error
-	if beginner, ok := dbtx.(interface{ Begin(context.Context) (pgx.Tx, error) }); ok {
+	if beginner, ok := dbtx.(interface {
+		Begin(context.Context) (pgx.Tx, error)
+	}); ok {
 		tx, err = beginner.Begin(ctx)
 		if err != nil {
 			return err
@@ -198,7 +200,9 @@ func (r *CustomerRepo) UpdateBalance(ctx context.Context, id uuid.UUID, amount i
 
 	var tx pgx.Tx
 	var err error
-	if beginner, ok := dbtx.(interface{ Begin(context.Context) (pgx.Tx, error) }); ok {
+	if beginner, ok := dbtx.(interface {
+		Begin(context.Context) (pgx.Tx, error)
+	}); ok {
 		tx, err = beginner.Begin(ctx)
 		if err != nil {
 			return err

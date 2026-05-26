@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,11 +22,18 @@ func (m *mockRegistry) Exists(id uuid.UUID) bool { return true }
 func (m *mockRegistry) Add(id, customerID uuid.UUID, brandID *uuid.UUID, brandFcapKey string, pacingMode domain.PacingMode, dailyBudget int64, timezone string, freqLimit, freqWindow int32, targetCountries []string) {
 }
 func (m *mockRegistry) GetCustomerID(id uuid.UUID) (uuid.UUID, bool) { return uuid.Nil, true }
-var staticCampaign = &domain.Campaign{CustomerID: uuid.Nil, Location: time.UTC}
+
+var (
+	staticCampaignMu sync.RWMutex
+	staticCampaign   = &domain.Campaign{CustomerID: uuid.Nil, Location: time.UTC}
+)
 
 func (m *mockRegistry) GetCampaign(id uuid.UUID) (*domain.Campaign, bool) {
-	staticCampaign.ID = id
-	return staticCampaign, true
+	staticCampaignMu.RLock()
+	defer staticCampaignMu.RUnlock()
+	cp := *staticCampaign
+	cp.ID = id
+	return &cp, true
 }
 func (m *mockRegistry) Sync(ctx context.Context) (int, error)                 { return 0, nil }
 func (m *mockRegistry) StartSync(ctx context.Context, interval time.Duration) {}
@@ -105,4 +113,3 @@ func BenchmarkTrackHandlerProto(b *testing.B) {
 		}
 	})
 }
-

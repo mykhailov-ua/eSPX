@@ -80,7 +80,7 @@ func (hb *HybridBalancer) UpdateCampaigns(campaigns []*CampaignMeta, secondsElap
 			linearRatio = float64(secondsElapsed) / float64(totalSeconds)
 		}
 		pacingFactor := linearRatio + (c.PeakTrafficFactor * math.Sin(linearRatio*math.Pi))
-		
+
 		var budgetRatio float64
 		if c.TotalBudget > 0 {
 			budgetRatio = float64(c.RemainingBudget) / float64(c.TotalBudget)
@@ -88,7 +88,7 @@ func (hb *HybridBalancer) UpdateCampaigns(campaigns []*CampaignMeta, secondsElap
 		if budgetRatio < 0.0 {
 			budgetRatio = 0.0
 		}
-		
+
 		w := float64(c.BidMicro) * c.CTR * math.Sqrt(budgetRatio) * pacingFactor
 		if w < 0.0 || math.IsNaN(w) || math.IsInf(w, 0) {
 			w = 0.0
@@ -167,13 +167,13 @@ func (hb *HybridBalancer) SelectAndShard(userID string, currentCampaignRps int64
 	n := len(table.prob)
 	r := randPool.Get().(*rand.Rand)
 	idx := r.Intn(n)
-	
+
 	selectedIdx := idx
 	if r.Float64() >= table.prob[idx] {
 		selectedIdx = table.alias[idx]
 	}
 	randPool.Put(r)
-	
+
 	campaign := table.campaigns[selectedIdx]
 	if hb.totalShards <= 0 {
 		return campaign, 0

@@ -53,8 +53,8 @@ func NewLockoutLimiter(rdb redis.UniversalClient) *LockoutLimiter {
 }
 
 const (
-	MaxGlobalAttempts      = 50
-	GlobalLockoutDuration  = 3600
+	MaxGlobalAttempts     = 50
+	GlobalLockoutDuration = 3600
 )
 
 const lockoutScript = `

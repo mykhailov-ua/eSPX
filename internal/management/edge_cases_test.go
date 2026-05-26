@@ -29,7 +29,6 @@ func TestEdge_RoundingAndSmallAmounts(t *testing.T) {
 	svc := NewService(pool, []redis.UniversalClient{rdb}, ads.NewJumpHashSharder(1), cfg)
 	defer svc.Close()
 
-
 	customerID := uuid.New()
 	_ = svc.CreateCustomer(context.Background(), customerID, "Small Saver", 100_000_000, "USD")
 

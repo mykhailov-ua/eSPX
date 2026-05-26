@@ -187,8 +187,8 @@ func (s *Service) CreateCampaign(ctx context.Context, customerID uuid.UUID, bran
 			FreqLimit:       pgtype.Int4{Int32: freqLimit, Valid: true},
 			FreqWindow:      pgtype.Int4{Int32: freqWindow, Valid: true},
 			TargetCountries: targetCountries,
-			BrandID:          brandIDParam,
-			BrandFcapKey:     brandFcapKey,
+			BrandID:         brandIDParam,
+			BrandFcapKey:    brandFcapKey,
 		})
 		if err != nil {
 			return err
@@ -332,7 +332,6 @@ func (s *Service) FinalizeCancelledCampaign(ctx context.Context, campaignID uuid
 	})
 }
 
-
 func (s *Service) getRDB(campaignID uuid.UUID) redis.UniversalClient {
 	if len(s.rdbs) <= 1 {
 		return s.rdbs[0]
@@ -340,7 +339,6 @@ func (s *Service) getRDB(campaignID uuid.UUID) redis.UniversalClient {
 	idx := s.sharder.GetShard(campaignID)
 	return s.rdbs[idx%len(s.rdbs)]
 }
-
 
 func (s *Service) ListAuditLogs(ctx context.Context, limit, offset int32) ([]db.AdminAuditLog, error) {
 	return db.New(s.pool).ListAuditLogs(ctx, db.ListAuditLogsParams{

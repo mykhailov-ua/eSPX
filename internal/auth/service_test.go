@@ -308,7 +308,6 @@ func TestRevokeToken(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-
 func TestSessionCleanupWorker(t *testing.T) {
 	repo := &mockRepo{}
 	service := NewService(repo, nil, nil, nil, nil)

@@ -258,7 +258,7 @@ func TestSnapshotRecovery_DisasterStressReplay(t *testing.T) {
 	// -------------------------------------------------------------
 	// PHASE 2: CATASTROPHIC DISASTER SIMULATION (Complete State Wipe)
 	// -------------------------------------------------------------
-	
+
 	// 1. Wipe Redis Budget keys
 	_ = rdb.Del(ctx, budgetSourceKey).Err()
 

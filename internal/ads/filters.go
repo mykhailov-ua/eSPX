@@ -15,18 +15,17 @@ import (
 )
 
 var (
-	ErrRateLimitExceeded     = errors.New("rate limit exceeded")
-	ErrDuplicateEvent        = errors.New("duplicate event detected")
-	ErrBudgetExhausted       = errors.New("budget exhausted")
-	ErrCampaignNotFound      = errors.New("campaign not found in registry")
-	ErrPacingExhausted       = errors.New("pacing exhausted")
-	ErrFreqLimitExceeded     = errors.New("frequency limit exceeded")
-	ErrGeoBlocked            = errors.New("geo-targeting blocked")
-	ErrFraudDetected         = errors.New("fraud detected")
+	ErrRateLimitExceeded      = errors.New("rate limit exceeded")
+	ErrDuplicateEvent         = errors.New("duplicate event detected")
+	ErrBudgetExhausted        = errors.New("budget exhausted")
+	ErrCampaignNotFound       = errors.New("campaign not found in registry")
+	ErrPacingExhausted        = errors.New("pacing exhausted")
+	ErrFreqLimitExceeded      = errors.New("frequency limit exceeded")
+	ErrGeoBlocked             = errors.New("geo-targeting blocked")
+	ErrFraudDetected          = errors.New("fraud detected")
 	ErrEmergencyBreakerActive = errors.New("service temporarily unavailable (emergency breaker active)")
 	ErrBidFloorNotMet         = errors.New("bid floor not met")
 )
-
 
 type bufWrapper struct {
 	buf []byte
@@ -386,4 +385,3 @@ func (f *EmergencyBreakerFilter) Check(ctx context.Context, evt *domain.Event) e
 	}
 	return nil
 }
-

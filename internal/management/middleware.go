@@ -75,7 +75,7 @@ func (m *AuthMiddleware) RequireAuth(allowedRoles ...string) func(http.HandlerFu
 			if m.rdb != nil {
 				ctxTimeout, cancel := context.WithTimeout(r.Context(), 100*time.Millisecond)
 				defer cancel()
-				
+
 				cmds, errPipe := m.rdb.Pipelined(ctxTimeout, func(pipe redis.Pipeliner) error {
 					pipe.Exists(ctxTimeout, "revoked:token:"+payload.ID.String())
 					pipe.Exists(ctxTimeout, "revoked:session:"+payload.SessionID.String())
@@ -88,7 +88,7 @@ func (m *AuthMiddleware) RequireAuth(allowedRoles ...string) func(http.HandlerFu
 					httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", "internal server error: security subsystem unavailable")
 					return
 				}
-				
+
 				for _, cmd := range cmds {
 					if exists, _ := cmd.(*redis.IntCmd).Result(); exists > 0 {
 						httpresponse.Error(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized: session revoked")
