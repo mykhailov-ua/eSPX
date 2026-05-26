@@ -72,4 +72,9 @@ var (
 		Name: "ad_management_active_campaigns_count",
 		Help: "Current number of active campaigns in the system",
 	})
+
+	DataDriftRatio = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ad_reconciliation_drift_ratio",
+		Help: "Ratio of discrepancy between Postgres and ClickHouse spend",
+	}, []string{"campaign_id"})
 )
