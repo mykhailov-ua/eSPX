@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -13,6 +12,7 @@ import (
 	"github.com/mykhailov-ua/ad-event-processor/internal/ads/db"
 	"github.com/mykhailov-ua/ad-event-processor/internal/config"
 	"github.com/mykhailov-ua/ad-event-processor/internal/database"
+	"github.com/panjf2000/gnet/v2"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -114,22 +114,18 @@ func main() {
 
 	filterEngine := ads.NewFilterEngine(breakerFilter, geoFilter, fraudFilter, unifiedFilter)
 
-	mux := ads.NewRouter(cfg, registry, filterEngine, pool, rdbs, sharder, cfg.FraudStreamName)
+	gnetHandler := ads.NewAdsPacketHandler(cfg, registry, filterEngine, pool, rdbs, sharder, cfg.FraudStreamName)
 
-	slog.Info("starting ad-event-tracker", "port", cfg.ServerPort)
-
-	server := &http.Server{
-		Addr:              ":" + cfg.ServerPort,
-		Handler:           mux,
-		ReadHeaderTimeout: time.Duration(cfg.HttpReadHeaderTimeoutMs) * time.Millisecond,
-		ReadTimeout:       time.Duration(cfg.HttpReadTimeoutMs) * time.Millisecond,
-		WriteTimeout:      time.Duration(cfg.HttpWriteTimeoutMs) * time.Millisecond,
-		IdleTimeout:       time.Duration(cfg.HttpIdleTimeoutMs) * time.Millisecond,
-	}
+	slog.Info("starting ad-event-tracker via gnet", "port", cfg.ServerPort)
 
 	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("server failed", "error", err)
+		err := gnet.Run(gnetHandler, "tcp://:"+cfg.ServerPort,
+			gnet.WithMulticore(true),
+			gnet.WithReusePort(true),
+			gnet.WithTCPNoDelay(gnet.TCPNoDelay),
+		)
+		if err != nil {
+			slog.Error("gnet server failed", "error", err)
 			os.Exit(1)
 		}
 	}()
@@ -144,8 +140,8 @@ func main() {
 
 	cancel()
 
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		slog.Error("server shutdown failed", "error", err)
+	if err := gnetHandler.Stop(shutdownCtx); err != nil {
+		slog.Error("gnet server shutdown failed", "error", err)
 	}
 
 	if err := registry.Wait(shutdownCtx); err != nil {

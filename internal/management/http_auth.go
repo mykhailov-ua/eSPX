@@ -51,6 +51,7 @@ func (h *AuthHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/auth/logout", h.logout)
 	mux.HandleFunc("POST /api/v1/auth/refresh", h.refresh)
 	mux.HandleFunc("GET /api/v1/auth/me", h.me)
+	mux.HandleFunc("POST /api/v1/auth/register", h.register)
 }
 
 // setCookie configures strict transport security attributes on session tokens. Enforcing Secure and SameSite=Strict mitigates cross-site scripting and request forgery vulnerabilities across client browser sessions.
@@ -222,4 +223,42 @@ func (h *AuthHandler) me(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httpresponse.JSON(w, http.StatusOK, dto)
+}
+
+type RegisterRequest struct {
+	Email      string `json:"email"`
+	Password   string `json:"password"`
+	Role       string `json:"role"`
+	CustomerID string `json:"customer_id,omitempty"`
+}
+
+func (h *AuthHandler) register(w http.ResponseWriter, r *http.Request) {
+	buf := bufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer putBuffer(buf)
+
+	if _, err := io.Copy(buf, r.Body); err != nil {
+		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "failed to read request body")
+		return
+	}
+
+	var req RegisterRequest
+	if err := json.Unmarshal(buf.Bytes(), &req); err != nil || req.Email == "" || req.Password == "" || req.Role == "" {
+		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid register request")
+		return
+	}
+
+	resp, err := h.authClient.Register(r.Context(), &pb.RegisterRequest{
+		Email:      req.Email,
+		Password:   req.Password,
+		Role:       req.Role,
+		CustomerId: req.CustomerID,
+	})
+	if err != nil {
+		slog.Warn("registration failed", "email", req.Email, "error", err)
+		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+
+	httpresponse.JSON(w, http.StatusCreated, map[string]any{"user_id": resp.UserId})
 }

@@ -60,6 +60,10 @@ func NewService(pool *pgxpool.Pool, rdbs []redis.UniversalClient, sharder ads.Sh
 	return s
 }
 
+func (s *Service) GetPool() *pgxpool.Pool {
+	return s.pool
+}
+
 func (s *Service) Close() {
 	if s.cancel != nil {
 		s.cancel()
