@@ -174,13 +174,13 @@ func TestE2EFlow_Protobuf(t *testing.T) {
 	defer srv.Close()
 
 	pbEvt := &pb.AdEvent{
-		CampaignId: campaignID.String(),
-		EventType:  "impression",
+		CampaignId: []byte(campaignID.String()),
+		EventType:  []byte("impression"),
 		Metadata: &pb.EventMetadata{
-			ClickId:    "click_123",
-			UserId:     "user_456",
-			DeviceType: "mobile",
-			Os:         "android",
+			ClickId:    []byte("click_123"),
+			UserId:     []byte("user_456"),
+			DeviceType: []byte("mobile"),
+			Os:         []byte("android"),
 		},
 	}
 	body, _ := proto.Marshal(pbEvt)

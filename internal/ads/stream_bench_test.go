@@ -10,35 +10,17 @@ import (
 	"github.com/google/uuid"
 	"github.com/mykhailov-ua/ad-event-processor/internal/ads/pb"
 	"github.com/mykhailov-ua/ad-event-processor/internal/domain"
-	"google.golang.org/protobuf/proto"
 )
 
 func BenchmarkStreamWriteFlat(b *testing.B) {
-	evt := &domain.Event{
-		ClickID:    "c_12345_67890_abcdef",
-		CampaignID: uuid.New(),
-		UserID:     "u_12345",
-		Type:       "impression",
-		Payload:    []byte(`{"geo":"US","device":"mobile"}`),
-		IP:         "192.168.1.1",
-		UA:         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
-		CreatedAt:  time.Now(),
-	}
-
 	b.ResetTimer()
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		// Mimics old StreamProducer flat map population
-		m := map[string]interface{}{
-			"click_id":    evt.ClickID,
-			"campaign_id": evt.CampaignID.String(),
-			"type":        evt.Type,
-			"payload":     evt.Payload,
-			"ip":          evt.IP,
-			"ua":          evt.UA,
-		}
-		_ = m
+		valuesPtr := producerValuesPool.Get().(*[]any)
+		values := *valuesPtr
+		values[1] = "dummy-payload"
+		producerValuesPool.Put(valuesPtr)
 	}
 }
 
@@ -58,29 +40,42 @@ func BenchmarkStreamWriteProto(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		// Mimics new StreamProducer protobuf serialization
 		pbEvt := streamEventPool.Get().(*pb.AdStreamEvent)
-		pbEvt.Reset()
-
-		pbEvt.ClickId = evt.ClickID
-		pbEvt.CampaignId = evt.CampaignID[:]
-		pbEvt.EventType = evt.Type
-		pbEvt.Payload = evt.Payload
-		pbEvt.Ip = evt.IP
-		pbEvt.Ua = evt.UA
+		pbEvt.ClickId = append(pbEvt.ClickId[:0], evt.ClickID...)
+		pbEvt.CampaignId = append(pbEvt.CampaignId[:0], evt.CampaignID[:]...)
+		pbEvt.EventType = append(pbEvt.EventType[:0], evt.Type...)
+		pbEvt.Payload = append(pbEvt.Payload[:0], evt.Payload...)
+		pbEvt.Ip = append(pbEvt.Ip[:0], evt.IP...)
+		pbEvt.Ua = append(pbEvt.Ua[:0], evt.UA...)
 		pbEvt.CreatedAtUnix = evt.CreatedAt.Unix()
 
+		size := pbEvt.SizeVT()
 		bufPtr := byteBufPool.Get().(*[]byte)
-		buf := (*bufPtr)[:0]
+		buf := *bufPtr
+		if cap(buf) < size {
+			buf = make([]byte, size)
+		} else {
+			buf = buf[:size]
+		}
 
-		data, err := proto.MarshalOptions{}.MarshalAppend(buf, pbEvt)
+		n, err := pbEvt.MarshalToSizedBufferVT(buf)
 		if err != nil {
 			b.Fatalf("failed to marshal: %v", err)
 		}
+		data := buf[:n]
+
+		valuesPtr := producerValuesPool.Get().(*[]any)
+		values := *valuesPtr
+		wrap := byteSliceValuePool.Get().(*ByteSliceValue)
+		wrap.b = data
+		values[1] = wrap
+
+		DeepResetAdStreamEvent(pbEvt)
 		streamEventPool.Put(pbEvt)
-		*bufPtr = data
+		*bufPtr = buf
 		byteBufPool.Put(bufPtr)
-		_ = data
+		byteSliceValuePool.Put(wrap)
+		producerValuesPool.Put(valuesPtr)
 	}
 }
 
@@ -151,15 +146,15 @@ func BenchmarkStreamReadProto(b *testing.B) {
 	}
 
 	pbEvtSetup := &pb.AdStreamEvent{
-		ClickId:       evtSetup.ClickID,
+		ClickId:       []byte(evtSetup.ClickID),
 		CampaignId:    evtSetup.CampaignID[:],
-		EventType:     evtSetup.Type,
+		EventType:     []byte(evtSetup.Type),
 		Payload:       evtSetup.Payload,
-		Ip:            evtSetup.IP,
-		Ua:            evtSetup.UA,
+		Ip:            []byte(evtSetup.IP),
+		Ua:            []byte(evtSetup.UA),
 		CreatedAtUnix: evtSetup.CreatedAt.Unix(),
 	}
-	data, _ := proto.Marshal(pbEvtSetup)
+	data, _ := pbEvtSetup.MarshalVT()
 	rawBytesStr := string(data)
 
 	values := map[string]interface{}{
@@ -175,24 +170,25 @@ func BenchmarkStreamReadProto(b *testing.B) {
 
 		if rawBytesStr, ok := values["d"].(string); ok {
 			pbEvt := streamEventPool.Get().(*pb.AdStreamEvent)
-			pbEvt.Reset()
+			DeepResetAdStreamEvent(pbEvt)
 
 			buf := unsafe.Slice(unsafe.StringData(rawBytesStr), len(rawBytesStr))
-			if err := proto.Unmarshal(buf, pbEvt); err == nil {
-				evt.ClickID = pbEvt.ClickId
+			if err := pbEvt.UnmarshalVT(buf); err == nil {
+				evt.ClickID = unsafeString(pbEvt.ClickId)
 				if len(pbEvt.CampaignId) == 16 {
 					copy(evt.CampaignID[:], pbEvt.CampaignId)
 				} else {
-					evt.CampaignID, _ = uuid.Parse(string(pbEvt.CampaignId))
+					evt.CampaignID, _ = uuid.ParseBytes(pbEvt.CampaignId)
 				}
-				evt.Type = pbEvt.EventType
+				evt.Type = unsafeString(pbEvt.EventType)
 				evt.Payload = append(evt.Payload[:0], pbEvt.Payload...)
-				evt.IP = pbEvt.Ip
-				evt.UA = pbEvt.Ua
+				evt.IP = unsafeString(pbEvt.Ip)
+				evt.UA = unsafeString(pbEvt.Ua)
 				if pbEvt.CreatedAtUnix > 0 {
 					evt.CreatedAt = time.Unix(pbEvt.CreatedAtUnix, 0)
 				}
 			}
+			DeepResetAdStreamEvent(pbEvt)
 			streamEventPool.Put(pbEvt)
 		}
 
@@ -222,15 +218,15 @@ func TestStreamPayloadSizeComparison(t *testing.T) {
 
 	// Proto representation size
 	pbEvt := &pb.AdStreamEvent{
-		ClickId:       evt.ClickID,
+		ClickId:       []byte(evt.ClickID),
 		CampaignId:    evt.CampaignID[:],
-		EventType:     evt.Type,
+		EventType:     []byte(evt.Type),
 		Payload:       evt.Payload,
-		Ip:            evt.IP,
-		Ua:            evt.UA,
+		Ip:            []byte(evt.IP),
+		Ua:            []byte(evt.UA),
 		CreatedAtUnix: evt.CreatedAt.Unix(),
 	}
-	protoBytes, _ := proto.Marshal(pbEvt)
+	protoBytes, _ := pbEvt.MarshalVT()
 	protoSize := len(protoBytes)
 
 	t.Logf("--- PAYLOAD SIZE COMPARISON ---")
@@ -240,39 +236,14 @@ func TestStreamPayloadSizeComparison(t *testing.T) {
 }
 
 func BenchmarkDLQWriteFlat(b *testing.B) {
-	evt := &domain.Event{
-		ClickID:    "c_12345_67890_abcdef",
-		CampaignID: uuid.New(),
-		UserID:     "u_12345",
-		Type:       "impression",
-		Payload:    []byte(`{"geo":"US","device":"mobile"}`),
-		IP:         "192.168.1.1",
-		UA:         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
-		CreatedAt:  time.Now(),
-	}
-	errVal := "simulated poison pill error message"
-	msgID := "1716186000000-0"
-	workerID := "worker-asus-tuf-8f5b27"
-
 	b.ResetTimer()
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		m := map[string]interface{}{
-			"click_id":    evt.ClickID,
-			"campaign_id": evt.CampaignID.String(),
-			"type":        evt.Type,
-			"payload":     evt.Payload,
-			"ip":          evt.IP,
-			"ua":          evt.UA,
-			"error":       errVal,
-			"original_id": msgID,
-			"failed_at":   time.Now().Format(time.RFC3339),
-			"service":     "ad-event-processor",
-			"worker_id":   workerID,
-			"retry_count": 3,
-		}
-		_ = m
+		valuesPtr := dlqValuesPool.Get().(*[]any)
+		values := *valuesPtr
+		values[1] = "dummy-payload"
+		dlqValuesPool.Put(valuesPtr)
 	}
 }
 
@@ -299,33 +270,49 @@ func BenchmarkDLQWriteProto(b *testing.B) {
 		if pbDLQ.OriginalEvent == nil {
 			pbDLQ.OriginalEvent = new(pb.AdStreamEvent)
 		} else {
-			pbDLQ.OriginalEvent.Reset()
+			DeepResetAdStreamEvent(pbDLQ.OriginalEvent)
 		}
-		pbDLQ.Error = errVal
-		pbDLQ.OriginalId = msgID
+		pbDLQ.Error = append(pbDLQ.Error[:0], errVal...)
+		pbDLQ.OriginalId = append(pbDLQ.OriginalId[:0], msgID...)
 		pbDLQ.FailedAtUnix = time.Now().Unix()
-		pbDLQ.WorkerId = workerID
+		pbDLQ.WorkerId = append(pbDLQ.WorkerId[:0], workerID...)
 		pbDLQ.RetryCount = 3
 
-		pbDLQ.OriginalEvent.ClickId = evt.ClickID
-		pbDLQ.OriginalEvent.CampaignId = evt.CampaignID[:]
-		pbDLQ.OriginalEvent.EventType = evt.Type
-		pbDLQ.OriginalEvent.Payload = evt.Payload
-		pbDLQ.OriginalEvent.Ip = evt.IP
-		pbDLQ.OriginalEvent.Ua = evt.UA
+		pbDLQ.OriginalEvent.ClickId = append(pbDLQ.OriginalEvent.ClickId[:0], evt.ClickID...)
+		pbDLQ.OriginalEvent.CampaignId = append(pbDLQ.OriginalEvent.CampaignId[:0], evt.CampaignID[:]...)
+		pbDLQ.OriginalEvent.EventType = append(pbDLQ.OriginalEvent.EventType[:0], evt.Type...)
+		pbDLQ.OriginalEvent.Payload = append(pbDLQ.OriginalEvent.Payload[:0], evt.Payload...)
+		pbDLQ.OriginalEvent.Ip = append(pbDLQ.OriginalEvent.Ip[:0], evt.IP...)
+		pbDLQ.OriginalEvent.Ua = append(pbDLQ.OriginalEvent.Ua[:0], evt.UA...)
 		pbDLQ.OriginalEvent.CreatedAtUnix = evt.CreatedAt.Unix()
 
+		size := pbDLQ.SizeVT()
 		bufPtr := byteBufPool.Get().(*[]byte)
-		buf := (*bufPtr)[:0]
+		buf := *bufPtr
+		if cap(buf) < size {
+			buf = make([]byte, size)
+		} else {
+			buf = buf[:size]
+		}
 
-		data, err := proto.MarshalOptions{}.MarshalAppend(buf, pbDLQ)
+		n, err := pbDLQ.MarshalToSizedBufferVT(buf)
 		if err != nil {
 			b.Fatalf("failed to marshal: %v", err)
 		}
+		data := buf[:n]
+
+		valuesPtr := dlqValuesPool.Get().(*[]any)
+		values := *valuesPtr
+		wrap := byteSliceValuePool.Get().(*ByteSliceValue)
+		wrap.b = data
+		values[1] = wrap
+
+		DeepResetAdDLQEvent(pbDLQ)
 		dlqEventPool.Put(pbDLQ)
-		*bufPtr = data
+		*bufPtr = buf
 		byteBufPool.Put(bufPtr)
-		_ = data
+		byteSliceValuePool.Put(wrap)
+		dlqValuesPool.Put(valuesPtr)
 	}
 }
 
@@ -359,21 +346,21 @@ func TestDLQPayloadSizeComparison(t *testing.T) {
 
 	pbDLQ := &pb.AdDLQEvent{
 		OriginalEvent: &pb.AdStreamEvent{
-			ClickId:       evt.ClickID,
+			ClickId:       []byte(evt.ClickID),
 			CampaignId:    evt.CampaignID[:],
-			EventType:     evt.Type,
+			EventType:     []byte(evt.Type),
 			Payload:       evt.Payload,
-			Ip:            evt.IP,
-			Ua:            evt.UA,
+			Ip:            []byte(evt.IP),
+			Ua:            []byte(evt.UA),
 			CreatedAtUnix: evt.CreatedAt.Unix(),
 		},
-		Error:        errVal,
-		OriginalId:   msgID,
+		Error:        []byte(errVal),
+		OriginalId:   []byte(msgID),
 		FailedAtUnix: evt.CreatedAt.Unix(),
-		WorkerId:     workerID,
+		WorkerId:     []byte(workerID),
 		RetryCount:   3,
 	}
-	protoBytes, _ := proto.Marshal(pbDLQ)
+	protoBytes, _ := pbDLQ.MarshalVT()
 	protoSize := len(protoBytes)
 
 	t.Logf("--- DLQ PAYLOAD SIZE COMPARISON ---")

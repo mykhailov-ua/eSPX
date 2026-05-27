@@ -27,9 +27,26 @@ func (s CircuitState) String() string {
 }
 
 // CircuitBreaker implements thread-safe status transitions and worker-granular failure isolation.
-// It tracks worker/shard health independently in an in-memory map to allow faulty worker routes
-// (e.g. failing clickhouse/postgres connections on specific hosts) to open the breaker without
-// starving healthy ingestion paths. Lock contention is bounded by local worker-granular scopes.
+//
+// Concurrency:
+// - Thread-safe. Read/write operations on state and failure maps are protected by a local Mutex lock.
+//
+// Circuit Breaker State Machine & Math:
+// 1. Closed (CircuitClosed = 0):
+//   - All actions are allowed (Allow() returns true).
+//   - Worker-granular failures are recorded in the failures map.
+//   - Transition to Open: Triggered if failures[workerID] >= failThreshold.
+//
+// 2. Open (CircuitOpen = 1):
+//   - Inbound actions are rejected (Allow() returns false).
+//   - Transition to Half-Open: Occurs if time.Since(lastOpenedAt) >= openTimeout when Allow() is evaluated.
+//
+// 3. Half-Open (CircuitHalfOpen = 2):
+//   - First check after Open cooldown completes allows a single pilot execution.
+//   - Transition to Closed: Triggered if the pilot execution is successful (RecordSuccess).
+//     The entire failures map is cleared.
+//   - Transition to Open: Triggered if the pilot execution fails (RecordFailure) or is cancelled.
+//     Cooldown interval is reset.
 type CircuitBreaker struct {
 	mu            sync.Mutex
 	state         CircuitState
