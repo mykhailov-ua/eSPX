@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -97,6 +98,16 @@ type DBHealthChecker interface {
 	Ping(ctx context.Context) error
 }
 
+// UnifiedFilter manages the execution of transactional ingestion eligibility logic.
+// It integrates rate-limiting, event deduplication, budget verification, pacing restrictions, and frequency capping
+// into a single round-trip evaluation.
+//
+// Memory Impact:
+// - Minimizes heap allocations by recycling string and interface slices via keysPool and argsPool.
+//
+// Concurrency:
+// - Thread-safe. Read operations on target campaign definitions bypass locks via double-buffered CampaignRegistry lookup.
+// - Sentinel logic uses atomic states and Mutex synchronization for offline performance sample collections.
 type UnifiedFilter struct {
 	rdbs                     []redis.UniversalClient
 	sharder                  Sharder
@@ -151,7 +162,15 @@ func (f *UnifiedFilter) SetGeoBidFloor(country string, floor int64) {
 }
 
 // parseBidMicro extracts the bid_micro value from a JSON byte slice without heap allocation.
-// This is a highly optimized scanner that avoids reflection and unmarshaling overhead on the hot path.
+//
+// Memory Impact:
+// - Zero allocations. Bypasses the Go standard library json.Unmarshal reflective parser.
+//
+// Concurrency:
+// - Thread-safe. Read-only scan on immutable request payloads.
+//
+// Performance Hacks:
+// - O(N) single-pass scan searching for target key token. Bypasses syntax token trees or AST creation.
 func parseBidMicro(payload []byte) int64 {
 	const key = `"bid_micro"`
 	n := len(payload)
@@ -257,6 +276,23 @@ func (f *UnifiedFilter) SetDBHealthChecker(checker DBHealthChecker) {
 }
 
 // StartSLASentinel launches a background goroutine to monitor DB latency and enforce SLA penalties.
+//
+// Memory Impact:
+// - Bounded memory footprint. Pre-allocates latency buffers via ResizeTrackers.
+//
+// Concurrency:
+// - Thread-safe. Synchronizes latency sample modifications using latencyMu.
+// - Employs atomic state checks (slaPenaltyActive.Load/Store) to eliminate lock contention on the track hot path.
+//
+// SLA & Latency Sentinel Mechanics:
+//  1. Diagnostics: Pings the database at standard intervals to record response round-trip times (RTT).
+//  2. Metrics: Maintains a circular window of latency samples, dynamically sorting the set to determine P95 delays.
+//  3. EMA Filtering: Computes an Exponential Moving Average (EMA) to smooth short-term latency jitter:
+//     EMA_new = alpha * Latency_current + (1 - alpha) * EMA_previous
+//  4. State Transitions:
+//     - Normal -> Penalty Mode: Triggered when the P95 latency breaches p95ThresholdMs.
+//     Redis key "sla:penalty:active" is set to true, notifying ingress nodes to throttle/halve budgets.
+//     - Penalty Mode -> Recovery: Triggered when the EMA drops below recoveryEmaMs and remains stable for recoveryStableDuration.
 func (f *UnifiedFilter) StartSLASentinel(ctx context.Context, interval time.Duration) {
 	go func() {
 		ticker := time.NewTicker(interval)
@@ -350,7 +386,7 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 	}
 
 	if evt.ClickID == "" {
-		id, err := uuid.NewV7()
+		id, err := NewFastUUID()
 		if err != nil {
 			return fmt.Errorf("failed to generate click id: %w", err)
 		}
@@ -374,9 +410,6 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 		}
 	}
 
-	campaignIDStr := campInfo.IDStr
-	customerIDStr := campInfo.CustomerIDStr
-
 	amount := f.clickAmountMicroAny
 	if evt.Type == "impression" {
 		amount = f.impressionAmountMicroAny
@@ -394,10 +427,7 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 
 	wRL := bufPool.Get().(*bufWrapper)
 	wDup := bufPool.Get().(*bufWrapper)
-	wBgt := bufPool.Get().(*bufWrapper)
 	wIdem := bufPool.Get().(*bufWrapper)
-	wCSync := bufPool.Get().(*bufWrapper)
-	wCustSync := bufPool.Get().(*bufWrapper)
 	wDate := bufPool.Get().(*bufWrapper)
 	wDS := bufPool.Get().(*bufWrapper)
 	wFcap := bufPool.Get().(*bufWrapper)
@@ -408,10 +438,7 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 	defer func() {
 		bufPool.Put(wRL)
 		bufPool.Put(wDup)
-		bufPool.Put(wBgt)
 		bufPool.Put(wIdem)
-		bufPool.Put(wCSync)
-		bufPool.Put(wCustSync)
 		bufPool.Put(wDate)
 		bufPool.Put(wDS)
 		bufPool.Put(wFcap)
@@ -432,25 +459,15 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 	wDup.buf = append(wDup.buf, evt.ClickID...)
 	dupKey := unsafeString(wDup.buf)
 
-	wBgt.buf = wBgt.buf[:0]
-	wBgt.buf = append(wBgt.buf, "budget:campaign:"...)
-	wBgt.buf = append(wBgt.buf, campaignIDStr...)
-	budgetSourceKey := unsafeString(wBgt.buf)
+	budgetSourceKey := campInfo.BudgetCampaignKey
 
 	wIdem.buf = wIdem.buf[:0]
 	wIdem.buf = append(wIdem.buf, "idempotency:click:"...)
 	wIdem.buf = append(wIdem.buf, evt.ClickID...)
 	idempotencyKey := unsafeString(wIdem.buf)
 
-	wCSync.buf = wCSync.buf[:0]
-	wCSync.buf = append(wCSync.buf, "budget:sync:campaign:"...)
-	wCSync.buf = append(wCSync.buf, campaignIDStr...)
-	campaignSyncKey := unsafeString(wCSync.buf)
-
-	wCustSync.buf = wCustSync.buf[:0]
-	wCustSync.buf = append(wCustSync.buf, "budget:sync:customer:"...)
-	wCustSync.buf = append(wCustSync.buf, customerIDStr...)
-	customerSyncKey := unsafeString(wCustSync.buf)
+	campaignSyncKey := campInfo.CampaignSyncKey
+	customerSyncKey := campInfo.CustomerSyncKey
 
 	dirtyCampaignsKey := "budget:dirty_campaigns"
 	dirtyCustomersKey := "budget:dirty_customers"
@@ -468,27 +485,16 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 	currentDate := unsafeString(wDate.buf)
 
 	wDS.buf = wDS.buf[:0]
-	wDS.buf = append(wDS.buf, "budget:daily_spent:campaign:"...)
-	wDS.buf = append(wDS.buf, campaignIDStr...)
-	wDS.buf = append(wDS.buf, ':')
+	wDS.buf = append(wDS.buf, campInfo.DailySpendKeyPrefix...)
 	wDS.buf = append(wDS.buf, currentDate...)
 	dailySpendKey := unsafeString(wDS.buf)
 
 	var fcapKey string
-	wFcap.buf = wFcap.buf[:0]
 	if evt.UserID != "" {
-		if campInfo.BrandFcapKey != "" {
-			wFcap.buf = append(wFcap.buf, campInfo.BrandFcapKey...)
-			wFcap.buf = append(wFcap.buf, ":u:"...)
-			wFcap.buf = append(wFcap.buf, evt.UserID...)
-			fcapKey = unsafeString(wFcap.buf)
-		} else {
-			wFcap.buf = append(wFcap.buf, "fcap:c:"...)
-			wFcap.buf = append(wFcap.buf, campaignIDStr...)
-			wFcap.buf = append(wFcap.buf, ":u:"...)
-			wFcap.buf = append(wFcap.buf, evt.UserID...)
-			fcapKey = unsafeString(wFcap.buf)
-		}
+		wFcap.buf = wFcap.buf[:0]
+		wFcap.buf = append(wFcap.buf, campInfo.FcapKeyPrefix...)
+		wFcap.buf = append(wFcap.buf, evt.UserID...)
+		fcapKey = unsafeString(wFcap.buf)
 	} else {
 		fcapKey = "fcap:ignored"
 	}
@@ -547,14 +553,18 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 	args[17] = campInfo.FreqLimitAny
 	args[18] = campInfo.FreqWindowAny
 
-	// Loop executes up to 2 times to handle potential Redis budget cache misses.
-	// If the unified Lua script returns -1, the budget key is loaded from the primary PostgreSQL
-	// database and seeded into Redis, after which the script is re-run.
+	// Execute up to 2 iterations to handle Redis budget cache misses.
+	// On the first -1 response, seed the missing budget key from PostgreSQL and retry.
+	// A shard index string is pre-formatted once outside the loop to avoid per-iteration allocation.
+	shardIdx := strconv.Itoa(f.sharder.GetShard(evt.CampaignID))
 	for i := 0; i < 2; i++ {
+		luaStart := time.Now()
 		cmd := f.script.EvalSha(ctx, rdb, keys, args...)
 		if err := cmd.Err(); err != nil && (errors.Is(err, redis.ErrNoScript) || err.Error() == "NOSCRIPT No matching script. Please use EVAL.") {
 			cmd = f.script.Eval(ctx, rdb, keys, args...)
 		}
+		// Record after EVALSHA settles (includes EVAL fallback latency on cache miss).
+		metrics.RedisLuaDuration.WithLabelValues(shardIdx).Observe(time.Since(luaStart).Seconds())
 		res, err := cmd.Int64()
 
 		if err != nil {

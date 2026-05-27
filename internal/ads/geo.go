@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/oschwald/geoip2-golang"
+	"github.com/oschwald/maxminddb-golang"
 )
 
 type GeoProvider interface {
@@ -15,13 +15,39 @@ type GeoProvider interface {
 	Close() error
 }
 
+type countryResult struct {
+	Country struct {
+		IsoCode string `maxminddb:"iso_code"`
+	} `maxminddb:"country"`
+}
+
+type anonymousIPResult struct {
+	IsAnonymous       bool `maxminddb:"is_anonymous"`
+	IsAnonymousVPN    bool `maxminddb:"is_anonymous_vpn"`
+	IsHostingProvider bool `maxminddb:"is_hosting_provider"`
+	IsPublicProxy     bool `maxminddb:"is_public_proxy"`
+	IsTorExitNode     bool `maxminddb:"is_tor_exit_node"`
+}
+
+var countryPool = sync.Pool{
+	New: func() any {
+		return &countryResult{}
+	},
+}
+
+var anonymousIPPool = sync.Pool{
+	New: func() any {
+		return &anonymousIPResult{}
+	},
+}
+
 type MaxMindProvider struct {
-	reader *geoip2.Reader
+	reader *maxminddb.Reader
 	mu     sync.RWMutex
 }
 
 func NewMaxMindProvider(dbPath string) (*MaxMindProvider, error) {
-	db, err := geoip2.Open(dbPath)
+	db, err := maxminddb.Open(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open maxmind db: %w", err)
 	}
@@ -34,12 +60,18 @@ func (p *MaxMindProvider) GetCountry(ipStr string) (string, error) {
 		return "", fmt.Errorf("invalid IP: %s", ipStr)
 	}
 
-	if p.reader == nil {
+	p.mu.RLock()
+	reader := p.reader
+	p.mu.RUnlock()
+	if reader == nil {
 		return "", fmt.Errorf("geoip provider closed")
 	}
 
-	record, err := p.reader.Country(ip)
-	if err != nil {
+	record := countryPool.Get().(*countryResult)
+	record.Country.IsoCode = ""
+	defer countryPool.Put(record)
+
+	if err := reader.Lookup(ip, record); err != nil {
 		return "", err
 	}
 
@@ -52,12 +84,22 @@ func (p *MaxMindProvider) IsAnonymous(ipStr string) (bool, error) {
 		return false, fmt.Errorf("invalid IP: %s", ipStr)
 	}
 
-	if p.reader == nil {
+	p.mu.RLock()
+	reader := p.reader
+	p.mu.RUnlock()
+	if reader == nil {
 		return false, fmt.Errorf("geoip provider closed")
 	}
 
-	record, err := p.reader.AnonymousIP(ip)
-	if err != nil {
+	record := anonymousIPPool.Get().(*anonymousIPResult)
+	record.IsAnonymous = false
+	record.IsAnonymousVPN = false
+	record.IsHostingProvider = false
+	record.IsPublicProxy = false
+	record.IsTorExitNode = false
+	defer anonymousIPPool.Put(record)
+
+	if err := reader.Lookup(ip, record); err != nil {
 		return false, err
 	}
 
