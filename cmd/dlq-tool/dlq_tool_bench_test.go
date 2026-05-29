@@ -51,9 +51,7 @@ func TestDLQBackupMetrics(t *testing.T) {
 	binPath := filepath.Join(tempDir, "backup.bin")
 
 	// 1. Benchmark JSONL Write
-	t.Log("--------------------------------------------------------------------------------")
 	t.Log("MEASURING WRITE SPEED & FILE SIZE")
-	t.Log("--------------------------------------------------------------------------------")
 
 	startJSONWrite := time.Now()
 	jsonFile, err := os.Create(jsonlPath)
@@ -121,9 +119,7 @@ func TestDLQBackupMetrics(t *testing.T) {
 	t.Logf("-> Write Speedup: %.1fx", float64(durJSONWrite.Nanoseconds())/float64(durBinWrite.Nanoseconds()))
 
 	// 3. Benchmark Read & Decode
-	t.Log("\n--------------------------------------------------------------------------------")
-	t.Log("MEASURING READ & DECODE (DESERIALIZATION) SPEED")
-	t.Log("--------------------------------------------------------------------------------")
+	t.Log("\nMEASURING READ & DECODE (DESERIALIZATION) SPEED")
 
 	// Read JSONL
 	startJSONRead := time.Now()

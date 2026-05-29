@@ -376,8 +376,7 @@ func inspectStream(ctx context.Context, rdb *redis.Client, stream string, batchS
 		}
 
 		for _, msg := range msgs[0].Messages {
-			fmt.Printf("\n========================================\n")
-			fmt.Printf("Message ID: %s\n", msg.ID)
+			fmt.Printf("\nMessage ID: %s\n", msg.ID)
 
 			if rawBytesStr, ok := msg.Values["d"].(string); ok {
 				// Try to unmarshal as DLQ event first
@@ -452,7 +451,6 @@ func inspectStream(ctx context.Context, rdb *redis.Client, stream string, batchS
 				prettyJSON, _ := json.MarshalIndent(msg.Values, "", "  ")
 				fmt.Println(string(prettyJSON))
 			}
-			fmt.Printf("========================================\n")
 			startID = msg.ID
 			totalProcessed++
 		}
