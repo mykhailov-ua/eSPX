@@ -3,7 +3,6 @@ package auth
 import ()
 
 import (
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -27,7 +26,7 @@ func addAuthorization(
 	token, err := tokenMaker.CreateToken(userID, sessionID, role, customerID, duration)
 	require.NoError(t, err)
 
-	authorizationHeader := fmt.Sprintf("%s %s", authorizationType, token)
+	authorizationHeader := authorizationType + " " + token
 	request.Header.Set(authorizationHeaderKey, authorizationHeader)
 }
 
@@ -145,7 +144,7 @@ func BenchmarkAuthMiddleware(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	req.Header.Set(authorizationHeaderKey, fmt.Sprintf("%s %s", authorizationTypeBearer, token))
+	req.Header.Set(authorizationHeaderKey, authorizationTypeBearer+" "+token)
 
 	rec := httptest.NewRecorder()
 

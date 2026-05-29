@@ -60,14 +60,21 @@ func (h *Handler) extractClientIP(ctx context.Context) string {
 
 	if isTrusted {
 		if md, ok := metadata.FromIncomingContext(ctx); ok {
+			// OWASP compliance: prioritize X-Real-IP because it is overwritten by Nginx with the actual socket peer IP.
+			if xri := md.Get("x-real-ip"); len(xri) > 0 && xri[0] != "" {
+				return strings.TrimSpace(xri[0])
+			}
+			// OWASP compliance: parse X-Forwarded-For from right to left, selecting the last element.
+			// The last element is added by Nginx (the trusted proxy) and corresponds to the real client IP.
+			// This prevents spoofing of X-Forwarded-For headers from untrusted clients.
 			if xff := md.Get("x-forwarded-for"); len(xff) > 0 {
 				ips := strings.Split(xff[0], ",")
-				if len(ips) > 0 && strings.TrimSpace(ips[0]) != "" {
-					return strings.TrimSpace(ips[0])
+				if len(ips) > 0 {
+					val := strings.TrimSpace(ips[len(ips)-1])
+					if val != "" {
+						return val
+					}
 				}
-			}
-			if xri := md.Get("x-real-ip"); len(xri) > 0 && xri[0] != "" {
-				return xri[0]
 			}
 		}
 	}
@@ -81,7 +88,7 @@ func (h *Handler) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Re
 	if req.CustomerId != "" {
 		customerID, err = uuid.Parse(req.CustomerId)
 		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "invalid customer id: %v", err)
+			return nil, status.Error(codes.InvalidArgument, "invalid customer id")
 		}
 	}
 	id, err := h.service.Register(ctx, RegisterDTO{
@@ -166,19 +173,19 @@ func mapError(err error) error {
 		return nil
 	}
 	if errors.Is(err, ErrRateLimitExceeded) {
-		return status.Errorf(codes.ResourceExhausted, "%v", err)
+		return status.Error(codes.ResourceExhausted, err.Error())
 	}
 	if errors.Is(err, ErrInvalidCredentials) || errors.Is(err, ErrInvalidToken) || errors.Is(err, ErrExpiredToken) || errors.Is(err, ErrAccountLocked) || errors.Is(err, ErrSessionBlocked) {
-		return status.Errorf(codes.Unauthenticated, "%v", err)
+		return status.Error(codes.Unauthenticated, err.Error())
 	}
 	if errors.Is(err, ErrUserAlreadyExists) {
-		return status.Errorf(codes.AlreadyExists, "%v", err)
+		return status.Error(codes.AlreadyExists, err.Error())
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
-		return status.Errorf(codes.NotFound, "user not found")
+		return status.Error(codes.NotFound, "user not found")
 	}
 	if errors.Is(err, ErrValidation) {
-		return status.Errorf(codes.InvalidArgument, "%v", err)
+		return status.Error(codes.InvalidArgument, err.Error())
 	}
-	return status.Errorf(codes.Internal, "internal server error: %v", err)
+	return status.Error(codes.Internal, "internal server error")
 }

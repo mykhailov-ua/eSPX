@@ -1,35 +1,15 @@
 package auth
 
-import ()
-
 import (
 	"context"
 	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 )
-
-var tokenCache sync.Map
-
-func verifyWithCache(tokenMaker Maker, token string) (*Payload, error) {
-	if cached, ok := tokenCache.Load(token); ok {
-		payload := cached.(*Payload)
-		if payload.Valid() == nil {
-			return payload, nil
-		}
-		tokenCache.Delete(token)
-	}
-	payload, err := tokenMaker.VerifyToken(token)
-	if err == nil {
-		tokenCache.Store(token, payload)
-	}
-	return payload, err
-}
 
 type contextKey string
 
@@ -59,7 +39,7 @@ func AuthMiddleware(tokenMaker Maker, rdb redis.UniversalClient, allowedRoles ..
 			}
 
 			accessToken := strings.TrimSpace(authorizationHeader[7:])
-			payload, err := verifyWithCache(tokenMaker, accessToken)
+			payload, err := tokenMaker.VerifyToken(accessToken)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusUnauthorized)
 				return
