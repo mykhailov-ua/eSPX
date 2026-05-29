@@ -229,7 +229,7 @@ func TestStreamPayloadSizeComparison(t *testing.T) {
 	protoBytes, _ := pbEvt.MarshalVT()
 	protoSize := len(protoBytes)
 
-	t.Logf("--- PAYLOAD SIZE COMPARISON ---")
+	t.Logf("PAYLOAD SIZE COMPARISON")
 	t.Logf("Flat map raw size: %d bytes", flatSize)
 	t.Logf("Protobuf binary size: %d bytes", protoSize)
 	t.Logf("Size reduction: %.1f%%", float64(flatSize-protoSize)/float64(flatSize)*100.0)
@@ -363,7 +363,7 @@ func TestDLQPayloadSizeComparison(t *testing.T) {
 	protoBytes, _ := pbDLQ.MarshalVT()
 	protoSize := len(protoBytes)
 
-	t.Logf("--- DLQ PAYLOAD SIZE COMPARISON ---")
+	t.Logf("DLQ PAYLOAD SIZE COMPARISON")
 	t.Logf("Flat map DLQ raw size: %d bytes", flatSize)
 	t.Logf("Protobuf DLQ binary size: %d bytes", protoSize)
 	t.Logf("Size reduction: %.1f%%", float64(flatSize-protoSize)/float64(flatSize)*100.0)

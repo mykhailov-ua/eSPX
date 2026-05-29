@@ -75,7 +75,7 @@ func (r *Registry) SetReplicaPath(path string) {
 	r.replicaPath = path
 }
 
-// Exists checks if an active campaign exists in the registry. Totally lock-free.
+// Exists checks if an active campaign exists in the registry.
 func (r *Registry) Exists(id uuid.UUID) bool {
 	m, _ := r.data.Load().(map[uuid.UUID]campaignInfo)
 	if m == nil {
@@ -85,7 +85,7 @@ func (r *Registry) Exists(id uuid.UUID) bool {
 	return ok && info.status == db.CampaignStatusTypeACTIVE
 }
 
-// GetCustomerID gets the CustomerID for a campaign. Totally lock-free.
+// GetCustomerID gets the CustomerID for a campaign.
 func (r *Registry) GetCustomerID(campaignID uuid.UUID) (uuid.UUID, bool) {
 	m, _ := r.data.Load().(map[uuid.UUID]campaignInfo)
 	if m == nil {
@@ -98,7 +98,7 @@ func (r *Registry) GetCustomerID(campaignID uuid.UUID) (uuid.UUID, bool) {
 	return info.campaign.CustomerID, true
 }
 
-// GetCampaign retrieves a domain.Campaign struct. Totally lock-free.
+// GetCampaign retrieves a domain.Campaign struct.
 func (r *Registry) GetCampaign(id uuid.UUID) (*domain.Campaign, bool) {
 	m, _ := r.data.Load().(map[uuid.UUID]campaignInfo)
 	if m == nil {
@@ -111,7 +111,7 @@ func (r *Registry) GetCampaign(id uuid.UUID) (*domain.Campaign, bool) {
 	return info.campaign, true
 }
 
-// Add manually inserts a campaign into the registry. Uses Copy-on-Write and atomic pointer swap.
+// Add manually inserts a campaign into the registry.
 func (r *Registry) Add(id, customerID uuid.UUID, brandID *uuid.UUID, brandFcapKey string, pacingMode domain.PacingMode, dailyBudget int64, timezone string, freqLimit, freqWindow int32, targetCountries []string) {
 	loc, err := time.LoadLocation(timezone)
 	if err != nil {

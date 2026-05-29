@@ -92,7 +92,7 @@ func TestUnifiedFilter_LatencySLA(t *testing.T) {
 	// Start SLA Sentinel
 	f.StartSLASentinel(ctx, 10*time.Millisecond)
 
-	// --- PHASE 1: Normal Operation (0ms Latency) ---
+	// PHASE 1: Normal Operation (0ms Latency)
 	time.Sleep(50 * time.Millisecond)
 	assert.False(t, f.slaPenaltyActive.Load(), "SLA penalty should be inactive initially")
 
@@ -110,7 +110,7 @@ func TestUnifiedFilter_LatencySLA(t *testing.T) {
 	afterBudget1, _ := rdb.Get(ctx, budgetSourceKey).Int64()
 	assert.Equal(t, int64(1_000_000), beforeBudget1-afterBudget1, "Should charge full click amount under normal SLA state")
 
-	// --- PHASE 2: Outage Simulation (300ms Slow DB) ---
+	// PHASE 2: Outage Simulation (300ms Slow DB)
 	mockDB.Delay.Store(300)
 
 	// Wait for a few ticks to trigger P95 threshold breach.
@@ -137,7 +137,7 @@ func TestUnifiedFilter_LatencySLA(t *testing.T) {
 	afterBudget2, _ := rdb.Get(ctx, budgetSourceKey).Int64()
 	assert.Equal(t, int64(500_000), beforeBudget2-afterBudget2, "Should apply 50% discount charge while SLA penalty is active")
 
-	// --- PHASE 3: Recovery Simulation (0ms Normal DB) ---
+	// PHASE 3: Recovery Simulation (0ms Normal DB)
 	mockDB.Delay.Store(0)
 
 	// Wait for EMA to drop below 100ms and remain stable for > 100ms.

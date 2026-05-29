@@ -151,13 +151,11 @@ type UnifiedFilter struct {
 
 // SetGeoProvider configures the GeoIP resolution service.
 func (f *UnifiedFilter) SetGeoProvider(geo GeoProvider) {
-	// A setter maintains compatibility with existing constructors.
 	f.geo = geo
 }
 
 // SetGeoBidFloor registers or updates a publisher floor limit for a specific geo.
 func (f *UnifiedFilter) SetGeoBidFloor(country string, floor int64) {
-	// Use sync.Map to guarantee thread-safe read-heavy configuration updates.
 	f.geoFloors.Store(country, floor)
 }
 
@@ -179,10 +177,8 @@ func parseBidMicro(payload []byte) int64 {
 		return 0
 	}
 
-	// Scan the payload for the raw key occurrence
 	for i := 0; i <= n-kLen; i++ {
 		if payload[i] == '"' && string(payload[i:i+kLen]) == key {
-			// Find the colon separating the key and value
 			idx := i + kLen
 			for idx < n && (payload[idx] == ' ' || payload[idx] == '\t' || payload[idx] == ':') {
 				if payload[idx] == ':' {
@@ -192,12 +188,10 @@ func parseBidMicro(payload []byte) int64 {
 				idx++
 			}
 
-			// Skip any whitespace before the number
 			for idx < n && (payload[idx] == ' ' || payload[idx] == '\t') {
 				idx++
 			}
 
-			// Parse the raw integer value directly
 			var val int64
 			hasDigit := false
 			for idx < n && payload[idx] >= '0' && payload[idx] <= '9' {

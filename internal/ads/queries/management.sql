@@ -245,3 +245,36 @@ SET pacing_mode = $2,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = $1
 RETURNING *;
+
+-- Recon queries (financial integrity cold path)
+-- These queries power the background reconciliation worker. They are intentionally
+-- scoped to closed time windows to eliminate races with the hot SyncWorker path.
+
+-- name: SumLedgerSpendByCampaignWindow :many
+SELECT 
+    campaign_id,
+    COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END), 0)::bigint AS total_spent_micro
+FROM balance_ledger
+WHERE created_at >= $1 
+  AND created_at < $2
+  AND (type = 'FEE' OR type = 'RECONCILIATION_ADJUST' OR type = 'REFUND')  -- spend-like movements
+GROUP BY campaign_id;
+
+-- name: CreateReconRun :one
+INSERT INTO recon_runs (period_start, period_end, status)
+VALUES ($1, $2, 'PENDING')
+RETURNING *;
+
+-- name: UpdateReconRun :exec
+UPDATE recon_runs
+SET status = $2,
+    total_delta = $3,
+    campaigns_checked = $4,
+    discrepancies_found = $5,
+    completed_at = NOW()
+WHERE id = $1;
+
+-- name: InsertReconDiscrepancy :exec
+INSERT INTO recon_discrepancies (
+    run_id, campaign_id, customer_id, expected_spend, actual_spend, delta, redis_adjusted
+) VALUES ($1, $2, $3, $4, $5, $6, $7);

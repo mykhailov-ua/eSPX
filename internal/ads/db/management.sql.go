@@ -285,6 +285,34 @@ func (q *Queries) CreateOutboxEvent(ctx context.Context, arg CreateOutboxEventPa
 	return i, err
 }
 
+const createReconRun = `-- name: CreateReconRun :one
+INSERT INTO recon_runs (period_start, period_end, status)
+VALUES ($1, $2, 'PENDING')
+RETURNING id, period_start, period_end, status, total_delta, campaigns_checked, discrepancies_found, created_at, completed_at
+`
+
+type CreateReconRunParams struct {
+	PeriodStart pgtype.Timestamptz `json:"period_start"`
+	PeriodEnd   pgtype.Timestamptz `json:"period_end"`
+}
+
+func (q *Queries) CreateReconRun(ctx context.Context, arg CreateReconRunParams) (ReconRun, error) {
+	row := q.db.QueryRow(ctx, createReconRun, arg.PeriodStart, arg.PeriodEnd)
+	var i ReconRun
+	err := row.Scan(
+		&i.ID,
+		&i.PeriodStart,
+		&i.PeriodEnd,
+		&i.Status,
+		&i.TotalDelta,
+		&i.CampaignsChecked,
+		&i.DiscrepanciesFound,
+		&i.CreatedAt,
+		&i.CompletedAt,
+	)
+	return i, err
+}
+
 const createStatusHistory = `-- name: CreateStatusHistory :exec
 INSERT INTO campaign_status_history (campaign_id, old_status, new_status, reason)
 VALUES ($1, $2, $3, $4)
@@ -806,6 +834,35 @@ func (q *Queries) GetPendingOutboxEventsForUpdate(ctx context.Context, limit int
 	return items, nil
 }
 
+const insertReconDiscrepancy = `-- name: InsertReconDiscrepancy :exec
+INSERT INTO recon_discrepancies (
+    run_id, campaign_id, customer_id, expected_spend, actual_spend, delta, redis_adjusted
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
+`
+
+type InsertReconDiscrepancyParams struct {
+	RunID         int64       `json:"run_id"`
+	CampaignID    pgtype.UUID `json:"campaign_id"`
+	CustomerID    pgtype.UUID `json:"customer_id"`
+	ExpectedSpend int64       `json:"expected_spend"`
+	ActualSpend   int64       `json:"actual_spend"`
+	Delta         int64       `json:"delta"`
+	RedisAdjusted bool        `json:"redis_adjusted"`
+}
+
+func (q *Queries) InsertReconDiscrepancy(ctx context.Context, arg InsertReconDiscrepancyParams) error {
+	_, err := q.db.Exec(ctx, insertReconDiscrepancy,
+		arg.RunID,
+		arg.CampaignID,
+		arg.CustomerID,
+		arg.ExpectedSpend,
+		arg.ActualSpend,
+		arg.Delta,
+		arg.RedisAdjusted,
+	)
+	return err
+}
+
 const listAuditLogs = `-- name: ListAuditLogs :many
 SELECT id, admin_id, action, target_type, target_id, changes, metadata, created_at FROM admin_audit_log
 ORDER BY created_at DESC
@@ -1171,6 +1228,51 @@ func (q *Queries) SoftDeleteCampaign(ctx context.Context, id pgtype.UUID) error 
 	return err
 }
 
+const sumLedgerSpendByCampaignWindow = `-- name: SumLedgerSpendByCampaignWindow :many
+
+SELECT 
+    campaign_id,
+    COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END), 0)::bigint AS total_spent_micro
+FROM balance_ledger
+WHERE created_at >= $1 
+  AND created_at < $2
+  AND (type = 'FEE' OR type = 'RECONCILIATION_ADJUST' OR type = 'REFUND')  -- spend-like movements
+GROUP BY campaign_id
+`
+
+type SumLedgerSpendByCampaignWindowParams struct {
+	CreatedAt   pgtype.Timestamp `json:"created_at"`
+	CreatedAt_2 pgtype.Timestamp `json:"created_at_2"`
+}
+
+type SumLedgerSpendByCampaignWindowRow struct {
+	CampaignID      pgtype.UUID `json:"campaign_id"`
+	TotalSpentMicro int64       `json:"total_spent_micro"`
+}
+
+// Recon queries (financial integrity cold path)
+// These queries power the background reconciliation worker. They are intentionally
+// scoped to closed time windows to eliminate races with the hot SyncWorker path.
+func (q *Queries) SumLedgerSpendByCampaignWindow(ctx context.Context, arg SumLedgerSpendByCampaignWindowParams) ([]SumLedgerSpendByCampaignWindowRow, error) {
+	rows, err := q.db.Query(ctx, sumLedgerSpendByCampaignWindow, arg.CreatedAt, arg.CreatedAt_2)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SumLedgerSpendByCampaignWindowRow
+	for rows.Next() {
+		var i SumLedgerSpendByCampaignWindowRow
+		if err := rows.Scan(&i.CampaignID, &i.TotalSpentMicro); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateCampaignBudget = `-- name: UpdateCampaignBudget :one
 UPDATE campaigns
 SET budget_limit = $2,
@@ -1339,4 +1441,33 @@ func (q *Queries) UpdateCustomerOverdraft(ctx context.Context, arg UpdateCustome
 		&i.AllowedOverdraft,
 	)
 	return i, err
+}
+
+const updateReconRun = `-- name: UpdateReconRun :exec
+UPDATE recon_runs
+SET status = $2,
+    total_delta = $3,
+    campaigns_checked = $4,
+    discrepancies_found = $5,
+    completed_at = NOW()
+WHERE id = $1
+`
+
+type UpdateReconRunParams struct {
+	ID                 int64  `json:"id"`
+	Status             string `json:"status"`
+	TotalDelta         int64  `json:"total_delta"`
+	CampaignsChecked   int32  `json:"campaigns_checked"`
+	DiscrepanciesFound int32  `json:"discrepancies_found"`
+}
+
+func (q *Queries) UpdateReconRun(ctx context.Context, arg UpdateReconRunParams) error {
+	_, err := q.db.Exec(ctx, updateReconRun,
+		arg.ID,
+		arg.Status,
+		arg.TotalDelta,
+		arg.CampaignsChecked,
+		arg.DiscrepanciesFound,
+	)
+	return err
 }

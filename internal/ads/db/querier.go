@@ -25,6 +25,7 @@ type Querier interface {
 	CreateCustomer(ctx context.Context, arg CreateCustomerParams) (Customer, error)
 	CreateLedgerEntry(ctx context.Context, arg CreateLedgerEntryParams) (BalanceLedger, error)
 	CreateOutboxEvent(ctx context.Context, arg CreateOutboxEventParams) (OutboxEvent, error)
+	CreateReconRun(ctx context.Context, arg CreateReconRunParams) (ReconRun, error)
 	CreateStatusHistory(ctx context.Context, arg CreateStatusHistoryParams) error
 	DeleteBlacklistIP(ctx context.Context, ip string) error
 	GetAllActiveCampaignsWithStats(ctx context.Context) ([]GetAllActiveCampaignsWithStatsRow, error)
@@ -54,6 +55,7 @@ type Querier interface {
 	// Invalid campaign_ids are filtered out before the stats insert to prevent FK violations
 	// from rolling back the entire batch.
 	InsertEventsBatch(ctx context.Context, arg InsertEventsBatchParams) error
+	InsertReconDiscrepancy(ctx context.Context, arg InsertReconDiscrepancyParams) error
 	ListActiveCampaigns(ctx context.Context) ([]Campaign, error)
 	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AdminAuditLog, error)
 	ListBlacklist(ctx context.Context, arg ListBlacklistParams) ([]IpBlacklist, error)
@@ -67,6 +69,10 @@ type Querier interface {
 	MarkOutboxEventProcessed(ctx context.Context, id int64) error
 	SetSystemSetting(ctx context.Context, arg SetSystemSettingParams) error
 	SoftDeleteCampaign(ctx context.Context, id pgtype.UUID) error
+	// Recon queries (financial integrity cold path)
+	// These queries power the background reconciliation worker. They are intentionally
+	// scoped to closed time windows to eliminate races with the hot SyncWorker path.
+	SumLedgerSpendByCampaignWindow(ctx context.Context, arg SumLedgerSpendByCampaignWindowParams) ([]SumLedgerSpendByCampaignWindowRow, error)
 	UpdateCampaignBudget(ctx context.Context, arg UpdateCampaignBudgetParams) (Campaign, error)
 	UpdateCampaignPacing(ctx context.Context, arg UpdateCampaignPacingParams) (Campaign, error)
 	UpdateCampaignSpend(ctx context.Context, arg UpdateCampaignSpendParams) error
@@ -76,6 +82,7 @@ type Querier interface {
 	UpdateCustomerBalance(ctx context.Context, arg UpdateCustomerBalanceParams) error
 	UpdateCustomerBalanceManagement(ctx context.Context, arg UpdateCustomerBalanceManagementParams) (Customer, error)
 	UpdateCustomerOverdraft(ctx context.Context, arg UpdateCustomerOverdraftParams) (Customer, error)
+	UpdateReconRun(ctx context.Context, arg UpdateReconRunParams) error
 }
 
 var _ Querier = (*Queries)(nil)

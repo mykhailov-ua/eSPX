@@ -46,7 +46,6 @@ func NewSettingsWatcher(rdb redis.UniversalClient, initial *config.Config) *Sett
 	return sw
 }
 
-// Get returns the current consistent snapshot of dynamic settings.
 func (sw *SettingsWatcher) Get() *DynamicConfig {
 	return sw.snapshot.Load().(*DynamicConfig)
 }

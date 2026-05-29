@@ -255,9 +255,7 @@ func TestSnapshotRecovery_DisasterStressReplay(t *testing.T) {
 	assert.NoError(t, err)
 	expectedFinalSpend := totalActualSpend[campID]
 
-	// -------------------------------------------------------------
 	// PHASE 2: CATASTROPHIC DISASTER SIMULATION (Complete State Wipe)
-	// -------------------------------------------------------------
 
 	// 1. Wipe Redis Budget keys
 	_ = rdb.Del(ctx, budgetSourceKey).Err()
@@ -268,9 +266,7 @@ func TestSnapshotRecovery_DisasterStressReplay(t *testing.T) {
 		delete(pg.idempotency, k)
 	}
 
-	// -------------------------------------------------------------
 	// PHASE 3: DISASTER RECOVERY VIA SNAPSHOT + TELEMETRY BACKFILL
-	// -------------------------------------------------------------
 
 	// 1. Restore PostgreSQL and sharded Redis to the T_c Snapshot spends
 	restoredSnap, err := replicator.RestoreSnapshot(ctx, snapshotData)

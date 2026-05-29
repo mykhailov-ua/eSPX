@@ -59,11 +59,12 @@ func (ns NullCampaignStatusType) Value() (driver.Value, error) {
 type LedgerType string
 
 const (
-	LedgerTypeTOPUP   LedgerType = "TOPUP"
-	LedgerTypeFREEZE  LedgerType = "FREEZE"
-	LedgerTypeRELEASE LedgerType = "RELEASE"
-	LedgerTypeFEE     LedgerType = "FEE"
-	LedgerTypeREFUND  LedgerType = "REFUND"
+	LedgerTypeTOPUP                LedgerType = "TOPUP"
+	LedgerTypeFREEZE               LedgerType = "FREEZE"
+	LedgerTypeRELEASE              LedgerType = "RELEASE"
+	LedgerTypeFEE                  LedgerType = "FEE"
+	LedgerTypeREFUND               LedgerType = "REFUND"
+	LedgerTypeRECONCILIATIONADJUST LedgerType = "RECONCILIATION_ADJUST"
 )
 
 func (e *LedgerType) Scan(src interface{}) error {
@@ -260,6 +261,31 @@ type OutboxEvent struct {
 	Payload   []byte             `json:"payload"`
 	Status    string             `json:"status"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type ReconDiscrepancy struct {
+	ID                 int64              `json:"id"`
+	RunID              int64              `json:"run_id"`
+	CampaignID         pgtype.UUID        `json:"campaign_id"`
+	CustomerID         pgtype.UUID        `json:"customer_id"`
+	ExpectedSpend      int64              `json:"expected_spend"`
+	ActualSpend        int64              `json:"actual_spend"`
+	Delta              int64              `json:"delta"`
+	AdjustmentLedgerID pgtype.Int8        `json:"adjustment_ledger_id"`
+	RedisAdjusted      bool               `json:"redis_adjusted"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+}
+
+type ReconRun struct {
+	ID                 int64              `json:"id"`
+	PeriodStart        pgtype.Timestamptz `json:"period_start"`
+	PeriodEnd          pgtype.Timestamptz `json:"period_end"`
+	Status             string             `json:"status"`
+	TotalDelta         int64              `json:"total_delta"`
+	CampaignsChecked   int32              `json:"campaigns_checked"`
+	DiscrepanciesFound int32              `json:"discrepancies_found"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	CompletedAt        pgtype.Timestamptz `json:"completed_at"`
 }
 
 type SyncIdempotency struct {

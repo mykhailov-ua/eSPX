@@ -23,7 +23,7 @@ const (
 )
 
 type Campaign struct {
-	// --- 16-byte Fields (fully aligned, size 16) ---
+	// 16-byte Fields (fully aligned, size 16)
 	ID                  uuid.UUID
 	CustomerID          uuid.UUID
 	IDStr               string
@@ -44,7 +44,7 @@ type Campaign struct {
 	FcapKeyPrefix       string
 	DailySpendKeyPrefix string
 
-	// --- 8-byte Fields (size 8, pointers/integers/maps) ---
+	// 8-byte Fields (size 8, pointers/integers/maps)
 	BrandID          *uuid.UUID
 	BudgetLimit      int64
 	CurrentSpend     int64
@@ -53,7 +53,7 @@ type Campaign struct {
 	Location         *time.Location
 	TargetCountries  map[string]struct{}
 
-	// --- 4-byte Fields (size 4, integers) ---
+	// 4-byte Fields (size 4, integers)
 	FreqLimit  int32
 	FreqWindow int32
 }
