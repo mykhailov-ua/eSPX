@@ -1,7 +1,7 @@
 package auth
 
 import (
-	"fmt"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,7 +16,7 @@ type PasetoMaker struct {
 
 func NewPasetoMaker(symmetricKey string) (Maker, error) {
 	if len(symmetricKey) != chacha20poly1305.KeySize {
-		return nil, fmt.Errorf("invalid key size: must be exactly %d bytes", chacha20poly1305.KeySize)
+		return nil, errors.New("invalid key size")
 	}
 
 	maker := &PasetoMaker{

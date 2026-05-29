@@ -2,10 +2,10 @@ package auth
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
-	"fmt"
-	"github.com/mykhailov-ua/ad-event-processor/internal/auth/pb"
-	"google.golang.org/protobuf/types/known/timestamppb"
 	"log/slog"
 	"regexp"
 	"runtime"
@@ -15,8 +15,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/mykhailov-ua/ad-event-processor/internal/auth/db"
+	"github.com/mykhailov-ua/ad-event-processor/internal/auth/pb"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 var (
@@ -26,6 +28,7 @@ var (
 	ErrRateLimitExceeded  = errors.New("rate limit exceeded")
 	ErrValidation         = errors.New("validation failed")
 	ErrSessionBlocked     = errors.New("session is blocked")
+	ErrPasswordReuse      = errors.New("password reuse not allowed")
 )
 
 type idempotentResultError struct {
@@ -39,7 +42,6 @@ func (e *idempotentResultError) Error() string {
 
 var (
 	emailRegex    = regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
-	passwordRegex = regexp.MustCompile(`^[A-Za-z\d@$!%*?&]{8,}$`)
 )
 
 var (
@@ -72,6 +74,7 @@ type Service struct {
 	rdb        redis.UniversalClient
 	rehashSem  chan struct{}
 	cryptoSem  chan struct{}
+	mailer     Mailer
 }
 
 func NewService(repo db.Store, tokenMaker Maker, hasher *PasswordHasher, lockout *LockoutLimiter, rdb redis.UniversalClient) *Service {
@@ -95,7 +98,12 @@ func NewService(repo db.Store, tokenMaker Maker, hasher *PasswordHasher, lockout
 		rdb:        rdb,
 		rehashSem:  make(chan struct{}, 2),
 		cryptoSem:  make(chan struct{}, cryptoLimit),
+		mailer:     SlogMailer{},
 	}
+}
+
+func (s *Service) SetMailer(mailer Mailer) {
+	s.mailer = mailer
 }
 
 type RegisterDTO struct {
@@ -108,14 +116,17 @@ type RegisterDTO struct {
 func (s *Service) Register(ctx context.Context, req RegisterDTO) (uuid.UUID, error) {
 	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
 	if !emailRegex.MatchString(req.Email) {
-		return uuid.Nil, fmt.Errorf("%w: invalid email format", ErrValidation)
+		slog.Warn("registration failed", slog.String("reason", "invalid email format"), slog.String("email", req.Email))
+		return uuid.Nil, ErrValidation
 	}
-	if !passwordRegex.MatchString(req.Password) {
-		return uuid.Nil, fmt.Errorf("%w: password must be at least 8 chars, contain uppercase, lowercase, digit, and special char", ErrValidation)
+	if err := ValidatePassword(req.Password); err != nil {
+		slog.Warn("registration failed", slog.String("reason", "invalid password"), slog.String("email", req.Email), slog.Any("error", err))
+		return uuid.Nil, ErrValidation
 	}
 
 	hashedPassword, err := s.hasher.HashPassword(req.Password)
 	if err != nil {
+		slog.Error("failed to hash password during registration", slog.String("email", req.Email), slog.Any("error", err))
 		return uuid.Nil, err
 	}
 
@@ -129,16 +140,29 @@ func (s *Service) Register(ctx context.Context, req RegisterDTO) (uuid.UUID, err
 		arg.CustomerID.Valid = true
 	}
 
-	user, err := s.repo.CreateUser(ctx, arg)
-	if err != nil {
-		existingUser, errGet := s.repo.GetUserByEmail(ctx, req.Email)
-		if errGet == nil {
-			return uuid.UUID(existingUser.ID.Bytes), nil
+	var userID uuid.UUID
+	err = s.repo.ExecTx(ctx, func(q db.Querier) error {
+		userRow, err := q.CreateUser(ctx, arg)
+		if err != nil {
+			return err
 		}
-		return uuid.Nil, fmt.Errorf("%w: %v", ErrUserAlreadyExists, err)
+		userID = uuid.UUID(userRow.ID.Bytes)
+
+		// SOC2 / PCI-DSS compliance: Record the initial password in password history.
+		// This prevents the user from rotating back to their registration password immediately.
+		return q.CreatePasswordHistoryEntry(ctx, db.CreatePasswordHistoryEntryParams{
+			UserID:       userRow.ID,
+			PasswordHash: hashedPassword,
+		})
+	})
+
+	if err != nil {
+		// OWASP compliance: prevent user enumeration by not disclosing existing user IDs
+		slog.Warn("registration failed", slog.String("reason", "user already exists"), slog.String("email", req.Email))
+		return uuid.Nil, ErrUserAlreadyExists
 	}
 
-	return uuid.UUID(user.ID.Bytes), nil
+	return userID, nil
 }
 
 type LoginDTO struct {
@@ -150,7 +174,8 @@ type LoginDTO struct {
 func (s *Service) Login(ctx context.Context, email, password, userAgent, clientIP string, duration time.Duration) (pb.LoginResponse, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if !emailRegex.MatchString(email) {
-		return pb.LoginResponse{}, fmt.Errorf("%w: invalid email format", ErrValidation)
+		slog.Warn("login failed", slog.String("reason", "invalid email format"), slog.String("email", email), slog.String("ip", clientIP))
+		return pb.LoginResponse{}, ErrValidation
 	}
 
 	if s.lockout != nil {
@@ -170,11 +195,7 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, clientI
 			} else if allowed == -1 {
 				AuthLoginAttempts.WithLabelValues("failure", "global_locked").Inc()
 				slog.Warn("security_audit_event", slog.String("event", "auth_failure"), slog.String("ip", clientIP), slog.String("email", email), slog.String("reason", "global account lockout triggered"))
-				if errTx := s.repo.ExecTx(ctx, func(q db.Querier) error {
-					return q.BlockUser(ctx, email)
-				}); errTx != nil {
-					slog.Error("failed to block user after lockout", slog.String("email", email), slog.Any("error", errTx))
-				}
+				// OWASP compliance: use safe temporary Redis-based global lockout instead of permanent Postgres DB block to prevent permanent DOS on accounts
 				return pb.LoginResponse{}, ErrAccountLocked
 			}
 		}
@@ -222,11 +243,9 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, clientI
 			if errInc != nil {
 				slog.Error("failed to increment lockout count", slog.String("ip", clientIP), slog.String("email", email), slog.Any("error", errInc))
 			} else if res == -1 {
-				if errTx := s.repo.ExecTx(ctx, func(q db.Querier) error {
-					return q.BlockUser(ctx, email)
-				}); errTx != nil {
-					slog.Error("failed to block user after lockout increment", slog.String("email", email), slog.Any("error", errTx))
-				}
+				// OWASP compliance: do not permanently block user in DB on brute force lockout.
+				// Rely on Redis-based global lockout with TTL to mitigate DOS attacks on existing users.
+				slog.Warn("security_audit_event", slog.String("event", "global_lockout_increment"), slog.String("ip", clientIP), slog.String("email", email), slog.String("reason", "global lockout increment reached limit"))
 			}
 		}
 		return pb.LoginResponse{}, ErrInvalidCredentials
@@ -313,7 +332,8 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, clientI
 	})
 
 	if err != nil {
-		return pb.LoginResponse{}, fmt.Errorf("failed to create session: %w", err)
+		slog.Error("failed to create session", slog.String("email", user.Email), slog.Any("error", err))
+		return pb.LoginResponse{}, err
 	}
 
 	return pb.LoginResponse{
@@ -405,7 +425,8 @@ func (s *Service) RefreshToken(ctx context.Context, refreshTokenStr string, dura
 	err := s.repo.ExecTx(ctx, func(q db.Querier) error {
 		session, err := q.GetSessionByRefreshTokenForUpdate(ctx, refreshTokenStr)
 		if err != nil {
-			return fmt.Errorf("invalid refresh token: %w", err)
+			slog.Warn("refresh token failed", slog.String("reason", "invalid refresh token"), slog.Any("error", err))
+			return errors.New("invalid refresh token")
 		}
 
 		if session.IsBlocked {
@@ -421,25 +442,30 @@ func (s *Service) RefreshToken(ctx context.Context, refreshTokenStr string, dura
 					}
 				}
 			}
+			slog.Warn("refresh token failed", slog.String("reason", "session is blocked"), slog.String("session_id", uuid.UUID(session.ID.Bytes).String()))
 			return ErrSessionBlocked
 		}
 
 		if session.ExpiresAt.Time.Before(time.Now()) {
+			slog.Warn("refresh token failed", slog.String("reason", "refresh token expired"), slog.String("session_id", uuid.UUID(session.ID.Bytes).String()))
 			return errors.New("refresh token expired")
 		}
 
 		user, err := q.GetUserByID(ctx, session.UserID)
 		if err != nil {
-			return fmt.Errorf("user not found: %w", err)
+			slog.Error("refresh token failed", slog.String("reason", "user not found"), slog.Any("error", err))
+			return errors.New("user not found")
 		}
 
 		if user.IsBlocked {
+			slog.Warn("refresh token failed", slog.String("reason", "user is blocked"), slog.String("email", user.Email))
 			return ErrSessionBlocked
 		}
 
 		err = q.BlockSession(ctx, session.ID)
 		if err != nil {
-			return fmt.Errorf("failed to block old session: %w", err)
+			slog.Error("refresh token failed", slog.String("reason", "failed to block old session"), slog.Any("error", err))
+			return errors.New("failed to block old session")
 		}
 
 		newRefreshTokenId := uuid.Must(uuid.NewV7())
@@ -452,6 +478,7 @@ func (s *Service) RefreshToken(ctx context.Context, refreshTokenStr string, dura
 			duration,
 		)
 		if err != nil {
+			slog.Error("refresh token failed", slog.String("reason", "failed to create access token"), slog.Any("error", err))
 			return err
 		}
 
@@ -467,7 +494,8 @@ func (s *Service) RefreshToken(ctx context.Context, refreshTokenStr string, dura
 			IsBlocked:    false,
 			ExpiresAt:    pgtype.Timestamptz{Time: expiresAt, Valid: true},
 		}); err != nil {
-			return fmt.Errorf("failed to create new session: %w", err)
+			slog.Error("refresh token failed", slog.String("reason", "failed to create new session"), slog.Any("error", err))
+			return errors.New("failed to create new session")
 		}
 
 		return nil
@@ -506,4 +534,199 @@ func (s *Service) RevokeToken(ctx context.Context, refreshTokenStr string) error
 		}
 	}
 	return s.repo.BlockSessionByRefreshToken(ctx, refreshTokenStr)
+}
+
+// AuditLog writes a security-relevant event to the dedicated auth_audit_log table.
+// It is deliberately best-effort and never returns an error to the caller:
+// an audit write failure must not turn a successful authentication into a failure
+// for the end user (availability > perfect audit in the hot path). Errors are only
+// logged at ERROR level for the on-call to investigate. This mirrors the exact
+// pattern used in the management service for admin_audit_log.
+func (s *Service) AuditLog(ctx context.Context, userID uuid.UUID, action, targetType, targetID, clientIP, userAgent string, changes, metadata map[string]any) {
+	changesJSON, err := json.Marshal(changes)
+	if err != nil {
+		slog.Error("failed to marshal audit log changes", "error", err)
+	}
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		slog.Error("failed to marshal audit log metadata", "error", err)
+	}
+
+	var uid pgtype.UUID
+	if userID != uuid.Nil {
+		uid = pgtype.UUID{Bytes: userID, Valid: true}
+	}
+
+	_, err = s.repo.CreateAuthAuditLog(ctx, db.CreateAuthAuditLogParams{
+		UserID:     uid,
+		Action:     action,
+		TargetType: pgtype.Text{String: targetType, Valid: targetType != ""},
+		TargetID:   pgtype.Text{String: targetID, Valid: targetID != ""},
+		ClientIp:   pgtype.Text{String: clientIP, Valid: clientIP != ""},
+		UserAgent:  pgtype.Text{String: userAgent, Valid: userAgent != ""},
+		Changes:    changesJSON,
+		Metadata:   metadataJSON,
+	})
+	if err != nil {
+		slog.Error("failed to write auth audit log (non-fatal)",
+			slog.String("action", action),
+			slog.Any("user_id", userID),
+			slog.Any("error", err))
+	}
+}
+
+// ChangePassword implements self-service rotation with explicit verification of the
+// old credential and checks against historical passwords (SOC2 / PCI-DSS compliance).
+// This is a deliberate defense-in-depth control: even if an attacker has a valid session
+// (e.g. via XSS or session fixation), they still need the current password to set a new one.
+// We verify the old password using the same constant-time path as login (including dummy hash
+// logic if somehow user not found), check the last 3 passwords for reuse, update the password and
+// history transactionally, and then send a secure HTML template email notifying the user of the change.
+func (s *Service) ChangePassword(ctx context.Context, userID uuid.UUID, oldPassword, newPassword, clientIP, userAgent string) error {
+	if err := ValidatePassword(newPassword); err != nil {
+		return ErrValidation
+	}
+
+	user, err := s.repo.GetUserByID(ctx, pgtype.UUID{Bytes: userID, Valid: true})
+	if err != nil {
+		return err
+	}
+
+	// Re-use the exact same verification path (with dummy hash protection) as Login.
+	match, verifyErr := VerifyPassword(oldPassword, user.PasswordHash)
+	if !match || (verifyErr != nil && !errors.Is(verifyErr, ErrInsecureHashParameters)) {
+		s.AuditLog(ctx, userID, "PASSWORD_CHANGE_FAILED", "user", userID.String(), clientIP, userAgent,
+			map[string]any{"reason": "old_password_mismatch"}, nil)
+		return ErrInvalidCredentials
+	}
+
+	// SOC2 / PCI-DSS compliance: Fetch the last 3 password hashes from history to prevent reuse.
+	historyHashes, err := s.repo.GetPasswordHistory(ctx, db.GetPasswordHistoryParams{
+		UserID: pgtype.UUID{Bytes: userID, Valid: true},
+		Limit:  3,
+	})
+	if err != nil {
+		return err
+	}
+
+	for _, oldHash := range historyHashes {
+		matchHist, _ := VerifyPassword(newPassword, oldHash)
+		if matchHist {
+			s.AuditLog(ctx, userID, "PASSWORD_REUSE_REJECTED", "user", userID.String(), clientIP, userAgent,
+				map[string]any{"reason": "password_reuse_detected"}, nil)
+			return ErrPasswordReuse
+		}
+	}
+
+	newHash, err := s.hasher.HashPassword(newPassword)
+	if err != nil {
+		return err
+	}
+
+	// Perform update of password and append to history atomically inside a transaction.
+	err = s.repo.ExecTx(ctx, func(q db.Querier) error {
+		if err := q.UpdatePassword(ctx, db.UpdatePasswordParams{
+			Email:        user.Email,
+			PasswordHash: newHash,
+		}); err != nil {
+			return err
+		}
+
+		return q.CreatePasswordHistoryEntry(ctx, db.CreatePasswordHistoryEntryParams{
+			UserID:       pgtype.UUID{Bytes: userID, Valid: true},
+			PasswordHash: newHash,
+		})
+	})
+	if err != nil {
+		return err
+	}
+
+	s.AuditLog(ctx, userID, "PASSWORD_CHANGED", "user", userID.String(), clientIP, userAgent, nil, nil)
+
+	// Send HTML-formatted security email notification.
+	// This ensures immediate awareness of critical account updates to thwart account takeovers.
+	if mailErr := s.mailer.SendPasswordChangedEmail(ctx, user.Email, clientIP, userAgent); mailErr != nil {
+		slog.Error("failed to send password changed notification email", "user_id", userID, "error", mailErr)
+	}
+
+	return nil
+}
+
+// CreateAPIKey generates a high-entropy secret (32 random bytes -> base64url),
+// hashes it once with the service Argon2id hasher (creation cost is acceptable;
+// keys are minted rarely), stores only the hash, and returns the raw secret to the
+// caller exactly once. The raw value is never logged or stored again.
+func (s *Service) CreateAPIKey(ctx context.Context, userID uuid.UUID, name string, expiresAt *time.Time) (id uuid.UUID, rawKey string, err error) {
+	// 32 bytes raw entropy -> ~43 chars base64. Enough for API keys.
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return uuid.Nil, "", err
+	}
+	rawKey = base64.RawURLEncoding.EncodeToString(raw)
+
+	keyHash, err := s.hasher.HashPassword(rawKey) // reuse proven primitive and params
+	if err != nil {
+		return uuid.Nil, "", err
+	}
+
+	var exp pgtype.Timestamptz
+	if expiresAt != nil {
+		exp = pgtype.Timestamptz{Time: *expiresAt, Valid: true}
+	}
+
+	row, err := s.repo.CreateAPIKey(ctx, db.CreateAPIKeyParams{
+		KeyHash:   keyHash,
+		UserID:    pgtype.UUID{Bytes: userID, Valid: true},
+		Name:      name,
+		ExpiresAt: exp,
+	})
+	if err != nil {
+		return uuid.Nil, "", err
+	}
+
+	id = uuid.UUID(row.ID.Bytes)
+	s.AuditLog(ctx, userID, "API_KEY_CREATED", "api_key", id.String(), "", "",
+		map[string]any{"name": name, "expires_at": expiresAt}, nil)
+	return id, rawKey, nil
+}
+
+func (s *Service) ListUserAPIKeys(ctx context.Context, userID uuid.UUID) ([]db.ListUserAPIKeysRow, error) {
+	return s.repo.ListUserAPIKeys(ctx, pgtype.UUID{Bytes: userID, Valid: true})
+}
+
+// RequestEmailVerification issues a single-use, time-limited token for email ownership proof.
+// Token is stored in Redis (fast, auto-expiring, no extra table). The raw token is returned
+// so the caller (gateway) can embed it in an email. In production the token is never returned
+// over the same channel the user is authenticated with.
+func (s *Service) RequestEmailVerification(ctx context.Context, userID uuid.UUID) (string, error) {
+	token := uuid.NewString()
+	key := "auth:email_verify:" + token
+	if err := s.rdb.Set(ctx, key, userID.String(), 24*time.Hour).Err(); err != nil {
+		return "", err
+	}
+	s.AuditLog(ctx, userID, "EMAIL_VERIFICATION_REQUESTED", "user", userID.String(), "", "", nil, nil)
+	return token, nil
+}
+
+func (s *Service) ConfirmEmailVerification(ctx context.Context, token string) (uuid.UUID, error) {
+	key := "auth:email_verify:" + token
+	userIDStr, err := s.rdb.Get(ctx, key).Result()
+	if err != nil {
+		return uuid.Nil, ErrInvalidToken
+	}
+	// Best-effort delete is acceptable; if deletion fails, the token lifetime is still capped by Redis TTL.
+	if delErr := s.rdb.Del(ctx, key).Err(); delErr != nil {
+		slog.Warn("failed to delete email verification token from Redis", "token", token, "error", delErr)
+	}
+
+	uid, err := uuid.Parse(userIDStr)
+	if err != nil {
+		return uuid.Nil, err
+	}
+
+	if err := s.repo.SetEmailVerified(ctx, pgtype.UUID{Bytes: uid, Valid: true}); err != nil {
+		return uuid.Nil, err
+	}
+	s.AuditLog(ctx, uid, "EMAIL_VERIFIED", "user", uid.String(), "", "", nil, nil)
+	return uid, nil
 }

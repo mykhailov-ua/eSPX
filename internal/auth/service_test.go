@@ -80,6 +80,28 @@ func (m *mockRepo) ExecTx(ctx context.Context, fn func(db.Querier) error) error 
 	return fn(m)
 }
 
+func (m *mockRepo) CreatePasswordHistoryEntry(ctx context.Context, arg db.CreatePasswordHistoryEntryParams) error {
+	return m.err
+}
+
+func (m *mockRepo) GetPasswordHistory(ctx context.Context, arg db.GetPasswordHistoryParams) ([]string, error) {
+	return nil, m.err
+}
+
+func (m *mockRepo) SetEmailVerified(ctx context.Context, id pgtype.UUID) error { return m.err }
+
+func (m *mockRepo) CreateAuthAuditLog(ctx context.Context, arg db.CreateAuthAuditLogParams) (db.CreateAuthAuditLogRow, error) {
+	return db.CreateAuthAuditLogRow{}, m.err
+}
+
+func (m *mockRepo) ListAuthAuditLogsByUser(ctx context.Context, arg db.ListAuthAuditLogsByUserParams) ([]db.AuthAuditLog, error) {
+	return nil, m.err
+}
+
+func (m *mockRepo) CreateAPIKey(ctx context.Context, arg db.CreateAPIKeyParams) (db.CreateAPIKeyRow, error) {
+	return db.CreateAPIKeyRow{ID: pgtype.UUID{Bytes: uuid.New(), Valid: true}}, nil
+}
+
 type mockTokenMaker struct {
 	Maker
 	createErr error
@@ -129,12 +151,11 @@ func TestRegister(t *testing.T) {
 		repo.createUserErr = errors.New("unique constraint")
 		repo.user = db.User{ID: pgtype.UUID{Bytes: uuid.New(), Valid: true}}
 		repo.err = nil
-		id, err := service.Register(context.Background(), RegisterDTO{
+		_, err := service.Register(context.Background(), RegisterDTO{
 			Email:    "exists@example.com",
 			Password: "Password123!",
 		})
-		assert.NoError(t, err)
-		assert.Equal(t, uuid.UUID(repo.user.ID.Bytes), id)
+		assert.ErrorIs(t, err, ErrUserAlreadyExists)
 	})
 
 	t.Run("CreateUserError", func(t *testing.T) {

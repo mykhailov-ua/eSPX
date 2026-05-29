@@ -5,7 +5,6 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -20,6 +19,37 @@ var (
 )
 
 const MaxPasswordLength = 72
+
+// ValidatePassword performs zero-allocation compliance checks against the security policy.
+// It enforces length and complexity criteria without regex engine overhead or heap allocations.
+func ValidatePassword(password string) error {
+	if len(password) < 8 {
+		return errors.Join(ErrInvalidPassword, errors.New("password must be at least 8 characters"))
+	}
+	if len(password) > MaxPasswordLength {
+		return errors.Join(ErrInvalidPassword, errors.New("password exceeds maximum length"))
+	}
+
+	var hasUpper, hasLower, hasDigit, hasSpecial bool
+	for i := 0; i < len(password); i++ {
+		c := password[i]
+		switch {
+		case c >= 'A' && c <= 'Z':
+			hasUpper = true
+		case c >= 'a' && c <= 'z':
+			hasLower = true
+		case c >= '0' && c <= '9':
+			hasDigit = true
+		default:
+			hasSpecial = true
+		}
+	}
+
+	if !hasUpper || !hasLower || !hasDigit || !hasSpecial {
+		return errors.Join(ErrInvalidPassword, errors.New("password must contain at least one uppercase letter, one lowercase letter, one digit, and one special character"))
+	}
+	return nil
+}
 
 type params struct {
 	memory      uint32
@@ -62,7 +92,7 @@ func NewPasswordHasher(memory, iterations uint32, parallelism uint8) (*PasswordH
 	var err error
 	h.dummyHash, err = h.HashPassword("dummy-password-timing-attack")
 	if err != nil {
-		return nil, fmt.Errorf("failed to pre-compute dummy hash: %w", err)
+		return nil, errors.Join(errors.New("failed to pre-compute dummy hash"), err)
 	}
 	return h, nil
 }
@@ -82,7 +112,7 @@ func (h *PasswordHasher) HashPassword(password string) (string, error) {
 
 	salt := make([]byte, h.saltLength)
 	if _, err := rand.Read(salt); err != nil {
-		return "", fmt.Errorf("failed to generate salt: %w", err)
+		return "", errors.Join(errors.New("failed to generate salt"), err)
 	}
 
 	hash := argon2.IDKey(
@@ -97,17 +127,21 @@ func (h *PasswordHasher) HashPassword(password string) (string, error) {
 	b64Salt := base64.RawStdEncoding.EncodeToString(salt)
 	b64Hash := base64.RawStdEncoding.EncodeToString(hash)
 
-	encodedHash := fmt.Sprintf(
-		"$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
-		argon2.Version,
-		h.memory,
-		h.iterations,
-		h.parallelism,
-		b64Salt,
-		b64Hash,
-	)
+	var sb strings.Builder
+	sb.WriteString("$argon2id$v=")
+	sb.WriteString(strconv.Itoa(argon2.Version))
+	sb.WriteString("$m=")
+	sb.WriteString(strconv.FormatUint(uint64(h.memory), 10))
+	sb.WriteString(",t=")
+	sb.WriteString(strconv.FormatUint(uint64(h.iterations), 10))
+	sb.WriteString(",p=")
+	sb.WriteString(strconv.FormatUint(uint64(h.parallelism), 10))
+	sb.WriteByte('$')
+	sb.WriteString(b64Salt)
+	sb.WriteByte('$')
+	sb.WriteString(b64Hash)
 
-	return encodedHash, nil
+	return sb.String(), nil
 }
 
 func unsafeStringToBytes(s string) []byte {

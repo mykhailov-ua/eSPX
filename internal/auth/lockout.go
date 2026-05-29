@@ -142,7 +142,6 @@ func (l *LockoutLimiter) AllowIP(ctx context.Context, clientIP string, limit int
 	return res.(int64) == 1, nil
 }
 
-// Allow evaluates both IP-based and global rate limits. Returns 1 for allowed, 0 for IP-locked, -1 for globally locked.
 func (l *LockoutLimiter) Allow(ctx context.Context, clientIP, email string, maxAttempts int, lockoutDuration, attemptWindow time.Duration) (int64, error) {
 	failKey := "lockout:ip_email:" + clientIP + ":{" + email + "}"
 	inflightKey := "lockout:inflight:" + clientIP + ":{" + email + "}"
@@ -160,7 +159,6 @@ func (l *LockoutLimiter) DecrementInflight(ctx context.Context, clientIP, email 
 	return err
 }
 
-// Increment increases both IP-based and global failure counters. Returns -1 if global limit is reached.
 func (l *LockoutLimiter) Increment(ctx context.Context, clientIP, email string, maxAttempts int, lockoutDuration, attemptWindow time.Duration) (int64, error) {
 	key := "lockout:ip_email:" + clientIP + ":{" + email + "}"
 	globalKey := "lockout:global_email:{" + email + "}"
