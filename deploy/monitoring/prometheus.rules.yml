@@ -36,3 +36,21 @@ groups:
         annotations:
           summary: "High HTTP request latency detected"
           description: "p95 HTTP request duration at the Go tracker edge is above 500ms."
+
+      - alert: ReconciliationFailed
+        expr: rate(ad_reconciliation_runs_total{status="failed"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Financial reconciliation job failed"
+          description: "The background reconciliation worker failed to complete a run, indicating database or Redis pool communication errors on the cold path."
+
+      - alert: ReconciliationDiscrepancySpike
+        expr: rate(ad_reconciliation_discrepancies_total[5m]) > 5
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High number of financial discrepancies detected"
+          description: "Automated reconciliation detected more than 5 campaign financial discrepancies in the last 5 minutes. Audit trails and ledger logs should be inspected for edge sync anomalies."
