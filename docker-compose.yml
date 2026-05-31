@@ -9,12 +9,13 @@ services:
       - .env
     environment:
       - SERVER_PORT=8181
-      - GOMEMLIMIT=700MiB
-      - GOGC=50
+      - GOMEMLIMIT=700MiB   # hard memory limit; triggers GC before OOM killer fires
+      - GOGC=50             # aggressive GC target: trade CPU for lower heap steady-state
     volumes:
       - ./deploy/geoip:/deploy/geoip:ro
     ulimits:
       nofile:
+        # gnet opens one fd per TCP connection; 100 000 allows ~100 k concurrent connections per instance
         soft: 100000
         hard: 100000
     deploy:
@@ -173,8 +174,8 @@ services:
       - CH_DSN=${CH_DSN}
       - PROCESSOR_PORT=${PROCESSOR_PORT}
       - DB_PROCESSOR_MAX_CONNS=${DB_PROCESSOR_MAX_CONNS}
-      - GOMEMLIMIT=1500MiB
-      - GOGC=100
+      - GOMEMLIMIT=1500MiB  # processor holds larger in-flight batches; needs wider heap
+      - GOGC=100            # standard GC pace; processor is not latency-critical
     deploy:
       resources:
         limits:
@@ -266,7 +267,13 @@ services:
       - POSTGRES_DB=${DB_NAME}
     ports:
       - "${DB_PORT}:${DB_PORT}"
-    command: ["postgres", "-p", "${DB_PORT}", "-c", "max_connections=600", "-c", "shared_buffers=1GB", "-c", "work_mem=64MB", "-c", "maintenance_work_mem=256MB", "-c", "effective_cache_size=3GB"]
+    command:
+      # max_connections: sized for 4 tracker replicas × 4 conns + processor × 16 + management + auth headroom
+      # shared_buffers: ~25% of container memory limit (2G)
+      # work_mem: per-sort/hash allocation; 64MB per connection × 600 connections worst case = 38G virtual
+      # maintenance_work_mem: index builds and vacuum
+      # effective_cache_size: planner assumption for page cache; ~75% of container memory
+      ["postgres", "-p", "${DB_PORT}", "-c", "max_connections=600", "-c", "shared_buffers=1GB", "-c", "work_mem=64MB", "-c", "maintenance_work_mem=256MB", "-c", "effective_cache_size=3GB"]
     volumes:
       - db_data:/var/lib/postgresql/data
     networks:
@@ -293,7 +300,8 @@ services:
       - .env
     ports:
       - "6479:6379"
-    command: ["redis-server", "--port", "6379", "--requirepass", "${REDIS_PASSWORD}", "--save", ""]
+    command: ["redis-server", "--port", "6379", "--requirepass", "${REDIS_PASSWORD}",
+              "--save", ""]  # persistence disabled; Redis is a hot cache, not a durable store
     deploy:
       resources:
         limits:
@@ -410,7 +418,7 @@ services:
       - "${CH_HTTP_PORT}:8123"
     ulimits:
       nofile:
-        soft: 262144
+        soft: 262144  # ClickHouse requires high fd limits for part merges and replication connections
         hard: 262144
     volumes:
       - clickhouse_data:/var/lib/clickhouse
@@ -493,7 +501,8 @@ services:
   alertmanager-telegram:
     build:
       context: .
-      dockerfile: cmd/alertmanager-telegram/Dockerfile
+      dockerfile: Dockerfile
+    entrypoint: ["/alertmanager-telegram"]
     network_mode: "${NET_MODE:-host}"
     environment:
       - PROXY_PORT=8222
