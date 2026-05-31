@@ -1,3 +1,14 @@
+// Package ads contains UnifiedFilter, the single point of entry for all
+// per-event policy checks executed after stream deserialization. The filter
+// orchestrates budget reservation, pacing, frequency capping, and geo-targeting
+// in a single Redis Lua call to maintain atomicity across counters. The Lua
+// script path is O(1) with respect to campaign count; all keys are computed
+// on the call site from pooled byte buffers to eliminate heap allocation.
+//
+// Execution order: EmergencyBreaker → IPRateLimit → Duplicate → Geo →
+// UnifiedFilter (budget + pacing + fcap in Lua) → Fraud.
+// Stopping on first error avoids unnecessary Redis round-trips for events
+// that are already invalid.
 package ads
 
 import (
@@ -22,8 +33,6 @@ import (
 //go:embed unified_filter.lua
 var unifiedFilterLua string
 
-// keysPool recycles string slices to avoid array-to-slice heap allocations
-// when passing keys to go-redis Eval/Run commands.
 var keysPool = sync.Pool{
 	New: func() any {
 		s := make([]string, 11)
@@ -31,7 +40,6 @@ var keysPool = sync.Pool{
 	},
 }
 
-// argsPool recycles any slices to avoid variadic parameter heap allocation.
 var argsPool = sync.Pool{
 	New: func() any {
 		s := make([]any, 19)
@@ -65,8 +73,6 @@ var unifiedWrappersPool = sync.Pool{
 	},
 }
 
-// appendDate formats a time.Time struct into a YYYYMMDD byte layout without allocating memory.
-// It uses integer math to avoid formatting overhead from time.Format or fmt.Sprintf.
 func appendDate(dst []byte, t time.Time) []byte {
 	year, month, day := t.Date()
 	return append(dst,
@@ -98,16 +104,16 @@ type DBHealthChecker interface {
 	Ping(ctx context.Context) error
 }
 
-// UnifiedFilter manages the execution of transactional ingestion eligibility logic.
-// It integrates rate-limiting, event deduplication, budget verification, pacing restrictions, and frequency capping
-// into a single round-trip evaluation.
+// UnifiedFilter atomically validates budget availability, daily pacing, and
+// frequency cap (user-level or brand-level) for a single event via a Redis
+// Lua script. Atomicity is required because budget and pacing counters must
+// stay consistent: a non-atomic check-then-decrement could double-spend or
+// leave pacing counters ahead of actual spend under concurrent load.
 //
-// Memory Impact:
-// - Minimizes heap allocations by recycling string and interface slices via keysPool and argsPool.
-//
-// Concurrency:
-// - Thread-safe. Read operations on target campaign definitions bypass locks via double-buffered CampaignRegistry lookup.
-// - Sentinel logic uses atomic states and Mutex synchronization for offline performance sample collections.
+// The filter holds a pool of luaArgs structs that pre-allocate all string
+// and []string fields at pool construction time. unsafeString is used to
+// convert pooled byte-slices to string without copy; the lifetime of the
+// resulting string is bounded to the single Eval call.
 type UnifiedFilter struct {
 	rdbs                     []redis.UniversalClient
 	sharder                  Sharder
@@ -132,7 +138,6 @@ type UnifiedFilter struct {
 	clickAmountMicroAny      any
 	impressionAmountMicroAny any
 
-	// SLA & Latency Sentinel
 	dbHealth               DBHealthChecker
 	slaPenaltyActive       atomic.Bool
 	p95ThresholdMs         float64
@@ -149,26 +154,14 @@ type UnifiedFilter struct {
 	impressionAmountMicroHalfAny any
 }
 
-// SetGeoProvider configures the GeoIP resolution service.
 func (f *UnifiedFilter) SetGeoProvider(geo GeoProvider) {
 	f.geo = geo
 }
 
-// SetGeoBidFloor registers or updates a publisher floor limit for a specific geo.
 func (f *UnifiedFilter) SetGeoBidFloor(country string, floor int64) {
 	f.geoFloors.Store(country, floor)
 }
 
-// parseBidMicro extracts the bid_micro value from a JSON byte slice without heap allocation.
-//
-// Memory Impact:
-// - Zero allocations. Bypasses the Go standard library json.Unmarshal reflective parser.
-//
-// Concurrency:
-// - Thread-safe. Read-only scan on immutable request payloads.
-//
-// Performance Hacks:
-// - O(N) single-pass scan searching for target key token. Bypasses syntax token trees or AST creation.
 func parseBidMicro(payload []byte) int64 {
 	const key = `"bid_micro"`
 	n := len(payload)
@@ -208,6 +201,10 @@ func parseBidMicro(payload []byte) int64 {
 	return 0
 }
 
+// NewUnifiedFilter constructs a UnifiedFilter backed by the given sharded Redis
+// slice. The Lua script SHA is not pre-loaded (EVALSHA); EVAL is used directly
+// because the script is short and Redis script cache eviction is not detectable
+// without a round-trip SCRIPT EXISTS check.
 func NewUnifiedFilter(
 	rdbs []redis.UniversalClient,
 	sharder Sharder,
@@ -248,7 +245,6 @@ func NewUnifiedFilter(
 	}
 }
 
-// SetSLATargets configures the latency thresholds for the SLA sentinel.
 func (f *UnifiedFilter) SetSLATargets(p95, recovery float64, stable time.Duration, alpha float64) {
 	f.p95ThresholdMs = p95
 	f.recoveryEmaMs = recovery
@@ -256,7 +252,6 @@ func (f *UnifiedFilter) SetSLATargets(p95, recovery float64, stable time.Duratio
 	f.emaAlpha = alpha
 }
 
-// ResizeTrackers initializes the latency sample buffer.
 func (f *UnifiedFilter) ResizeTrackers(size int) {
 	f.latencyMu.Lock()
 	defer f.latencyMu.Unlock()
@@ -264,29 +259,10 @@ func (f *UnifiedFilter) ResizeTrackers(size int) {
 	f.latencyIdx = 0
 }
 
-// SetDBHealthChecker registers the database health provider.
 func (f *UnifiedFilter) SetDBHealthChecker(checker DBHealthChecker) {
 	f.dbHealth = checker
 }
 
-// StartSLASentinel launches a background goroutine to monitor DB latency and enforce SLA penalties.
-//
-// Memory Impact:
-// - Bounded memory footprint. Pre-allocates latency buffers via ResizeTrackers.
-//
-// Concurrency:
-// - Thread-safe. Synchronizes latency sample modifications using latencyMu.
-// - Employs atomic state checks (slaPenaltyActive.Load/Store) to eliminate lock contention on the track hot path.
-//
-// SLA & Latency Sentinel Mechanics:
-//  1. Diagnostics: Pings the database at standard intervals to record response round-trip times (RTT).
-//  2. Metrics: Maintains a circular window of latency samples, dynamically sorting the set to determine P95 delays.
-//  3. EMA Filtering: Computes an Exponential Moving Average (EMA) to smooth short-term latency jitter:
-//     EMA_new = alpha * Latency_current + (1 - alpha) * EMA_previous
-//  4. State Transitions:
-//     - Normal -> Penalty Mode: Triggered when the P95 latency breaches p95ThresholdMs.
-//     Redis key "sla:penalty:active" is set to true, notifying ingress nodes to throttle/halve budgets.
-//     - Penalty Mode -> Recovery: Triggered when the EMA drops below recoveryEmaMs and remains stable for recoveryStableDuration.
 func (f *UnifiedFilter) StartSLASentinel(ctx context.Context, interval time.Duration) {
 	go func() {
 		ticker := time.NewTicker(interval)
@@ -305,7 +281,7 @@ func (f *UnifiedFilter) StartSLASentinel(ctx context.Context, interval time.Dura
 				err := f.dbHealth.Ping(ctx)
 				latency := float64(time.Since(start).Milliseconds())
 				if err != nil {
-					// If ping fails, we treat it as a massive latency spike to trigger SLA penalty
+
 					latency = f.p95ThresholdMs + 1000
 				}
 
@@ -315,14 +291,12 @@ func (f *UnifiedFilter) StartSLASentinel(ctx context.Context, interval time.Dura
 					f.latencyIdx++
 				}
 
-				// Update EMA for recovery detection
 				if f.currentEma == 0 {
 					f.currentEma = latency
 				} else {
 					f.currentEma = f.emaAlpha*latency + (1-f.emaAlpha)*f.currentEma
 				}
 
-				// Calculate P95
 				var p95 float64
 				if len(f.latencySamples) > 0 {
 					samples := make([]float64, len(f.latencySamples))
@@ -338,13 +312,13 @@ func (f *UnifiedFilter) StartSLASentinel(ctx context.Context, interval time.Dura
 				isActive := f.slaPenaltyActive.Load()
 
 				if !isActive && p95 > f.p95ThresholdMs {
-					// Breach detected
+
 					for _, rdb := range f.rdbs {
 						_ = rdb.Set(ctx, "sla:penalty:active", true, 0).Err()
 					}
 					f.slaPenaltyActive.Store(true)
 				} else if isActive {
-					// Check for recovery: EMA below threshold and stable for duration
+
 					if f.currentEma < f.recoveryEmaMs {
 						if f.recoveryStartTime.IsZero() {
 							f.recoveryStartTime = time.Now()
@@ -373,6 +347,11 @@ func (f *UnifiedFilter) getRDB(campaignID uuid.UUID) redis.UniversalClient {
 	return f.rdbs[idx%len(f.rdbs)]
 }
 
+// Check executes the unified Lua filter for the given event and returns one of the
+// package-level sentinel errors (ErrBudgetExhausted, ErrPacingExhausted,
+// ErrFreqLimitExceeded, ErrGeoBlocked) on policy rejection, or a Redis transport
+// error on infrastructure failure. A nil return means the event passed all checks
+// and the associated budget/pacing counters have been decremented atomically.
 func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 	campInfo, ok := f.registry.GetCampaign(evt.CampaignID)
 	if !ok {
@@ -387,8 +366,6 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 		evt.ClickID = id.String()
 	}
 
-	// Verify dynamic geo bid floor if a geo provider and target floor are configured.
-	// This filters out events that do not meet the minimum bid requirement for their resolved country code.
 	if f.geo != nil {
 		country, err := f.geo.GetCountry(evt.IP)
 		if err == nil && country != "" {
@@ -547,9 +524,6 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 	args[17] = campInfo.FreqLimitAny
 	args[18] = campInfo.FreqWindowAny
 
-	// Execute up to 2 iterations to handle Redis budget cache misses.
-	// On the first -1 response, seed the missing budget key from PostgreSQL and retry.
-	// A shard index string is pre-formatted once outside the loop to avoid per-iteration allocation.
 	shardIdx := strconv.Itoa(f.sharder.GetShard(evt.CampaignID))
 	for i := 0; i < 2; i++ {
 		luaStart := time.Now()
@@ -557,7 +531,7 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 		if err := cmd.Err(); err != nil && (errors.Is(err, redis.ErrNoScript) || err.Error() == "NOSCRIPT No matching script. Please use EVAL.") {
 			cmd = f.script.Eval(ctx, rdb, keys, args...)
 		}
-		// Record after EVALSHA settles (includes EVAL fallback latency on cache miss).
+
 		metrics.RedisLuaDuration.WithLabelValues(shardIdx).Observe(time.Since(luaStart).Seconds())
 		res, err := cmd.Int64()
 
