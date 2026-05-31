@@ -19,7 +19,7 @@ func TestTrackHandlerMalformed(t *testing.T) {
 	handler := NewRouter(cfg, registry, nil, nil, nil, sharder, "fraud-stream")
 
 	t.Run("Malformed Protobuf", func(t *testing.T) {
-		body := []byte{0xFF, 0xEE, 0xDD} // Injects a corrupted byte sequence to trigger Protobuf wire-format parsing errors.
+		body := []byte{0xFF, 0xEE, 0xDD}
 		req := httptest.NewRequest("POST", "/track", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/x-protobuf")
 		w := httptest.NewRecorder()
@@ -29,7 +29,7 @@ func TestTrackHandlerMalformed(t *testing.T) {
 	})
 
 	t.Run("Payload Too Large", func(t *testing.T) {
-		body := make([]byte, 2048) // Exceeds MaxRequestBodySize to verify the request body reader's enforcement of hard memory limits.
+		body := make([]byte, 2048)
 		req := httptest.NewRequest("POST", "/track", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/x-protobuf")
 		w := httptest.NewRecorder()
@@ -39,8 +39,8 @@ func TestTrackHandlerMalformed(t *testing.T) {
 	})
 
 	t.Run("Invalid db.Campaign ID", func(t *testing.T) {
-		// Constructs a valid Protobuf structure containing a malformed UUID string to validate secondary logic-level checks.
-		body := []byte{10, 3, 104, 105, 33} // tag 1 (CampaignId), len 3, val "hi!"
+
+		body := []byte{10, 3, 104, 105, 33}
 		req := httptest.NewRequest("POST", "/track", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/x-protobuf")
 		w := httptest.NewRecorder()

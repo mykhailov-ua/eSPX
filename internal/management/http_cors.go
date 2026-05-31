@@ -5,7 +5,6 @@ import (
 	"strings"
 )
 
-// NewCORSMiddleware validates request origins against an explicit whitelist to prevent unauthorized cross-origin access. Setting Vary: Origin ensures intermediate caches do not incorrectly serve cached responses across different client domains.
 func NewCORSMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
 	originsMap := make(map[string]bool)
 	for _, o := range allowedOrigins {

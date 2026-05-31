@@ -1,3 +1,15 @@
+-- events.sql: sqlc query definitions for campaign and event persistence.
+-- All event writes target the PARTITION BY RANGE (created_date) table; callers
+-- must supply created_date explicitly to guarantee correct partition routing.
+-- ON CONFLICT (click_id, created_date) DO NOTHING provides idempotency within
+-- the daily partition boundary.
+--
+-- InsertEventsBatch is the primary batch-write path. The CTE uses RETURNING to
+-- count only newly-inserted rows for campaign_stats aggregation; this prevents
+-- double-counting when the same batch is retried. The EXISTS sub-select on campaigns
+-- filters orphaned campaign_ids before the stats INSERT to avoid FK violations
+-- rolling back the entire batch.
+
 -- name: CreateCampaign :one
 INSERT INTO campaigns (id, name, budget_limit, status, customer_id, pacing_mode, daily_budget, timezone, freq_limit, freq_window, target_countries, brand_id, brand_fcap_key)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)

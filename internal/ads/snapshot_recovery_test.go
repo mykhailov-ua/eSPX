@@ -22,7 +22,7 @@ type MockPostgresDB struct {
 	limits       map[uuid.UUID]int64
 	idempotency  map[string]bool
 	Healthy      atomic.Bool
-	NetworkDelay atomic.Int64 // simulated delay in milliseconds
+	NetworkDelay atomic.Int64
 }
 
 func (m *MockPostgresDB) UpdateCampaignSpend(ctx context.Context, campaignID uuid.UUID, currentSpend int64) error {
@@ -60,7 +60,7 @@ func (m *MockPostgresDB) MarkEventIdempotent(ctx context.Context, clickID string
 		return false, errors.New("postgres connection timeout")
 	}
 	if m.idempotency[clickID] {
-		return false, nil // already processed
+		return false, nil
 	}
 	m.idempotency[clickID] = true
 	return true, nil
@@ -89,9 +89,9 @@ func (m *MockClickHouseDB) QueryAggregatedSpend(ctx context.Context, until time.
 	res := make(map[uuid.UUID]int64)
 	for _, e := range m.events {
 		if !e.CreatedAt.After(until) {
-			charge := int64(10_000) // click charge
+			charge := int64(10_000)
 			if e.Type == "impression" {
-				charge = int64(1_000) // impression charge
+				charge = int64(1_000)
 			}
 			res[e.CampaignID] += charge
 		}
@@ -102,7 +102,7 @@ func (m *MockClickHouseDB) QueryAggregatedSpend(ctx context.Context, until time.
 func (m *MockClickHouseDB) LogEvent(e *domain.Event) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	// Store copy to avoid concurrent slice modifications
+
 	eCopy := &domain.Event{
 		ClickID:    e.ClickID,
 		CampaignID: e.CampaignID,
@@ -124,7 +124,6 @@ func TestSnapshotRecovery_DisasterStressReplay(t *testing.T) {
 	custID := uuid.New()
 	reg := &mockRegistry{}
 
-	// Setup static campaign config in mock registry
 	staticCampaign.ID = campID
 	staticCampaign.CustomerID = custID
 	staticCampaign.IDStr = campID.String()
@@ -138,7 +137,6 @@ func TestSnapshotRecovery_DisasterStressReplay(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	// Initial Postgres State
 	pg := &MockPostgresDB{
 		spends:      make(map[uuid.UUID]int64),
 		limits:      map[uuid.UUID]int64{campID: int64(50_000_000)},
@@ -148,7 +146,6 @@ func TestSnapshotRecovery_DisasterStressReplay(t *testing.T) {
 
 	ch := &MockClickHouseDB{}
 
-	// Seed redis campaign budget limit
 	budgetSourceKey := "budget:campaign:" + campID.String()
 	_ = rdb.Set(ctx, budgetSourceKey, int64(50_000_000), 24*time.Hour).Err()
 
@@ -162,15 +159,14 @@ func TestSnapshotRecovery_DisasterStressReplay(t *testing.T) {
 		time.Minute,
 		time.Hour,
 		time.Hour,
-		10_000, // click amount micro-units
-		1_000,  // impression amount micro-units
+		10_000,
+		1_000,
 		"events-stream-sla",
 		100000,
 	)
 
 	replicator := NewSnapshotReplicator(pg, ch, []redis.UniversalClient{rdb}, sharder, 10_000, 1_000)
 
-	// Phase 1: High RPS Concurrent Ingestion
 	const concurrency = 20
 	const iterations = 500
 	var wg sync.WaitGroup
@@ -178,7 +174,6 @@ func TestSnapshotRecovery_DisasterStressReplay(t *testing.T) {
 
 	startTime := time.Now().Add(-5 * time.Minute)
 
-	// Simulate event stream ingestion
 	for g := 0; g < concurrency; g++ {
 		go func(workerID int) {
 			defer wg.Done()
@@ -197,13 +192,11 @@ func TestSnapshotRecovery_DisasterStressReplay(t *testing.T) {
 					CreatedAt:  startTime.Add(time.Duration(workerID*10+i) * time.Second),
 				}
 
-				// Check budget deduction
 				err := f.Check(ctx, evt)
 				if err != nil {
 					continue
 				}
 
-				// Log event inside simulated ClickHouse analytical table
 				ch.LogEvent(evt)
 			}
 		}(g)
@@ -211,7 +204,6 @@ func TestSnapshotRecovery_DisasterStressReplay(t *testing.T) {
 
 	wg.Wait()
 
-	// Capture spend at Checkpoint 1 (T_c)
 	checkpointTime := startTime.Add(2 * time.Minute)
 	snapshotData, err := replicator.CreateSnapshot(ctx, checkpointTime)
 	assert.NoError(t, err)
@@ -222,7 +214,6 @@ func TestSnapshotRecovery_DisasterStressReplay(t *testing.T) {
 	checkpointSpend := snap.CampaignSpends[campID]
 	assert.Greater(t, checkpointSpend, int64(0))
 
-	// Ingest more events AFTER the checkpoint (T_c) to simulate live progress
 	liveStart := checkpointTime.Add(time.Second)
 	var postWg sync.WaitGroup
 	postWg.Add(10)
@@ -250,44 +241,32 @@ func TestSnapshotRecovery_DisasterStressReplay(t *testing.T) {
 	}
 	postWg.Wait()
 
-	// Capture total actual spend before disaster
 	totalActualSpend, err := ch.QueryAggregatedSpend(ctx, time.Now().Add(24*time.Hour))
 	assert.NoError(t, err)
 	expectedFinalSpend := totalActualSpend[campID]
 
-	// PHASE 2: CATASTROPHIC DISASTER SIMULATION (Complete State Wipe)
-
-	// 1. Wipe Redis Budget keys
 	_ = rdb.Del(ctx, budgetSourceKey).Err()
 
-	// 2. Wipe PostgreSQL campaign spending records
 	pg.spends[campID] = 0
 	for k := range pg.idempotency {
 		delete(pg.idempotency, k)
 	}
 
-	// PHASE 3: DISASTER RECOVERY VIA SNAPSHOT + TELEMETRY BACKFILL
-
-	// 1. Restore PostgreSQL and sharded Redis to the T_c Snapshot spends
 	restoredSnap, err := replicator.RestoreSnapshot(ctx, snapshotData)
 	assert.NoError(t, err)
 	assert.Equal(t, checkpointSpend, restoredSnap.CampaignSpends[campID])
 
-	// Verify database budget holds restored snapshot spend
 	assert.Equal(t, checkpointSpend, pg.spends[campID])
 
-	// Verify Redis pacing keys re-seeded correctly
 	redisBudget, err := rdb.Get(ctx, budgetSourceKey).Int64()
 	assert.NoError(t, err)
 	assert.Equal(t, 50_000_000-checkpointSpend, redisBudget)
 
-	// 2. Replay all raw telemetry logged since checkpointTime (T_c) from ClickHouse
 	replayedCount, err := replicator.ReplayTelemetrySince(ctx, checkpointTime, f)
 	assert.NoError(t, err)
 	assert.Greater(t, replayedCount, 0)
 
-	// 3. Final Verification: PostgreSQL balances must match expected spends perfectly
 	finalPgSpend := pg.spends[campID]
-	// Replayed events will add up their click/impression spend, bringing total back to pre-disaster status
+
 	assert.Equal(t, expectedFinalSpend, finalPgSpend)
 }

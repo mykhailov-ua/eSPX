@@ -23,7 +23,7 @@ func (m *MockRepo) ListActiveCampaigns(ctx context.Context) ([]db.Campaign, erro
 	for _, id := range m.ids {
 		res = append(res, db.Campaign{
 			ID:         id,
-			CustomerID: id, // Mock customer ID
+			CustomerID: id,
 			Status:     db.CampaignStatusTypeACTIVE,
 		})
 	}

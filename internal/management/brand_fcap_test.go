@@ -20,8 +20,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestBrandFrequencyCapping executes the functional verification flow of brand grouping and joint capping behavior.
-// It creates a customer, registers a brand profile, provisions multiple campaigns sharing that brand identity, and checks the shared frequency cap bounds.
 func TestBrandFrequencyCapping(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")
@@ -48,7 +46,6 @@ func TestBrandFrequencyCapping(t *testing.T) {
 	err := svc.CreateCustomer(ctx, custID, "Brand Owner", 1_000_000_000, "USD")
 	require.NoError(t, err)
 
-	// 1. Create a brand group via REST API
 	brandReq := map[string]any{
 		"customer_id": custID.String(),
 		"name":        "Nike Group",
@@ -68,7 +65,6 @@ func TestBrandFrequencyCapping(t *testing.T) {
 	brandID, err := uuid.Parse(brandResp.ID)
 	require.NoError(t, err)
 
-	// Verify Listing Brand via REST API
 	reqList, _ := http.NewRequest("GET", "/admin/brands?customer_id="+custID.String(), nil)
 	reqList.Header.Set("X-Admin-API-Key", "test-secret")
 	respList := httptest.NewRecorder()
@@ -83,7 +79,6 @@ func TestBrandFrequencyCapping(t *testing.T) {
 	assert.Equal(t, custID.String(), listResp[0].CustomerID)
 	assert.Equal(t, "Nike Group", listResp[0].Name)
 
-	// Configure Brand-level frequency cap via REST API
 	fcapReq := map[string]any{
 		"freq_limit":  3,
 		"freq_window": 3600,
@@ -95,26 +90,22 @@ func TestBrandFrequencyCapping(t *testing.T) {
 	mux.ServeHTTP(respFcap, reqFcap)
 	require.Equal(t, http.StatusOK, respFcap.Code)
 
-	// Verify persistence in PostgreSQL
 	var dbLimit, dbWindow int32
 	err = pool.QueryRow(ctx, "SELECT freq_limit, freq_window FROM advertiser_brands WHERE id = $1", brandID).Scan(&dbLimit, &dbWindow)
 	require.NoError(t, err)
 	assert.Equal(t, int32(3), dbLimit)
 	assert.Equal(t, int32(3600), dbWindow)
 
-	// Verify administrative audit log is created
 	var auditCount int64
 	err = pool.QueryRow(ctx, "SELECT COUNT(*) FROM admin_audit_log WHERE action = 'CONFIGURE_BRAND_FCAP' AND target_id = $1", brandID).Scan(&auditCount)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), auditCount)
 
-	// Verify Outbox Event is emitted
 	var outboxCount int64
 	err = pool.QueryRow(ctx, "SELECT COUNT(*) FROM outbox_events WHERE event_type = 'CONFIGURE_BRAND_FCAP'").Scan(&outboxCount)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), outboxCount)
 
-	// 2. Create two campaigns under the same brand via REST API
 	campAReq := map[string]any{
 		"customer_id":      custID.String(),
 		"brand_id":         brandResp.ID,
@@ -165,7 +156,6 @@ func TestBrandFrequencyCapping(t *testing.T) {
 	campBID, err := uuid.Parse(campBResp.ID)
 	require.NoError(t, err)
 
-	// Verify database columns are stored correctly
 	var brandFcapKeyA, brandFcapKeyB string
 	var brandIDDbA, brandIDDbB uuid.UUID
 	err = pool.QueryRow(ctx, "SELECT brand_id, brand_fcap_key FROM campaigns WHERE id = $1", campAID).Scan(&brandIDDbA, &brandFcapKeyA)
@@ -179,7 +169,6 @@ func TestBrandFrequencyCapping(t *testing.T) {
 	assert.Equal(t, expectedFcapKey, brandFcapKeyA)
 	assert.Equal(t, expectedFcapKey, brandFcapKeyB)
 
-	// 3. Verify brand-level frequency capping behavior via ads.UnifiedFilter
 	queries := db.New(pool)
 	registry := ads.NewRegistry(queries)
 	_, err = registry.Sync(ctx)
@@ -190,8 +179,8 @@ func TestBrandFrequencyCapping(t *testing.T) {
 		[]redis.UniversalClient{rdb},
 		sharder,
 		registry,
-		nil, // no repo needed since budget won't miss in this test scenario
-		100, // high rate limit so it doesn't trigger
+		nil,
+		100,
 		time.Minute,
 		time.Hour,
 		time.Hour,
@@ -201,7 +190,6 @@ func TestBrandFrequencyCapping(t *testing.T) {
 		10000,
 	)
 
-	// Set campaign budgets in Redis to avoid Postgres budget loader fallback
 	rdb.Set(ctx, "budget:campaign:"+campAID.String(), 1000000000, 0)
 	rdb.Set(ctx, "budget:campaign:"+campBID.String(), 1000000000, 0)
 
@@ -229,15 +217,12 @@ func TestBrandFrequencyCapping(t *testing.T) {
 		IP:         "1.1.1.1",
 	}
 
-	// First event on Campaign A (brand Nike, user_1) -> Success (count=1)
 	err = filter.Check(ctx, evtUser1A)
 	assert.NoError(t, err)
 
-	// Second event on Campaign B (brand Nike, user_1) -> Success (count=2)
 	err = filter.Check(ctx, evtUser1B)
 	assert.NoError(t, err)
 
-	// Third event on Campaign A (brand Nike, user_1) -> Fails with FreqLimitExceeded (limit=2)
 	err = filter.Check(ctx, evtUser1ASecond)
 	assert.ErrorIs(t, err, ads.ErrFreqLimitExceeded)
 }

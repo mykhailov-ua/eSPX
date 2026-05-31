@@ -1,3 +1,11 @@
+// Package ads provides discrete filter types that implement the EventFilter interface
+// and a FilterEngine combinator that chains them in order. Each filter receives a
+// *domain.Event and returns one of the package-level sentinel errors on rejection or
+// nil on pass. A non-nil error from any filter short-circuits the chain; the caller
+// inspects the error type to select the appropriate Prometheus label and response code.
+//
+// Shared key-building utilities (appendUUID, unsafeString, bufPool) are defined here
+// and reused by budget_store.go and unified_filter.go.
 package ads
 
 import (
@@ -14,6 +22,8 @@ import (
 	redis "github.com/redis/go-redis/v9"
 )
 
+// Sentinel errors returned by filter implementations. Callers must compare with
+// errors.Is; the string form is used only in log messages, not in API responses.
 var (
 	ErrRateLimitExceeded      = errors.New("rate limit exceeded")
 	ErrDuplicateEvent         = errors.New("duplicate event detected")
@@ -31,7 +41,6 @@ type bufWrapper struct {
 	buf []byte
 }
 
-// bufPool recycles byte buffer wrappers to avoid heap allocation overhead during string key formatting.
 var bufPool = sync.Pool{
 	New: func() any {
 		return &bufWrapper{
@@ -42,8 +51,6 @@ var bufPool = sync.Pool{
 
 const hexChars = "0123456789abcdef"
 
-// appendUUID performs zero-allocation hexadecimal formatting of a 16-byte UUID directly into a destination slice.
-// This bypasses the standard google/uuid.String() method, which forces heap allocations.
 func appendUUID(dst []byte, u uuid.UUID) []byte {
 	return append(dst,
 		hexChars[u[0]>>4], hexChars[u[0]&0xf],
@@ -69,8 +76,6 @@ func appendUUID(dst []byte, u uuid.UUID) []byte {
 	)
 }
 
-// unsafeString performs zero-copy conversion from a byte slice to a string to eliminate heap allocation.
-// The caller must guarantee that the underlying byte slice is not mutated while the returned string is referenced.
 func unsafeString(b []byte) string {
 	if len(b) == 0 {
 		return ""
@@ -93,6 +98,12 @@ var timestampPool = sync.Pool{
 	},
 }
 
+// FraudFilter checks for anonymous-IP traffic and time-to-click (TTC) velocity.
+// For impression events it stores a Unix-ms timestamp in Redis under a per-user+campaign
+// key with a 10-minute TTL. For click events it reads that timestamp and computes the
+// delta; if delta < ttcMin the click is annotated with a fraud reason string in
+// evt.FraudReason (not rejected — the event is still forwarded to the fraud stream
+// for later analysis). Datacenter IP detection rejects the event immediately.
 type FraudFilter struct {
 	geo    GeoProvider
 	rdb    redis.UniversalClient
@@ -158,6 +169,10 @@ func (f *FraudFilter) Check(ctx context.Context, evt *domain.Event) error {
 	return nil
 }
 
+// GeoFilter rejects events whose source IP does not match the campaign's
+// TargetCountries allow-list. If the campaign has no target countries configured,
+// all IPs are permitted. Geo-lookup failures are treated as pass to avoid false
+// positives from MaxMind database gaps (private or newly-allocated ranges).
 type GeoFilter struct {
 	geo      GeoProvider
 	registry domain.CampaignRegistry
@@ -193,6 +208,10 @@ func (f *GeoFilter) Check(ctx context.Context, evt *domain.Event) error {
 	return ErrGeoBlocked
 }
 
+// BudgetFilter delegates to domain.BudgetManager.CheckAndSpend. The charge amount
+// differs by event type: clicks consume clickAmount micro-units, impressions consume
+// impressionAmount. The customer ID is resolved from the registry to route the
+// deduction to the correct customer balance in the Lua script.
 type BudgetFilter struct {
 	manager          domain.BudgetManager
 	registry         domain.CampaignRegistry
@@ -230,10 +249,14 @@ func (f *BudgetFilter) Check(ctx context.Context, evt *domain.Event) error {
 	return nil
 }
 
+// EventFilter is the common interface implemented by all filter types. The single
+// Check method must be idempotent and safe for concurrent use.
 type EventFilter interface {
 	Check(ctx context.Context, evt *domain.Event) error
 }
 
+// FilterEngine runs a sequence of EventFilter instances in registration order,
+// returning the first non-nil error. It does not recover from panics inside filters.
 type FilterEngine struct {
 	filters []EventFilter
 }
@@ -251,6 +274,10 @@ func (e *FilterEngine) Check(ctx context.Context, evt *domain.Event) error {
 	return nil
 }
 
+// IPRateLimiter enforces a per-IP sliding-window rate limit via a Redis Lua script.
+// The window is expressed in milliseconds (PEXPIRE) to avoid rounding at sub-second
+// granularities. limitAny and windowAny are pre-boxed interface values to prevent
+// per-call interface boxing on the Eval args slice.
 type IPRateLimiter struct {
 	rdb       redis.Cmdable
 	limit     int
@@ -330,6 +357,9 @@ func (l *IPRateLimiter) Check(ctx context.Context, evt *domain.Event) error {
 	return nil
 }
 
+// DuplicateEventFilter uses Redis SetNX to detect and reject replayed click IDs.
+// The TTL (duplicateTTL) should cover the maximum stream reprocessing lag to prevent
+// double-billing on processor restarts.
 type DuplicateEventFilter struct {
 	rdb redis.Cmdable
 	ttl time.Duration
@@ -369,8 +399,10 @@ func (f *DuplicateEventFilter) Check(ctx context.Context, evt *domain.Event) err
 	return nil
 }
 
-// EmergencyBreakerFilter checks the in-memory breaker status using zero-allocation atomic values from SettingsWatcher,
-// providing an instant failsafe to drop ingestion traffic without stressing the DB/Redis pool.
+// EmergencyBreakerFilter reads the EmergencyBreaker flag from the SettingsWatcher
+// snapshot. When true, all events are rejected with ErrEmergencyBreakerActive without
+// contacting Redis or any other downstream. The flag is set via the UPDATE_SETTINGS
+// outbox event and propagated atomically through the SettingsWatcher snapshot swap.
 type EmergencyBreakerFilter struct {
 	watcher *SettingsWatcher
 }

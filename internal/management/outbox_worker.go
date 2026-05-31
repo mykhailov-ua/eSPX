@@ -1,3 +1,18 @@
+// Package management implements OutboxWorker, which reads PENDING rows from
+// outbox_events and applies their side-effects to Redis (budget key creation,
+// campaign settings publication, brand frequency cap updates). The worker uses
+// PostgreSQL LISTEN on outbox_channel for real-time notifications, with a
+// 5×interval ticker as a safety fallback for missed notifications.
+//
+// Processing protocol:
+//  1. BEGIN, SELECT ... FOR UPDATE SKIP LOCKED (up to 100 rows).
+//  2. Set status = 'PROCESSING'; COMMIT.
+//  3. Apply side-effects to Redis via Pipelined.
+//  4. On success: UPDATE status = 'PROCESSED'.
+//     On Redis failure: UPDATE status = 'PENDING' (revert for retry).
+//
+// Stale PROCESSING rows (older than 5 minutes) are reset to PENDING by the
+// ticker to handle crashes that occurred between steps 2 and 4.
 package management
 
 import (
@@ -15,10 +30,9 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// OutboxWorker implements a high-performance Hybrid CDC-like Transactional Outbox pattern.
-// It leverages PostgreSQL LISTEN/NOTIFY for real-time push events to completely eliminate SQL polling database overhead,
-// combined with a Decoupled Transaction Pattern that executes external Redis I/O outside of PostgreSQL transactions
-// to prevent connection pool starvation and database row lock contention.
+// OutboxWorker drains the outbox_events table and propagates campaign and settings
+// mutations to Redis. It is safe to run as a single instance; the SELECT FOR UPDATE
+// SKIP LOCKED ensures concurrent instances do not process the same row.
 type OutboxWorker struct {
 	svc *Service
 }
@@ -37,12 +51,11 @@ type SettingsPayload struct {
 }
 
 func (w *OutboxWorker) Start(ctx context.Context, interval time.Duration) {
-	// 1. Cold Sync on startup: Drain any pending events created while the worker was offline
+
 	if err := w.ProcessOutbox(ctx); err != nil {
 		slog.Error("outbox startup cold sync failed", "error", err)
 	}
 
-	// 2. Persistent LISTEN/NOTIFY background worker (Real-time CDC Push Path)
 	go func() {
 		for {
 			select {
@@ -51,7 +64,6 @@ func (w *OutboxWorker) Start(ctx context.Context, interval time.Duration) {
 			default:
 			}
 
-			// Acquire a dedicated connection for LISTEN
 			conn, err := w.svc.pool.Acquire(ctx)
 			if err != nil {
 				slog.Error("failed to acquire connection for outbox listen, retrying in 2s", "error", err)
@@ -77,7 +89,6 @@ func (w *OutboxWorker) Start(ctx context.Context, interval time.Duration) {
 				default:
 				}
 
-				// WaitForNotification blocks until a notification is received or context is canceled
 				_, err := conn.Conn().WaitForNotification(ctx)
 				if err != nil {
 					conn.Release()
@@ -86,10 +97,9 @@ func (w *OutboxWorker) Start(ctx context.Context, interval time.Duration) {
 					}
 					slog.Error("outbox listen connection lost, reconnecting in 2s", "error", err)
 					time.Sleep(2 * time.Second)
-					break // Break inner loop to trigger reconnect
+					break
 				}
 
-				// Real-time edge-triggered signal: drain the queue!
 				if err := w.ProcessOutbox(ctx); err != nil {
 					slog.Error("failed to process outbox after notification", "error", err)
 				}
@@ -97,7 +107,6 @@ func (w *OutboxWorker) Start(ctx context.Context, interval time.Duration) {
 		}
 	}()
 
-	// 3. Fallback Interval Janitor: Resets stuck 'PROCESSING' states and drains missed signals
 	ticker := time.NewTicker(interval * 5)
 	defer ticker.Stop()
 
@@ -106,10 +115,9 @@ func (w *OutboxWorker) Start(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// Self-healing: Reset events stuck in 'PROCESSING' state for > 5 minutes back to 'PENDING'
+
 			_, _ = w.svc.pool.Exec(ctx, "UPDATE outbox_events SET status = 'PENDING' WHERE status = 'PROCESSING' AND created_at < NOW() - INTERVAL '5 minutes'")
 
-			// Trigger safety drain
 			if err := w.ProcessOutbox(ctx); err != nil {
 				if strings.Contains(err.Error(), "closed pool") {
 					return
@@ -120,11 +128,14 @@ func (w *OutboxWorker) Start(ctx context.Context, interval time.Duration) {
 	}
 }
 
+// ProcessOutbox reads up to 100 PENDING outbox events in a single transaction,
+// marks them PROCESSING, then applies Redis side-effects. Rows that fail Redis
+// application are reverted to PENDING; successful rows are marked PROCESSED.
+// Returns the first database-level error; Redis errors are logged and retried on
+// the next ProcessOutbox call.
 func (w *OutboxWorker) ProcessOutbox(ctx context.Context) error {
 	var events []db.OutboxEvent
 
-	// Acquire pending outbox events and transition them to PROCESSING inside a localized transaction.
-	// This immediately commits the status update, releasing row locks and returning the DB connection to the pool before executing external I/O.
 	err := pgx.BeginFunc(ctx, w.svc.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		var err error
@@ -149,8 +160,6 @@ func (w *OutboxWorker) ProcessOutbox(ctx context.Context) error {
 	processedIDs := make([]int64, 0, len(events))
 	revertIDs := make([]int64, 0, len(events))
 
-	// Execute Redis network I/O completely outside of the PostgreSQL database transaction.
-	// This decouples the database transaction hold time from external network transport latencies to prevent database connection pool exhaustion.
 	for _, ev := range events {
 		var rdbErr error
 		switch ev.EventType {
@@ -223,8 +232,7 @@ func (w *OutboxWorker) ProcessOutbox(ctx context.Context) error {
 				}
 			}
 		case "CONFIGURE_BRAND_FCAP":
-			// Select active campaigns linked to this brand and publish invalidation signals to Redis.
-			// This triggers the real-time cache sync in active trackers to immediately apply new brand constraints.
+
 			var p struct {
 				BrandID    string `json:"brand_id"`
 				FreqLimit  int32  `json:"freq_limit"`
@@ -278,8 +286,6 @@ func (w *OutboxWorker) ProcessOutbox(ctx context.Context) error {
 		}
 	}
 
-	// Batch transition the outbox event statuses in the database to finalize the transaction outbox cycle.
-	// Executing this as a batch query minimizes database roundtrips and lock holding times.
 	if len(processedIDs) > 0 {
 		_, err = w.svc.pool.Exec(ctx, "UPDATE outbox_events SET status = 'PROCESSED' WHERE id = ANY($1)", processedIDs)
 		if err != nil {

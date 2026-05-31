@@ -108,7 +108,6 @@ func TestAuthMiddleware_RedisOutage(t *testing.T) {
 	rdb, cleanupRedis := database.SetupTestRedis(t)
 	defer cleanupRedis()
 
-	// Close client to simulate network outage
 	_ = rdb.Close()
 
 	cfg := &config.Config{

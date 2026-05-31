@@ -14,8 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// FailingEventStore returns an error for every StoreBatch call until
-// the heal channel is closed. It also counts the number of calls.
 type FailingEventStore struct {
 	mu      sync.Mutex
 	flushes [][]*domain.Event
@@ -53,24 +51,22 @@ func TestStreamConsumer_CircuitBreakerStopsReads(t *testing.T) {
 		failErr: errors.New("database connection refused"),
 	}
 
-	// maxRetries=3, retryMaxWait=50ms -> CB openTimeout = 100ms
 	producer := NewStreamProducer(rdb, "cb-test", 1000, 1*time.Second)
 	consumer := NewStreamConsumer(
 		failStore, rdb, "cb-test", "cb-group", "cb-c",
 		2, 1,
-		50*time.Millisecond, // flushInt
-		1*time.Second,       // writeTimeout
-		10*time.Millisecond, // retryInitWait
-		50*time.Millisecond, // retryMaxWait
-		3,                   // maxRetries
-		1*time.Minute,       // streamMinIdle
-		1*time.Second,       // drainTimeout
+		50*time.Millisecond,
+		1*time.Second,
+		10*time.Millisecond,
+		50*time.Millisecond,
+		3,
+		1*time.Minute,
+		1*time.Second,
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Produce events that will trigger flushes.
 	for i := 0; i < 5; i++ {
 		err := producer.Process(&domain.Event{CampaignID: uuid.New(), Type: "click"})
 		require.NoError(t, err)
@@ -78,28 +74,20 @@ func TestStreamConsumer_CircuitBreakerStopsReads(t *testing.T) {
 
 	consumer.Start(ctx)
 
-	// Wait for the CB to trip open. With 3 failures at 10-50ms backoff, it
-	// should take ~200ms. Give it generous time.
 	assert.Eventually(t, func() bool {
 		return consumer.cb.State() == CircuitOpen
 	}, 3*time.Second, 10*time.Millisecond, "circuit breaker should be open")
 
-	// Record the call count when the CB is open.
 	callsAtOpen := failStore.calls.Load()
 
-	// Wait 200ms and verify calls have NOT increased significantly.
-	// In a tight loop without CB, we'd see hundreds of calls.
 	time.Sleep(200 * time.Millisecond)
 	callsAfterWait := failStore.calls.Load()
 
-	// Allow at most 4 extra calls (the HalfOpen probe + batch decomposition calls).
 	assert.LessOrEqual(t, callsAfterWait-callsAtOpen, int64(4),
 		"CB should prevent flush calls while open, got %d extra calls", callsAfterWait-callsAtOpen)
 
-	// Heal the store and verify recovery.
 	failStore.Heal()
 
-	// The CB will transition to HalfOpen after its timeout, then probe once.
 	assert.Eventually(t, func() bool {
 		return consumer.cb.State() == CircuitClosed
 	}, 3*time.Second, 10*time.Millisecond, "circuit breaker should recover to closed")

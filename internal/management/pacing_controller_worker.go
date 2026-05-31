@@ -8,7 +8,6 @@ import (
 	"github.com/mykhailov-ua/ad-event-processor/internal/ads"
 )
 
-// PacingControllerWorker executes periodic evaluation of the closed-loop pacing logic in a background goroutine.
 type PacingControllerWorker struct {
 	svc         *Service
 	syncWorkers []*ads.SyncWorker
@@ -21,7 +20,6 @@ func NewPacingControllerWorker(svc *Service, syncWorkers []*ads.SyncWorker) *Pac
 	}
 }
 
-// Start initiates the execution ticker loop to regulate campaign spend velocities at designated intervals.
 func (w *PacingControllerWorker) Start(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()

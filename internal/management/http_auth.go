@@ -29,7 +29,6 @@ func putBuffer(buf *bytes.Buffer) {
 	bufferPool.Put(buf)
 }
 
-// AuthHandler manages gateway session lifecycles and token orchestration. Bridging HTTP boundary requests to internal gRPC auth microservices enforces centralized authentication without duplicating token validation logic.
 type AuthHandler struct {
 	authClient pb.AuthServiceClient
 	tokenMaker auth.Maker
@@ -54,7 +53,6 @@ func (h *AuthHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/auth/register", h.register)
 }
 
-// setCookie configures strict transport security attributes on session tokens. Enforcing Secure and SameSite=Strict mitigates cross-site scripting and request forgery vulnerabilities across client browser sessions.
 func setCookie(w http.ResponseWriter, name, value, path string, maxAge int, httpOnly bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     name,

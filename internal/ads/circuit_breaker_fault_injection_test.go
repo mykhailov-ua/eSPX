@@ -15,7 +15,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// FailingRedisClient simulates various connection issues (timeouts, refuse, etc.)
 type FailingRedisClient struct {
 	redis.UniversalClient
 	failSet  bool
@@ -36,7 +35,7 @@ func (m *FailingRedisClient) Eval(ctx context.Context, script string, keys []str
 	if m.failEval {
 		cmd.SetErr(m.failErr)
 	} else {
-		cmd.SetVal(int64(-1)) // Force budget cache miss
+		cmd.SetVal(int64(-1))
 	}
 	return cmd
 }
@@ -46,7 +45,7 @@ func (m *FailingRedisClient) EvalSha(ctx context.Context, sha1 string, keys []st
 	if m.failEval {
 		cmd.SetErr(m.failErr)
 	} else {
-		cmd.SetVal(int64(-1)) // Force budget cache miss
+		cmd.SetVal(int64(-1))
 	}
 	return cmd
 }
@@ -65,7 +64,6 @@ func (m *FailingRedisClient) Ping(ctx context.Context) *redis.StatusCmd {
 	return cmd
 }
 
-// FailingCampaignRepo simulates a database connection failure on budget misses
 type FailingCampaignRepo struct {
 	failErr error
 }
@@ -86,7 +84,6 @@ func (r *FailingCampaignRepo) ListActive(ctx context.Context) ([]*domain.Campaig
 	return nil, r.failErr
 }
 
-// Scenario 1: Redis Node Timeout/Refusal during Ingestion via API
 func TestFaultInjection_RedisTimeoutDuringIngestion(t *testing.T) {
 	rdb := &FailingRedisClient{
 		failSet: true,
@@ -103,15 +100,12 @@ func TestFaultInjection_RedisTimeoutDuringIngestion(t *testing.T) {
 		CampaignID: uuid.New(),
 	}
 
-	// Fraud check should handle Redis command timeout without crashing or leaking.
-	// In the real system, it logs a warning but allows the ingestion flow to continue (asynchronous fail-safe).
 	err := f.Check(context.Background(), evt)
 	assert.NoError(t, err, "Ingestion filter must survive transient Redis errors gracefully")
 }
 
-// Scenario 2: Postgres Database Connection Failure on Budget Miss
 func TestFaultInjection_PostgresCrashOnBudgetMiss(t *testing.T) {
-	// Eval returns -1 to force a cache miss, prompting the budget manager to seed from Postgres
+
 	rdb := &FailingRedisClient{
 		failEval: false,
 	}
@@ -127,13 +121,11 @@ func TestFaultInjection_PostgresCrashOnBudgetMiss(t *testing.T) {
 	clickID := "click_fail_1"
 	amount := int64(150_000)
 
-	// Verify that the postgres connection failure is propagated safely and doesn't leak or hang
 	allowed, err := bm.CheckAndSpend(ctx, customerID, campaignID, clickID, amount)
 	assert.False(t, allowed)
 	assert.ErrorContains(t, err, "failed to load campaign from db on cache miss")
 }
 
-// Scenario 3: Stream Consumer Poison Pill Ingestion (Decomposition & DLQ)
 func TestFaultInjection_StreamConsumerPoisonPillToDLQ(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping testcontainers-based integration test in short mode")
@@ -142,7 +134,6 @@ func TestFaultInjection_StreamConsumerPoisonPillToDLQ(t *testing.T) {
 	rdb, cleanup := setupTestRedis(t)
 	defer cleanup()
 
-	// Store rejects zero/corrupted CampaignID events (poison pills)
 	mockStore := &MockEventStore{
 		Err: errors.New("postgres: null constraint violation on campaign_id"),
 	}
@@ -154,7 +145,7 @@ func TestFaultInjection_StreamConsumerPoisonPillToDLQ(t *testing.T) {
 		50*time.Millisecond,
 		5*time.Millisecond,
 		10*time.Millisecond,
-		1, // maxRetries=1 to trip DLQ immediately
+		1,
 		1*time.Minute,
 		1*time.Second,
 	)
@@ -164,22 +155,19 @@ func TestFaultInjection_StreamConsumerPoisonPillToDLQ(t *testing.T) {
 
 	consumer.Start(ctx)
 
-	// Produce a completely corrupt/malformed payload (invalid protobuf bytes)
 	_, err := rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "poison-stream",
 		MaxLen: 1000,
 		Approx: true,
-		Values: []any{"d", "\xff\xff\xff\xff"}, // Invalid proto wire format bytes
+		Values: []any{"d", "\xff\xff\xff\xff"},
 	}).Result()
 	require.NoError(t, err)
 
-	// StreamConsumer should attempt to process it, fail, decompose the batch, and move it to DLQ
 	assert.Eventually(t, func() bool {
 		size, err := rdb.XLen(ctx, "ad:events:dlq").Result()
 		return err == nil && size == 1
 	}, 5*time.Second, 50*time.Millisecond, "Corrupt stream message should be moved to DLQ as a poison pill")
 
-	// Ensure it is deleted from the main stream pending list
 	pending, err := rdb.XPending(ctx, "poison-stream", "poison-group").Result()
 	assert.NoError(t, err)
 	assert.Equal(t, int64(0), pending.Count, "DLQ'ed message must be deleted from main stream")
@@ -188,7 +176,6 @@ func TestFaultInjection_StreamConsumerPoisonPillToDLQ(t *testing.T) {
 	consumer.Wait(ctx)
 }
 
-// Scenario 4: Concurrency and Race Detector Verification under sustained failure
 func TestFaultInjection_CircuitBreakerConcurrency(t *testing.T) {
 	cb := NewCircuitBreaker(10, 50*time.Millisecond)
 
@@ -197,7 +184,6 @@ func TestFaultInjection_CircuitBreakerConcurrency(t *testing.T) {
 	var successCount atomic.Int64
 	var failureCount atomic.Int64
 
-	// Spawn multiple concurrent workers driving state transitions under load
 	for i := 0; i < int(activeWorkers); i++ {
 		wg.Add(1)
 		go func(workerID string) {
@@ -206,7 +192,7 @@ func TestFaultInjection_CircuitBreakerConcurrency(t *testing.T) {
 			for j := 0; j < 50; j++ {
 				if cb.Allow() {
 					successCount.Add(1)
-					// Simulate intermittent failures and successes
+
 					if j%3 == 0 {
 						cb.RecordFailure(workerID)
 					} else {
@@ -223,7 +209,6 @@ func TestFaultInjection_CircuitBreakerConcurrency(t *testing.T) {
 
 	wg.Wait()
 
-	// Verify states are stable and consistent
 	assert.Contains(t, []CircuitState{CircuitClosed, CircuitOpen, CircuitHalfOpen}, cb.State())
 	assert.Greater(t, successCount.Load()+failureCount.Load(), int64(0))
 }

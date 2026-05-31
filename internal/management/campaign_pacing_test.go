@@ -40,7 +40,6 @@ func TestManagementAPI_CampaignPacing(t *testing.T) {
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
-	// Create test customer & campaign
 	custID := uuid.New()
 	err := svc.CreateCustomer(context.Background(), custID, "Advertiser Pacing", 500_000_000, "USD")
 	require.NoError(t, err)
@@ -112,20 +111,16 @@ func TestManagementAPI_CampaignPacing(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "ASAP", camp.PacingMode)
 
-		// Verify persisted state in Postgres
 		var currentPacing string
 		err = pool.QueryRow(context.Background(), "SELECT pacing_mode FROM campaigns WHERE id = $1", campID).Scan(&currentPacing)
 		require.NoError(t, err)
 		assert.Equal(t, "ASAP", currentPacing)
 
-		// Verify audit log entry
 		var auditCount int
 		err = pool.QueryRow(context.Background(), "SELECT COUNT(*) FROM admin_audit_log WHERE action = 'UPDATE_CAMPAIGN_PACING' AND target_id = $1", campID).Scan(&auditCount)
 		require.NoError(t, err)
 		assert.Equal(t, 1, auditCount)
 
-		// Verify outbox worker processes the update to Redis & PubSub
-		// Wait for OutboxWorker background poll
 		assert.Eventually(t, func() bool {
 			val, rdbErr := rdb.HGet(context.Background(), "campaign:settings:"+campID.String(), "pacing_mode").Result()
 			return rdbErr == nil && val == "ASAP"

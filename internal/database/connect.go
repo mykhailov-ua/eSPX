@@ -28,8 +28,6 @@ func Connect(ctx context.Context, dsn string, maxConns, minConns int) (*pgxpool.
 		return nil, fmt.Errorf("failed to ping db: %w", err)
 	}
 
-	// Parallel pings pre-establish physical connections up to minConns immediately.
-	// This avoids lazy-loading TCP/TLS handshake latency penalties under initial high RPS traffic.
 	if minConns > 1 {
 		var wg sync.WaitGroup
 		for i := 1; i < minConns; i++ {

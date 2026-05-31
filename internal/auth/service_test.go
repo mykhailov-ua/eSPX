@@ -363,7 +363,6 @@ func TestLoginFlood(t *testing.T) {
 	var lockedCount atomic.Int32
 	var rateLimitedCount atomic.Int32
 
-	// Launch 50 concurrent login attempts with wrong password
 	for i := 0; i < 50; i++ {
 		wg.Add(1)
 		go func() {
@@ -378,9 +377,6 @@ func TestLoginFlood(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Verify metrics and lockout enforcement
-	// IP rate limit is 20, so at most 20 requests will hit the account lockout limiter (5 attempts before lock + 15 locked)
-	// Remaining 30 requests should be IP rate limited
 	assert.GreaterOrEqual(t, int(rateLimitedCount.Load()), 25)
 	assert.GreaterOrEqual(t, int(lockedCount.Load()), 10)
 }

@@ -41,11 +41,9 @@ func TestRedisBreaker_TransitionsToHalfOpen(t *testing.T) {
 
 	time.Sleep(25 * time.Millisecond)
 
-	// First probe allowed, state moves to HalfOpen
 	assert.True(t, b.Allow())
 	assert.Equal(t, CircuitHalfOpen, b.State())
 
-	// Concurrent probes blocked
 	assert.False(t, b.Allow())
 }
 
@@ -73,7 +71,7 @@ func TestRedisBreaker_HalfOpenSuccessCloses(t *testing.T) {
 	require.True(t, b.Allow())
 
 	b.RecordSuccess()
-	assert.Equal(t, CircuitHalfOpen, b.State()) // needs 2 successes
+	assert.Equal(t, CircuitHalfOpen, b.State())
 
 	b.RecordSuccess()
 	assert.Equal(t, CircuitClosed, b.State())

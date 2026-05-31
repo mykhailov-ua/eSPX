@@ -106,7 +106,7 @@ func TestAuthHandler_Login(t *testing.T) {
 				assert.Contains(t, c, "HttpOnly")
 				assert.Contains(t, c, "Secure")
 				assert.Contains(t, c, "SameSite=Strict")
-				assert.Contains(t, c, "Max-Age=2592000") // 30 days
+				assert.Contains(t, c, "Max-Age=2592000")
 			}
 			if strings.HasPrefix(c, "csrfToken=") {
 				csrfSet = true

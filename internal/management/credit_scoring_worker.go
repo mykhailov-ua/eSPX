@@ -17,8 +17,6 @@ func NewCreditScoringWorker(svc *Service) *CreditScoringWorker {
 	return &CreditScoringWorker{svc: svc}
 }
 
-// Start spawns the background loop for dynamic credit line evaluations at specific execution intervals.
-// It retrieves customer aggregated metrics from the primary database, applies the pricing multipliers, and updates overdraft tables.
 func (w *CreditScoringWorker) Start(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -35,8 +33,6 @@ func (w *CreditScoringWorker) Start(ctx context.Context, interval time.Duration)
 	}
 }
 
-// EvaluateAll executes a single pass over all system customers, computing and applying dynamic overdraft limits.
-// It iterates through the dataset, applying time and spend multipliers to update credit metrics.
 func (w *CreditScoringWorker) EvaluateAll(ctx context.Context) error {
 	queries := db.New(w.svc.pool)
 	rows, err := queries.ListCustomersForScoring(ctx)
@@ -68,8 +64,6 @@ func (w *CreditScoringWorker) EvaluateAll(ctx context.Context) error {
 	return nil
 }
 
-// calculateOverdraft maps payment history and account longevity to a safe allowed overdraft threshold.
-// Multipliers scale based on operational duration to prevent immediate over-allocations on new profiles.
 func (w *CreditScoringWorker) calculateOverdraft(ageDays float64, topupSum int64) int64 {
 	if ageDays < w.svc.cfg.CreditScoringMinAgeDays {
 		return 0

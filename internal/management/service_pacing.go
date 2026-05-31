@@ -51,8 +51,6 @@ func (s *Service) ClosedLoopPacingController(ctx context.Context, syncWorkers []
 				timeRatio = 1.0
 			}
 
-			// Perform pacing arithmetic strictly using micro-units int64 values.
-			// This completely bypasses decimal.Decimal heap allocations and float parsing on the core loop.
 			budgetMicro := row.DailyBudget
 			if budgetMicro == 0 {
 				budgetMicro = row.BudgetLimit
@@ -67,7 +65,6 @@ func (s *Service) ClosedLoopPacingController(ctx context.Context, syncWorkers []
 			var targetPacing db.PacingModeType
 			var shouldUpdate bool
 
-			// Apply configured tolerance margin using integer scaling factor multiplication.
 			overThresholdMicro := int64(float64(expectedSpendMicro) * (1.0 + s.cfg.PacingToleranceMargin))
 			underThresholdMicro := int64(float64(expectedSpendMicro) * (1.0 - s.cfg.PacingToleranceMargin))
 

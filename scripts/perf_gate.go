@@ -36,7 +36,6 @@ func main() {
 	fmt.Printf("Baseline File: %s\n", baselineFile)
 	fmt.Printf("PR File:       %s\n\n", prFile)
 
-	// 1. Strict Zero-Alloc check from raw PR benchmark output
 	err := verifyRawZeroAlloc(prFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
@@ -44,7 +43,6 @@ func main() {
 	}
 	fmt.Println("PASS: Zero-Alloc raw verification successful.")
 
-	// 2. Perform CPU Regression comparison via benchstat -format csv
 	regressionDetected, comparisonTable, err := runBenchstatCSVComparison(baselineFile, prFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "FAIL: Benchstat CSV comparison failed: %v\n", err)
@@ -62,7 +60,6 @@ func main() {
 	fmt.Println("PASS: Performance gate cleared successfully.")
 }
 
-// verifyRawZeroAlloc checks that every benchmark line in the PR file has exactly 0 B/op and 0 allocs/op
 func verifyRawZeroAlloc(filename string) error {
 	file, err := os.Open(filename)
 	if err != nil {
@@ -134,7 +131,7 @@ func parseCSVOutput(csvContent string) (bool, string) {
 	var regression bool
 
 	reader := csv.NewReader(strings.NewReader(csvContent))
-	// Configure reader to handle variable fields per line if needed
+
 	reader.FieldsPerRecord = -1
 
 	var currentMetric string
@@ -152,19 +149,15 @@ func parseCSVOutput(csvContent string) (bool, string) {
 			continue
 		}
 
-		// Detect metric headers e.g. ",sec/op,CI,sec/op,CI,vs base,P"
 		if len(record) >= 2 && record[0] == "" && (record[1] == "sec/op" || record[1] == "B/op" || record[1] == "allocs/op") {
 			currentMetric = record[1]
 			continue
 		}
 
-		// Ignore geomean rows and comment headers
 		if record[0] == "" || record[0] == "geomean" || strings.HasPrefix(record[0], "goos:") || strings.HasPrefix(record[0], "goarch:") || strings.HasPrefix(record[0], "pkg:") || strings.HasPrefix(record[0], "cpu:") {
 			continue
 		}
 
-		// Process benchmark row
-		// Indexes: 0=Name, 1=OldVal, 2=OldCI, 3=NewVal, 4=NewCI, 5=Delta, 6=PValue
 		if len(record) >= 7 && currentMetric != "" {
 			benchName := record[0]
 			oldVal := formatValue(record[1], currentMetric)
@@ -172,7 +165,7 @@ func parseCSVOutput(csvContent string) (bool, string) {
 			delta := record[5]
 
 			pValStr := ""
-			pValField := record[6] // e.g. "p=0.000 n=10"
+			pValField := record[6]
 			if strings.HasPrefix(pValField, "p=") {
 				fields := strings.Fields(pValField)
 				pValStr = strings.TrimPrefix(fields[0], "p=")
@@ -180,7 +173,6 @@ func parseCSVOutput(csvContent string) (bool, string) {
 
 			status := "OK"
 
-			// Check memory and CPU limits
 			if currentMetric == "B/op" {
 				val, parseErr := strconv.ParseFloat(record[3], 64)
 				if parseErr == nil && val > 0.0 {
@@ -218,7 +210,6 @@ func parseCSVOutput(csvContent string) (bool, string) {
 		}
 	}
 
-	// Format rows to aligned CLI Columns
 	var tableBuilder strings.Builder
 	w := tabwriter.NewWriter(&tableBuilder, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "BENCHMARK\tMETRIC\tBASELINE\tPR\tDELTA\tP-VALUE\tSTATUS")

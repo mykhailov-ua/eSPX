@@ -1,3 +1,20 @@
+// Package metrics declares all Prometheus metrics for the eSPX pipeline.
+// Metrics are registered at package initialisation via promauto (no explicit
+// registration call required). All counter and histogram names follow the
+// ad_<subsystem>_<metric> convention:
+//
+//	ad_http_*           HTTP layer counters/histograms (tracker + net/http path).
+//	ad_events_*         Stream ingestion throughput and drop counters.
+//	ad_filter_*         Filter engine decisions and blocked-event breakdown.
+//	ad_db_*             PostgreSQL and ClickHouse write latency and error counts.
+//	ad_circuit_breaker_* Circuit breaker state gauge (0=closed, 1=open, 2=half-open).
+//	ad_dlq_*            Dead-letter queue depth.
+//	ad_management_*     Management service business metrics (commissions, top-ups).
+//	ad_reconciliation_* Data-drift gauges and correction counters.
+//	ad_gnet_*           gnet event-loop counters (packets, bytes, connections).
+//	ad_redis_lua_*      Redis Lua script execution duration histogram.
+//	ad_registry_*       Campaign registry sync lag.
+//	ad_uuid_*           NewFastUUID generation duration (nanosecond-scale buckets).
 package metrics
 
 import (
@@ -6,7 +23,6 @@ import (
 )
 
 var (
-	// HTTP Metrics
 	HttpRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ad_http_requests_total",
 		Help: "Total number of HTTP requests by status code",
@@ -18,7 +34,6 @@ var (
 		Buckets: prometheus.DefBuckets,
 	}, []string{"method", "path"})
 
-	// Event Processing Metrics
 	EventsProcessed = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ad_events_processed_total",
 		Help: "Total number of events successfully accepted into Redis Streams",
@@ -34,7 +49,6 @@ var (
 		Help: "Total number of events blocked by filters",
 	}, []string{"reason"})
 
-	// DB Metrics
 	DbWriteDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "ad_db_write_duration_seconds",
 		Help:    "Duration of database batch write operations",
@@ -46,7 +60,6 @@ var (
 		Help: "Total number of database write errors",
 	}, []string{"type"})
 
-	// System Resilience Metrics
 	CircuitBreakerState = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "ad_circuit_breaker_state",
 		Help: "Current state of the circuit breaker (0=closed, 1=open, 2=half-open)",
@@ -57,7 +70,6 @@ var (
 		Help: "Current number of events in the Dead Letter Queue",
 	})
 
-	// Management & Financial Metrics
 	CommissionsCollectedTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ad_management_commissions_total",
 		Help: "Total amount of commissions collected from campaign cancellations",
@@ -78,7 +90,6 @@ var (
 		Help: "Ratio of discrepancy between Postgres and ClickHouse spend",
 	}, []string{"campaign_id"})
 
-	// Reconciliation Metrics
 	ReconRunsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ad_reconciliation_runs_total",
 		Help: "Total number of completed reconciliation runs",
@@ -99,7 +110,6 @@ var (
 		Help: "Total number of errors during automated reconciliation corrections",
 	})
 
-	// gnet & Network Metrics
 	GnetPacketsReceived = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ad_gnet_packets_received_total",
 		Help: "Total number of network packets received",
@@ -129,7 +139,6 @@ var (
 		Help: "Total number of HTTP/1.1 parsing errors",
 	}, []string{"error_type"})
 
-	// Business Logic / Filter Metrics
 	FilterThroughput = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ad_filter_throughput_total",
 		Help: "Total throughput through the filter engine",

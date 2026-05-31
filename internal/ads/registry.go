@@ -1,3 +1,16 @@
+// Package ads implements the in-process campaign registry that provides O(1)
+// look-ups by campaign UUID for the filter hot path. The registry stores an
+// immutable snapshot inside an atomic.Value (copy-on-write); writers replace the
+// entire map atomically so readers never observe partial updates and never block.
+//
+// Persistence uses two layers: a PostgreSQL source-of-truth read by Sync on start-up
+// and on each poll interval, and a JSON file replica written to disk after every
+// successful sync. The file replica allows the processor to boot without a live
+// database connection if the registry snapshot is recent enough (configurable).
+//
+// Hot reload is triggered via a Redis Pub/Sub channel (CampaignUpdateChannel);
+// any registry mutation published by the management service triggers an immediate
+// out-of-band Sync without waiting for the next polling tick.
 package ads
 
 import (
@@ -22,6 +35,19 @@ type campaignInfo struct {
 	status   db.CampaignStatusType
 }
 
+// CampaignRegistry is the in-process cache of active campaign metadata. It is safe
+// for concurrent use: readers hold the atomic snapshot pointer while Sync replaces
+// the map in one CAS operation. The embedded WaitGroup tracks the background sync
+// goroutine started by StartSync.
+type CampaignRegistry struct {
+	repo          db.Querier
+	data          atomic.Value
+	manuallyAdded map[uuid.UUID]bool
+	mu            sync.Mutex
+	replicaPath   string
+	wg            sync.WaitGroup
+}
+
 type campaignReplicaDTO struct {
 	ID               uuid.UUID             `json:"id"`
 	CustomerID       uuid.UUID             `json:"customer_id"`
@@ -41,25 +67,8 @@ type campaignReplicaDTO struct {
 	RegistryStatus   string                `json:"registry_status"`
 }
 
-// Registry maintains a dynamic, in-memory replica of active advertisement campaigns.
-//
-// Concurrency:
-//   - Read Operations (Exists, GetCampaign, GetCustomerID): Completely lock-free. Operates on a double-buffered
-//     immutable campaign map using Go's atomic pointer swaps (atomic.Value).
-//   - Write/Sync Operations (Add, Sync): Mutex-serialized. Uses a Copy-On-Write (COW) pattern to update campaign
-//     definitions, cloning the backing map and swapping pointers atomically to eliminate read lock contention
-//     on high-throughput hot paths.
-type Registry struct {
-	repo          db.Querier
-	data          atomic.Value // holds map[uuid.UUID]campaignInfo
-	manuallyAdded map[uuid.UUID]bool
-	mu            sync.Mutex // guards writes (updates to data map, manuallyAdded)
-	replicaPath   string
-	wg            sync.WaitGroup
-}
-
-func NewRegistry(repo db.Querier) *Registry {
-	r := &Registry{
+func NewRegistry(repo db.Querier) *CampaignRegistry {
+	r := &CampaignRegistry{
 		manuallyAdded: make(map[uuid.UUID]bool),
 		repo:          repo,
 		replicaPath:   "campaigns_replica.json",
@@ -68,15 +77,13 @@ func NewRegistry(repo db.Querier) *Registry {
 	return r
 }
 
-// SetReplicaPath updates the path used to persist the campaign cache replica.
-func (r *Registry) SetReplicaPath(path string) {
+func (r *CampaignRegistry) SetReplicaPath(path string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.replicaPath = path
 }
 
-// Exists checks if an active campaign exists in the registry.
-func (r *Registry) Exists(id uuid.UUID) bool {
+func (r *CampaignRegistry) Exists(id uuid.UUID) bool {
 	m, _ := r.data.Load().(map[uuid.UUID]campaignInfo)
 	if m == nil {
 		return false
@@ -85,8 +92,7 @@ func (r *Registry) Exists(id uuid.UUID) bool {
 	return ok && info.status == db.CampaignStatusTypeACTIVE
 }
 
-// GetCustomerID gets the CustomerID for a campaign.
-func (r *Registry) GetCustomerID(campaignID uuid.UUID) (uuid.UUID, bool) {
+func (r *CampaignRegistry) GetCustomerID(campaignID uuid.UUID) (uuid.UUID, bool) {
 	m, _ := r.data.Load().(map[uuid.UUID]campaignInfo)
 	if m == nil {
 		return uuid.Nil, false
@@ -98,8 +104,10 @@ func (r *Registry) GetCustomerID(campaignID uuid.UUID) (uuid.UUID, bool) {
 	return info.campaign.CustomerID, true
 }
 
-// GetCampaign retrieves a domain.Campaign struct.
-func (r *Registry) GetCampaign(id uuid.UUID) (*domain.Campaign, bool) {
+// GetCampaign returns the full Campaign record from the snapshot, or (nil, false)
+// if the campaign is not in the registry. The returned pointer is valid for the
+// lifetime of the atomic snapshot; callers must not mutate it.
+func (r *CampaignRegistry) GetCampaign(id uuid.UUID) (*domain.Campaign, bool) {
 	m, _ := r.data.Load().(map[uuid.UUID]campaignInfo)
 	if m == nil {
 		return nil, false
@@ -111,8 +119,7 @@ func (r *Registry) GetCampaign(id uuid.UUID) (*domain.Campaign, bool) {
 	return info.campaign, true
 }
 
-// Add manually inserts a campaign into the registry.
-func (r *Registry) Add(id, customerID uuid.UUID, brandID *uuid.UUID, brandFcapKey string, pacingMode domain.PacingMode, dailyBudget int64, timezone string, freqLimit, freqWindow int32, targetCountries []string) {
+func (r *CampaignRegistry) Add(id, customerID uuid.UUID, brandID *uuid.UUID, brandFcapKey string, pacingMode domain.PacingMode, dailyBudget int64, timezone string, freqLimit, freqWindow int32, targetCountries []string) {
 	loc, err := time.LoadLocation(timezone)
 	if err != nil {
 		slog.Error("invalid timezone in registry Add", "timezone", timezone, "error", err)
@@ -186,18 +193,12 @@ func (r *Registry) Add(id, customerID uuid.UUID, brandID *uuid.UUID, brandFcapKe
 	}
 }
 
-// Sync loads active campaigns from PostgreSQL and updates the local double-buffered memory map.
-//
-// Memory Impact:
-// - Allocates a fresh campaign map to perform Copy-on-Write swap.
-//
-// Concurrency:
-// - Mutex serialized to isolate write/sync operations. Safe to call concurrently from background loops.
-//
-// Recovery/Fault Tolerance:
-//   - If PostgreSQL becomes unreachable, dynamically attempts to reload campaign state from the local
-//     JSON replica file (`campaigns_replica.json`) to prevent system startup failures.
-func (r *Registry) Sync(ctx context.Context) (int, error) {
+// Sync fetches all active campaigns from PostgreSQL, rebuilds the in-memory map, and
+// atomically replaces the atomic.Value snapshot. It writes a JSON replica to the
+// configured file path. Returns the number of campaigns loaded and any read or write
+// error; callers that cannot tolerate a stale registry on first boot should assert
+// (n > 0, err == nil).
+func (r *CampaignRegistry) Sync(ctx context.Context) (int, error) {
 	rows, err := r.repo.ListActiveCampaigns(ctx)
 	if err != nil {
 		r.mu.Lock()
@@ -219,9 +220,6 @@ func (r *Registry) Sync(ctx context.Context) (int, error) {
 	for _, row := range rows {
 		id := uuid.UUID(row.ID.Bytes)
 
-		// Measure the lag between the database-recorded UpdatedAt timestamp and the
-		// current time at cache load. This captures end-to-end propagation delay from
-		// management write → PostgreSQL → Sync → in-memory registry.
 		if row.UpdatedAt.Valid {
 			lag := time.Since(row.UpdatedAt.Time).Seconds()
 			if lag >= 0 {
@@ -307,7 +305,7 @@ func (r *Registry) Sync(ctx context.Context) (int, error) {
 	return len(fresh), nil
 }
 
-func (r *Registry) saveReplica(m map[uuid.UUID]campaignInfo) error {
+func (r *CampaignRegistry) saveReplica(m map[uuid.UUID]campaignInfo) error {
 	dtos := make([]campaignReplicaDTO, 0, len(m))
 	for _, info := range m {
 		var targetCountries []string
@@ -346,7 +344,7 @@ func (r *Registry) saveReplica(m map[uuid.UUID]campaignInfo) error {
 	tempFile := r.replicaPath + ".tmp"
 	f, err := os.OpenFile(tempFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
-		// Auto-fallback to /tmp if primary directory is not writable
+
 		if !strings.HasPrefix(r.replicaPath, "/tmp/") {
 			r.replicaPath = "/tmp/campaigns_replica.json"
 			tempFile = r.replicaPath + ".tmp"
@@ -374,7 +372,7 @@ func (r *Registry) saveReplica(m map[uuid.UUID]campaignInfo) error {
 	return os.Rename(tempFile, r.replicaPath)
 }
 
-func (r *Registry) loadReplica() (map[uuid.UUID]campaignInfo, error) {
+func (r *CampaignRegistry) loadReplica() (map[uuid.UUID]campaignInfo, error) {
 	data, err := os.ReadFile(r.replicaPath)
 	if err != nil {
 		if !strings.HasPrefix(r.replicaPath, "/tmp/") {
@@ -452,7 +450,11 @@ func (r *Registry) loadReplica() (map[uuid.UUID]campaignInfo, error) {
 	return m, nil
 }
 
-func (r *Registry) StartSync(ctx context.Context, interval time.Duration) {
+// StartSync launches the background polling and Pub/Sub watch goroutines for the
+// registry. Polling fires every interval; Pub/Sub fires on each campaign mutation
+// event published by the management service via Redis PUBLISH. The goroutines
+// are tracked by the embedded WaitGroup and exit when ctx is cancelled.
+func (r *CampaignRegistry) StartSync(ctx context.Context, interval time.Duration) {
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
@@ -475,7 +477,7 @@ func (r *Registry) StartSync(ctx context.Context, interval time.Duration) {
 	}()
 }
 
-func (r *Registry) StartWatch(ctx context.Context, rdb redis.UniversalClient, channel string) {
+func (r *CampaignRegistry) StartWatch(ctx context.Context, rdb redis.UniversalClient, channel string) {
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
@@ -528,7 +530,7 @@ func (r *Registry) StartWatch(ctx context.Context, rdb redis.UniversalClient, ch
 	}()
 }
 
-func (r *Registry) Wait(ctx context.Context) error {
+func (r *CampaignRegistry) Wait(ctx context.Context) error {
 	done := make(chan struct{})
 	go func() {
 		r.wg.Wait()

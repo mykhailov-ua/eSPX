@@ -15,7 +15,6 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// Handler routes administrative and customer management API endpoints. Encapsulating rate limiting, RBAC validation middleware, and service delegation in a single multiplexer handler ensures consistent boundary enforcement.
 type Handler struct {
 	svc            *Service
 	cfg            *config.Config
@@ -27,7 +26,7 @@ func NewHandler(svc *Service, cfg *config.Config, authMiddleware *AuthMiddleware
 	return &Handler{
 		svc:            svc,
 		cfg:            cfg,
-		limiter:        rate.NewLimiter(rate.Limit(10), 50), // 10 req/s, burst 50
+		limiter:        rate.NewLimiter(rate.Limit(10), 50),
 		authMiddleware: authMiddleware,
 	}
 }
@@ -177,7 +176,6 @@ func (h *Handler) createCampaign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Defaults
 	pacing := db.PacingModeTypeASAP
 	if req.PacingMode == "EVEN" {
 		pacing = db.PacingModeTypeEVEN
@@ -625,8 +623,6 @@ func (h *Handler) configureBrandFcap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// For the Customer ('C') role, verifying ownership of the brand profile in Postgres
-	// prevents malicious cross-tenant frequency capping / constraint modification exploits.
 	u, ok := GetUser(r.Context())
 	if ok && u.Role == "C" {
 		brand, errBrand := h.svc.GetBrandDTO(r.Context(), brandID)

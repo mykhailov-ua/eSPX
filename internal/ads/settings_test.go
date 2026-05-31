@@ -30,13 +30,11 @@ func TestSettingsWatcher(t *testing.T) {
 
 	sw := NewSettingsWatcher(rdb, cfg)
 
-	// Initial state
 	assert.Equal(t, 100, sw.Get().RateLimitPerMin)
 	assert.Equal(t, int64(100_000), sw.Get().ClickAmount)
 
 	go sw.Start(ctx, 100*time.Millisecond)
 
-	// Update settings in Redis
 	err := rdb.HSet(ctx, "config:values", map[string]interface{}{
 		"rate_limit_per_min": "200",
 		"click_amount":       "0.25",
@@ -46,7 +44,6 @@ func TestSettingsWatcher(t *testing.T) {
 	err = rdb.Incr(ctx, "config:version").Err()
 	require.NoError(t, err)
 
-	// Wait for sync
 	assert.Eventually(t, func() bool {
 		return sw.Get().RateLimitPerMin == 200 && sw.Get().ClickAmount == 250_000
 	}, 2*time.Second, 200*time.Millisecond)

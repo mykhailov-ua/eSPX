@@ -12,7 +12,6 @@ import (
 	"github.com/mykhailov-ua/ad-event-processor/internal/ads/db"
 )
 
-// CampaignDrainWorker asynchronously finalizes campaigns transitioning through the DRAINING lifecycle state. Offloading budget reconciliation and record deletion to a background worker removes synchronous database locks from customer cancellation API requests.
 type CampaignDrainWorker struct {
 	svc *Service
 }

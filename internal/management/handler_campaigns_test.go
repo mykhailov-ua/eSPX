@@ -39,7 +39,6 @@ func TestManagementAPI_Campaigns(t *testing.T) {
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
-	// Create test customer & campaign
 	custID := uuid.New()
 	err := svc.CreateCustomer(context.Background(), custID, "Advertiser", 500_000_000, "USD")
 	require.NoError(t, err)
@@ -101,7 +100,7 @@ func TestManagementAPI_Campaigns(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, campID.String(), camp.ID)
 		assert.Equal(t, "100.00", camp.BudgetLimit)
-		assert.NotNil(t, camp.TargetCountries) // Ensure non-null slice
+		assert.NotNil(t, camp.TargetCountries)
 	})
 
 	t.Run("GetCampaignHistory", func(t *testing.T) {

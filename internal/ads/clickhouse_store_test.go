@@ -68,8 +68,6 @@ func TestClickHouseStore_StoreBatch_PartialFailureDeduplication(t *testing.T) {
 
 	batchEvents := []*domain.Event{evt1, evt2}
 
-	// Step 1: Simulate Clickhouse failure on "clicks" table insertion
-	// but success on "impressions" table insertion.
 	var preparedTables []string
 	var sentTables []string
 
@@ -95,17 +93,14 @@ func TestClickHouseStore_StoreBatch_PartialFailureDeduplication(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "clickhouse connection refused on clicks")
 
-	// Verify that impression was successfully marked as InsertedToCH
 	assert.True(t, evt1.InsertedToCH, "evt1 (impression) should be marked as inserted")
 	assert.False(t, evt2.InsertedToCH, "evt2 (click) should NOT be marked as inserted")
 
-	// Verify the tables clickhouse tried to prepare and send
 	assert.Contains(t, preparedTables, "INSERT INTO impressions")
 	assert.Contains(t, preparedTables, "INSERT INTO clicks")
 	assert.Contains(t, sentTables, "INSERT INTO impressions")
 	assert.Contains(t, sentTables, "INSERT INTO clicks")
 
-	// Step 2: Now heal clickhouse (no more errors) and retry with the same batch.
 	preparedTables = nil
 	sentTables = nil
 
@@ -123,12 +118,9 @@ func TestClickHouseStore_StoreBatch_PartialFailureDeduplication(t *testing.T) {
 	err = store.StoreBatch(context.Background(), batchEvents)
 	assert.NoError(t, err, "Retried batch insertion should succeed")
 
-	// Verify both are now inserted
 	assert.True(t, evt1.InsertedToCH)
 	assert.True(t, evt2.InsertedToCH)
 
-	// Since evt1 was already marked as InsertedToCH:
-	// We MUST skip preparing and inserting to "impressions" table completely!
 	assert.NotContains(t, preparedTables, "INSERT INTO impressions", "Should NOT prepare impressions again")
 	assert.Contains(t, preparedTables, "INSERT INTO clicks", "Should prepare clicks")
 	assert.NotContains(t, sentTables, "INSERT INTO impressions", "Should NOT send impressions again")

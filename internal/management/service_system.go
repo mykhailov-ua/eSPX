@@ -145,7 +145,6 @@ func (s *Service) GetSettings(ctx context.Context) (map[string]string, error) {
 func (s *Service) SyncSystemState(ctx context.Context) error {
 	q := db.New(s.pool)
 
-	// 1. Sync blacklist
 	bl, err := q.GetAllBlacklist(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get blacklist from db: %w", err)
@@ -160,7 +159,6 @@ func (s *Service) SyncSystemState(ctx context.Context) error {
 		rdb.SAdd(ctx, "blacklist:"+reason, item.Ip)
 	}
 
-	// 2. Sync settings
 	st, err := q.GetAllSystemSettings(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get settings from db: %w", err)
@@ -182,7 +180,6 @@ func (s *Service) RunSystemStateSyncer(ctx context.Context) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 
-	// Initial sync
 	_ = s.SyncSystemState(ctx)
 
 	for {
@@ -197,15 +194,12 @@ func (s *Service) RunSystemStateSyncer(ctx context.Context) {
 	}
 }
 
-// ToggleEmergencyBreaker switches the system emergency breaker flag, updates the DB, emits an outbox event and logs the audit trail.
 func (s *Service) ToggleEmergencyBreaker(ctx context.Context, active bool, reason string) error {
 	val := "false"
 	if active {
 		val = "true"
 	}
 
-	// Persisting the emergency breaker state inside a transaction and propagating it via CDC outbox ensures
-	// atomic persistence in Postgres and rapid, consistent synchronization to Redis for stateless ingestion filters.
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		err := q.SetSystemSetting(ctx, db.SetSystemSettingParams{

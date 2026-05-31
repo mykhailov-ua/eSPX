@@ -13,25 +13,15 @@ import (
 	redis "github.com/redis/go-redis/v9"
 )
 
-// ReconService performs financial reconciliation between the authoritative PostgreSQL ledger
-// and the edge state in Redis (plus secondary volume signals from ClickHouse).
-// It is deliberately a cold-path background process running on closed time windows to avoid
-// any contention with the hot SyncWorker / Processor settlement paths.
 type ReconService struct {
 	pool *pgxpool.Pool
 	rdb  redis.UniversalClient
 }
 
-// NewReconService constructs the reconciliation engine.
-// Why: centralizes all delta detection and corrective action in one place with explicit
-// dependencies, making the cold-path logic easy to test in isolation and reason about.
 func NewReconService(pool *pgxpool.Pool, rdb redis.UniversalClient) *ReconService {
 	return &ReconService{pool: pool, rdb: rdb}
 }
 
-// ReconcileWindow is the core entry point. It is called by the background ReconWorker
-// for a deliberately "closed" hour (e.g. two hours in the past).
-// The method is idempotent per (period_start, period_end) thanks to the unique run record.
 func (s *ReconService) ReconcileWindow(ctx context.Context, start, end time.Time) error {
 	run, err := s.createRun(ctx, start, end)
 	if err != nil {
@@ -40,8 +30,6 @@ func (s *ReconService) ReconcileWindow(ctx context.Context, start, end time.Time
 		return err
 	}
 
-	// Collect authoritative spend from ledger for the closed window.
-	// We sum only negative movements that represent actual budget consumption.
 	ledgerRows, err := s.pool.Query(ctx, `
 		SELECT campaign_id, COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END), 0)::bigint
 		FROM balance_ledger
@@ -67,17 +55,13 @@ func (s *ReconService) ReconcileWindow(ctx context.Context, start, end time.Time
 		ledgerMap[cid] = spent
 	}
 
-	// For each campaign that had activity, fetch the current "truth" from Redis sync keys.
-	// The sync keys represent what the edge has actually reserved and what has been
-	// acknowledged as settled by the SyncWorker.
-	// We compare ledger cumulative vs Redis sync state.
 	discrepancies := 0
 	var totalDelta int64
 
 	for campID, ledgerSpent := range ledgerMap {
-		// Redis keys maintained by unified_filter.lua + sync_worker.go
+
 		syncKey := "budget:sync:campaign:" + campID.String()
-		// The sync value is the amount that has been moved from "current" to "sync" bucket.
+
 		syncVal, err := s.rdb.Get(ctx, syncKey).Int64()
 		if err != nil && !errors.Is(err, redis.Nil) {
 			slog.Error("failed to fetch campaign sync budget from Redis in recon", "campaign_id", campID, "error", err)
@@ -87,10 +71,9 @@ func (s *ReconService) ReconcileWindow(ctx context.Context, start, end time.Time
 			return err
 		}
 
-		// Expected from edge perspective (what was actually consumed at the edge)
 		expected := syncVal
 		actual := ledgerSpent
-		delta := expected - actual // positive = ledger under-charged the customer
+		delta := expected - actual
 
 		if delta == 0 {
 			continue
@@ -98,7 +81,6 @@ func (s *ReconService) ReconcileWindow(ctx context.Context, start, end time.Time
 
 		discrepancies++
 
-		// Record the finding to postgres.
 		_, err = s.pool.Exec(ctx, `
 			INSERT INTO recon_discrepancies (run_id, campaign_id, customer_id, expected_spend, actual_spend, delta, redis_adjusted)
 			VALUES ($1, $2, $3, $4, $5, $6, false)
@@ -111,21 +93,18 @@ func (s *ReconService) ReconcileWindow(ctx context.Context, start, end time.Time
 			return err
 		}
 
-		// Perform atomic correction on Redis if the delta is material and safe.
-		// The Lua script below guarantees atomicity even under concurrent SyncWorker activity.
 		if err := s.adjustRedisBudgetAtomically(ctx, campID, delta); err != nil {
 			slog.Error("failed to adjust Redis budget atomically in recon", "campaign_id", campID, "delta", delta, "error", err)
 			metrics.ReconAdjustmentErrors.Inc()
-			// Continue to next campaign but track error
+
 			continue
 		}
 
-		// Mark as adjusted and also create a corrective ledger entry for audit.
 		adjType := "RECONCILIATION_ADJUST"
 		_, err = s.pool.Exec(ctx, `
 			INSERT INTO balance_ledger (customer_id, campaign_id, amount, type, created_at)
 			VALUES ($1, $2, $3, $4, NOW())
-		`, ads.ToUUID(uuid.Nil), ads.ToUUID(campID), -delta, adjType) // negative delta means credit to customer
+		`, ads.ToUUID(uuid.Nil), ads.ToUUID(campID), -delta, adjType)
 		if err != nil {
 			slog.Error("failed to insert corrective ledger entry for recon", "campaign_id", campID, "delta", delta, "error", err)
 			metrics.ReconAdjustmentErrors.Inc()
@@ -145,7 +124,6 @@ func (s *ReconService) ReconcileWindow(ctx context.Context, start, end time.Time
 		totalDelta += delta
 	}
 
-	// Finalize the run record.
 	_, err = s.pool.Exec(ctx, `
 		UPDATE recon_runs 
 		SET status = 'COMPLETED', total_delta = $1, campaigns_checked = $2, discrepancies_found = $3, completed_at = NOW()
@@ -157,7 +135,6 @@ func (s *ReconService) ReconcileWindow(ctx context.Context, start, end time.Time
 		return err
 	}
 
-	// Update Prometheus metrics to power alarms and dashboards.
 	metrics.ReconRunsTotal.WithLabelValues("success").Inc()
 	if discrepancies > 0 {
 		metrics.ReconDiscrepanciesTotal.Add(float64(discrepancies))
@@ -172,9 +149,6 @@ func (s *ReconService) ReconcileWindow(ctx context.Context, start, end time.Time
 	return nil
 }
 
-// adjustRedisBudgetAtomically uses a Lua script to safely correct the sync counters.
-// Why: INCRBY is atomic, but we must also protect against the key being deleted by the
-// normal SyncWorker in the same millisecond. The script returns the new remaining value.
 func (s *ReconService) adjustRedisBudgetAtomically(ctx context.Context, campID uuid.UUID, delta int64) error {
 	script := `
 		local key = KEYS[1]

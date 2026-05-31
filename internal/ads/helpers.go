@@ -1,3 +1,22 @@
+// Package ads provides miscellaneous helpers shared across the ads package:
+//
+//   - NewFastUUID: a time-ordered UUID v7 variant that embeds a cached Unix-ms
+//     timestamp, a 48-bit atomic monotone sequence, and a 16-bit node ID derived
+//     from hostname+PID. The cached timestamp is updated by a background 1-ms ticker
+//     goroutine; this avoids a syscall on every UUID generation call. The result is
+//     monotonically ordered within a process and globally unique across nodes.
+//
+//   - CampaignRepo / CustomerRepo: thin sqlc wrappers that add txID-guarded spend
+//     updates (INSERT INTO sync_idempotency ON CONFLICT DO NOTHING) to make
+//     SyncWorker commits idempotent under network retries.
+//
+//   - DeepResetAdStreamEvent / ClearAdStreamEvent / DeepResetAdDLQEvent: pool
+//     reset helpers for vtproto-generated structs. DeepReset re-slices byte fields
+//     to length 0 (retaining capacity); Clear nils them (releases backing arrays).
+//     Use DeepReset when the struct will be immediately reused, Clear before Put.
+//
+//   - UnsafeString / UnsafeBytes: unsafe string↔[]byte conversions with zero copy.
+//     The caller guarantees the backing memory outlives the returned value.
 package ads
 
 import (
@@ -16,9 +35,6 @@ import (
 	"github.com/mykhailov-ua/ad-event-processor/internal/domain"
 )
 
-// nodeID holds a semi-unique identifier derived from hostname and PID to bound RFC 4122 namespace collisions.
-// idSequence is incremented atomically to guarantee uniqueness across UUIDv7 generation.
-// cachedUnixMilli holds the cached timestamp in milliseconds to eliminate gettimeofday/clock_gettime syscall overhead.
 var (
 	nodeID          uint16
 	idSequence      uint64
@@ -43,25 +59,21 @@ func init() {
 	}()
 }
 
-// NewFastUUID generates an RFC 4122 compliant UUIDv7 layout optimized for highload ingestion.
+// NewFastUUID generates a time-ordered UUID without crypto/rand. Layout:
 //
-// Memory Impact:
-// - Allocation-free. Returns a direct value-type uuid.UUID without heap escape.
+//	bytes  0-5:  48-bit Unix millisecond timestamp (big-endian, cached).
+//	bytes  6-7:  version nibble 0x7 | upper bits of 48-bit sequence.
+//	bytes  8-9:  variant 0x80 | 16-bit nodeID.
+//	bytes 10-15: lower 48 bits of the atomic sequence.
 //
-// Concurrency:
-// - Thread-safe. Utilizes lock-free atomic sequence increments and lock-free time reads.
-//
-// Performance Hacks:
-//   - Timestamp Caching: Bypasses the clock_gettime syscall by utilizing a background goroutine ticking every 1ms
-//     to store the current Unix epoch millisecond into an atomic integer.
-//   - Binary Packing: Manual bit-shifting maps the 48-bit millisecond timestamp, 12-bit sequence high,
-//     14-bit node ID, and 48-bit low sequence directly into the 16-byte array.
+// The sequence wraps at 2^64; within a single millisecond window collisions
+// are impossible across the 2^64 sequence space.
 func NewFastUUID() (uuid.UUID, error) {
 	seq := atomic.AddUint64(&idSequence, 1)
 	now := cachedUnixMilli.Load()
 
 	var u uuid.UUID
-	// RFC 4122 UUIDv7: 48-bit timestamp in milliseconds in bytes 0 to 5
+
 	u[0] = byte(now >> 40)
 	u[1] = byte(now >> 32)
 	u[2] = byte(now >> 24)
@@ -69,15 +81,12 @@ func NewFastUUID() (uuid.UUID, error) {
 	u[4] = byte(now >> 8)
 	u[5] = byte(now)
 
-	// High part of sequence (12 bits) in bytes 6 and 7
 	u[6] = byte(seq >> 48)
 	u[7] = byte(seq >> 40)
 
-	// Node ID (14 bits) in bytes 8 and 9
 	u[8] = byte(nodeID >> 8)
 	u[9] = byte(nodeID)
 
-	// Low part of sequence (48 bits) in bytes 10 to 15
 	u[10] = byte(seq >> 40)
 	u[11] = byte(seq >> 32)
 	u[12] = byte(seq >> 24)
@@ -85,7 +94,6 @@ func NewFastUUID() (uuid.UUID, error) {
 	u[14] = byte(seq >> 8)
 	u[15] = byte(seq)
 
-	// RFC 4122 standard compatibility: Version 7 (0x70) and Variant 10xxxxxx (0x80)
 	u[6] = (u[6] & 0x0f) | 0x70
 	u[8] = (u[8] & 0x3f) | 0x80
 
@@ -109,6 +117,10 @@ func SliceToMap(slice []string) map[string]struct{} {
 	return m
 }
 
+// CampaignRepo wraps a sqlc Querier to implement domain.CampaignRepository.
+// UpdateSpend acquires a PostgreSQL transaction and inserts a txID row into
+// sync_idempotency before updating current_spend; if the txID is already present
+// the UPDATE is skipped, providing exactly-once semantics for SyncWorker.
 type CampaignRepo struct {
 	queries db.Querier
 }
@@ -244,6 +256,8 @@ func (r *CampaignRepo) ListActive(ctx context.Context) ([]*domain.Campaign, erro
 	return campaigns, nil
 }
 
+// CustomerRepo wraps a sqlc Querier to implement domain.CustomerRepository.
+// UpdateBalance uses the same txID idempotency pattern as CampaignRepo.UpdateSpend.
 type CustomerRepo struct {
 	queries db.Querier
 }
@@ -326,21 +340,8 @@ func (r *CustomerRepo) UpdateBalance(ctx context.Context, id uuid.UUID, amount i
 	return nil
 }
 
-// UnsafeString performs a zero-copy conversion from a byte slice to a Go string.
-//
-// Memory Impact:
-// - Allocation-free. Avoids allocating a new backing array or copying the underlying data.
-//
-// Concurrency:
-// - Thread-safe, provided the backing byte array of b is never mutated after the string is created.
-//
-// Unsafe/Performance Hacks:
-//   - Bypasses standard Go compiler string-copy allocation by mapping the string header directly
-//     to the memory slice data pointer.
-//
-// Safety:
-//   - The caller MUST guarantee that the source byte slice is immutable for the lifetime of the returned string.
-//     Mutation of the underlying bytes triggers undefined behavior and violates Go string immutability guarantees.
+// UnsafeString converts a byte slice to a string without allocation.
+// The returned string must not outlive the byte slice.
 func UnsafeString(b []byte) string {
 	if len(b) == 0 {
 		return ""
@@ -348,20 +349,8 @@ func UnsafeString(b []byte) string {
 	return unsafe.String(unsafe.SliceData(b), len(b))
 }
 
-// UnsafeBytes performs a zero-copy conversion from a Go string to a byte slice.
-//
-// Memory Impact:
-// - Allocation-free. Bypasses slice allocation.
-//
-// Concurrency:
-// - Thread-safe, provided the returned byte slice is treated as read-only.
-//
-// Unsafe/Performance Hacks:
-// - Bypasses standard copy restrictions by creating a slice slice header directly pointing to string memory.
-//
-// Safety:
-//   - The caller MUST NOT attempt to mutate the returned byte slice. Doing so will trigger a segmentation fault
-//     or memory corruption as the backing memory is allocated in read-only segment space.
+// UnsafeBytes converts a string to a byte slice without allocation.
+// The returned slice must not be modified; doing so may corrupt the original string.
 func UnsafeBytes(s string) []byte {
 	if s == "" {
 		return nil
@@ -383,6 +372,9 @@ var byteSliceValuePool = sync.Pool{
 	},
 }
 
+// DeepResetAdStreamEvent re-slices all byte fields of m to length 0, retaining
+// their backing arrays for reuse. Use immediately before re-populating and
+// passing to MarshalToSizedBufferVT on the producer hot path.
 func DeepResetAdStreamEvent(m *pb.AdStreamEvent) {
 	if m == nil {
 		return
@@ -396,6 +388,9 @@ func DeepResetAdStreamEvent(m *pb.AdStreamEvent) {
 	m.CreatedAtUnix = 0
 }
 
+// ClearAdStreamEvent nils all byte fields of m, releasing the backing arrays
+// to the GC. Use before returning the struct to a sync.Pool to prevent the pool
+// from retaining arbitrarily large event payloads between reuses.
 func ClearAdStreamEvent(m *pb.AdStreamEvent) {
 	if m == nil {
 		return

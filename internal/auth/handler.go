@@ -60,13 +60,11 @@ func (h *Handler) extractClientIP(ctx context.Context) string {
 
 	if isTrusted {
 		if md, ok := metadata.FromIncomingContext(ctx); ok {
-			// OWASP compliance: prioritize X-Real-IP because it is overwritten by Nginx with the actual socket peer IP.
+
 			if xri := md.Get("x-real-ip"); len(xri) > 0 && xri[0] != "" {
 				return strings.TrimSpace(xri[0])
 			}
-			// OWASP compliance: parse X-Forwarded-For from right to left, selecting the last element.
-			// The last element is added by Nginx (the trusted proxy) and corresponds to the real client IP.
-			// This prevents spoofing of X-Forwarded-For headers from untrusted clients.
+
 			if xff := md.Get("x-forwarded-for"); len(xff) > 0 {
 				ips := strings.Split(xff[0], ",")
 				if len(ips) > 0 {

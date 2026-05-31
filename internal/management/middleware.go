@@ -29,9 +29,6 @@ func GetUser(ctx context.Context) (AuthenticatedUser, bool) {
 	return u, ok
 }
 
-// AuthMiddleware enforces RBAC and session revocation policies across the gateway.
-// Verification uses in-memory cryptographic evaluation to eliminate network round-trips on the hot path,
-// coupled with a fast Redis revocation lookup protected by a 100ms circuit breaker.
 type AuthMiddleware struct {
 	tokenMaker auth.Maker
 	rdb        redis.UniversalClient

@@ -1,3 +1,18 @@
+// Package ads provides RedisBudgetManager, a budget accounting subsystem backed
+// by Redis Lua scripts for atomic check-and-deduct semantics. The Lua script
+// (budgetLuaScript) performs three operations in a single server-side round-trip:
+//  1. idempotency guard: if the click-ID key already exists, return 1 (already spent).
+//  2. balance check: GET budget:campaign:<id>; return 0 if insufficient.
+//  3. deduction: INCRBY -amount on the campaign key, INCRBY +amount on the two
+//     budget:sync:* accumulation keys, SADD to dirty-set for the SyncWorker, and
+//     SET the idempotency key with configurable TTL.
+//
+// Key construction reuses pooled budgetArgs structs whose [N]byte fixed arrays
+// serve as stack-allocated scratch space. unsafeString converts the sub-slice to
+// a Go string without copy; the string lifetime must not exceed the Eval call.
+//
+// Cache miss (Redis returns -1) triggers one Postgres fallback load and a SetNX
+// to warm the cache; a second miss is treated as a hard error to prevent starvation.
 package ads
 
 import (
@@ -64,6 +79,9 @@ redis.call("SET", KEYS[2], "1", "EX", ARGV[2])
 return 1
 `
 
+// RedisBudgetManager executes atomic check-and-spend operations against sharded
+// Redis. idempotencyTTL controls how long click-ID deduplication keys are retained;
+// the minimum safe value is the maximum expected stream reprocessing window.
 type RedisBudgetManager struct {
 	rdb            redis.Cmdable
 	campaignRepo   domain.CampaignRepository
@@ -78,6 +96,10 @@ func NewRedisBudgetManager(rdb redis.Cmdable, repo domain.CampaignRepository, id
 	}
 }
 
+// CheckAndSpend validates and atomically deducts amount micro-units from the campaign
+// budget in Redis. Returns (true, nil) if the deduction succeeded, (false, nil) if
+// the budget is insufficient, and (false, err) on infrastructure failures. A true
+// return guarantees idempotent deduction for the given clickID within idempotencyTTL.
 func (m *RedisBudgetManager) CheckAndSpend(ctx context.Context, customerID, campaignID uuid.UUID, clickID string, amount int64) (bool, error) {
 	ba := budgetArgsPool.Get().(*budgetArgs)
 	defer budgetArgsPool.Put(ba)
@@ -122,8 +144,6 @@ func (m *RedisBudgetManager) CheckAndSpend(ctx context.Context, customerID, camp
 			return false, err
 		}
 
-		// If res is -1, the campaign budget key does not exist in Redis.
-		// We load the remaining budget from PostgreSQL, seed the budget in Redis, and retry the script execution.
 		if res == -1 {
 			if i > 0 {
 				return false, fmt.Errorf("budget cache miss on retry")

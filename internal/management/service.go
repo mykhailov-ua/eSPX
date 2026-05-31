@@ -60,10 +60,6 @@ func NewService(pool *pgxpool.Pool, rdbs []redis.UniversalClient, sharder ads.Sh
 	return s
 }
 
-// StartReconWorker launches the financial reconciliation cold-path worker.
-// The worker only ever looks at data at least two hours old. This hard guarantee
-// removes all race conditions between reconciliation adjustments and the hot
-// settlement path (SyncWorker + Processor pool). Interval is typically 15-30m.
 func (s *Service) StartReconWorker(rdb redis.UniversalClient, interval time.Duration) {
 	s.wg.Add(1)
 	rw := NewReconWorker(s.pool, rdb, interval)
@@ -84,9 +80,8 @@ func (s *Service) Close() {
 	s.wg.Wait()
 }
 
-// StartPacingController spawns the closed-loop pacing feedback worker in a background goroutine.
 func (s *Service) StartPacingController(syncWorkers []*ads.SyncWorker, interval time.Duration) {
-	// Periodic pacing adjustment enables real-time rate regulation across active campaigns.
+
 	s.wg.Add(1)
 	w := NewPacingControllerWorker(s, syncWorkers)
 	go func() {
@@ -120,8 +115,6 @@ func (s *Service) GenerateIdempotencyHash(customerID uuid.UUID, params any) stri
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// TopUpBalance executes an atomic deposit into a customer ledger.
-// It verifies idempotency against existing hashes within the same transaction to prevent double-crediting during network retries.
 func (s *Service) TopUpBalance(ctx context.Context, customerID uuid.UUID, amount int64, idempotencyKey string) error {
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
@@ -150,8 +143,6 @@ func (s *Service) TopUpBalance(ctx context.Context, customerID uuid.UUID, amount
 	})
 }
 
-// CreateCampaign validates customer solvency and freezes the initial campaign budget within a single ACID transaction.
-// The budget limit is subsequently synchronized to the sharded Redis pool to enable low-latency pacing evaluation at the edge.
 func (s *Service) CreateCampaign(ctx context.Context, customerID uuid.UUID, brandID *uuid.UUID, name string, budgetLimit int64, pacingMode db.PacingModeType, dailyBudget int64, timezone string, freqLimit, freqWindow int32, targetCountries []string, idempotencyKey string) (uuid.UUID, error) {
 	campaignID, _ := uuid.NewV7()
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
@@ -245,8 +236,6 @@ func (s *Service) CreateCampaign(ctx context.Context, customerID uuid.UUID, bran
 	return campaignID, err
 }
 
-// CancelCampaign transitions a campaign through a two-stage draining lifecycle to ensure inflight ad impressions complete before final budget reconciliation.
-// Remaining funds are refunded to the customer balance minus a configured cancellation fee.
 func (s *Service) CancelCampaign(ctx context.Context, campaignID uuid.UUID, reason string) error {
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
@@ -364,7 +353,6 @@ func (s *Service) ListAuditLogs(ctx context.Context, limit, offset int32) ([]db.
 	})
 }
 
-// UpdateOverdraft updates a customer's allowed overdraft inside a database transaction and records audit trail.
 func (s *Service) UpdateOverdraft(ctx context.Context, id uuid.UUID, newOverdraft, oldOverdraft int64) error {
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)

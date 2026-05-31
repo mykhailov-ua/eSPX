@@ -1,5 +1,11 @@
+pre-commit:
+  commands:
+    lint:
+      tags: backend
+      run: make lint
+
 pre-push:
   commands:
-    ci-emulation:
-      tags: backend ci
-      run: act -j all-in-one
+    test:
+      tags: backend
+      run: make test

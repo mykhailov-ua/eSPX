@@ -1,87 +1,64 @@
-# ad-event-processor Architecture Specification
+# eSPX Architecture Specification
 
-Overview of the distributed real-time ad event ingestion pipeline, control plane, and dual storage persistence architecture.
+## Topology
 
-## System Topology
+The pipeline consists of five layers:
 
-The architecture is structured into six distinct operational layers communicating over standardized protocols:
+1. **Ingress (Nginx)**: Edge load balancer. Routes `/admin/*` to the Control Plane and `/track/*` to the Ingestion Plane.
+2. **Control Plane**:
+   - **Management Gateway (`:8188`)**: Exposes REST interfaces for campaign management, RBAC verification, and outbox event logging.
+   - **Auth Service (`:51051`)**: Internal gRPC microservice for Argon2id hashing and PASETO token generation.
+3. **Ingestion Plane (Trackers)**:
+   - Stateless Go instances (`:8181-8184`) running in host networking mode.
+   - Event-driven I/O via `gnet/v2` multi-reactors locked to physical CPU cores at boot (`gnet.WithLockOSThread(true)`).
+   - Zero-allocation connection-local pool (`connContext`) bound to connection lifetime.
+   - Zero-copy DFA HTTP/1.1 stream parser mapping headers directly from socket ring buffers.
+4. **Caching State (Redis)**:
+   - 6-node Redis cluster sharded via client-side `StaticSlotSharder` using O(1) constant-time lookup.
+   - Executes atomic Lua scripts for budget allocation, pacing checks, and user frequency capping.
+5. **Settlement & Storage**:
+   - **Processor Pool (`:8186`)**: Background consumer workers fetching stream batches from Redis Consumer Groups.
+   - **PostgreSQL 16**: Relational storage for accounts, ledgers, audit logs, and daily partition tables.
+   - **ClickHouse**: Columnar data warehouse for high-volume raw event telemetry.
 
-1. **Ingress Layer (Nginx)**
-   - Primary HTTP/3 reverse proxy terminating incoming client traffic.
-   - Routes administrative REST API calls to the Control Plane (`/admin/*`) and high-frequency ad impression/click events to the Ingestion Plane (`/track/*`).
+---
 
-2. **Control Plane (Management, Authentication, & Tooling)**
-   - **Management Gateway (`:8188`)**: Serves external REST endpoints, managing RBAC, DTO serialization, and financial ledger idempotency.
-   - **Auth Service (`:51051`)**: Internal gRPC microservice handling `Argon2id` password hashing and issuing cryptographic PASETO tokens.
-   - **Admin CLI Utility (`cmd/admin`)**: High-performance developer utility for offline seeding, consistent JumpHash-routed budget resets, and database CRUD.
+## Subsystem Workflows
 
-3. **Ingestion Plane (Tracker Replicas)**
-   - Stateless Go instances (`:8181-8184`) running in `network_mode: host` to bypass bridge network layers, using event-driven `gnet/v2` engines with physical CPU thread-to-core pinning (`runtime.LockOSThread()`) to optimize connection processing.
-   - Employs `sync.Pool` object recycling (enforcing heap-allocated slice pointer targets to prevent stack-to-heap escapes) to maintain zero heap allocations on `/track`, `/health`, and `/metrics` ingestion paths.
-   - Eliminates allocations on the hot path by utilizing pre-generated domain UUID strings from a registry cache, representing budgets as 64-bit integers scaled by 1,000,000 (10^6), and adopting raw `bytes` schema definitions in protobuf pipelines to allow zero-copy unmarshaling.
+### 1. Administrative Control Plane
 
-4. **Edge Caching Layer (Client-Side Sharded Redis Pool)**
-   - 6 independent Redis instances sharded client-side via consistent JumpHash indexing.
-   - Executes atomic Lua scripts for budget verification, deduplication, and IP blacklists, while buffering valid events as serialized binary Protobuf `AdStreamEvent` payloads in Redis Streams (`ad:events:stream`).
+- **Ledger Auditing**: Campaign modifications update Postgres tables and generate audit records in `balance_ledger` within a single ACID transaction block (`pgx.BeginFunc`).
+- **Transactional Outbox Pattern**:
+  - Commits to Postgres write event payloads to `outbox_events` and invoke a trigger executing `pg_notify('outbox_channel', event_id)`.
+  - A push-based `OutboxWorker` receives notifications via `LISTEN outbox_channel`.
+  - Leases batches using `FOR UPDATE SKIP LOCKED` inside a short database transaction.
+  - Commits the transaction, then executes Redis I/O (pipelining updates) outside Postgres transaction boundaries.
+  - Updates the outbox event state to `'PROCESSED'` in a final batch write.
+- **Closed-Loop Pacing Controller**:
+  - A background `PacingControllerWorker` executes at designated intervals.
+  - Compares actual spend against targeted profiles, adjusting pacing state (ASAP/EVEN) in PostgreSQL and emitting outbox invalidation signals to Redis.
+  - Operates strictly on scaled `int64` micro-units (10^6) to prevent float rounding precision issues.
 
-5. **Asynchronous Settlement & Storage**
-   - **Processor Pool (`:8186`)**: Background consumer workers fetching stream batches and executing multi-row database updates.
-   - **PostgreSQL 16**: Primary relational storage for ACID transactions, ledger balances (`balance_ledger`), and daily table partitions.
-   - **ClickHouse**: Columnar analytical data warehouse storing raw ad telemetry and anti-fraud anomaly logs.
+### 2. Ingestion & Settlement
 
-6. **Observability & Alerting**
-   - **Prometheus (`:9190`)**: Scrapes real-time metrics from trackers, gateways, and processors. Evaluates alerting rules (`prometheus.rules.yml`).
-   - **Alertmanager (`:9093`)**: Group and route fired rules to targets.
-   - **Telegram Alert Proxy (`:8222`)**: Webhook endpoint transforming Prometheus JSON payloads into HTML and routing them to the Telegram Bot API.
+- **Dynamic Geo Bid Floor Verification**:
+  - Tracker replicas load publisher floor limits per country into a thread-safe `geoFloors sync.Map`.
+  - Client IPs are mapped to ISO country codes via MaxMind databases.
+  - If a floor is configured, a DFA scanner `parseBidMicro` traverses the raw payload linearly to extract the bid value without reflection or allocation. Bids below the floor are rejected with `ErrBidFloorNotMet`.
+- **Atomic Edge Lua Evaluation**:
+  - Tracker computes a static slot index: `crc32IEEE(id) & 1023`.
+  - Executes a unified, atomic Lua script on the designated Redis shard to verify IP blacklists, deduplicate clicks (45s TTL), enforce frequency capping, and reserve micro-budget.
+- **Exactly-Once Persistence**:
+  - **PostgreSQL**: Workers enforce transactional idempotency via `ON CONFLICT DO NOTHING` against a `sync_idempotency` table.
+  - **ClickHouse**: Multi-table columnar batch insertions track persistence status using an in-memory `InsertedToCH` flag per event. Failed retries skip already-persisted tables to prevent analytics duplication.
+  - **Janitor Loop**: Monitors stream groups and executes `XAutoClaim` to recover orphaned messages from the Pending Entries List (PEL). Messages exceeding `maxRetries` are archived to `ad:events:dlq` and deleted from the main queue.
 
-## Core Subsystems & Request Lifecycles
-
-### 1. Management Control Plane Lifecycle
-1. **Ingress & Authentication**: Requests to `/admin/*` arrive at the Management Gateway (`:8188`). The gateway authenticates incoming calls by intercepting HTTP cookies (`accessToken` and `refreshToken`). Cryptographic PASETO verification occurs entirely in memory.
-2. **Session Revocation & RBAC**: The gateway checks token revocation status against Redis (`revoked:token:{id}`) with a 100ms circuit breaker. The user's role (`SA`, `M`, `C`, `G`) is evaluated against endpoint permissions. For Customer (`C`) requests, the gateway enforces a hard data isolation filter by extracting `CustomerID` from the token payload.
-3. **Database Execution**: All state-modifying operations (e.g., `TopUpBalance`, `CreateCampaign`, `BlockIP`, `UpdateSettings`) execute within a strict PostgreSQL ACID transaction (`pgx.BeginFunc`). Write operations generate immutable ledger entries in `balance_ledger` and log administrative actions in `admin_audit_log`.
-4. **Transactional Outbox Replication**: Successful database modifications write an event payload to the `outbox_events` table within the same database transaction. Upon commit, a PostgreSQL trigger `outbox_event_trigger` executes `pg_notify('outbox_channel', event_id)`. A background `OutboxWorker` processes these events:
-    - **Trigger/LISTEN Path**: The worker maintains a dedicated database connection running `LISTEN outbox_channel` and waits on `WaitForNotification`.
-    - **Decoupled Transaction Pattern**: Upon a signal, the worker leases a batch of pending events to a `'PROCESSING'` state by executing a transaction with restricted scope (using `FOR UPDATE SKIP LOCKED`) and commits the transaction immediately. All Redis I/O (pipelined writes and Pub/Sub notifications) is then executed outside PostgreSQL database transaction boundaries. The worker then runs a final batch update to set status to `'PROCESSED'` or revert failed events to `'PENDING'`.
-    - **Janitor Loop**: A periodic self-healing loop runs at 5 times the default interval to reset events stuck in `'PROCESSING'` for over 5 minutes and perform safety drain checks.
-5. **Closed-Loop Pacing Controller**: A background supervisor worker (`PacingControllerWorker`) runs at designated execution intervals. It calculates expected spending rates based on time elapsed relative to the daily limit, comparing actual spend against target profiles.
-    - **Timezone Location Cache**: Leverages a thread-safe caching `sync.Map` for localized campaign zones to bypass redundant OS-level timezone file operations.
-    - **Proportional Feedback**: Adjusts campaign pacing (switching between ASAP and EVEN modes) in the primary PostgreSQL storage and emits transactional outbox invalidation signals to Redis.
-    - **Arithmetic Optimization**: Operates strictly on scaled `int64` micro-units via the zero-allocation `NumericToMicro` integer scaling parser, completely avoiding floating-point precision issues and heap-allocated `decimal.Decimal` serialization.
-
-### 2. Ad Event Ingestion & Processing Lifecycle
-1. **Ingress**: Telemetry events (impressions and clicks) reach Tracker replicas (`:8181-8184`) via Nginx over HTTP/3. Tracker replicas execute event loops using `github.com/panjf2000/gnet/v2` with `SO_REUSEPORT` and `TCP_NODELAY` socket configurations. A custom zero-copy DFA HTTP/1.1 stream scanner extracts headers as raw byte slices directly referencing the incoming socket ring buffer. Ingestion uses pre-allocated domain UUID strings from a registry cache and campaign budgets represented as 64-bit integers scaled by 10^6. Protobuf schemas utilize `bytes` types to facilitate zero-copy vtproto deserialization, and the engine recycles slice memory using `sync.Pool` retaining heap-allocated backing array pointers (`*[]byte`) to guarantee 0 B/op and 0 alloc/op.
-2. **Dynamic Geo Bid Floor Verification**: Tracker replicas load configured publisher floor limits per geo-country code into a thread-safe `geoFloors sync.Map`.
-    - **IP Country Resolution**: The incoming client IP is mapped to an ISO country code via the `GeoProvider` interface.
-    - **Zero-Allocation JSON Scanning**: If a floor limit is configured for the resolved country, a specialized DFA scanner `parseBidMicro` traverses the raw event payload byte array linearly, extracting the bid value without heap allocations or reflection. Bids below the geo bid floor are rejected early with `ErrBidFloorNotMet`, preventing subsequent Redis script evaluations.
-3. **Atomic Edge Lua Evaluation**: The tracker computes a consistent JumpHash on `CampaignID` to locate the assigned Redis shard. It executes a unified, atomic Lua script that verifies IP blacklists, deduplicates clicks, enforces user frequency capping, and reserves the micro-budget. If validation fails, the event is dropped or flagged for fraud analysis.
-4. **Stream Queuing**: Validated events are serialized as binary Protobuf `AdStreamEvent` payloads and appended to the Redis Stream `ad:events:stream`.
-5. **Asynchronous Settlement & Exactly-Once Persistence**: Processor pool workers (`:8186`) consume event batches from Redis Streams via Consumer Groups. They settle these events using the following durability and isolation guarantees:
-    - **Worker-Granular Circuit Breaker**: Thread-safe status transitions and worker-specific failure tracking maps isolate downstream write pressure. Bounding failure tracking to individual worker/shard scopes prevents a failing database or ClickHouse shard on one host from blocking independent, healthy ingestion pipelines.
-    - **PostgreSQL Exactly-Once Settlement**: Asynchronous budget settlement updates are transactionally synchronized. To ensure exactly-once persistence during retry loops of previously claimed messages, workers execute writes within active PostgreSQL transactions using an `ON CONFLICT DO NOTHING` clause on a `sync_idempotency` ledger table.
-    - **ClickHouse Partial Failure Deduplication**: Multi-table columnar batch insertions (routing to impressions, clicks, conversions, and fraud logs) track persistence status using an in-memory `InsertedToCH` flag per event. During batch retry attempts, the pipeline skips tables where the event has already been successfully written, preventing duplicate analytical log data.
-    - **Self-Healing Janitor & DLQ Monitoring**: Background janitor routines monitor stream groups and execute `XAutoClaim` to recover orphaned messages stalled in the Pending Entries List (PEL). Message retries are capped at `maxRetries`; events exceeding this limit are atomically encapsulated into a binary Protobuf `AdDLQEvent` envelope, routed to the `ad:events:dlq` stream, and deleted from the main ingestion queue.
-
-## Storage Specifications & Scaling Strategy
-
-### Storage Engines
-* **PostgreSQL 16**: Relational master database storing customer accounts, financial ledgers (`balance_ledger`), RBAC permissions, and campaign metadata. Database access is managed via type-safe `sqlc` queries with daily table partitioning.
-* **ClickHouse**: Columnar analytical store designed for click/impression telemetry, aggregation queries, and anti-fraud anomaly detection.
-* **Sharded Redis Pool**: 6 independent in-memory storage nodes sharded client-side, providing edge validation for active budgets, token revocation flags, IP blacklists, and asynchronous streaming queues.
-
-### Scalability Strategy
-* **Horizontal Scaling**: All ingestion trackers, batch processors, and management gateways are stateless and scale horizontally across container nodes.
-* **Sharding Architecture**: In-memory state is sharded across multiple Redis instances using consistent JumpHash indexing, ensuring uniform load distribution without cross-node lock contention.
-
-## Anti-Fraud & Geo-Targeting Execution
-* **Geo-IP Verification**: Tracker replicas load MaxMind `GeoLite2-Country.mmdb` into memory. Incoming click/impression IPs are mapped to ISO country codes. If a campaign configures geo-targeting, non-matching countries trigger direct `ErrGeoBlocked` failures.
-* **Datacenter/VPN Identification**: IPs are verified against MaxMind `GeoLite2-Anonymous.mmdb`. Telemetry originating from datacenters, public proxies, VPNs, or Tor exit nodes is tagged as fraud (`datacenter_ip`) and silently dropped from the main flow into the clickfraud analytics stream.
-* **Time-To-Click (TTC) Velocity Capping**: Impressions write an expiration key `imp_ts:{UserID}:{CampaignID}` in Redis. Clicking within a time delta shorter than `ttcMin` (e.g. 500ms) flags the request as bot-generated (`low_ttc`).
+---
 
 ## Observability & SLA Thresholds
-* **Prometheus Alerting Rules**: Evaluated against the following metric thresholds:
-  * `CircuitBreakerOpen`: Fired if downstream database pressure forces the Redis-to-database consumer group circuit breaker open for >5 minutes.
-  * `DatabaseWriteErrors`: Triggers on failed batch persistence/ledger updates.
-  * `DeadLetterQueueSpike`: Triggers if the unprocessable event dead-letter queue (DLQ) length exceeds 100 messages.
-  * `HighRequestLatency`: Alerts if p99 ingestion tracker latency climbs above 15ms.
-* **Telegram Routing Proxy**: When alerts transition to `firing`, Alertmanager posts JSON payloads to `/webhook`. The custom `alertmanager-telegram` daemon formats the event details into HTML and forwards them via the Telegram Bot API.
+
+- **CircuitBreakerOpen**: Alert fires if consumer group circuit breaker remains open for >5 minutes.
+- **DatabaseWriteErrors**: Alert triggers on batch persistence/ledger failures.
+- **DeadLetterQueueSpike**: Alert triggers if DLQ length exceeds 100 messages.
+- **HighRequestLatency**: Alert triggers if p99 ingestion tracker latency climbs above 15ms.
+- **Telegram Alert Proxy**: Alertmanager alerts are routed to a custom proxy daemon (`cmd/telegram.go`) that formats the JSON event into HTML and posts it to the Telegram Bot API.

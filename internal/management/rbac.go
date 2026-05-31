@@ -24,7 +24,6 @@ var rolePermissions = map[string][]string{
 	},
 }
 
-// GetPermissionsForRole maps high-level user roles into fine-grained capability matrices. Exposing explicit permissions to client applications decouples frontend presentation logic from static backend role definitions.
 func GetPermissionsForRole(role string) []string {
 	normalized := strings.ToUpper(strings.TrimSpace(role))
 	switch normalized {

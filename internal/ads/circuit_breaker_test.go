@@ -99,12 +99,10 @@ func TestCircuitBreaker_HalfOpenBlocksConcurrentProbes(t *testing.T) {
 
 	time.Sleep(60 * time.Millisecond)
 
-	// First call wins the CAS and gets Allow()=true
 	first := cb.Allow()
 	assert.True(t, first)
 	assert.Equal(t, CircuitHalfOpen, cb.State())
 
-	// Subsequent calls in HalfOpen must return false
 	assert.False(t, cb.Allow())
 	assert.False(t, cb.Allow())
 }
@@ -144,7 +142,6 @@ func TestCircuitBreaker_ConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 
-	// After 200 failures with threshold 100, must be Open.
 	assert.Equal(t, CircuitOpen, cb.State())
 	assert.False(t, cb.Allow())
 }
@@ -167,7 +164,6 @@ func TestCircuitBreaker_ConcurrentMixedOps(t *testing.T) {
 	}
 	wg.Wait()
 
-	// State is deterministic enough to verify it's one of the valid states.
 	state := cb.State()
 	assert.Contains(t, []CircuitState{CircuitClosed, CircuitOpen, CircuitHalfOpen}, state)
 }
@@ -180,15 +176,12 @@ func TestCircuitBreaker_CancellationResetsHalfOpen(t *testing.T) {
 
 	time.Sleep(60 * time.Millisecond)
 
-	// Transition to HalfOpen by allowing a probe
 	require.True(t, cb.Allow())
 	assert.Equal(t, CircuitHalfOpen, cb.State())
 
-	// Call RecordCancellation to transition back to CircuitOpen
 	cb.RecordCancellation("test")
 	assert.Equal(t, CircuitOpen, cb.State())
 
-	// Since state is CircuitOpen, cb.Allow() must return false immediately because cb.openTimeout is reset
 	assert.False(t, cb.Allow())
 }
 

@@ -11,11 +11,6 @@ import (
 	"time"
 )
 
-// NginxConfigWorker exports blacklist configuration files to a shared volume and signals Nginx to reload.
-// Architectural Isolation (12-Factor App): Rather than executing OS binaries directly via exec syscalls from the HTTP gateway,
-// this worker writes a flag file (reload_required.flg) to the shared directory.
-// A separate lightweight process (e.g., inotify/cron) running inside the Nginx container must monitor this directory
-// for the flag file, execute 'nginx -s reload', and remove the flag upon completion.
 type NginxConfigWorker struct {
 	svc        *Service
 	exportPath string
@@ -101,7 +96,6 @@ func (w *NginxConfigWorker) writeDenyFile(filename string, ips []string) (err er
 			continue
 		}
 
-		// Enforce strict IP or CIDR validation to prevent Nginx configuration injection
 		if net.ParseIP(ip) == nil {
 			if _, _, errCIDR := net.ParseCIDR(ip); errCIDR != nil {
 				slog.Warn("skipping invalid blacklist IP/CIDR to prevent injection", "ip", ip)

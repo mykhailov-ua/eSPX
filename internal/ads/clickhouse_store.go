@@ -1,3 +1,14 @@
+// Package ads provides ClickHouseStore, which fans events into four ClickHouse tables
+// (impressions, clicks, conversions, fraud_events) in a single insertToClickHouse call.
+// Four pooled *[]*domain.Event slices are used to classify events by type before
+// constructing PreparedBatch objects; the pool enforces a 5 000-element capacity cap
+// to prevent unbounded memory retention on large flush batches. Events with the
+// InsertedToCH flag set are skipped during the classification pass to ensure
+// exactly-once insertion across StreamConsumer retries.
+//
+// Write failures are retried up to MaxRetries times with exponential back-off
+// (InitialWait, MaxWait from processor.go). A metrics.DbWriteErrors counter and
+// metrics.DbWriteDuration histogram are updated after each batch attempt.
 package ads
 
 import (
@@ -18,6 +29,10 @@ var slicePool = sync.Pool{
 	},
 }
 
+// ClickHouseStore writes ad events to ClickHouse via the native protocol driver.
+// writeTimeout bounds each PrepareBatch+Send round-trip; it must be set at least
+// as high as the maximum network round-trip under full load to avoid spurious
+// context cancellation errors that would incorrectly trigger the circuit breaker.
 type ClickHouseStore struct {
 	conn         driver.Conn
 	writeTimeout time.Duration
@@ -30,18 +45,9 @@ func NewClickHouseStore(conn driver.Conn, writeTimeout time.Duration) *ClickHous
 	}
 }
 
-// StoreBatch persists a block of events to ClickHouse, executing transient failure retry loops.
-//
-// Memory Impact:
-// - Minimizes heap allocations by retrieving categorization slices (*[]*domain.Event) from slicePool.
-//
-// Concurrency:
-// - Thread-safe. Connection resources are shared safely across worker execution boundaries.
-//
-// Batching & Partial Failures:
-//   - Retries: Incurs exponential backoff on write failures up to MaxRetries.
-//   - Deduplication: Uses the domain.Event.InsertedToCH flag to mark successfully written elements.
-//     On subsequent retries, already-written events are skipped, preventing database duplicates.
+// StoreBatch persists a slice of events to ClickHouse with exponential retry.
+// Events already marked InsertedToCH are skipped within insertToClickHouse.
+// A DbWriteErrors counter is incremented after all retries are exhausted.
 func (s *ClickHouseStore) StoreBatch(ctx context.Context, events []*domain.Event) error {
 	if len(events) == 0 {
 		return nil
@@ -78,10 +84,6 @@ func (s *ClickHouseStore) StoreBatch(ctx context.Context, events []*domain.Event
 	return err
 }
 
-// insertToClickHouse classifies and persists events to corresponding ClickHouse tables.
-// Recycled event slices are fetched from a sync.Pool to eliminate high-volume heap allocations.
-// Granular tracking via the InsertedToCH flag avoids double-inserting elements during retry loops
-// if a partial batch insertion failure occurs across different tables.
 func (s *ClickHouseStore) insertToClickHouse(ctx context.Context, events []*domain.Event) error {
 	start := time.Now()
 

@@ -12,8 +12,6 @@ import (
 	"github.com/mykhailov-ua/ad-event-processor/internal/ads/db"
 )
 
-// AutoscaleBudgets coordinates budget shifts from low CTR to high CTR campaigns under the same customer.
-// It executes a synchronous SyncAll over all SyncWorkers to ensure Postgres data is fully current.
 func (s *Service) AutoscaleBudgets(ctx context.Context, syncWorkers []*ads.SyncWorker) error {
 	for _, sw := range syncWorkers {
 		sw.SyncAll(ctx)

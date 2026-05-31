@@ -7,8 +7,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestSlogMailer_AllTemplates renders each implemented email alert with structured logs to ensure
-// no template executing syntax crashes, panic conditions, or unescaped variables.
 func TestSlogMailer_AllTemplates(t *testing.T) {
 	mailer := SlogMailer{}
 	ctx := context.Background()

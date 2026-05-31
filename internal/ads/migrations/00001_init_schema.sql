@@ -1,3 +1,14 @@
+-- 00001_init_schema.sql: baseline schema for campaigns, partitioned events table,
+-- and campaign_stats. The events table uses RANGE partitioning by created_at;
+-- daily partitions are managed by database.PartitionManager at runtime.
+-- events_default is a catch-all partition that absorbs inserts falling outside
+-- all defined range partitions; its presence prevents INSERT failures but data
+-- written to it is truncated by PartitionManager as it indicates a missing partition.
+--
+-- PRIMARY KEY (click_id, created_at): PostgreSQL requires the partition key
+-- (created_at) to be part of any unique or primary key on a partitioned table.
+-- click_id provides idempotency at the deduplication boundary.
+
 -- +goose Up
 -- +goose StatementBegin
 CREATE TABLE campaigns (

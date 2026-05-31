@@ -36,12 +36,10 @@ func TestManagementAPI_Customers(t *testing.T) {
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
-	// Create test customer
 	custID := uuid.New()
 	err := svc.CreateCustomer(context.Background(), custID, "Acme Corp", 150_500_000, "USD")
 	require.NoError(t, err)
 
-	// Topup to create ledger entry
 	err = svc.TopUpBalance(context.Background(), custID, 50_000_000, "idemp-hash-1")
 	require.NoError(t, err)
 
@@ -59,7 +57,6 @@ func TestManagementAPI_Customers(t *testing.T) {
 		require.NoError(t, err)
 		require.NotEmpty(t, customers)
 
-		// Find our customer
 		var found *CustomerDTO
 		for _, c := range customers {
 			if c.ID == custID.String() {
@@ -69,7 +66,7 @@ func TestManagementAPI_Customers(t *testing.T) {
 		}
 		require.NotNil(t, found)
 		assert.Equal(t, "Acme Corp", found.Name)
-		assert.Equal(t, "200.50", found.Balance) // 150.50 + 50.00 topup
+		assert.Equal(t, "200.50", found.Balance)
 	})
 
 	t.Run("GetCustomerByID", func(t *testing.T) {
@@ -107,11 +104,9 @@ func TestManagementAPI_Customers(t *testing.T) {
 	t.Run("CustomerIsolation_Forbidden", func(t *testing.T) {
 		otherCustID := uuid.New()
 
-		// Simulate request from a customer (role C) accessing another customer's ID
 		req, _ := http.NewRequest("GET", "/admin/customers/"+custID.String(), nil)
 		req.Header.Set("X-Admin-API-Key", "test-secret")
 
-		// Set context with role C and otherCustID
 		user := AuthenticatedUser{
 			UserID:     uuid.New(),
 			Role:       "C",

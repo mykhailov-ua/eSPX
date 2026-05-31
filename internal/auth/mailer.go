@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-// Mailer defines the contract for dispatching security, billing, and operational notifications.
-// It decouples template rendering and delivery implementations.
 type Mailer interface {
 	SendPasswordChangedEmail(ctx context.Context, toEmail, clientIP, userAgent string) error
 
@@ -26,11 +24,8 @@ type Mailer interface {
 	SendCreativeModerationEmail(ctx context.Context, toEmail, creativeID, status, reason string) error
 }
 
-// SlogMailer is a lightweight development/test implementation of the Mailer interface
-// that renders templates and dumps the resulting HTML to structured logs.
 type SlogMailer struct{}
 
-// Helper to render and log email templates uniformly.
 func renderAndLog(ctx context.Context, templateName string, tpl *template.Template, toEmail, subject string, data any) error {
 	var buf bytes.Buffer
 	if err := tpl.Execute(&buf, data); err != nil {
@@ -52,8 +47,6 @@ func renderAndLog(ctx context.Context, templateName string, tpl *template.Templa
 	)
 	return nil
 }
-
-// Templates
 
 var passwordChangedHTMLTemplate = template.Must(template.New("password_changed").Parse(`<!DOCTYPE html>
 <html>
@@ -290,8 +283,6 @@ var creativeModerationHTMLTemplate = template.Must(template.New("creative_modera
     </div>
 </body>
 </html>`))
-
-// Implementation of Mailer Methods
 
 type PasswordChangedEmailData struct {
 	Email     string

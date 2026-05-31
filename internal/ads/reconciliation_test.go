@@ -46,7 +46,6 @@ func TestReconciliationWorker_DataDriftDetection(t *testing.T) {
 	campID1 := uuid.New()
 	campID2 := uuid.New()
 
-	// 1. Setup Mock Campaign Registry
 	repo := &MockCampaignRepository{
 		campaigns: []*domain.Campaign{
 			{ID: campID1, Status: domain.CampaignStatusActive},
@@ -54,9 +53,6 @@ func TestReconciliationWorker_DataDriftDetection(t *testing.T) {
 		},
 	}
 
-	// 2. Setup Mock Postgres spends
-	// Campaign 1: Postgres spend = 100,000 micro-units
-	// Campaign 2: Postgres spend = 200,000 micro-units
 	pg := &MockPostgresDB{
 		spends: map[uuid.UUID]int64{
 			campID1: 100_000,
@@ -65,15 +61,10 @@ func TestReconciliationWorker_DataDriftDetection(t *testing.T) {
 	}
 	pg.Healthy.Store(true)
 
-	// 3. Setup Mock ClickHouse logs
 	ch := &MockClickHouseDB{}
 
-	// Let's populate ClickHouse logs (T_c - 10 minutes ago, well outside the 5m lag allowance)
 	logTime := time.Now().Add(-10 * time.Minute)
 
-	// Campaign 1: Intentionally "lose" one batch of 1,000 micro-units!
-	// Real Postgres spend is 100,000, but in ClickHouse we only record 99,000 micro-units (9 clicks, 9 impressions).
-	// Expected drift = |100,000 - 99,000| / 100,000 = 1.0% (0.01)
 	for i := 0; i < 9; i++ {
 		ch.LogEvent(&domain.Event{
 			CampaignID: campID1,
@@ -89,9 +80,6 @@ func TestReconciliationWorker_DataDriftDetection(t *testing.T) {
 		})
 	}
 
-	// Campaign 2: Perfectly consistent spends!
-	// Real Postgres spend is 200,000, and ClickHouse has exactly 200,000 (18 clicks, 20 impressions).
-	// Expected drift = 0.0% (0.0)
 	for i := 0; i < 18; i++ {
 		ch.LogEvent(&domain.Event{
 			CampaignID: campID2,
@@ -109,15 +97,11 @@ func TestReconciliationWorker_DataDriftDetection(t *testing.T) {
 		})
 	}
 
-	// 4. Initialize ReconciliationWorker
-	// Audit interval = 10 minutes, lag allowance = 5 minutes, drift limit = 0.5% (0.005)
 	rw := NewReconciliationWorker(pg, ch, repo, 0.005, 5*time.Minute, 10*time.Minute)
 
-	// 5. Run audit reconciliation pass
 	err := rw.Reconcile(ctx)
 	require.NoError(t, err)
 
-	// 6. Assert and read Prometheus data drift metrics
 	metric1 := &io_prometheus_client.Metric{}
 	err = metrics.DataDriftRatio.WithLabelValues(campID1.String()).Write(metric1)
 	require.NoError(t, err)
@@ -128,10 +112,7 @@ func TestReconciliationWorker_DataDriftDetection(t *testing.T) {
 	require.NoError(t, err)
 	driftVal2 := metric2.GetGauge().GetValue()
 
-	// Assertions:
-	// Campaign 1 should have a 1% drift ratio (0.01) which is critical (> 0.5%)
 	assert.InDelta(t, 0.01, driftVal1, 0.0001, "Campaign 1 should detect 1.0% drift due to lost batch")
 
-	// Campaign 2 should have 0% drift (0.0)
 	assert.Equal(t, 0.0, driftVal2, "Campaign 2 should have exactly 0.0% drift")
 }

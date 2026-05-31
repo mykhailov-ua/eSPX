@@ -1,3 +1,15 @@
+// Package config loads the process configuration from environment variables.
+// All numeric fields have typed fallbacks; missing or malformed values silently
+// fall through to the default. Required string fields (SERVER_PORT, DB_DSN,
+// TOKEN_SYMMETRIC_KEY) return errors from Load if absent.
+//
+// Monetary values (ClickAmount, ImpressionAmount, AutoscaleShiftAmount, etc.)
+// are stored as int64 micro-units (1 unit = 0.000001 currency) parsed by
+// getEnvMicro via float×1_000_000 conversion. All budget math in the ads package
+// operates in micro-units to avoid floating-point rounding errors.
+//
+// Secret wraps sensitive string fields and masks their value in slog output via
+// LogValue, preventing accidental credential logging at any log level.
 package config
 
 import (
@@ -8,6 +20,8 @@ import (
 	"strings"
 )
 
+// Secret is a string type whose LogValue returns "**********" to prevent
+// credentials from appearing in structured log output regardless of log level.
 type Secret string
 
 func (s Secret) LogValue() slog.Value {
@@ -133,6 +147,9 @@ func getEnvInt64(key string, fallback int64) int64 {
 	return fallback
 }
 
+// Load reads all environment variables and applies defaults, then validates
+// required fields. Returns a fully-initialised Config or a non-nil error if
+// a required variable is missing or a mutex of mutually-exclusive fields is violated.
 func Load() (*Config, error) {
 	cfg := &Config{
 		ServerPort:                  os.Getenv("SERVER_PORT"),

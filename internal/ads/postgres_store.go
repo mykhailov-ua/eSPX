@@ -1,3 +1,17 @@
+// Package ads provides PostgresStore, which persists ad events to the partitioned
+// events table using a single INSERT ... SELECT unnest(@arrays...) CTE that also
+// updates campaign_stats in the same statement (InsertEventsBatch). The CTE pattern
+// avoids N+1 INSERT/UPDATE round-trips and allows the database to use bulk copy
+// mechanics internally. The ON CONFLICT (click_id, created_date) DO NOTHING clause
+// provides idempotency within daily partitions.
+//
+// The postgresBatchArraysPool avoids per-batch allocation of the nine parallel slices
+// required by pgx unnest binding. When the incoming batch is larger than the pooled
+// capacity, fresh slices are allocated in-place; the pool retains the previous
+// smaller slices to avoid growing the retained memory footprint.
+//
+// Dates are computed as integer division of Unix seconds by 86 400 and converted back
+// to a UTC time.Time to avoid time.Location arithmetic on the hot path.
 package ads
 
 import (
@@ -39,6 +53,9 @@ var postgresBatchArraysPool = sync.Pool{
 	},
 }
 
+// PostgresStore persists event batches to the partitioned events table via sqlc-
+// generated queries. It does not own a connection pool; the pool is injected via
+// the db.Querier interface to allow the test suite to substitute a fake.
 type PostgresStore struct {
 	queries      db.Querier
 	writeTimeout time.Duration
@@ -51,20 +68,9 @@ func NewPostgresStore(queries db.Querier, writeTimeout time.Duration) *PostgresS
 	}
 }
 
-// StoreBatch persists a block of ingestion events into PostgreSQL using optimized array-based bulk inserts.
-//
-// Memory Impact:
-//   - Near zero heap allocations. Recycles slice containers (postgresBatchArrays) via postgresBatchArraysPool.
-//     Dynamically inflates array capacity if the incoming batch size exceeds pre-allocated limits.
-//
-// Concurrency:
-//   - Thread-safe. Designed to safely run concurrent batch flushes across multiple worker threads
-//     by utilizing connection-pool-based pgx queries.
-//
-// Performance Hacks:
-//   - pgx Array Batching: Passes bulk parameters as Go slices mapped directly to PostgreSQL arrays,
-//     reducing multi-statement round-trip latency to a single SQL query execution cycle:
-//     "InsertEventsBatch" executes a single UNNEST statement over the arrays.
+// StoreBatch inserts events into PostgreSQL with retry. Each retry re-uses the same
+// pre-built array slices; context cancellation during a retry back-off timer stops
+// the loop and returns ctx.Err().
 func (s *PostgresStore) StoreBatch(ctx context.Context, events []*domain.Event) error {
 	if len(events) == 0 {
 		return nil

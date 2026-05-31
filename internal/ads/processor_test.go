@@ -103,13 +103,12 @@ func TestStreamConsumer_DLQ(t *testing.T) {
 	rdb, cleanup := setupTestRedis(t)
 	defer cleanup()
 
-	// Use FailingEventStore to force poison pills
 	failStore := &FailingEventStore{
 		failErr: errors.New("simulated poison pill"),
 	}
 
 	producer := NewStreamProducer(rdb, "s_dlq", 1000, 1*time.Second)
-	// maxRetries=1, retryMaxWait=10ms
+
 	proc := NewStreamConsumer(failStore, rdb, "s_dlq", "g_dlq", "c_dlq", 2, 1, 10*time.Millisecond, 1*time.Second, 10*time.Millisecond, 10*time.Millisecond, 1, 1*time.Minute, 1*time.Second)
 
 	ctx, cancel := context.WithCancel(context.Background())

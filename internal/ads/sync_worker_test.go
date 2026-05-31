@@ -42,12 +42,9 @@ func (m *mockCampaignRepo) ListActive(ctx context.Context) ([]*domain.Campaign, 
 func TestMultiShardBudgetSync(t *testing.T) {
 	ctx := context.Background()
 
-	// Initializes two independent Redis shards to simulate a distributed budget environment.
-
 	rdb1 := redis.NewClient(&redis.Options{Addr: "localhost:6479"})
 	rdb2 := redis.NewClient(&redis.Options{Addr: "localhost:6480"})
 
-	// Ensure we can connect or skip
 	if err := rdb1.Ping(ctx).Err(); err != nil {
 		t.Skip("Redis shard 1 not available")
 	}
@@ -57,7 +54,6 @@ func TestMultiShardBudgetSync(t *testing.T) {
 
 	campaignID := uuid.New()
 
-	// Record spend events on both shards for the same campaign to simulate parallel ingestion.
 	rdb1.SAdd(ctx, "budget:dirty_campaigns", campaignID.String())
 	rdb1.Set(ctx, "budget:sync:campaign:"+campaignID.String(), 10500000, 0)
 
@@ -66,21 +62,17 @@ func TestMultiShardBudgetSync(t *testing.T) {
 
 	repo := new(mockCampaignRepo)
 
-	// Configures expectations for atomic database updates per shard.
 	repo.On("UpdateSpend", mock.Anything, campaignID, int64(10500000), mock.Anything).Return(nil).Once()
 	repo.On("UpdateSpend", mock.Anything, campaignID, int64(5250000), mock.Anything).Return(nil).Once()
 
 	worker1 := NewSyncWorker(rdb1, repo, nil, 100*time.Millisecond)
 	worker2 := NewSyncWorker(rdb2, repo, nil, 100*time.Millisecond)
 
-	// Executes reconciliation workers for all shards to move data from Redis to PostgreSQL.
 	worker1.SyncAll(ctx)
 	worker2.SyncAll(ctx)
 
-	// Validates repository interactions and post-sync state consistency.
 	repo.AssertExpectations(t)
 
-	// Ensures that synchronization keys are purged from the Redis shards after successful persistence.
 	val1, _ := rdb1.Get(ctx, "budget:sync:campaign:"+campaignID.String()).Result()
 	assert.Empty(t, val1)
 

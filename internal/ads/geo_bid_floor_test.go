@@ -44,7 +44,7 @@ func BenchmarkParseBidMicro(b *testing.B) {
 
 func TestUnifiedFilter_GeoBidFloor(t *testing.T) {
 	campID := uuid.New()
-	reg := &mockRegistry{} // Reuses the mockRegistry from handler_test.go
+	reg := &mockRegistry{}
 
 	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
 	f := NewUnifiedFilter(
@@ -75,7 +75,6 @@ func TestUnifiedFilter_GeoBidFloor(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Case 1: UA Event, Bid 1.00 USD -> Must fail
 	evt1 := &domain.Event{
 		CampaignID: campID,
 		IP:         "2.2.2.2",
@@ -85,7 +84,6 @@ func TestUnifiedFilter_GeoBidFloor(t *testing.T) {
 	err := f.Check(ctx, evt1)
 	assert.ErrorIs(t, err, ErrBidFloorNotMet)
 
-	// Case 2: UA Event, Bid 2.00 USD -> Must pass floor check
 	evt2 := &domain.Event{
 		CampaignID: campID,
 		IP:         "2.2.2.2",
@@ -95,7 +93,6 @@ func TestUnifiedFilter_GeoBidFloor(t *testing.T) {
 	err = f.Check(ctx, evt2)
 	assert.NotErrorIs(t, err, ErrBidFloorNotMet)
 
-	// Case 3: DE Event (no floor configured) -> Must pass floor check
 	evt3 := &domain.Event{
 		CampaignID: campID,
 		IP:         "4.4.4.4",
@@ -106,7 +103,6 @@ func TestUnifiedFilter_GeoBidFloor(t *testing.T) {
 	err = f.Check(ctx, evt3)
 	assert.NotErrorIs(t, err, ErrBidFloorNotMet)
 
-	// Case 4: Empty IP -> Should skip geo check and pass
 	evtEmptyIP := &domain.Event{
 		CampaignID: campID,
 		IP:         "",
@@ -116,7 +112,6 @@ func TestUnifiedFilter_GeoBidFloor(t *testing.T) {
 	err = f.Check(ctx, evtEmptyIP)
 	assert.NotErrorIs(t, err, ErrBidFloorNotMet)
 
-	// Case 5: Empty/Nil Payload -> Treat as bid = 0 and reject if floor exists
 	evtEmptyPayload := &domain.Event{
 		CampaignID: campID,
 		IP:         "2.2.2.2",
@@ -126,7 +121,6 @@ func TestUnifiedFilter_GeoBidFloor(t *testing.T) {
 	err = f.Check(ctx, evtEmptyPayload)
 	assert.ErrorIs(t, err, ErrBidFloorNotMet)
 
-	// Case 6: Malformed JSON -> Treat as bid = 0 and reject if floor exists
 	evtMalformed := &domain.Event{
 		CampaignID: campID,
 		IP:         "2.2.2.2",

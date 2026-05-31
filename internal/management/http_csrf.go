@@ -10,7 +10,6 @@ import (
 	"github.com/mykhailov-ua/ad-event-processor/pkg/httpresponse"
 )
 
-// GenerateSecureToken generates unpredictable session secrets using hardware-backed cryptographic entropy. This prevents session guessing and token forgery attacks across distributed gateways.
 func GenerateSecureToken(length int) (string, error) {
 	b := make([]byte, length)
 	if _, err := rand.Read(b); err != nil {
@@ -19,7 +18,6 @@ func GenerateSecureToken(length int) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// NewCSRFMiddleware implements the Double Submit Cookie pattern to guard against Cross-Site Request Forgery on state-mutating HTTP endpoints. Requiring both a non-HttpOnly cookie and a matching custom HTTP header verifies that requests originate strictly from authenticated client scripts.
 func NewCSRFMiddleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

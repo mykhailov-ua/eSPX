@@ -70,7 +70,7 @@ func BenchmarkFraudFilter_DC(b *testing.B) {
 	geo := &MockGeoProvider{}
 	f := NewFraudFilter(geo, nil, 300*time.Millisecond)
 	evt := &domain.Event{
-		IP: "1.1.1.66", // Mock triggers DC fraud
+		IP: "1.1.1.66",
 	}
 	ctx := context.Background()
 

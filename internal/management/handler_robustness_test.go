@@ -80,9 +80,9 @@ func TestManagementAPI_Robustness(t *testing.T) {
 	})
 
 	t.Run("DBFailure_Simulation", func(t *testing.T) {
-		// Close the DB connection pool to simulate DB outage
+
 		badPool, cleanupBadDB := database.SetupTestDB(t)
-		cleanupBadDB() // immediately close it
+		cleanupBadDB()
 
 		badSvc := NewService(badPool, []redis.UniversalClient{rdb}, nil, cfg)
 		defer badSvc.Close()
@@ -117,13 +117,10 @@ func TestManagementAPI_Robustness(t *testing.T) {
 			svc.RunSystemStateSyncer(ctx)
 		}()
 
-		// Allow initial sync to complete
 		time.Sleep(50 * time.Millisecond)
 
-		// Cancel context to test clean shutdown without deadlocks
 		cancel()
 
-		// Wait for goroutine to exit with timeout
 		done := make(chan struct{})
 		go func() {
 			wg.Wait()
@@ -132,7 +129,7 @@ func TestManagementAPI_Robustness(t *testing.T) {
 
 		select {
 		case <-done:
-			// Success
+
 		case <-time.After(1 * time.Second):
 			t.Fatal("RunSystemStateSyncer goroutine did not exit after context cancellation (potential deadlock)")
 		}
@@ -144,6 +141,6 @@ func TestManagementAPI_Robustness(t *testing.T) {
 		resp := httptest.NewRecorder()
 		mux.ServeHTTP(resp, req)
 		assert.Equal(t, http.StatusOK, resp.Code)
-		// Verify that limit was capped
+
 	})
 }

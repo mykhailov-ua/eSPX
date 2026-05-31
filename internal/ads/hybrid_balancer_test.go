@@ -88,7 +88,6 @@ func TestHybridBalancer_ConcurrencyAndRaces(t *testing.T) {
 	workers := 16
 	requestsPerWorker := 10000
 
-	// Concurrent readers performing SelectAndShard.
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func(workerID int) {
@@ -100,7 +99,6 @@ func TestHybridBalancer_ConcurrencyAndRaces(t *testing.T) {
 		}(i)
 	}
 
-	// Concurrent writer continuously updating campaigns.
 	stopWriter := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(1 * time.Millisecond)
@@ -196,7 +194,7 @@ func TestHybridBalancer_Pprof(t *testing.T) {
 }
 
 func TestHybridBalancer_EdgeCases(t *testing.T) {
-	// Case 1: Nil campaign in UpdateCampaigns
+
 	t.Run("NilCampaign", func(t *testing.T) {
 		hb := NewHybridBalancer(10, 1000)
 		assert.NotPanics(t, func() {
@@ -207,7 +205,6 @@ func TestHybridBalancer_EdgeCases(t *testing.T) {
 		assert.Equal(t, 0, shard)
 	})
 
-	// Case 2: totalSeconds = 0 (NaN pacingFactor prevention)
 	t.Run("ZeroTotalSeconds", func(t *testing.T) {
 		hb := NewHybridBalancer(10, 1000)
 		c := &CampaignMeta{
@@ -224,7 +221,6 @@ func TestHybridBalancer_EdgeCases(t *testing.T) {
 		_ = campaign
 	})
 
-	// Case 3: c.TotalBudget = 0 (NaN budgetRatio prevention)
 	t.Run("ZeroTotalBudget", func(t *testing.T) {
 		hb := NewHybridBalancer(10, 1000)
 		c := &CampaignMeta{
@@ -241,7 +237,6 @@ func TestHybridBalancer_EdgeCases(t *testing.T) {
 		_ = campaign
 	})
 
-	// Case 4: maxRpsPerNode = 0 & hot traffic (prevent division by zero panic)
 	t.Run("ZeroMaxRpsPerNode", func(t *testing.T) {
 		hb := NewHybridBalancer(10, 0)
 		c := &CampaignMeta{
@@ -259,7 +254,6 @@ func TestHybridBalancer_EdgeCases(t *testing.T) {
 		})
 	})
 
-	// Case 5: totalShards = 0 or negative (prevent negative jumpHash bounds panic)
 	t.Run("ZeroOrNegativeTotalShards", func(t *testing.T) {
 		hb := NewHybridBalancer(0, 1000)
 		c := &CampaignMeta{

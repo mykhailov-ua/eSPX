@@ -51,7 +51,6 @@ type errorTemplateData struct {
 	Message string
 }
 
-// Hot path branch: avoid full reload if request is from HTMX (HX-Request: true)
 func HTMXError(w http.ResponseWriter, r *http.Request, status int, code, message string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
@@ -65,7 +64,7 @@ func HTMXError(w http.ResponseWriter, r *http.Request, status int, code, message
 	var buf bytes.Buffer
 	if r.Header.Get("HX-Request") == "true" {
 		if err := htmxErrorFragmentTemplate.Execute(&buf, data); err != nil {
-			// Fallback: template execution failed
+
 			if _, writeErr := w.Write([]byte(`<div style="color:red; font-weight:bold;">Error: ` + message + `</div>`)); writeErr != nil {
 				slog.Error("failed to write htmx error fallback response", "error", writeErr)
 			}
@@ -73,7 +72,7 @@ func HTMXError(w http.ResponseWriter, r *http.Request, status int, code, message
 		}
 	} else {
 		if err := fullPageErrorTemplate.Execute(&buf, data); err != nil {
-			// Fallback: template execution failed
+
 			if _, writeErr := w.Write([]byte(`<h1>Error ` + strconv.Itoa(status) + `</h1><p>` + message + `</p>`)); writeErr != nil {
 				slog.Error("failed to write full page error fallback response", "error", writeErr)
 			}

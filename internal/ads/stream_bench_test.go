@@ -208,7 +208,6 @@ func TestStreamPayloadSizeComparison(t *testing.T) {
 		CreatedAt:  time.Now(),
 	}
 
-	// Flat representation size estimation
 	flatSize := len("click_id") + len(evt.ClickID) +
 		len("campaign_id") + len(evt.CampaignID.String()) +
 		len("type") + len(evt.Type) +
@@ -216,7 +215,6 @@ func TestStreamPayloadSizeComparison(t *testing.T) {
 		len("ip") + len(evt.IP) +
 		len("ua") + len(evt.UA)
 
-	// Proto representation size
 	pbEvt := &pb.AdStreamEvent{
 		ClickId:       []byte(evt.ClickID),
 		CampaignId:    evt.CampaignID[:],

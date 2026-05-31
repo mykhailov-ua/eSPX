@@ -1,3 +1,17 @@
+// Package ads implements SyncWorker, the background agent that reconciles Redis
+// budget counters back to PostgreSQL. Budget deductions accumulate in Redis keys
+// (budget:sync:campaign:* and budget:sync:customer:*) and dirty-set membership
+// (budget:dirty_campaigns, budget:dirty_customers). SyncWorker iterates these sets
+// with SScan, then for each member executes a two-phase Lua commit:
+//
+//	Phase 1 (prepareSyncScript): check lock key; compute total (sync + inflight);
+//	move current accumulator into inflight; set lock with TTL; return (amount, txID).
+//	Phase 2 (commitSyncScript): subtract from inflight; conditionally remove from
+//	dirty-set if both sync and inflight reach zero; delete lock and txID keys.
+//
+// The txID is inserted into the sync_idempotency table by the repository layer before
+// updating the spend column, making each sync operation idempotent across restarts.
+// maxConcurrency (32) bounds the goroutine fan-out per SScan page.
 package ads
 
 import (
@@ -11,6 +25,9 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// SyncWorker reconciles Redis budget accumulators to PostgreSQL on a fixed interval.
+// It holds references to both the campaign and customer repositories to execute
+// independent spend and balance updates per entity type.
 type SyncWorker struct {
 	rdb          redis.Cmdable
 	campaignRepo domain.CampaignRepository
@@ -33,6 +50,9 @@ func NewSyncWorker(
 	}
 }
 
+// Start launches the periodic sync loop and associates the goroutine with the
+// embedded WaitGroup. The goroutine exits on ctx cancellation; call Wait to
+// ensure the last sync run completes before the process terminates.
 func (w *SyncWorker) Start(ctx context.Context) {
 	w.wg.Add(1)
 	go func() {
@@ -52,6 +72,7 @@ func (w *SyncWorker) Start(ctx context.Context) {
 	}()
 }
 
+// Wait blocks until the background sync goroutine exits or ctx expires.
 func (w *SyncWorker) Wait(ctx context.Context) error {
 	done := make(chan struct{})
 	go func() {
@@ -176,8 +197,6 @@ func (w *SyncWorker) syncEntity(ctx context.Context, prefix string, idStr string
 		return
 	}
 
-	// lockKey is intentionally NOT released on updateFn errors. It expires via its TTL to prevent
-	// parallel sync goroutines from racing into the same DB write within the same lock window.
 	if err := updateFn(ctx, id, amountMicro, txIDVal); err == nil {
 		w.rdb.Eval(ctx, commitSyncScript, []string{inFlightKey, dirtySet, lockKey, txKey, syncKey}, amountMicro, idStr)
 	}

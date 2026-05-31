@@ -29,7 +29,6 @@ func TestUnifiedFilter_SLAPenalty_Discount(t *testing.T) {
 	custID := uuid.New()
 	reg := &mockRegistry{}
 
-	// Setup staticCampaign for the mock registry
 	staticCampaign.ID = campID
 	staticCampaign.CustomerID = custID
 	staticCampaign.IDStr = campID.String()
@@ -43,10 +42,8 @@ func TestUnifiedFilter_SLAPenalty_Discount(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	// Clear any SLA penalty flags
 	_ = rdb.Del(ctx, "sla:penalty:active").Err()
 
-	// Pre-seed campaign budget in Redis
 	budgetSourceKey := "budget:campaign:" + campID.String()
 	_ = rdb.Set(ctx, budgetSourceKey, int64(10_000_000), 24*time.Hour).Err()
 
@@ -59,13 +56,12 @@ func TestUnifiedFilter_SLAPenalty_Discount(t *testing.T) {
 		time.Minute,
 		time.Hour,
 		time.Hour,
-		1_000_000, // Click charge: 1.00 USD
-		10_000,    // Impression charge
+		1_000_000,
+		10_000,
 		"events-stream-sla",
 		10000,
 	)
 
-	// Case 1: SLA Penalty inactive. Charge should be exactly clickAmount (1_000_000).
 	evt := &domain.Event{
 		CampaignID: campID,
 		ClickID:    uuid.NewString(),
@@ -81,9 +77,8 @@ func TestUnifiedFilter_SLAPenalty_Discount(t *testing.T) {
 	afterBudget, _ := rdb.Get(ctx, budgetSourceKey).Int64()
 	assert.Equal(t, int64(1_000_000), beforeBudget-afterBudget)
 
-	// Case 2: Manually activate SLA penalty.
 	_ = rdb.Set(ctx, "sla:penalty:active", "true", time.Minute).Err()
-	// Fetch state into local cache of filter
+
 	f.slaPenaltyActive.Store(true)
 
 	evt2 := &domain.Event{
@@ -99,10 +94,9 @@ func TestUnifiedFilter_SLAPenalty_Discount(t *testing.T) {
 	assert.NoError(t, err)
 
 	afterBudget2, _ := rdb.Get(ctx, budgetSourceKey).Int64()
-	// Charge should be discounted by 50% -> exactly 500_000 micro-units
+
 	assert.Equal(t, int64(500_000), beforeBudget2-afterBudget2)
 
-	// Reset SLA penalty key
 	_ = rdb.Del(ctx, "sla:penalty:active").Err()
 }
 
@@ -132,8 +126,8 @@ func TestUnifiedFilter_SLASentinel_AutoDetection(t *testing.T) {
 	f.SetSLATargets(
 		200.0,
 		100.0,
-		10*time.Millisecond, // fast recovery duration
-		0.9,                 // high alpha for fast decay
+		10*time.Millisecond,
+		0.9,
 	)
 	f.ResizeTrackers(2)
 
@@ -141,33 +135,25 @@ func TestUnifiedFilter_SLASentinel_AutoDetection(t *testing.T) {
 	mockDB.Healthy.Store(true)
 	f.SetDBHealthChecker(mockDB)
 
-	// Start SLA Sentinel
 	f.StartSLASentinel(ctx, 10*time.Millisecond)
 
-	// Wait for first tick
 	time.Sleep(30 * time.Millisecond)
 	assert.False(t, f.slaPenaltyActive.Load())
 
-	// Break the database connection
 	mockDB.Healthy.Store(false)
 
-	// Wait for database failure detection tick
 	time.Sleep(50 * time.Millisecond)
 	assert.True(t, f.slaPenaltyActive.Load())
 
-	// Verify Redis flag has been auto-set by sentinel
 	redisVal, err := rdb.Get(ctx, "sla:penalty:active").Bool()
 	assert.NoError(t, err)
 	assert.True(t, redisVal)
 
-	// Heal the database
 	mockDB.Healthy.Store(true)
 
-	// Wait for recovery tick (EMA decay and stabilization)
 	time.Sleep(150 * time.Millisecond)
 	assert.False(t, f.slaPenaltyActive.Load())
 
-	// Redis flag must be cleared/deleted or false
 	_, err = rdb.Get(ctx, "sla:penalty:active").Bool()
 	assert.ErrorIs(t, err, redis.Nil)
 }
@@ -194,18 +180,15 @@ func TestSLASentinel_NoRedisPanic(t *testing.T) {
 	f.SetSLATargets(
 		200.0,
 		100.0,
-		10*time.Millisecond, // fast recovery duration
-		0.9,                 // high alpha for fast decay
+		10*time.Millisecond,
+		0.9,
 	)
 	f.ResizeTrackers(2)
 
 	mockDB := &MockDBHealth{}
-	mockDB.Healthy.Store(false) // immediately broken (Ping-error simulation)
+	mockDB.Healthy.Store(false)
 	f.SetDBHealthChecker(mockDB)
 
-	// Start SLA Sentinel.
-	// Since rdbs slice is empty, any redis calls must be bypassed entirely.
-	// We verify that the process transitions to SLA penalty active in-memory and does not panic.
 	assert.NotPanics(t, func() {
 		f.StartSLASentinel(ctx, 10*time.Millisecond)
 		time.Sleep(50 * time.Millisecond)

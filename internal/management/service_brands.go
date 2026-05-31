@@ -85,7 +85,6 @@ func (s *Service) ConfigureBrandFcap(ctx context.Context, brandID uuid.UUID, lim
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
 
-		// Pessimistic lock to serialize brand modifications.
 		brand, err := q.GetBrandForUpdate(ctx, ads.ToUUID(brandID))
 		if err != nil {
 			return fmt.Errorf("brand not found: %w", err)

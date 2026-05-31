@@ -82,18 +82,18 @@ func TestManagementAPI_Hardening(t *testing.T) {
 		var logs []any
 		err := json.NewDecoder(resp.Body).Decode(&logs)
 		require.NoError(t, err)
-		assert.GreaterOrEqual(t, len(logs), 2) // Settings update + Blacklist
+		assert.GreaterOrEqual(t, len(logs), 2)
 	})
 
 	t.Run("RateLimit", func(t *testing.T) {
-		// Exhaust the limiter
+
 		for i := 0; i < 60; i++ {
 			req, _ := http.NewRequest("GET", "/admin/audit", nil)
 			req.Header.Set("X-Admin-API-Key", "test-secret")
 			resp := httptest.NewRecorder()
 			mux.ServeHTTP(resp, req)
 			if resp.Code == http.StatusTooManyRequests {
-				return // Success
+				return
 			}
 		}
 		t.Errorf("Rate limiter did not trigger after 60 requests")

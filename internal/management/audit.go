@@ -12,7 +12,6 @@ import (
 	"github.com/mykhailov-ua/ad-event-processor/internal/ads"
 )
 
-// AuditLog records an administrative action to the persistent audit trail.
 func (s *Service) AuditLog(ctx context.Context, q db.Querier, adminID uuid.UUID, action string, targetType string, targetID *uuid.UUID, changes any, metadata any) {
 	changesJSON, _ := json.Marshal(changes)
 	metadataJSON, _ := json.Marshal(metadata)
@@ -40,7 +39,6 @@ func (s *Service) AuditLog(ctx context.Context, q db.Querier, adminID uuid.UUID,
 	}
 }
 
-// RunAuditCleaner starts a background worker that prunes audit logs older than the specified retention period.
 func (s *Service) RunAuditCleaner(ctx context.Context, retention Days) {
 	ticker := time.NewTicker(24 * time.Hour)
 	defer ticker.Stop()

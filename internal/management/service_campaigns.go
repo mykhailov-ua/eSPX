@@ -173,7 +173,6 @@ func (s *Service) UpdateCampaignPacing(ctx context.Context, campaignID uuid.UUID
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
 
-		// Pessimistic lock to serialize campaign modifications.
 		camp, err := q.GetCampaignForUpdate(ctx, ads.ToUUID(campaignID))
 		if err != nil {
 			return fmt.Errorf("campaign not found: %w", err)

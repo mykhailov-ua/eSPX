@@ -64,10 +64,10 @@ func TestNginxConfigWorker(t *testing.T) {
 		ips := []string{
 			"1.2.3.4",
 			"5.6.7.8/24",
-			"10.0.0.999", // invalid IP
-			"1.2.3.4;\ninclude /etc/nginx/nginx.conf;\n#", // injection payload
-			"2001:db8::1",   // IPv6
-			"2001:db8::/32", // IPv6 CIDR
+			"10.0.0.999",
+			"1.2.3.4;\ninclude /etc/nginx/nginx.conf;\n#",
+			"2001:db8::1",
+			"2001:db8::/32",
 		}
 
 		err := worker.writeDenyFile("test_validation.conf", ips)

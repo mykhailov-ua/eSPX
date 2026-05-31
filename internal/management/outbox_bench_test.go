@@ -31,17 +31,15 @@ func TestOutboxPerformanceMetrics(t *testing.T) {
 		CampaignUpdateChannel: "campaigns:update-test",
 	}
 	svc := NewService(pool, []redis.UniversalClient{rdb}, ads.NewJumpHashSharder(1), cfg)
-	svc.Close() // Stop background workers immediately to avoid them stealing seeded events
+	svc.Close()
 
 	ctx := context.Background()
 	queries := db.New(pool)
 
 	const eventCount = 100
 
-	// 1. Measure standard processing duration with real Redis (localhost)
 	t.Log("MEASURING TRANSACTION TIMES: Standard Outbox vs Decoupled Outbox")
 
-	// Seed events
 	seedEvents(t, queries, eventCount)
 
 	worker := NewOutboxWorker(svc)
@@ -53,9 +51,6 @@ func TestOutboxPerformanceMetrics(t *testing.T) {
 	t.Logf("[Baseline Redis] Processed %d events in standard outbox loop.", eventCount)
 	t.Logf("-> Active PG Transaction Duration: %v (%.3f ms/op)", durationNormal, float64(durationNormal.Nanoseconds())/1e6/float64(eventCount))
 
-	// 2. Simulate Connection Pool Starvation & Row Lock Contention under Latency
-	// If the OutboxWorker gets stuck on a slow Redis call (e.g. 50ms latency),
-	// let's measure how long another worker or the API pool is blocked on the locked rows.
 	t.Log("\nSIMULATING LOCK CONTENTION & CONNECTION STARVATION UNDER REDIS LATENCY (50ms)")
 
 	seedEvents(t, queries, 10)
@@ -66,7 +61,6 @@ func TestOutboxPerformanceMetrics(t *testing.T) {
 	var tx1Start, tx1End, tx2Start, tx2End time.Time
 	lockedSignal := make(chan struct{})
 
-	// Worker 1: Locks events and simulates a slow Redis write (50ms sleep) inside PG transaction
 	go func() {
 		defer wg.Done()
 		tx1Start = time.Now()
@@ -76,10 +70,9 @@ func TestOutboxPerformanceMetrics(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			// Signal Worker 2 that locks have been successfully acquired
+
 			close(lockedSignal)
 
-			// Simulate Redis write latency of 50ms inside the transaction
 			time.Sleep(50 * time.Millisecond)
 
 			for _, ev := range events {
@@ -90,11 +83,9 @@ func TestOutboxPerformanceMetrics(t *testing.T) {
 		tx1End = time.Now()
 	}()
 
-	// Worker 2: Tries to acquire the SAME outbox events using FOR UPDATE WITHOUT SKIP LOCKED
-	// to measure the exact blocking latency.
 	go func() {
 		defer wg.Done()
-		// Wait until Worker 1 has locked the events
+
 		select {
 		case <-lockedSignal:
 		case <-time.After(2 * time.Second):
@@ -102,7 +93,7 @@ func TestOutboxPerformanceMetrics(t *testing.T) {
 
 		tx2Start = time.Now()
 		_ = pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-			// Query for update WITHOUT skip locked to block on the same rows
+
 			_, _ = tx.Exec(ctx, "SELECT id FROM outbox_events WHERE status = 'PENDING' FOR UPDATE")
 			return nil
 		})

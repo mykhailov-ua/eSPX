@@ -20,8 +20,6 @@ var (
 
 const MaxPasswordLength = 72
 
-// ValidatePassword performs zero-allocation compliance checks against the security policy.
-// It enforces length and complexity criteria without regex engine overhead or heap allocations.
 func ValidatePassword(password string) error {
 	if len(password) < 8 {
 		return errors.Join(ErrInvalidPassword, errors.New("password must be at least 8 characters"))
@@ -70,8 +68,6 @@ const (
 	minParallelism uint8  = 2
 )
 
-// PasswordHasher encapsulates Argon2id configuration state and maintains a pre-computed dummy hash.
-// The dummy hash neutralizes timing side-channels during authentication of non-existent users.
 type PasswordHasher struct {
 	memory      uint32
 	iterations  uint32

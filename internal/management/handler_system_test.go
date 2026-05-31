@@ -49,7 +49,6 @@ func TestManagementAPI_System(t *testing.T) {
 		mux.ServeHTTP(resp, req)
 		assert.Equal(t, http.StatusNoContent, resp.Code)
 
-		// Get Settings
 		reqGet, _ := http.NewRequest("GET", "/admin/settings", nil)
 		reqGet.Header.Set("X-Admin-API-Key", "test-secret")
 		respGet := httptest.NewRecorder()
@@ -62,7 +61,6 @@ func TestManagementAPI_System(t *testing.T) {
 		assert.Equal(t, "100", res["rate_limit_per_min"])
 		assert.Equal(t, "0.05", res["click_amount"])
 
-		// Verify Redis
 		assert.Eventually(t, func() bool {
 			val, err := rdb.HGet(context.Background(), "config:values", "rate_limit_per_min").Result()
 			return err == nil && val == "100"
@@ -81,12 +79,10 @@ func TestManagementAPI_System(t *testing.T) {
 		mux.ServeHTTP(resp, req)
 		assert.Equal(t, http.StatusCreated, resp.Code)
 
-		// Check Redis
 		isMember, err := rdb.SIsMember(context.Background(), "blacklist:fraud", "192.168.1.50").Result()
 		require.NoError(t, err)
 		assert.True(t, isMember)
 
-		// List Blacklist
 		reqList, _ := http.NewRequest("GET", "/admin/blacklist", nil)
 		reqList.Header.Set("X-Admin-API-Key", "test-secret")
 		respList := httptest.NewRecorder()
@@ -101,18 +97,15 @@ func TestManagementAPI_System(t *testing.T) {
 		assert.Equal(t, "192.168.1.50", bl[0].IP)
 		assert.Equal(t, "fraud", bl[0].Reason)
 
-		// Test SyncSystemState
 		err = svc.SyncSystemState(context.Background())
 		require.NoError(t, err)
 
-		// Delete
 		reqDel, _ := http.NewRequest("DELETE", "/admin/blacklist", bytes.NewReader(body))
 		reqDel.Header.Set("X-Admin-API-Key", "test-secret")
 		respDel := httptest.NewRecorder()
 		mux.ServeHTTP(respDel, reqDel)
 		assert.Equal(t, http.StatusNoContent, respDel.Code)
 
-		// Check Redis removed
 		isMember, err = rdb.SIsMember(context.Background(), "blacklist:fraud", "192.168.1.50").Result()
 		require.NoError(t, err)
 		assert.False(t, isMember)

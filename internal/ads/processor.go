@@ -1,3 +1,17 @@
+// Package ads implements the Redis Streams consumer pipeline that drains ad-event
+// messages from sharded streams into PostgreSQL (transactional ledger) and ClickHouse
+// (columnar telemetry). StreamConsumer operates a fan-out of worker goroutines each
+// holding an XReadGroup lease; batch accumulation is bounded by batchSize and flushInt
+// to amortize per-write PostgreSQL round-trips. Write failures trigger exponential
+// back-off controlled by the embedded CircuitBreaker; repeated failures decompose the
+// batch into singleton writes to isolate poison-pill messages before escalating
+// survivors to the ad:events:dlq stream serialized as vtproto-encoded AdDLQEvent.
+//
+// The janitor goroutine uses XAutoClaim to reclaim messages abandoned by crashed
+// consumers after streamMinIdle, preventing PEL (Pending Entry List) accumulation.
+// The dlqMonitor goroutine samples XLen every 15 s to keep the DLQ Prometheus gauge
+// current. All goroutines check ctx.Done() on every iteration; shutdown drains any
+// buffered batch before returning. See docs/architecture.md §Processor.
 package ads
 
 import (
@@ -18,12 +32,11 @@ import (
 	redis "github.com/redis/go-redis/v9"
 )
 
-// StreamConsumer implements parallel processing of Redis streams with exact-once delivery guarantees.
-//
-// Concurrency:
-// - Manages multiple worker goroutines executing pipeline ingress operations.
-// - Features an embedded CircuitBreaker to handle database connection issues and isolate failure zones.
-// - Safe for concurrent startup/shutdown operations via synchronized mutex locks.
+// StreamConsumer is a Redis Streams consumer group worker pool for a single logical
+// stream. It maintains maxWorkers concurrent XReadGroup loops, a janitor goroutine
+// for autoclaim, and a dlqMonitor goroutine for queue-depth observability. The
+// CircuitBreaker field gates flush attempts; when Open, workers back off for the
+// remaining timeout duration rather than hammering a degraded downstream.
 type StreamConsumer struct {
 	store         domain.EventStore
 	rdb           redis.UniversalClient
@@ -46,6 +59,10 @@ type StreamConsumer struct {
 	cb            *CircuitBreaker
 }
 
+// NewStreamConsumer constructs a StreamConsumer and derives a globally unique
+// consumerID by combining the provided base ID, the OS hostname, and a random UUID
+// suffix to prevent PEL conflicts when multiple processor replicas share the same
+// configuration. The CircuitBreaker is initialized with a timeout of 2×retryMaxWait.
 func NewStreamConsumer(
 	store domain.EventStore,
 	rdb redis.UniversalClient,
@@ -83,6 +100,10 @@ func NewStreamConsumer(
 	}
 }
 
+// Start creates the consumer group if it does not exist (XGroupCreateMkStream with
+// offset "0" to process all historical messages on first boot), then launches
+// maxWorkers worker goroutines plus one janitor and one dlqMonitor. It is idempotent:
+// concurrent calls are serialized by startMu and subsequent calls are no-ops.
 func (p *StreamConsumer) Start(ctx context.Context) {
 	p.startMu.Lock()
 	defer p.startMu.Unlock()
@@ -125,6 +146,8 @@ func (p *StreamConsumer) Close() {
 	}
 }
 
+// Wait blocks until all internal goroutines exit or the supplied context expires.
+// Use after Close to guarantee a clean drain before the process terminates.
 func (p *StreamConsumer) Wait(ctx context.Context) error {
 	done := make(chan struct{})
 	go func() {
@@ -144,19 +167,6 @@ func (p *StreamConsumer) workerConsumerID(workerIdx int) string {
 	return fmt.Sprintf("%s-w%d", p.consumerID, workerIdx)
 }
 
-// worker executes a continuous batch-consumption cycle, reading events from the stream and flushing them to persistent stores.
-//
-// Memory Impact:
-// - Bounded allocations. Pools are leveraged inside parseMessage to recycle transient objects.
-//
-// Concurrency:
-// - Thread-safe. Designed to scale across multiple CPU cores, isolating connection failures through local worker contexts.
-//
-// Operational Stages:
-// 1. Recovery Phase: Pulls pending events previously assigned to the worker and flushes them first.
-// 2. Main Loop: Pulls batches of size Count via XReadGroup.
-// 3. Pacing & Timers: Batch is processed when count equals batchSize or the last flush was more than flushInt ago.
-// 4. Graceful Draining: Listens for context cancellation, completes active flush cycles, and returns.
 func (p *StreamConsumer) worker(ctx context.Context, workerIdx int) {
 	workerID := p.workerConsumerID(workerIdx)
 	defer func() {
@@ -550,7 +560,6 @@ func (p *StreamConsumer) moveToDLQ(ctx context.Context, batch []*domain.Event, m
 		hasError = true
 	}
 
-	// Step 2: For every successfully written message, send XAck and XDel to clean up the main stream
 	pipeAck := p.rdb.Pipeline()
 	ackedMsgIDs := make([]string, 0, len(batch))
 
@@ -797,20 +806,6 @@ func (p *StreamConsumer) janitor(ctx context.Context) {
 	}
 }
 
-// claimStuckMessages crawls the stream's Pending Entries List (PEL) using XAutoClaim, attempting to reclaim
-// messages that have been stranded or stuck under crashed workers.
-//
-// Memory Impact:
-// - Uses standard recycling pools when building DLQ marshaled objects to prevent memory fragmentation.
-//
-// Concurrency:
-// - Thread-safe. Executed sequentially within the janitor goroutine interval scope.
-//
-// Recovery & DLQ Invariants:
-//   - MinIdle check: Evaluates if a message remains pending without acknowledgment for longer than streamMinIdle.
-//   - XAutoClaim: Shifts ownership of expired messages to the active consumer.
-//   - DLQ Escalation: Increments a tracking counter in the "ad:events:retries" Redis hash for every claimed message.
-//     If a message's retry count exceeds maxRetries, it is treated as a poison pill, moved to the DLQ, and deleted from the main stream.
 func (p *StreamConsumer) claimStuckMessages(ctx context.Context) {
 	startID := "0-0"
 	for {
