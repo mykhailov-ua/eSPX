@@ -1,0 +1,6 @@
+# Log evacuation container environment
+FROM alpine:3.19
+RUN apk add --no-cache rsync zstd openssh-client bash coreutils
+COPY scripts/log-evacuate.sh /scripts/log-evacuate.sh
+RUN chmod +x /scripts/log-evacuate.sh
+ENTRYPOINT ["/scripts/log-evacuate.sh"]

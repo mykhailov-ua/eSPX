@@ -1,0 +1,1 @@
+*/5 * * * * cd /opt/espx && docker compose --profile tools run --rm log-evacuator >> /var/log/espx-evacuate.log 2>&1
