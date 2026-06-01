@@ -18,6 +18,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Secret is a string type whose LogValue returns "**********" to prevent
@@ -58,6 +59,7 @@ type Config struct {
 	DBProcessorMaxConns     int
 	DBMinConns              int
 	WriteTimeoutMs          int
+	FilterTimeoutMs         int
 	IdempotencyTTLHrs       int
 	RateLimitPerMin         int
 	RateLimitWindowMs       int
@@ -108,6 +110,15 @@ type Config struct {
 		ShutdownTimeoutMs int
 		DrainTimeoutMs    int
 		WaitTimeoutMs     int
+	}
+
+	Logger struct {
+		Dir            string
+		Shards         int
+		FlushSizeKB    int
+		RotateSizeMB   int
+		RotateInterval time.Duration
+		LatencyLimit   time.Duration
 	}
 }
 
@@ -172,6 +183,7 @@ func Load() (*Config, error) {
 		DBProcessorMaxConns:         getEnvInt("DB_PROCESSOR_MAX_CONNS", 16),
 		DBMinConns:                  getEnvInt("DB_MIN_CONNS", 2),
 		WriteTimeoutMs:              getEnvInt("WRITE_TIMEOUT_MS", 5000),
+		FilterTimeoutMs:             getEnvInt("FILTER_TIMEOUT_MS", 0),
 		IdempotencyTTLHrs:           getEnvInt("IDEMPOTENCY_TTL_HRS", 24),
 		RateLimitPerMin:             getEnvInt("RATE_LIMIT_PER_MIN", 100),
 		RateLimitWindowMs:           getEnvInt("RATE_LIMIT_WINDOW_MS", 60000),
@@ -220,6 +232,16 @@ func Load() (*Config, error) {
 		CreditScoringMaturePercent:  getEnvInt64("CREDIT_SCORING_MATURE_PERCENT", 30),
 		CreditScoringMaxCap:         getEnvMicro("CREDIT_SCORING_MAX_CAP", 10000.0),
 	}
+
+	cfg.Logger.Dir = os.Getenv("LOGGER_DIR")
+	if cfg.Logger.Dir == "" {
+		cfg.Logger.Dir = "/var/log/espx"
+	}
+	cfg.Logger.Shards = getEnvInt("LOGGER_SHARDS", 8)
+	cfg.Logger.FlushSizeKB = getEnvInt("LOGGER_FLUSH_SIZE_KB", 256)
+	cfg.Logger.RotateSizeMB = getEnvInt("LOGGER_ROTATE_SIZE_MB", 512)
+	cfg.Logger.RotateInterval = time.Duration(getEnvInt("LOGGER_ROTATE_INTERVAL_MIN", 60)) * time.Minute
+	cfg.Logger.LatencyLimit = time.Duration(getEnvInt("LOGGER_LATENCY_LIMIT_MS", 100)) * time.Millisecond
 
 	if len(cfg.AllowedOrigins) == 1 && cfg.AllowedOrigins[0] == "" {
 		cfg.AllowedOrigins = []string{"https://dashboard.example.com", "http://localhost:8188"}
@@ -276,6 +298,10 @@ func Load() (*Config, error) {
 	}
 	if cfg.TokenSymmetricKey == "" {
 		return nil, errors.New("TOKEN_SYMMETRIC_KEY is required")
+	}
+
+	if cfg.FilterTimeoutMs <= 0 {
+		cfg.FilterTimeoutMs = cfg.WriteTimeoutMs
 	}
 
 	return cfg, nil
