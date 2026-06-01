@@ -29,6 +29,7 @@ import (
 	"github.com/mykhailov-ua/ad-event-processor/internal/ads/pb"
 	"github.com/mykhailov-ua/ad-event-processor/internal/domain"
 	"github.com/mykhailov-ua/ad-event-processor/internal/metrics"
+	"github.com/mykhailov-ua/ad-event-processor/pkg/logger"
 	redis "github.com/redis/go-redis/v9"
 )
 
@@ -57,6 +58,18 @@ type StreamConsumer struct {
 	maxRetries    int
 	started       bool
 	cb            *CircuitBreaker
+	logger        *logger.Logger
+}
+
+func (p *StreamConsumer) SetLogger(l *logger.Logger) {
+	p.logger = l
+}
+
+var logBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 512)
+		return &b
+	},
 }
 
 // NewStreamConsumer constructs a StreamConsumer and derives a globally unique
@@ -198,7 +211,7 @@ func (p *StreamConsumer) worker(ctx context.Context, workerIdx int) {
 		case <-ctx.Done():
 			drainCtx, drainCancel := context.WithTimeout(context.Background(), p.drainTimeout)
 			if len(batch) > 0 {
-				if err := p.flushBatch(drainCtx, batch, msgIDs); err == nil {
+				if err := p.flushBatch(drainCtx, batch, msgIDs, workerID); err == nil {
 					for _, e := range batch {
 						domain.EventPool.Put(e)
 					}
@@ -307,7 +320,7 @@ func (p *StreamConsumer) tryFlush(ctx context.Context, batch *[]*domain.Event, m
 		}
 		return
 	}
-	err := p.flushBatch(ctx, *batch, *msgIDs)
+	err := p.flushBatch(ctx, *batch, *msgIDs, workerID)
 	if err == nil {
 		p.recordSuccess(workerID)
 		_ = p.rdb.HDel(ctx, "ad:events:retries", (*msgIDs)...).Err()
@@ -663,10 +676,19 @@ func (p *StreamConsumer) parseMessage(id string, values map[string]interface{}) 
 	return evt
 }
 
-func (p *StreamConsumer) flushBatch(ctx context.Context, batch []*domain.Event, msgIDs []string) error {
+func firstN(ids []string, n int) []string {
+	if len(ids) <= n {
+		return ids
+	}
+	return ids[:n]
+}
+
+func (p *StreamConsumer) flushBatch(ctx context.Context, batch []*domain.Event, msgIDs []string, workerID string) error {
 	if len(batch) == 0 {
 		return nil
 	}
+
+	slog.Debug("flushing batch", "group", p.groupName, "batch_size", len(batch), "first_ids", firstN(msgIDs, 5))
 
 	storeCtx, storeCancel := context.WithTimeout(ctx, p.writeTimeout)
 	defer storeCancel()
@@ -674,17 +696,43 @@ func (p *StreamConsumer) flushBatch(ctx context.Context, batch []*domain.Event, 
 	err := p.store.StoreBatch(storeCtx, batch)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
-			slog.Error("store failed, NOT ACKING", "error", err, "group", p.groupName, "size", len(batch))
+			slog.Error("store failed, NOT ACKING", "error", err, "group", p.groupName, "batch_size", len(batch), "first_ids", firstN(msgIDs, 5))
 		}
 		return err
+	}
+
+	if p.logger != nil {
+		workerIdx := 0
+		if idx := strings.LastIndex(workerID, "-w"); idx != -1 {
+			if val, err := strconv.Atoi(workerID[idx+2:]); err == nil {
+				workerIdx = val
+			}
+		}
+		for _, e := range batch {
+			bufPtr := logBufPool.Get().(*[]byte)
+			buf := (*bufPtr)[:0]
+			buf = append(buf, `{"level":"info","timestamp":"`...)
+			buf = e.CreatedAt.AppendFormat(buf, time.RFC3339)
+			buf = append(buf, `","msg":"event successfully processed","campaign_id":"`...)
+			buf = appendUUID(buf, e.CampaignID)
+			buf = append(buf, `","click_id":"`...)
+			buf = append(buf, e.ClickID...)
+			buf = append(buf, `","type":"`...)
+			buf = append(buf, e.Type...)
+			buf = append(buf, `","priority":0}`...)
+			p.logger.WriteToShard(workerIdx, 0, buf)
+			*bufPtr = buf
+			logBufPool.Put(bufPtr)
+		}
 	}
 
 	ackCtx, cancel := context.WithTimeout(ctx, p.writeTimeout)
 	defer cancel()
 	if err := p.rdb.XAck(ackCtx, p.streamName, p.groupName, msgIDs...).Err(); err != nil {
 		if !errors.Is(err, context.Canceled) {
-			slog.Error("failed to ack", "error", err, "group", p.groupName)
+			slog.Error("xack failed after successful store", "error", err, "group", p.groupName, "batch_size", len(batch), "first_ids", firstN(msgIDs, 5))
 		}
+		return err
 	}
 	return nil
 }
@@ -714,7 +762,7 @@ func (p *StreamConsumer) recoverPending(ctx context.Context, consumerID string) 
 				msgIDs = append(msgIDs, msg.ID)
 			}
 
-			if err := p.flushBatch(ctx, batch, msgIDs); err != nil {
+			if err := p.flushBatch(ctx, batch, msgIDs, consumerID); err != nil {
 				if !errors.Is(err, context.Canceled) {
 					p.recordFailure(consumerID)
 					slog.Error("recovery flush failed, moving to DLQ", "error", err, "group", p.groupName)
@@ -769,7 +817,7 @@ func (p *StreamConsumer) drainNewMessages(ctx context.Context, consumerID string
 				msgIDs = append(msgIDs, msg.ID)
 			}
 
-			if err := p.flushBatch(ctx, batch, msgIDs); err != nil {
+			if err := p.flushBatch(ctx, batch, msgIDs, consumerID); err != nil {
 				if !errors.Is(err, context.Canceled) {
 					slog.Error("drain: failed to flush batch", "error", err, "group", p.groupName, "worker", consumerID)
 				}
@@ -864,7 +912,7 @@ func (p *StreamConsumer) claimStuckMessages(ctx context.Context) {
 			}
 
 			if len(batch) > 0 {
-				if err := p.flushBatch(ctx, batch, msgIDs); err != nil {
+				if err := p.flushBatch(ctx, batch, msgIDs, "janitor"); err != nil {
 					p.recordFailure("janitor")
 					if !errors.Is(err, context.Canceled) {
 						slog.Error("janitor flush failed", "error", err, "group", p.groupName)
