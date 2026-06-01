@@ -12,6 +12,7 @@
 package ads
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"errors"
@@ -162,16 +163,17 @@ func (f *UnifiedFilter) SetGeoBidFloor(country string, floor int64) {
 	f.geoFloors.Store(country, floor)
 }
 
+var parseBidMicroKey = []byte(`"bid_micro"`)
+
 func parseBidMicro(payload []byte) int64 {
-	const key = `"bid_micro"`
 	n := len(payload)
-	kLen := len(key)
+	kLen := len(parseBidMicroKey)
 	if n < kLen {
 		return 0
 	}
 
 	for i := 0; i <= n-kLen; i++ {
-		if payload[i] == '"' && string(payload[i:i+kLen]) == key {
+		if payload[i] == '"' && bytes.Equal(payload[i:i+kLen], parseBidMicroKey) {
 			idx := i + kLen
 			for idx < n && (payload[idx] == ' ' || payload[idx] == '\t' || payload[idx] == ':') {
 				if payload[idx] == ':' {
@@ -278,7 +280,9 @@ func (f *UnifiedFilter) StartSLASentinel(ctx context.Context, interval time.Dura
 				}
 
 				start := time.Now()
-				err := f.dbHealth.Ping(ctx)
+				pingCtx, pingCancel := context.WithTimeout(ctx, interval)
+				err := f.dbHealth.Ping(pingCtx)
+				pingCancel()
 				latency := float64(time.Since(start).Milliseconds())
 				if err != nil {
 

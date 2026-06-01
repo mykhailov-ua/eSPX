@@ -1,0 +1,3 @@
+# Place GeoLite2-Country.mmdb here for production geo-targeting.
+# Download: https://dev.maxmind.com/geoip/geolite2-free-geolocation-data
+# ENV=development allows tracker startup without this file (mock geo provider).

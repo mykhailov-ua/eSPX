@@ -162,6 +162,7 @@ func (f *FraudFilter) Check(ctx context.Context, evt *domain.Event) error {
 			delta := time.Since(time.UnixMilli(ts))
 			if delta < f.ttcMin {
 				evt.FraudReason = "low_ttc:" + delta.String()
+				return ErrFraudDetected
 			}
 		}
 	}
