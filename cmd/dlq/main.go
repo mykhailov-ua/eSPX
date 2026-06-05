@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -17,16 +18,18 @@ import (
 	"github.com/mykhailov-ua/ad-event-processor/internal/ads"
 	"github.com/mykhailov-ua/ad-event-processor/internal/ads/pb"
 	"github.com/redis/go-redis/v9"
+	"golang.org/x/time/rate"
 	"google.golang.org/protobuf/proto"
 )
 
 func main() {
 	var (
-		action   = flag.String("action", "archive", "Action to perform: archive, requeue, restore, or inspect")
-		stream   = flag.String("stream", "ad:events:dlq", "DLQ stream name or target stream name")
-		dest     = flag.String("dest", "dlq_archive.bin", "Destination file for archive/restore or target stream name for requeue")
-		batch    = flag.Int64("batch", 1000, "Batch size for processing")
-		redisURL = flag.String("redis", "redis://localhost:6379", "Redis connection string")
+		action    = flag.String("action", "archive", "Action to perform: archive, requeue, restore, or inspect")
+		stream    = flag.String("stream", "ad:events:dlq", "DLQ stream name or target stream name")
+		dest      = flag.String("dest", "dlq_archive.bin", "Destination file for archive/restore or target stream name for requeue")
+		batch     = flag.Int64("batch", 1000, "Batch size for processing")
+		redisURL  = flag.String("redis", "redis://localhost:6379", "Redis connection string")
+		rateLimit = flag.Int64("rate", 0, "Rate limit (events per second) for requeue/restore. 0 means unlimited.")
 	)
 	flag.Parse()
 
@@ -50,11 +53,11 @@ func main() {
 			log.Fatalf("Archive failed: %v", err)
 		}
 	case "requeue":
-		if err := requeueDLQ(ctx, rdb, *stream, *dest, *batch); err != nil {
+		if err := requeueDLQ(ctx, rdb, *stream, *dest, *batch, *rateLimit); err != nil {
 			log.Fatalf("Requeue failed: %v", err)
 		}
 	case "restore":
-		if err := restoreDLQ(ctx, rdb, *dest, *stream, *batch); err != nil {
+		if err := restoreDLQ(ctx, rdb, *dest, *stream, *batch, *rateLimit); err != nil {
 			log.Fatalf("Restore failed: %v", err)
 		}
 	case "inspect":
@@ -73,10 +76,16 @@ func archiveDLQ(ctx context.Context, rdb *redis.Client, stream, destFile string,
 	}
 	defer file.Close()
 
+	writer := bufio.NewWriter(file)
+	defer writer.Flush()
+
 	startID := "0-0"
 	var totalProcessed int64
 
 	log.Printf("Starting binary Protobuf archive of stream %s to %s", stream, destFile)
+
+	pbDLQ := &pb.AdDLQEvent{}
+	pbStream := &pb.AdStreamEvent{}
 
 	for {
 		msgs, err := rdb.XRead(ctx, &redis.XReadArgs{
@@ -97,31 +106,27 @@ func archiveDLQ(ctx context.Context, rdb *redis.Client, stream, destFile string,
 		var msgIDs []string
 
 		for _, msg := range msgs[0].Messages {
-			pbDLQ := &pb.AdDLQEvent{}
+			pbDLQ.Reset()
 
 			if rawBytesStr, ok := msg.Values["d"].(string); ok {
-
 				if err := proto.Unmarshal(ads.UnsafeBytes(rawBytesStr), pbDLQ); err != nil {
-
-					pbStream := &pb.AdStreamEvent{}
+					pbStream.Reset()
 					if err := proto.Unmarshal(ads.UnsafeBytes(rawBytesStr), pbStream); err == nil {
 						pbDLQ.OriginalEvent = pbStream
 						pbDLQ.Error = ads.UnsafeBytes("recovered stream event")
 						pbDLQ.OriginalId = ads.UnsafeBytes(msg.ID)
 						pbDLQ.FailedAtUnix = time.Now().Unix()
 					} else {
-
-						pbDLQ.OriginalEvent = &pb.AdStreamEvent{
-							Payload: ads.UnsafeBytes(rawBytesStr),
-						}
+						pbStream.Reset()
+						pbStream.Payload = ads.UnsafeBytes(rawBytesStr)
+						pbDLQ.OriginalEvent = pbStream
 						pbDLQ.Error = ads.UnsafeBytes("unknown binary")
 						pbDLQ.OriginalId = ads.UnsafeBytes(msg.ID)
 						pbDLQ.FailedAtUnix = time.Now().Unix()
 					}
 				}
 			} else {
-
-				pbStream := &pb.AdStreamEvent{}
+				pbStream.Reset()
 				if v, ok := msg.Values["click_id"].(string); ok {
 					pbStream.ClickId = ads.UnsafeBytes(v)
 				}
@@ -179,10 +184,10 @@ func archiveDLQ(ctx context.Context, rdb *redis.Client, stream, destFile string,
 
 			var lengthBuf [4]byte
 			binary.BigEndian.PutUint32(lengthBuf[:], uint32(len(data)))
-			if _, err := file.Write(lengthBuf[:]); err != nil {
+			if _, err := writer.Write(lengthBuf[:]); err != nil {
 				return fmt.Errorf("failed to write length prefix for msg %s: %w", msg.ID, err)
 			}
-			if _, err := file.Write(data); err != nil {
+			if _, err := writer.Write(data); err != nil {
 				return fmt.Errorf("failed to write message data for msg %s: %w", msg.ID, err)
 			}
 
@@ -203,11 +208,18 @@ func archiveDLQ(ctx context.Context, rdb *redis.Client, stream, destFile string,
 	return nil
 }
 
-func requeueDLQ(ctx context.Context, rdb *redis.Client, dlqStream, targetStream string, batchSize int64) error {
+func requeueDLQ(ctx context.Context, rdb *redis.Client, dlqStream, targetStream string, batchSize int64, rateLimit int64) error {
 	startID := "0-0"
 	var totalProcessed int64
 
-	log.Printf("Starting requeue from %s to %s", dlqStream, targetStream)
+	log.Printf("Starting requeue from %s to %s with rate limit %d events/sec", dlqStream, targetStream, rateLimit)
+
+	pbDLQ := &pb.AdDLQEvent{}
+
+	var limiter *rate.Limiter
+	if rateLimit > 0 {
+		limiter = rate.NewLimiter(rate.Limit(rateLimit), int(rateLimit))
+	}
 
 	for {
 		msgs, err := rdb.XRead(ctx, &redis.XReadArgs{
@@ -228,10 +240,15 @@ func requeueDLQ(ctx context.Context, rdb *redis.Client, dlqStream, targetStream 
 		var msgIDs []string
 
 		for _, msg := range msgs[0].Messages {
+			if limiter != nil {
+				if err := limiter.Wait(ctx); err != nil {
+					return fmt.Errorf("rate limiter wait error: %w", err)
+				}
+			}
+
 			values := make(map[string]interface{})
 			if rawBytesStr, ok := msg.Values["d"].(string); ok {
-
-				pbDLQ := &pb.AdDLQEvent{}
+				pbDLQ.Reset()
 				if err := proto.Unmarshal(ads.UnsafeBytes(rawBytesStr), pbDLQ); err == nil && pbDLQ.OriginalEvent != nil {
 					data, err := proto.Marshal(pbDLQ.OriginalEvent)
 					if err == nil {
@@ -243,7 +260,6 @@ func requeueDLQ(ctx context.Context, rdb *redis.Client, dlqStream, targetStream 
 					log.Printf("Failed to unmarshal Protobuf DLQ message %s: %v", msg.ID, err)
 				}
 			} else {
-
 				for k, v := range msg.Values {
 					if k != "error" && k != "original_id" && k != "failed_at" && k != "service" && k != "worker_id" && k != "retry_count" {
 						values[k] = v
@@ -272,19 +288,27 @@ func requeueDLQ(ctx context.Context, rdb *redis.Client, dlqStream, targetStream 
 	return nil
 }
 
-func restoreDLQ(ctx context.Context, rdb *redis.Client, srcFile, targetStream string, batchSize int64) error {
+func restoreDLQ(ctx context.Context, rdb *redis.Client, srcFile, targetStream string, batchSize int64, rateLimit int64) error {
 	file, err := os.Open(srcFile)
 	if err != nil {
 		return fmt.Errorf("failed to open archive file: %w", err)
 	}
 	defer file.Close()
 
-	log.Printf("Starting restore from %s to stream %s", srcFile, targetStream)
+	log.Printf("Starting restore from %s to stream %s with rate limit %d events/sec", srcFile, targetStream, rateLimit)
 
+	reader := bufio.NewReader(file)
 	var totalProcessed int64
 	var lengthBuf [4]byte
 	pipe := rdb.Pipeline()
 	batchCount := 0
+
+	pbDLQ := &pb.AdDLQEvent{}
+
+	var limiter *rate.Limiter
+	if rateLimit > 0 {
+		limiter = rate.NewLimiter(rate.Limit(rateLimit), int(rateLimit))
+	}
 
 	for {
 		select {
@@ -293,7 +317,7 @@ func restoreDLQ(ctx context.Context, rdb *redis.Client, srcFile, targetStream st
 		default:
 		}
 
-		_, err := file.Read(lengthBuf[:])
+		_, err := reader.Read(lengthBuf[:])
 		if err != nil {
 			if err == io.EOF {
 				break
@@ -303,11 +327,11 @@ func restoreDLQ(ctx context.Context, rdb *redis.Client, srcFile, targetStream st
 
 		length := binary.BigEndian.Uint32(lengthBuf[:])
 		data := make([]byte, length)
-		if _, err := io.ReadFull(file, data); err != nil {
+		if _, err := io.ReadFull(reader, data); err != nil {
 			return fmt.Errorf("failed to read message payload: %w", err)
 		}
 
-		pbDLQ := &pb.AdDLQEvent{}
+		pbDLQ.Reset()
 		if err := proto.Unmarshal(data, pbDLQ); err != nil {
 			return fmt.Errorf("failed to unmarshal AdDLQEvent: %w", err)
 		}
@@ -320,6 +344,12 @@ func restoreDLQ(ctx context.Context, rdb *redis.Client, srcFile, targetStream st
 		streamData, err := proto.Marshal(pbDLQ.OriginalEvent)
 		if err != nil {
 			return fmt.Errorf("failed to marshal original event: %w", err)
+		}
+
+		if limiter != nil {
+			if err := limiter.Wait(ctx); err != nil {
+				return fmt.Errorf("rate limiter wait error: %w", err)
+			}
 		}
 
 		pipe.XAdd(ctx, &redis.XAddArgs{
@@ -358,6 +388,9 @@ func inspectStream(ctx context.Context, rdb *redis.Client, stream string, batchS
 
 	log.Printf("Starting inspection of stream %s", stream)
 
+	pbDLQ := &pb.AdDLQEvent{}
+	pbStream := &pb.AdStreamEvent{}
+
 	for {
 		msgs, err := rdb.XRead(ctx, &redis.XReadArgs{
 			Streams: []string{stream, startID},
@@ -377,8 +410,7 @@ func inspectStream(ctx context.Context, rdb *redis.Client, stream string, batchS
 			fmt.Printf("\nMessage ID: %s\n", msg.ID)
 
 			if rawBytesStr, ok := msg.Values["d"].(string); ok {
-
-				pbDLQ := &pb.AdDLQEvent{}
+				pbDLQ.Reset()
 				if err := proto.Unmarshal(ads.UnsafeBytes(rawBytesStr), pbDLQ); err == nil && pbDLQ.OriginalEvent != nil {
 					fmt.Println("Format: Protobuf (AdDLQEvent)")
 					orig := pbDLQ.OriginalEvent
@@ -413,8 +445,7 @@ func inspectStream(ctx context.Context, rdb *redis.Client, stream string, batchS
 					prettyJSON, _ := json.MarshalIndent(m, "", "  ")
 					fmt.Println(string(prettyJSON))
 				} else {
-
-					pbStream := &pb.AdStreamEvent{}
+					pbStream.Reset()
 					if err := proto.Unmarshal(ads.UnsafeBytes(rawBytesStr), pbStream); err == nil {
 						fmt.Println("Format: Protobuf (AdStreamEvent)")
 						var campUUIDStr string
