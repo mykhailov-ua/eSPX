@@ -52,6 +52,34 @@ var (
 			Help: "Logger internal flusher queue depth.",
 		},
 	)
+
+	LogPersistQueueCapacity = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "log_persist_queue_capacity",
+			Help: "Configured capacity of the persist buffer channel.",
+		},
+	)
+
+	LogPersistQueueSaturation = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "log_persist_queue_saturation",
+			Help: "Ratio of persist queue depth to capacity.",
+		},
+	)
+
+	LogPersistQueueDroppedBuffersTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "log_persist_queue_dropped_buffers_total",
+			Help: "Buffers dropped after persist enqueue timeout.",
+		},
+	)
+
+	LogPersistQueueDroppedBytesTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "log_persist_queue_dropped_bytes_total",
+			Help: "Bytes dropped after persist enqueue timeout.",
+		},
+	)
 )
 
 func RegisterMetrics() {
@@ -61,10 +89,21 @@ func RegisterMetrics() {
 	_ = prometheus.Register(LogDiskDegraded)
 	_ = prometheus.Register(LogRotationTotal)
 	_ = prometheus.Register(LogQueueDepth)
+	_ = prometheus.Register(LogPersistQueueCapacity)
+	_ = prometheus.Register(LogPersistQueueSaturation)
+	_ = prometheus.Register(LogPersistQueueDroppedBuffersTotal)
+	_ = prometheus.Register(LogPersistQueueDroppedBytesTotal)
 }
 
 func (l *Logger) StartMetricsReporter(interval time.Duration) {
-	defer l.wg.Done()
+	l.wg.Add(1)
+	go func() {
+		defer l.wg.Done()
+		l.metricsReporterLoop(interval)
+	}()
+}
+
+func (l *Logger) metricsReporterLoop(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -85,7 +124,21 @@ func (l *Logger) StartMetricsReporter(interval time.Duration) {
 			if shedEvents > 0 {
 				LogLoadSheddingEventsTotal.Add(float64(shedEvents))
 			}
-			LogQueueDepth.Set(float64(len(l.persistCh)))
+			depth := len(l.persistCh)
+			cap := l.persistQueueCap
+			LogQueueDepth.Set(float64(depth))
+			LogPersistQueueCapacity.Set(float64(cap))
+			if cap > 0 {
+				LogPersistQueueSaturation.Set(float64(depth) / float64(cap))
+			}
+			drops := l.persistQueueDrops.Swap(0)
+			if drops > 0 {
+				LogPersistQueueDroppedBuffersTotal.Add(float64(drops))
+			}
+			dropBytes := l.persistQueueDropBytes.Swap(0)
+			if dropBytes > 0 {
+				LogPersistQueueDroppedBytesTotal.Add(float64(dropBytes))
+			}
 			LogDiskDegraded.Set(float64(l.diskDegraded.Load()))
 		}
 	}

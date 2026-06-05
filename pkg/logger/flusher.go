@@ -1,10 +1,11 @@
 package logger
 
 import (
+	"encoding/binary"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -81,7 +82,7 @@ func (l *Logger) StartDrainer() {
 		select {
 		case <-l.closeChan:
 			buf, _ = l.drainShards(buf)
-			l.sendBuffer(buf)
+			l.sendBuffer(buf, true)
 			close(l.persistCh)
 			return
 		case <-ticker.C:
@@ -91,8 +92,8 @@ func (l *Logger) StartDrainer() {
 				firstLogAt = time.Now()
 			}
 			if buf.offset > 0 {
-				if buf.offset >= 64*1024 || time.Since(firstLogAt) >= 50*time.Millisecond {
-					l.sendBuffer(buf)
+				if buf.offset >= l.cfg.FlushBufferSize || time.Since(firstLogAt) >= 50*time.Millisecond {
+					l.sendBuffer(buf, false)
 					buf = l.getBuffer()
 					firstLogAt = time.Time{}
 				}
@@ -110,19 +111,25 @@ func (l *Logger) drainShards(buf *AlignedBuffer) (*AlignedBuffer, bool) {
 		for readCursor < writeCursor {
 			idx := readCursor & RingMask
 			payload := &shard.slots[idx]
+			for payload.ready.Load() == 0 {
+				runtime.Gosched()
+			}
 			if degraded && payload.Priority == 0 {
 				l.loadSheddingEvents.Add(1)
 				readCursor++
 				continue
 			}
 			logBytes := payload.Data[:payload.Length]
-			totalSize := len(logBytes) + 1
+			totalSize := 4 + len(logBytes)
 			if buf.Available() < totalSize {
-				l.sendBuffer(buf)
+				l.sendBuffer(buf, false)
 				buf = l.getBuffer()
 			}
+			var lenBuf [4]byte
+			binary.BigEndian.PutUint32(lenBuf[:], uint32(len(logBytes)))
+			buf.Write(lenBuf[:])
 			buf.Write(logBytes)
-			buf.WriteByte('\n')
+			payload.ready.Store(0)
 			flushed = true
 			readCursor++
 		}
@@ -131,15 +138,27 @@ func (l *Logger) drainShards(buf *AlignedBuffer) (*AlignedBuffer, bool) {
 	return buf, flushed
 }
 
-func (l *Logger) sendBuffer(buf *AlignedBuffer) {
+func (l *Logger) recordPersistQueueDrop(buf *AlignedBuffer) {
+	l.persistQueueDrops.Add(1)
+	l.persistQueueDropBytes.Add(uint64(buf.offset))
+	l.loadSheddingEvents.Add(uint64(buf.offset / 100))
+}
+
+func (l *Logger) sendBuffer(buf *AlignedBuffer, blocking bool) {
 	if buf.offset == 0 {
 		bufferPool.Put(buf)
 		return
 	}
+	if blocking {
+		l.persistCh <- buf
+		return
+	}
+	timer := time.NewTimer(l.cfg.PersistEnqueueTimeout)
+	defer timer.Stop()
 	select {
 	case l.persistCh <- buf:
-	default:
-		l.loadSheddingEvents.Add(uint64(buf.offset / 100))
+	case <-timer.C:
+		l.recordPersistQueueDrop(buf)
 		buf.Reset()
 		bufferPool.Put(buf)
 	}
@@ -147,15 +166,10 @@ func (l *Logger) sendBuffer(buf *AlignedBuffer) {
 
 func (l *Logger) StartPersister() {
 	defer l.wg.Done()
-	lastStatCheck := time.Now()
 	for buf := range l.persistCh {
 		l.writeBuffer(buf)
 		buf.Reset()
 		bufferPool.Put(buf)
-		if time.Since(lastStatCheck) >= 5*time.Second {
-			l.checkDiskSpace()
-			lastStatCheck = time.Now()
-		}
 	}
 }
 
@@ -168,6 +182,9 @@ func (l *Logger) writeBuffer(buf *AlignedBuffer) {
 	data := buf.Bytes()
 	start := time.Now()
 	n, err := l.activeFile.Write(data)
+	if err == nil {
+		err = syscall.Fdatasync(int(l.activeFile.Fd()))
+	}
 	duration := time.Since(start)
 	LogNVMEWriteDurationSeconds.Observe(duration.Seconds())
 	if err != nil {
@@ -175,16 +192,16 @@ func (l *Logger) writeBuffer(buf *AlignedBuffer) {
 		l.loadSheddingEvents.Add(uint64(buf.offset / 100))
 		return
 	}
-	latencyMs := float64(duration.Nanoseconds()) / 1e6
-	currentEMA := math.Float64frombits(l.emaLatency.Load())
-	var newEMA float64
+	latencyNs := uint64(duration.Nanoseconds())
+	currentEMA := l.emaLatency.Load()
+	var newEMA uint64
 	if currentEMA == 0 {
-		newEMA = latencyMs
+		newEMA = latencyNs
 	} else {
-		newEMA = 0.1*latencyMs + 0.9*currentEMA
+		newEMA = (latencyNs + 9*currentEMA) / 10
 	}
-	l.emaLatency.Store(math.Float64bits(newEMA))
-	if newEMA > float64(l.cfg.DiskLatencyLimit.Milliseconds()) {
+	l.emaLatency.Store(newEMA)
+	if newEMA > uint64(l.cfg.DiskLatencyLimit.Nanoseconds()) {
 		l.diskDegraded.Store(1)
 	}
 	l.bytesWritten += int64(n)
@@ -201,9 +218,26 @@ func (l *Logger) checkDiskSpace() {
 	if freeSpace < 1024*1024*1024 {
 		l.diskDegraded.Store(1)
 	} else {
-		ema := math.Float64frombits(l.emaLatency.Load())
-		if ema <= float64(l.cfg.DiskLatencyLimit.Milliseconds()) {
+		ema := l.emaLatency.Load()
+		if ema <= uint64(l.cfg.DiskLatencyLimit.Nanoseconds()) {
 			l.diskDegraded.Store(0)
+		} else {
+			l.emaLatency.Store(0)
+			l.diskDegraded.Store(0)
+		}
+	}
+}
+
+func (l *Logger) StartDiskMonitor() {
+	defer l.wg.Done()
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-l.closeChan:
+			return
+		case <-ticker.C:
+			l.checkDiskSpace()
 		}
 	}
 }
@@ -227,7 +261,6 @@ func (l *Logger) checkRotation() {
 }
 
 func (l *Logger) openActiveFile() {
-	_ = os.MkdirAll(l.cfg.LogDir, 0755)
 	activePath := filepath.Join(l.cfg.LogDir, "active.log")
 	f, err := os.OpenFile(activePath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
