@@ -53,6 +53,22 @@ The pipeline consists of five layers:
   - **ClickHouse**: Multi-table columnar batch insertions track persistence status using an in-memory `InsertedToCH` flag per event. Failed retries skip already-persisted tables to prevent analytics duplication.
   - **Janitor Loop**: Monitors stream groups and executes `XAutoClaim` to recover orphaned messages from the Pending Entries List (PEL). Messages exceeding `maxRetries` are archived to `ad:events:dlq` and deleted from the main queue.
 
+### 3. Log Broker (ELB) Implementation
+
+- **Storage Engine**:
+  - Leverages memory-mapped files (`syscall.Mmap`) for append-only log segments and companion index files.
+  - Active segments automatically roll over to read-only segments when file sizes cross segment limits.
+  - Sparse indexing records offset maps at configurable intervals. Searches on index offsets utilize binary search for log position lookup.
+  - Startup recovery scans the tail of active segments, validates length headers, and truncates partial writes to recover from crashes.
+- **Lock-Free Concurrency**:
+  - Employs an RCU-like snapshot pattern (`atomic.Pointer[segmentSnapshot]`). Updates to segment listings swap pointers atomically, eliminating read-write mutex locks on the read path.
+  - Buffers for fetches are recycled using a `sync.Pool` to eliminate heap allocations under load.
+  - Transient network data is explicitly cloned before storing topic keys to prevent memory corruption from recycled network buffers.
+- **Coordinated High Availability**:
+  - Redis acts as the coordinator storing leader leases and nodes metadata.
+  - Active-passive replication loops on follower nodes pull from leaders via non-blocking consumers.
+  - Health checks query memory state flags updated by background workers, bypassing synchronous disk writes.
+
 ---
 
 ## Observability & SLA Thresholds

@@ -14,8 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mykhailov-ua/ad-event-processor/pkg/broker/log"
-	"github.com/mykhailov-ua/ad-event-processor/pkg/broker/protocol"
+	"espx/pkg/broker/log"
+	"espx/pkg/broker/protocol"
 	"github.com/panjf2000/gnet/v2"
 )
 
@@ -35,8 +35,8 @@ type Server struct {
 	dataDir       string
 	maxSegSize    int64
 	indexInterval int64
-	topics        map[string]*log.PartitionLog
-	topicsMu      sync.RWMutex
+	topics        sync.Map
+	initMu        sync.Mutex // serializes partition initialization on cold path
 	closeChan     chan struct{}
 	closeOnce     sync.Once
 	wg            sync.WaitGroup
@@ -59,7 +59,6 @@ func NewServer(addr string, dataDir string, maxSegSize int64, indexInterval int6
 		dataDir:            dataDir,
 		maxSegSize:         maxSegSize,
 		indexInterval:      indexInterval,
-		topics:             make(map[string]*log.PartitionLog),
 		closeChan:          make(chan struct{}),
 	}
 	s.diskOK.Store(true)
@@ -197,11 +196,10 @@ func (s *Server) Stop() {
 			_ = eng.Stop(context.Background())
 		}
 
-		s.topicsMu.Lock()
-		for _, pl := range s.topics {
-			_ = pl.Close()
-		}
-		s.topicsMu.Unlock()
+		s.topics.Range(func(_, val any) bool {
+			_ = val.(*log.PartitionLog).Close()
+			return true
+		})
 	})
 	s.wg.Wait()
 }
@@ -282,10 +280,12 @@ func (s *Server) handleProduce(c gnet.Conn, seq uint64, payload []byte) {
 	}
 
 	if s.coord != nil && !s.coord.IsLeader(topic) {
-
-		resp := protocol.EncodeProduceResponse(buf, seq, 4, 0)
-		_, _ = c.Write(resp)
-		return
+		hasLeader, _ := s.coord.HasLeader(topic)
+		if hasLeader {
+			resp := protocol.EncodeProduceResponse(buf, seq, 4, 0)
+			_, _ = c.Write(resp)
+			return
+		}
 	}
 
 	pl, err := s.getOrCreatePartition(topic)
@@ -325,7 +325,7 @@ func (s *Server) handleFetch(c gnet.Conn, seq uint64, payload []byte) {
 		return
 	}
 
-	data, err := pl.ReadRawMessages(startOffset, maxBytes)
+	data, dataBufPtr, err := pl.ReadRawMessages(startOffset, maxBytes)
 	if err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, log.ErrSegmentNotFound) {
 			header := protocol.EncodeFetchResponseHeader(buf, seq, 0, 0, 0)
@@ -335,6 +335,9 @@ func (s *Server) handleFetch(c gnet.Conn, seq uint64, payload []byte) {
 		header := protocol.EncodeFetchResponseHeader(buf, seq, 3, 0, 0)
 		_, _ = c.Write(header)
 		return
+	}
+	if dataBufPtr != nil {
+		defer log.FetchBufPool.Put(dataBufPtr)
 	}
 
 	msgCount, totalBytes := countMessages(data)
@@ -363,26 +366,22 @@ func countMessages(buf []byte) (uint32, uint32) {
 }
 
 func (s *Server) getOrCreatePartition(topic string) (*log.PartitionLog, error) {
-	s.topicsMu.RLock()
-	pl, ok := s.topics[topic]
-	s.topicsMu.RUnlock()
-	if ok {
-		return pl, nil
+	if val, ok := s.topics.Load(topic); ok {
+		return val.(*log.PartitionLog), nil
 	}
 
-	s.topicsMu.Lock()
-	defer s.topicsMu.Unlock()
-	pl, ok = s.topics[topic]
-	if ok {
-		return pl, nil
+	s.initMu.Lock()
+	defer s.initMu.Unlock()
+
+	if val, ok := s.topics.Load(topic); ok {
+		return val.(*log.PartitionLog), nil
 	}
 
 	dir := filepath.Join(s.dataDir, topic)
-	var err error
-	pl, err = log.NewPartitionLog(dir, s.maxSegSize, s.indexInterval)
+	pl, err := log.NewPartitionLog(dir, s.maxSegSize, s.indexInterval)
 	if err != nil {
 		return nil, err
 	}
-	s.topics[topic] = pl
+	s.topics.Store(strings.Clone(topic), pl)
 	return pl, nil
 }

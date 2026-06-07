@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/mykhailov-ua/ad-event-processor/pkg/broker/client"
+	"espx/pkg/broker/client"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -20,8 +21,7 @@ type Coordinator struct {
 	closeChan chan struct{}
 	closeOnce sync.Once
 	wg        sync.WaitGroup
-	leaders   map[string]bool
-	leadersMu sync.RWMutex
+	leaders   atomic.Pointer[map[string]bool] // lock-free reads on hot path
 }
 
 func NewCoordinator(nodeID string, tcpAddr string, redisURL string, server *Server) (*Coordinator, error) {
@@ -31,14 +31,16 @@ func NewCoordinator(nodeID string, tcpAddr string, redisURL string, server *Serv
 	}
 
 	rdb := redis.NewClient(opts)
-	return &Coordinator{
+	c := &Coordinator{
 		nodeID:    nodeID,
 		tcpAddr:   tcpAddr,
 		rdb:       rdb,
 		server:    server,
 		closeChan: make(chan struct{}),
-		leaders:   make(map[string]bool),
-	}, nil
+	}
+	initMap := make(map[string]bool)
+	c.leaders.Store(&initMap)
+	return c, nil
 }
 
 func (c *Coordinator) Start() {
@@ -64,9 +66,18 @@ func (c *Coordinator) Stop() {
 }
 
 func (c *Coordinator) IsLeader(topic string) bool {
-	c.leadersMu.RLock()
-	defer c.leadersMu.RUnlock()
-	return c.leaders[topic]
+	m := c.leaders.Load()
+	if m == nil {
+		return false
+	}
+	return (*m)[topic]
+}
+
+func (c *Coordinator) HasLeader(topic string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	exists, err := c.rdb.Exists(ctx, "espx:topics:"+topic+":leader").Result()
+	return exists > 0, err
 }
 
 func (c *Coordinator) runHeartbeatLoop() {
@@ -102,12 +113,11 @@ func (c *Coordinator) runCoordinationLoop() {
 			}
 			return
 		case <-ticker.C:
-			c.server.topicsMu.RLock()
-			topics := make([]string, 0, len(c.server.topics))
-			for t := range c.server.topics {
-				topics = append(topics, t)
-			}
-			c.server.topicsMu.RUnlock()
+			var topics []string
+			c.server.topics.Range(func(key, _ any) bool {
+				topics = append(topics, key.(string))
+				return true
+			})
 
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			for _, topic := range topics {
@@ -149,9 +159,17 @@ func (c *Coordinator) runCoordinationLoop() {
 }
 
 func (c *Coordinator) setLeaderStatus(topic string, isLeader bool) {
-	c.leadersMu.Lock()
-	c.leaders[topic] = isLeader
-	c.leadersMu.Unlock()
+	for {
+		old := c.leaders.Load()
+		newMap := make(map[string]bool, len(*old)+1)
+		for k, v := range *old {
+			newMap[k] = v
+		}
+		newMap[topic] = isLeader
+		if c.leaders.CompareAndSwap(old, &newMap) {
+			return
+		}
+	}
 }
 
 func (c *Coordinator) replicate(topic string, leaderID string, stopCh chan struct{}) {
@@ -208,15 +226,20 @@ func (c *Coordinator) replicate(topic string, leaderID string, stopCh chan struc
 
 			nextOffset := pl.NextOffset()
 
-			err = cli.FetchStream(topic, nextOffset, 65536, func(offset uint64, payload []byte) error {
-				_, err := pl.Append(payload)
-				return err
-			})
+			iter, fetchErr := cli.Fetch(topic, nextOffset, 65536)
+			if fetchErr == nil {
+				for iter.Next() {
+					if _, err = pl.Append(iter.Payload); err != nil {
+						fetchErr = err
+						break
+					}
+				}
+			}
 
-			if err != nil {
+			if fetchErr != nil {
 				_ = cli.Close()
 				cli = nil
-				if !errors.Is(err, errors.New("EOF")) {
+				if !errors.Is(fetchErr, errors.New("EOF")) {
 					time.Sleep(500 * time.Millisecond)
 				}
 			}

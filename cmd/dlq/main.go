@@ -10,13 +10,14 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"espx/internal/ads"
+	"espx/internal/ads/pb"
 	"github.com/google/uuid"
-	"github.com/mykhailov-ua/ad-event-processor/internal/ads"
-	"github.com/mykhailov-ua/ad-event-processor/internal/ads/pb"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/time/rate"
 	"google.golang.org/protobuf/proto"
@@ -24,12 +25,13 @@ import (
 
 func main() {
 	var (
-		action    = flag.String("action", "archive", "Action to perform: archive, requeue, restore, or inspect")
+		action    = flag.String("action", "archive", "Action to perform: archive, requeue, restore, inspect, or edit")
 		stream    = flag.String("stream", "ad:events:dlq", "DLQ stream name or target stream name")
 		dest      = flag.String("dest", "dlq_archive.bin", "Destination file for archive/restore or target stream name for requeue")
 		batch     = flag.Int64("batch", 1000, "Batch size for processing")
 		redisURL  = flag.String("redis", "redis://localhost:6379", "Redis connection string")
 		rateLimit = flag.Int64("rate", 0, "Rate limit (events per second) for requeue/restore. 0 means unlimited.")
+		id        = flag.String("id", "", "ID of the stream message to edit (required for -action=edit)")
 	)
 	flag.Parse()
 
@@ -63,6 +65,13 @@ func main() {
 	case "inspect":
 		if err := inspectStream(ctx, rdb, *stream, *batch); err != nil {
 			log.Fatalf("Inspect failed: %v", err)
+		}
+	case "edit":
+		if *id == "" {
+			log.Fatalf("Please specify the message ID to edit using the -id flag")
+		}
+		if err := editDLQMessage(ctx, rdb, *stream, *id); err != nil {
+			log.Fatalf("Edit failed: %v", err)
 		}
 	default:
 		log.Fatalf("Unknown action: %s", *action)
@@ -485,5 +494,187 @@ func inspectStream(ctx context.Context, rdb *redis.Client, stream string, batchS
 		}
 	}
 	log.Printf("Inspection completed. Total inspected: %d", totalProcessed)
+	return nil
+}
+
+type EditableStreamEvent struct {
+	ClickId       string `json:"click_id"`
+	CampaignId    string `json:"campaign_id"`
+	EventType     string `json:"event_type"`
+	Payload       string `json:"payload"`
+	Ip            string `json:"ip"`
+	Ua            string `json:"ua"`
+	CreatedAtUnix int64  `json:"created_at_unix"`
+}
+
+type EditableDLQEvent struct {
+	ID            string              `json:"id"`
+	Error         string              `json:"error"`
+	OriginalId    string              `json:"original_id"`
+	FailedAtUnix  int64               `json:"failed_at_unix"`
+	WorkerId      string              `json:"worker_id"`
+	RetryCount    int32               `json:"retry_count"`
+	OriginalEvent EditableStreamEvent `json:"original_event"`
+}
+
+func toEditable(id string, pbDLQ *pb.AdDLQEvent) EditableDLQEvent {
+	var orig EditableStreamEvent
+	if pbDLQ.OriginalEvent != nil {
+		campUUIDStr := ""
+		if len(pbDLQ.OriginalEvent.CampaignId) == 16 {
+			if u, err := uuid.FromBytes(pbDLQ.OriginalEvent.CampaignId); err == nil {
+				campUUIDStr = u.String()
+			}
+		}
+		if campUUIDStr == "" {
+			campUUIDStr = ads.UnsafeString(pbDLQ.OriginalEvent.CampaignId)
+		}
+
+		orig = EditableStreamEvent{
+			ClickId:       ads.UnsafeString(pbDLQ.OriginalEvent.ClickId),
+			CampaignId:    campUUIDStr,
+			EventType:     ads.UnsafeString(pbDLQ.OriginalEvent.EventType),
+			Payload:       ads.UnsafeString(pbDLQ.OriginalEvent.Payload),
+			Ip:            ads.UnsafeString(pbDLQ.OriginalEvent.Ip),
+			Ua:            ads.UnsafeString(pbDLQ.OriginalEvent.Ua),
+			CreatedAtUnix: pbDLQ.OriginalEvent.CreatedAtUnix,
+		}
+	}
+	return EditableDLQEvent{
+		ID:            id,
+		Error:         ads.UnsafeString(pbDLQ.Error),
+		OriginalId:    ads.UnsafeString(pbDLQ.OriginalId),
+		FailedAtUnix:  pbDLQ.FailedAtUnix,
+		WorkerId:      ads.UnsafeString(pbDLQ.WorkerId),
+		RetryCount:    pbDLQ.RetryCount,
+		OriginalEvent: orig,
+	}
+}
+
+func fromEditable(edit EditableDLQEvent) *pb.AdDLQEvent {
+	var campID []byte
+	if u, err := uuid.Parse(edit.OriginalEvent.CampaignId); err == nil {
+		campID = u[:]
+	} else {
+		campID = ads.UnsafeBytes(edit.OriginalEvent.CampaignId)
+	}
+
+	return &pb.AdDLQEvent{
+		Error:        ads.UnsafeBytes(edit.Error),
+		OriginalId:   ads.UnsafeBytes(edit.OriginalId),
+		FailedAtUnix: edit.FailedAtUnix,
+		WorkerId:     ads.UnsafeBytes(edit.WorkerId),
+		RetryCount:   edit.RetryCount,
+		OriginalEvent: &pb.AdStreamEvent{
+			ClickId:       ads.UnsafeBytes(edit.OriginalEvent.ClickId),
+			CampaignId:    campID,
+			EventType:     ads.UnsafeBytes(edit.OriginalEvent.EventType),
+			Payload:       ads.UnsafeBytes(edit.OriginalEvent.Payload),
+			Ip:            ads.UnsafeBytes(edit.OriginalEvent.Ip),
+			Ua:            ads.UnsafeBytes(edit.OriginalEvent.Ua),
+			CreatedAtUnix: edit.OriginalEvent.CreatedAtUnix,
+		},
+	}
+}
+
+func launchEditor(filepath string) error {
+	editor := os.Getenv("EDITOR")
+	if editor != "" {
+		cmd := exec.Command(editor, filepath)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err == nil {
+			return nil
+		}
+	}
+
+	for _, ed := range []string{"nano", "vim", "vi"} {
+		cmd := exec.Command(ed, filepath)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("failed to start editor: please set your EDITOR environment variable")
+}
+
+func editDLQMessage(ctx context.Context, rdb *redis.Client, stream, id string) error {
+	msgs, err := rdb.XRange(ctx, stream, id, id).Result()
+	if err != nil {
+		return fmt.Errorf("failed to fetch message %s from stream: %w", id, err)
+	}
+	if len(msgs) == 0 {
+		return fmt.Errorf("message %s not found in stream %s", id, stream)
+	}
+	msg := msgs[0]
+
+	rawBytesStr, ok := msg.Values["d"].(string)
+	if !ok {
+		return fmt.Errorf("message %s does not contain data field 'd'", id)
+	}
+
+	pbDLQ := &pb.AdDLQEvent{}
+	if err := proto.Unmarshal(ads.UnsafeBytes(rawBytesStr), pbDLQ); err != nil {
+		return fmt.Errorf("failed to unmarshal AdDLQEvent: %w", err)
+	}
+
+	editable := toEditable(id, pbDLQ)
+	jsonData, err := json.MarshalIndent(editable, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal editable event to JSON: %w", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "dlq-edit-*.json")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := tmpFile.Write(jsonData); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("failed to write JSON to temporary file: %w", err)
+	}
+	_ = tmpFile.Close()
+
+	log.Printf("Opening editor for message %s. Edit the JSON and save/close...", id)
+	if err := launchEditor(tmpPath); err != nil {
+		return err
+	}
+
+	modifiedData, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return fmt.Errorf("failed to read modified file: %w", err)
+	}
+
+	var modifiedEditable EditableDLQEvent
+	if err := json.Unmarshal(modifiedData, &modifiedEditable); err != nil {
+		return fmt.Errorf("failed to parse modified JSON: %w", err)
+	}
+
+	modifiedPBDLQ := fromEditable(modifiedEditable)
+	newRawBytes, err := proto.Marshal(modifiedPBDLQ)
+	if err != nil {
+		return fmt.Errorf("failed to marshal modified event to Protobuf: %w", err)
+	}
+
+	pipe := rdb.Pipeline()
+	pipe.XDel(ctx, stream, id)
+	pipe.XAdd(ctx, &redis.XAddArgs{
+		Stream: stream,
+		Values: map[string]interface{}{
+			"d": ads.UnsafeString(newRawBytes),
+		},
+	})
+	cmds, err := pipe.Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to update message in stream: %w", err)
+	}
+
+	newID := cmds[1].(*redis.StringCmd).Val()
+	log.Printf("Successfully updated message. Old ID: %s, New ID: %s", id, newID)
 	return nil
 }

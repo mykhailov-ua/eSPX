@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"espx/internal/ads"
+	"espx/internal/ads/pb"
 	"github.com/google/uuid"
-	"github.com/mykhailov-ua/ad-event-processor/internal/ads"
-	"github.com/mykhailov-ua/ad-event-processor/internal/ads/pb"
 	"google.golang.org/protobuf/proto"
 )
 

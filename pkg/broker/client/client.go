@@ -10,13 +10,33 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mykhailov-ua/ad-event-processor/pkg/broker/protocol"
+	"espx/pkg/broker/protocol"
 	"github.com/redis/go-redis/v9"
 )
 
-type Message struct {
+type MessageIterator struct {
+	data    []byte
+	idx     int
+	count   uint32
+	curr    uint32
 	Offset  uint64
 	Payload []byte
+}
+
+func (it *MessageIterator) Next() bool {
+	if it.curr >= it.count || it.idx+12 > len(it.data) {
+		return false
+	}
+	length := binary.BigEndian.Uint32(it.data[it.idx : it.idx+4])
+	it.Offset = binary.BigEndian.Uint64(it.data[it.idx+4 : it.idx+12])
+	payloadLen := int(length) - 8
+	if it.idx+12+payloadLen > len(it.data) {
+		return false
+	}
+	it.Payload = it.data[it.idx+12 : it.idx+12+payloadLen]
+	it.idx += 12 + payloadLen
+	it.curr++
+	return true
 }
 
 type Client struct {
@@ -184,7 +204,7 @@ func (c *Client) Produce(topic string, payload []byte) (uint64, error) {
 	return 0, fmt.Errorf("failed after 5 attempts, last error: %w", lastErr)
 }
 
-func (c *Client) Fetch(topic string, startOffset uint64, maxBytes uint32) ([]Message, error) {
+func (c *Client) Fetch(topic string, startOffset uint64, maxBytes uint32) (MessageIterator, error) {
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
 		if attempt > 0 {
@@ -238,17 +258,17 @@ func (c *Client) Fetch(topic string, startOffset uint64, maxBytes uint32) ([]Mes
 
 		if cmd != protocol.CmdFetchResp {
 			c.mu.Unlock()
-			return nil, fmt.Errorf("unexpected command response: %d", cmd)
+			return MessageIterator{}, fmt.Errorf("unexpected command response: %d", cmd)
 		}
 
 		if respSeq != seq {
 			c.mu.Unlock()
-			return nil, fmt.Errorf("sequence mismatch: expected %d, got %d", seq, respSeq)
+			return MessageIterator{}, fmt.Errorf("sequence mismatch: expected %d, got %d", seq, respSeq)
 		}
 
 		if len(respPayload) < 5 {
 			c.mu.Unlock()
-			return nil, errors.New("malformed fetch response payload")
+			return MessageIterator{}, errors.New("malformed fetch response payload")
 		}
 
 		status := respPayload[0]
@@ -266,168 +286,20 @@ func (c *Client) Fetch(topic string, startOffset uint64, maxBytes uint32) ([]Mes
 
 		if status != 0 {
 			c.mu.Unlock()
-			return nil, fmt.Errorf("broker error status: %d", status)
+			return MessageIterator{}, fmt.Errorf("broker error status: %d", status)
 		}
 
 		msgCount := binary.BigEndian.Uint32(respPayload[1:5])
 		messagesData := respPayload[5:]
 
-		if msgCount == 0 {
-			c.mu.Unlock()
-			return nil, nil
-		}
-
-		messages := make([]Message, 0, msgCount)
-		idx := 0
-		for i := uint32(0); i < msgCount; i++ {
-			if idx+12 > len(messagesData) {
-				break
-			}
-			length := binary.BigEndian.Uint32(messagesData[idx : idx+4])
-			offset := binary.BigEndian.Uint64(messagesData[idx+4 : idx+12])
-			payloadLen := int(length) - 8
-
-			if idx+12+payloadLen > len(messagesData) {
-				break
-			}
-
-			payload := make([]byte, payloadLen)
-			copy(payload, messagesData[idx+12:idx+12+payloadLen])
-			messages = append(messages, Message{
-				Offset:  offset,
-				Payload: payload,
-			})
-
-			idx += 12 + payloadLen
-		}
-
 		c.mu.Unlock()
-		return messages, nil
+		return MessageIterator{
+			data:  messagesData,
+			count: msgCount,
+		}, nil
 	}
 
-	return nil, fmt.Errorf("failed after 5 attempts, last error: %w", lastErr)
-}
-
-func (c *Client) FetchStream(topic string, startOffset uint64, maxBytes uint32, cb func(offset uint64, payload []byte) error) error {
-	var lastErr error
-	for attempt := 0; attempt < 5; attempt++ {
-		if attempt > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
-
-		c.mu.Lock()
-		conn, err := c.getConn()
-		if err != nil {
-			c.mu.Unlock()
-			lastErr = err
-			if c.redisURL != "" {
-				if newAddr, rErr := c.resolveLeaderAddr(topic); rErr == nil && newAddr != c.addr {
-					c.addr = newAddr
-				}
-			}
-			continue
-		}
-
-		seq := atomic.AddUint64(&c.nextSeq, 1)
-		req := protocol.EncodeFetchRequest(c.writeBuf, seq, topic, startOffset, maxBytes)
-
-		if c.timeout > 0 {
-			_ = conn.SetDeadline(time.Now().Add(c.timeout))
-		}
-
-		if _, err := conn.Write(req); err != nil {
-			_ = c.closeRawConn()
-			c.mu.Unlock()
-			lastErr = err
-			if c.redisURL != "" {
-				if newAddr, rErr := c.resolveLeaderAddr(topic); rErr == nil && newAddr != c.addr {
-					c.addr = newAddr
-				}
-			}
-			continue
-		}
-
-		cmd, respSeq, respPayload, err := protocol.ReadFrame(conn, c.readBuf, c.lenBuf)
-		if err != nil {
-			_ = c.closeRawConn()
-			c.mu.Unlock()
-			lastErr = err
-			if c.redisURL != "" {
-				if newAddr, rErr := c.resolveLeaderAddr(topic); rErr == nil && newAddr != c.addr {
-					c.addr = newAddr
-				}
-			}
-			continue
-		}
-
-		if cmd != protocol.CmdFetchResp {
-			c.mu.Unlock()
-			return fmt.Errorf("unexpected command response: %d", cmd)
-		}
-
-		if respSeq != seq {
-			c.mu.Unlock()
-			return fmt.Errorf("sequence mismatch: expected %d, got %d", seq, respSeq)
-		}
-
-		if len(respPayload) < 5 {
-			c.mu.Unlock()
-			return errors.New("malformed fetch response payload")
-		}
-
-		status := respPayload[0]
-		if status == 4 {
-			_ = c.closeRawConn()
-			c.mu.Unlock()
-			lastErr = errors.New("not leader")
-			if c.redisURL != "" {
-				if newAddr, rErr := c.resolveLeaderAddr(topic); rErr == nil && newAddr != c.addr {
-					c.addr = newAddr
-				}
-			}
-			continue
-		}
-
-		if status != 0 {
-			c.mu.Unlock()
-			return fmt.Errorf("broker error status: %d", status)
-		}
-
-		msgCount := binary.BigEndian.Uint32(respPayload[1:5])
-		messagesData := respPayload[5:]
-
-		if msgCount == 0 {
-			c.mu.Unlock()
-			return nil
-		}
-
-		idx := 0
-		for i := uint32(0); i < msgCount; i++ {
-			if idx+12 > len(messagesData) {
-				break
-			}
-			length := binary.BigEndian.Uint32(messagesData[idx : idx+4])
-			offset := binary.BigEndian.Uint64(messagesData[idx+4 : idx+12])
-			payloadLen := int(length) - 8
-
-			if idx+12+payloadLen > len(messagesData) {
-				break
-			}
-
-			payload := messagesData[idx+12 : idx+12+payloadLen]
-			if err := cb(offset, payload); err != nil {
-				c.mu.Unlock()
-				return err
-			}
-
-			idx += 12 + payloadLen
-		}
-
-		c.mu.Unlock()
-		return nil
-	}
-
-	return fmt.Errorf("failed after 5 attempts, last error: %w", lastErr)
+	return MessageIterator{}, fmt.Errorf("failed after 5 attempts, last error: %w", lastErr)
 }
 
 func (c *Client) closeRawConn() error {

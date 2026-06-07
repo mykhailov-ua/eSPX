@@ -14,13 +14,16 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
 var ErrSegmentNotFound = errors.New("segment not found")
 
-type IndexEntry struct {
-	Offset   uint64
-	Position int64
+var FetchBufPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, 1024*1024)
+		return &b
+	},
 }
 
 type Segment struct {
@@ -32,13 +35,44 @@ type Segment struct {
 	logSize    int64
 	indexSize  int64
 
-	indexCache []IndexEntry
-
 	mmapData   []byte
+	mmapIndex  []byte
 	maxSegSize int64
+	maxIdxSize int64
 }
 
-func NewSegment(dir string, baseOffset uint64, maxSegSize int64, writeable bool) (*Segment, error) {
+func findActualIndexSize(idxData []byte, baseOffset uint64) int64 {
+	numEntries := len(idxData) / 16
+	var count int64 = 0
+	var lastOffset uint64 = 0
+	hasLast := false
+
+	for i := 0; i < numEntries; i++ {
+		off := binary.BigEndian.Uint64(idxData[i*16 : i*16+8])
+		pos := int64(binary.BigEndian.Uint64(idxData[i*16+8 : i*16+16]))
+
+		if off == 0 && pos == 0 && i > 0 {
+			break
+		}
+		if off < baseOffset {
+			break
+		}
+		if pos < 0 {
+			break
+		}
+		if hasLast && off <= lastOffset {
+			break
+		}
+
+		lastOffset = off
+		hasLast = true
+		count++
+	}
+
+	return count * 16
+}
+
+func NewSegment(dir string, baseOffset uint64, maxSegSize int64, indexInterval int64, writeable bool) (*Segment, error) {
 	logName := fmt.Sprintf("%020d.log", baseOffset)
 	idxName := fmt.Sprintf("%020d.index", baseOffset)
 	logPath := filepath.Join(dir, logName)
@@ -69,23 +103,24 @@ func NewSegment(dir string, baseOffset uint64, maxSegSize int64, writeable bool)
 		_ = indexFile.Close()
 		return nil, err
 	}
-
 	indexSize := idxInfo.Size()
-	numEntries := indexSize / 16
-	indexCache := make([]IndexEntry, 0, numEntries)
 
-	if numEntries > 0 {
-		idxData := make([]byte, numEntries*16)
+	if indexSize > 0 {
+		idxData := make([]byte, indexSize)
 		if _, err := io.ReadFull(indexFile, idxData); err == nil {
-			for i := int64(0); i < numEntries; i++ {
-				off := binary.BigEndian.Uint64(idxData[i*16 : i*16+8])
-				pos := int64(binary.BigEndian.Uint64(idxData[i*16+8 : i*16+16]))
-				indexCache = append(indexCache, IndexEntry{Offset: off, Position: pos})
-			}
+			indexSize = findActualIndexSize(idxData, baseOffset)
 		}
+		_, _ = indexFile.Seek(0, io.SeekStart)
 	}
 
+	if indexInterval <= 0 {
+		indexInterval = 4096
+	}
+	maxIdxSize := (maxSegSize/indexInterval + 100) * 16
+
 	var mmapData []byte
+	var mmapIndex []byte
+
 	if writeable {
 		if logSize < maxSegSize {
 			if err := logFile.Truncate(maxSegSize); err != nil {
@@ -98,7 +133,23 @@ func NewSegment(dir string, baseOffset uint64, maxSegSize int64, writeable bool)
 		if err != nil {
 			_ = logFile.Close()
 			_ = indexFile.Close()
-			return nil, fmt.Errorf("mmap failed: %w", err)
+			return nil, fmt.Errorf("log mmap failed: %w", err)
+		}
+
+		if indexSize < maxIdxSize {
+			if err := indexFile.Truncate(maxIdxSize); err != nil {
+				_ = syscall.Munmap(mmapData)
+				_ = logFile.Close()
+				_ = indexFile.Close()
+				return nil, err
+			}
+		}
+		mmapIndex, err = syscall.Mmap(int(indexFile.Fd()), 0, int(maxIdxSize), syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+		if err != nil {
+			_ = syscall.Munmap(mmapData)
+			_ = logFile.Close()
+			_ = indexFile.Close()
+			return nil, fmt.Errorf("index mmap failed: %w", err)
 		}
 	} else {
 		if logSize > 0 {
@@ -106,8 +157,21 @@ func NewSegment(dir string, baseOffset uint64, maxSegSize int64, writeable bool)
 			if err != nil {
 				_ = logFile.Close()
 				_ = indexFile.Close()
-				return nil, fmt.Errorf("mmap failed: %w", err)
+				return nil, fmt.Errorf("log mmap failed: %w", err)
 			}
+			madvise(mmapData, syscall.MADV_WILLNEED)
+		}
+		if indexSize > 0 {
+			mmapIndex, err = syscall.Mmap(int(indexFile.Fd()), 0, int(indexSize), syscall.PROT_READ, syscall.MAP_SHARED)
+			if err != nil {
+				if len(mmapData) > 0 {
+					_ = syscall.Munmap(mmapData)
+				}
+				_ = logFile.Close()
+				_ = indexFile.Close()
+				return nil, fmt.Errorf("index mmap failed: %w", err)
+			}
+			madvise(mmapIndex, syscall.MADV_WILLNEED)
 		}
 	}
 
@@ -119,10 +183,21 @@ func NewSegment(dir string, baseOffset uint64, maxSegSize int64, writeable bool)
 		indexPath:  indexPath,
 		logSize:    logSize,
 		indexSize:  indexSize,
-		indexCache: indexCache,
 		mmapData:   mmapData,
+		mmapIndex:  mmapIndex,
 		maxSegSize: maxSegSize,
+		maxIdxSize: maxIdxSize,
 	}, nil
+}
+
+// madvise issues the madvise syscall without allocating.
+// Safe no-op if data is nil/empty.
+func madvise(data []byte, advice int) {
+	if len(data) == 0 {
+		return
+	}
+	ptr := unsafe.Pointer(unsafe.SliceData(data))
+	_, _, _ = syscall.Syscall(syscall.SYS_MADVISE, uintptr(ptr), uintptr(len(data)), uintptr(advice))
 }
 
 func (s *Segment) Close() error {
@@ -132,6 +207,12 @@ func (s *Segment) Close() error {
 			errs = append(errs, err)
 		}
 		s.mmapData = nil
+	}
+	if len(s.mmapIndex) > 0 {
+		if err := syscall.Munmap(s.mmapIndex); err != nil {
+			errs = append(errs, err)
+		}
+		s.mmapIndex = nil
 	}
 	if err := s.logFile.Close(); err != nil {
 		errs = append(errs, err)
@@ -149,7 +230,7 @@ func (s *Segment) Write(offset uint64, payload []byte) (int64, error) {
 	payloadLen := len(payload)
 	length := uint32(8 + payloadLen)
 	totalLen := 12 + payloadLen
-	pos := s.logSize
+	pos := atomic.LoadInt64(&s.logSize)
 
 	if pos+int64(totalLen) > s.maxSegSize {
 		return 0, errors.New("segment space exhausted")
@@ -159,38 +240,41 @@ func (s *Segment) Write(offset uint64, payload []byte) (int64, error) {
 	binary.BigEndian.PutUint64(s.mmapData[pos+4:pos+12], offset)
 	copy(s.mmapData[pos+12:pos+int64(totalLen)], payload)
 
-	s.logSize += int64(totalLen)
+	// Release semantics: ensure the mmap payload is visible before logSize increments.
+	atomic.StoreInt64(&s.logSize, pos+int64(totalLen))
 	return pos, nil
 }
 
 func (s *Segment) WriteIndexEntry(offset uint64, position int64) error {
-	var buf [16]byte
-	binary.BigEndian.PutUint64(buf[0:8], offset)
-	binary.BigEndian.PutUint64(buf[8:16], uint64(position))
-
-	if _, err := s.indexFile.WriteAt(buf[:], s.indexSize); err != nil {
-		return err
+	idxSize := atomic.LoadInt64(&s.indexSize)
+	if idxSize+16 > s.maxIdxSize {
+		return errors.New("index space exhausted")
 	}
-	s.indexSize += 16
-	s.indexCache = append(s.indexCache, IndexEntry{Offset: offset, Position: position})
+
+	binary.BigEndian.PutUint64(s.mmapIndex[idxSize:idxSize+8], offset)
+	binary.BigEndian.PutUint64(s.mmapIndex[idxSize+8:idxSize+16], uint64(position))
+
+	// Release semantics: ensure index bytes are visible before size updates.
+	atomic.StoreInt64(&s.indexSize, idxSize+16)
 	return nil
 }
 
 func (s *Segment) FindPosition(offset uint64) (int64, error) {
-	n := len(s.indexCache)
+	idxSize := atomic.LoadInt64(&s.indexSize)
+	n := idxSize / 16
 	if n == 0 {
 		return 0, nil
 	}
 
-	low := 0
+	low := int64(0)
 	high := n - 1
 	var bestPos int64 = 0
 
 	for low <= high {
 		mid := (low + high) / 2
-		entry := s.indexCache[mid]
-		if entry.Offset <= offset {
-			bestPos = entry.Position
+		off := binary.BigEndian.Uint64(s.mmapIndex[mid*16 : mid*16+8])
+		if off <= offset {
+			bestPos = int64(binary.BigEndian.Uint64(s.mmapIndex[mid*16+8 : mid*16+16]))
 			low = mid + 1
 		} else {
 			high = mid - 1
@@ -206,37 +290,24 @@ func (s *Segment) Recover() (uint64, error) {
 	}
 
 	idxSize := idxInfo.Size()
-	if idxSize%16 != 0 {
-		idxSize -= idxSize % 16
-		_ = s.indexFile.Truncate(idxSize)
+	if idxSize > 0 {
+		idxData := make([]byte, idxSize)
+		if _, err := s.indexFile.ReadAt(idxData, 0); err == nil {
+			idxSize = findActualIndexSize(idxData, s.baseOffset)
+		}
 	}
 
 	var lastIdxOffset uint64 = s.baseOffset
 	var lastIdxPos int64 = 0
 
 	if idxSize >= 16 {
-		var buf [16]byte
-		if _, err := s.indexFile.ReadAt(buf[:], idxSize-16); err == nil {
-			lastIdxOffset = binary.BigEndian.Uint64(buf[0:8])
-			lastIdxPos = int64(binary.BigEndian.Uint64(buf[8:16]))
+		if len(s.mmapIndex) >= int(idxSize) {
+			lastIdxOffset = binary.BigEndian.Uint64(s.mmapIndex[idxSize-16 : idxSize-8])
+			lastIdxPos = int64(binary.BigEndian.Uint64(s.mmapIndex[idxSize-8 : idxSize]))
 		}
 	}
 
-	s.indexSize = idxSize
-
-	numEntries := idxSize / 16
-	indexCache := make([]IndexEntry, 0, numEntries)
-	if numEntries > 0 {
-		idxData := make([]byte, numEntries*16)
-		if _, err := s.indexFile.ReadAt(idxData, 0); err == nil {
-			for i := int64(0); i < numEntries; i++ {
-				off := binary.BigEndian.Uint64(idxData[i*16 : i*16+8])
-				pos := int64(binary.BigEndian.Uint64(idxData[i*16+8 : i*16+16]))
-				indexCache = append(indexCache, IndexEntry{Offset: off, Position: pos})
-			}
-		}
-	}
-	s.indexCache = indexCache
+	atomic.StoreInt64(&s.indexSize, idxSize)
 
 	currentOffset := lastIdxOffset
 	currentPos := lastIdxPos
@@ -263,8 +334,8 @@ func (s *Segment) Recover() (uint64, error) {
 		currentPos += 12 + payloadLen
 	}
 
-	s.logSize = currentPos
-	if err := s.logFile.Truncate(s.logSize); err != nil {
+	atomic.StoreInt64(&s.logSize, currentPos)
+	if err := s.logFile.Truncate(currentPos); err != nil {
 		return currentOffset, err
 	}
 
@@ -272,22 +343,39 @@ func (s *Segment) Recover() (uint64, error) {
 		_ = syscall.Munmap(s.mmapData)
 		s.mmapData = nil
 	}
+	if len(s.mmapIndex) > 0 {
+		_ = syscall.Munmap(s.mmapIndex)
+		s.mmapIndex = nil
+	}
 
 	if mmapSize == s.maxSegSize {
 		if err := s.logFile.Truncate(s.maxSegSize); err != nil {
 			return currentOffset, err
 		}
 		s.mmapData, err = syscall.Mmap(int(s.logFile.Fd()), 0, int(s.maxSegSize), syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+		if err != nil {
+			return currentOffset, err
+		}
+		if err := s.indexFile.Truncate(s.maxIdxSize); err != nil {
+			return currentOffset, err
+		}
+		s.mmapIndex, err = syscall.Mmap(int(s.indexFile.Fd()), 0, int(s.maxIdxSize), syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
 	} else {
-		if s.logSize > 0 {
-			s.mmapData, err = syscall.Mmap(int(s.logFile.Fd()), 0, int(s.logSize), syscall.PROT_READ, syscall.MAP_SHARED)
+		if currentPos > 0 {
+			s.mmapData, err = syscall.Mmap(int(s.logFile.Fd()), 0, int(currentPos), syscall.PROT_READ, syscall.MAP_SHARED)
+			if err != nil {
+				return currentOffset, err
+			}
+		}
+		if idxSize > 0 {
+			s.mmapIndex, err = syscall.Mmap(int(s.indexFile.Fd()), 0, int(idxSize), syscall.PROT_READ, syscall.MAP_SHARED)
 		}
 	}
 	return currentOffset, err
 }
 
 func (s *Segment) LocateMessages(indexPos int64, startOffset uint64, maxBytes uint32) (int64, uint32, uint32, error) {
-	logSize := s.logSize
+	logSize := atomic.LoadInt64(&s.logSize)
 	currentPos := indexPos
 	var targetPos int64 = -1
 	var msgCount uint32 = 0
@@ -301,6 +389,9 @@ func (s *Segment) LocateMessages(indexPos int64, startOffset uint64, maxBytes ui
 		length := binary.BigEndian.Uint32(s.mmapData[currentPos : currentPos+4])
 		offset := binary.BigEndian.Uint64(s.mmapData[currentPos+4 : currentPos+12])
 		payloadLen := int64(length) - 8
+		if payloadLen < 0 {
+			break
+		}
 		recordLen := 12 + payloadLen
 
 		if currentPos+recordLen > logSize {
@@ -347,11 +438,17 @@ func (s *Segment) Sync() error {
 	return nil
 }
 
+// segmentSnapshot is an immutable snapshot of partition state for lock-free reads.
+// Stored via atomic.Pointer and swapped atomically on mutation (RCU pattern).
+type segmentSnapshot struct {
+	segments  []*Segment
+	activeSeg *Segment
+}
+
 type PartitionLog struct {
-	mu            sync.RWMutex
+	writeMu       sync.Mutex // protects Append/roll (writers only)
 	dir           string
-	segments      []*Segment
-	activeSeg     *Segment
+	snap          atomic.Pointer[segmentSnapshot] // lock-free reads via RCU
 	nextOffset    uint64
 	bytesSinceIdx int64
 	indexInterval int64
@@ -409,30 +506,36 @@ func (p *PartitionLog) loadSegments() error {
 		return baseOffsets[i] < baseOffsets[j]
 	})
 
+	var segments []*Segment
 	for i, offset := range baseOffsets {
 		isLast := i == len(baseOffsets)-1
-		seg, err := NewSegment(p.dir, offset, p.maxSegSize, isLast)
+		seg, err := NewSegment(p.dir, offset, p.maxSegSize, p.indexInterval, isLast)
 		if err != nil {
 			return err
 		}
-		p.segments = append(p.segments, seg)
+		segments = append(segments, seg)
 	}
 
-	if len(p.segments) == 0 {
-		seg, err := NewSegment(p.dir, 0, p.maxSegSize, true)
+	if len(segments) == 0 {
+		seg, err := NewSegment(p.dir, 0, p.maxSegSize, p.indexInterval, true)
 		if err != nil {
 			return err
 		}
-		p.segments = append(p.segments, seg)
+		segments = append(segments, seg)
 	}
 
-	p.activeSeg = p.segments[len(p.segments)-1]
+	active := segments[len(segments)-1]
 
-	next, err := p.activeSeg.Recover()
+	next, err := active.Recover()
 	if err != nil {
 		return fmt.Errorf("failed to recover active segment: %w", err)
 	}
 	p.nextOffset = next
+
+	p.snap.Store(&segmentSnapshot{
+		segments:  segments,
+		activeSeg: active,
+	})
 
 	return nil
 }
@@ -454,24 +557,30 @@ func (p *PartitionLog) startFlushLoop() {
 }
 
 func (p *PartitionLog) NextOffset() uint64 {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.nextOffset
+	p.writeMu.Lock()
+	off := p.nextOffset
+	p.writeMu.Unlock()
+	return off
 }
 
 func (p *PartitionLog) Append(payload []byte) (uint64, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.writeMu.Lock()
+	defer p.writeMu.Unlock()
 
+	s := p.snap.Load()
+	activeSeg := s.activeSeg
 	offset := p.nextOffset
 	totalLen := int64(12 + len(payload))
 
-	if p.activeSeg.logSize+totalLen > p.maxSegSize {
-		if err := p.roll(); err != nil {
+	activeLogSize := atomic.LoadInt64(&activeSeg.logSize)
+	if activeLogSize+totalLen > p.maxSegSize {
+		if err := p.rollLocked(s); err != nil {
 			return 0, err
 		}
+		s = p.snap.Load()
+		activeSeg = s.activeSeg
 	}
-	pos, err := p.activeSeg.Write(offset, payload)
+	pos, err := activeSeg.Write(offset, payload)
 	if err != nil {
 		return 0, err
 	}
@@ -480,7 +589,7 @@ func (p *PartitionLog) Append(payload []byte) (uint64, error) {
 	p.bytesSinceIdx += int64(12 + len(payload))
 
 	if p.bytesSinceIdx >= p.indexInterval {
-		if err := p.activeSeg.WriteIndexEntry(offset, pos); err != nil {
+		if err := activeSeg.WriteIndexEntry(offset, pos); err != nil {
 			return 0, err
 		}
 		p.bytesSinceIdx = 0
@@ -489,44 +598,66 @@ func (p *PartitionLog) Append(payload []byte) (uint64, error) {
 	return offset, nil
 }
 
-func (p *PartitionLog) roll() error {
-	if err := p.activeSeg.Sync(); err != nil {
+// rollLocked transitions the active segment to read-only and creates a new
+// writable segment. It atomically publishes a new segmentSnapshot containing
+// a read-only clone of the rolled segment. The writeable segment's mmap and
+// file descriptors are closed after a 100ms grace period to allow concurrent
+// readers to finish copying.
+// Must be called with p.writeMu held.
+func (p *PartitionLog) rollLocked(old *segmentSnapshot) error {
+	activeSeg := old.activeSeg
+
+	if err := activeSeg.Sync(); err != nil {
 		return err
 	}
 
-	if len(p.activeSeg.mmapData) > 0 {
-		_ = syscall.Munmap(p.activeSeg.mmapData)
-		p.activeSeg.mmapData = nil
-	}
-	if err := p.activeSeg.logFile.Truncate(p.activeSeg.logSize); err != nil {
+	activeLogSize := atomic.LoadInt64(&activeSeg.logSize)
+	if err := activeSeg.logFile.Truncate(activeLogSize); err != nil {
 		return err
 	}
-	var err error
-	if p.activeSeg.logSize > 0 {
-		p.activeSeg.mmapData, err = syscall.Mmap(int(p.activeSeg.logFile.Fd()), 0, int(p.activeSeg.logSize), syscall.PROT_READ, syscall.MAP_SHARED)
-		if err != nil {
-			return err
-		}
+
+	activeIdxSize := atomic.LoadInt64(&activeSeg.indexSize)
+	if err := activeSeg.indexFile.Truncate(activeIdxSize); err != nil {
+		return err
 	}
 
-	newSeg, err := NewSegment(p.dir, p.nextOffset, p.maxSegSize, true)
+	// Create a read-only segment clone of the active segment. Since the file is truncated,
+	// the clone will map exactly the written data read-only.
+	readOnlySeg, err := NewSegment(p.dir, activeSeg.baseOffset, p.maxSegSize, p.indexInterval, false)
 	if err != nil {
 		return err
 	}
 
-	p.segments = append(p.segments, newSeg)
-	p.activeSeg = newSeg
+	newSeg, err := NewSegment(p.dir, p.nextOffset, p.maxSegSize, p.indexInterval, true)
+	if err != nil {
+		_ = readOnlySeg.Close()
+		return err
+	}
+
+	newSegments := make([]*Segment, len(old.segments))
+	copy(newSegments, old.segments)
+	newSegments[len(old.segments)-1] = readOnlySeg
+	newSegments = append(newSegments, newSeg)
+
+	p.snap.Store(&segmentSnapshot{
+		segments:  newSegments,
+		activeSeg: newSeg,
+	})
+
+	// Safely close the old active segment after 100ms grace period.
+	go func(seg *Segment) {
+		time.Sleep(100 * time.Millisecond)
+		_ = seg.Close()
+	}(activeSeg)
+
 	p.bytesSinceIdx = 0
 	return nil
 }
 
 func (p *PartitionLog) Sync() {
-	p.mu.RLock()
-	active := p.activeSeg
-	p.mu.RUnlock()
-
-	if active != nil {
-		_ = active.Sync()
+	s := p.snap.Load()
+	if s != nil && s.activeSeg != nil {
+		_ = s.activeSeg.Sync()
 	}
 }
 
@@ -535,11 +666,16 @@ func (p *PartitionLog) Close() error {
 	p.flushTicker.Stop()
 	p.wg.Wait()
 
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.writeMu.Lock()
+	defer p.writeMu.Unlock()
+
+	s := p.snap.Load()
+	if s == nil {
+		return nil
+	}
 
 	var errs []error
-	for _, seg := range p.segments {
+	for _, seg := range s.segments {
 		if err := seg.Close(); err != nil {
 			errs = append(errs, err)
 		}
@@ -550,41 +686,50 @@ func (p *PartitionLog) Close() error {
 	return nil
 }
 
-func (p *PartitionLog) ReadRawMessages(startOffset uint64, maxBytes uint32) ([]byte, error) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	if len(p.segments) == 0 {
-		return nil, ErrSegmentNotFound
+// ReadRawMessages performs a lock-free read by loading the current snapshot
+// atomically. No RWMutex contention with writers. Page faults on mmap data
+// cannot block other goroutines because there is no shared lock held.
+func (p *PartitionLog) ReadRawMessages(startOffset uint64, maxBytes uint32) ([]byte, *[]byte, error) {
+	s := p.snap.Load()
+	if s == nil || len(s.segments) == 0 {
+		return nil, nil, ErrSegmentNotFound
 	}
 
 	var targetSeg *Segment
-	for i := len(p.segments) - 1; i >= 0; i-- {
-		if p.segments[i].baseOffset <= startOffset {
-			targetSeg = p.segments[i]
+	for i := len(s.segments) - 1; i >= 0; i-- {
+		if s.segments[i].baseOffset <= startOffset {
+			targetSeg = s.segments[i]
 			break
 		}
 	}
 
 	if targetSeg == nil {
-		return nil, ErrSegmentNotFound
+		return nil, nil, ErrSegmentNotFound
 	}
 
 	pos, err := targetSeg.FindPosition(startOffset)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	targetPos, _, totalMsgBytes, err := targetSeg.LocateMessages(pos, startOffset, maxBytes)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if totalMsgBytes == 0 {
-		return nil, io.EOF
+		return nil, nil, io.EOF
 	}
 
-	buf := make([]byte, totalMsgBytes)
+	var bufPtr *[]byte
+	var buf []byte
+	if totalMsgBytes <= 1024*1024 {
+		bufPtr = FetchBufPool.Get().(*[]byte)
+		buf = (*bufPtr)[:totalMsgBytes]
+	} else {
+		buf = make([]byte, totalMsgBytes)
+	}
+
 	copy(buf, targetSeg.mmapData[targetPos:targetPos+int64(totalMsgBytes)])
-	return buf, nil
+	return buf, bufPtr, nil
 }

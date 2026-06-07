@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"espx/internal/ads"
+	"espx/internal/ads/pb"
 	"github.com/google/uuid"
-	"github.com/mykhailov-ua/ad-event-processor/internal/ads"
-	"github.com/mykhailov-ua/ad-event-processor/internal/ads/pb"
 	"github.com/redis/go-redis/v9"
 	rediscontainer "github.com/testcontainers/testcontainers-go/modules/redis"
 	"google.golang.org/protobuf/proto"
