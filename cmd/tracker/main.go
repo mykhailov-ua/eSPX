@@ -15,6 +15,7 @@ import (
 	"espx/internal/database"
 	"espx/internal/metrics"
 	"espx/pkg/logger"
+
 	"github.com/panjf2000/gnet/v2"
 	"github.com/redis/go-redis/v9"
 )
@@ -93,7 +94,7 @@ func main() {
 			slog.Error("failed to connect to redis shard", "addr", addr, "error", rdbErr)
 			os.Exit(1)
 		}
-		breaker := database.NewRedisBreaker(50, 3, 5*time.Second)
+		breaker := database.NewRedisBreaker(10000, 10, 5*time.Second)
 		rdb.AddHook(database.NewRedisCircuitBreakerHook(breaker))
 		rdbs = append(rdbs, rdb)
 	}
@@ -154,6 +155,9 @@ func main() {
 	gnetHandler.SetLogger(appLogger)
 	gnetHandler.StartHealthProbe(ctx)
 
+	workerPool := ads.NewPinnedWorkerPool(cfg.MaxWorkers, 8192)
+	gnetHandler.SetWorkerPool(workerPool)
+
 	slog.Info("starting ad-event-tracker via gnet", "port", cfg.ServerPort)
 
 	go func() {
@@ -161,7 +165,8 @@ func main() {
 			gnet.WithMulticore(true),
 			gnet.WithReusePort(true),
 			gnet.WithTCPNoDelay(gnet.TCPNoDelay),
-			gnet.WithLockOSThread(true),
+			gnet.WithNumEventLoop(2),
+			gnet.WithLockOSThread(false),
 		)
 		if err != nil {
 			slog.Error("gnet server failed", "error", err)
@@ -182,6 +187,8 @@ func main() {
 	if err := gnetHandler.Stop(shutdownCtx); err != nil {
 		slog.Error("gnet server shutdown failed", "error", err)
 	}
+
+	workerPool.Shutdown()
 
 	if err := registry.Wait(shutdownCtx); err != nil {
 		slog.Error("registry wait failed", "error", err)
