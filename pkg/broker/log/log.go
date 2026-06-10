@@ -190,8 +190,6 @@ func NewSegment(dir string, baseOffset uint64, maxSegSize int64, indexInterval i
 	}, nil
 }
 
-// madvise issues the madvise syscall without allocating.
-// Safe no-op if data is nil/empty.
 func madvise(data []byte, advice int) {
 	if len(data) == 0 {
 		return
@@ -598,12 +596,9 @@ func (p *PartitionLog) Append(payload []byte) (uint64, error) {
 	return offset, nil
 }
 
-// rollLocked transitions the active segment to read-only and creates a new
-// writable segment. It atomically publishes a new segmentSnapshot containing
-// a read-only clone of the rolled segment. The writeable segment's mmap and
-// file descriptors are closed after a 100ms grace period to allow concurrent
-// readers to finish copying.
-// Must be called with p.writeMu held.
+// rollLocked publishes a snapshot with a read-only clone of the active segment,
+// opens a new writable segment, and closes the old mmap after 100ms so concurrent
+// readers can finish copying. Requires p.writeMu held.
 func (p *PartitionLog) rollLocked(old *segmentSnapshot) error {
 	activeSeg := old.activeSeg
 
@@ -621,8 +616,6 @@ func (p *PartitionLog) rollLocked(old *segmentSnapshot) error {
 		return err
 	}
 
-	// Create a read-only segment clone of the active segment. Since the file is truncated,
-	// the clone will map exactly the written data read-only.
 	readOnlySeg, err := NewSegment(p.dir, activeSeg.baseOffset, p.maxSegSize, p.indexInterval, false)
 	if err != nil {
 		return err
@@ -644,7 +637,6 @@ func (p *PartitionLog) rollLocked(old *segmentSnapshot) error {
 		activeSeg: newSeg,
 	})
 
-	// Safely close the old active segment after 100ms grace period.
 	go func(seg *Segment) {
 		time.Sleep(100 * time.Millisecond)
 		_ = seg.Close()
@@ -686,9 +678,8 @@ func (p *PartitionLog) Close() error {
 	return nil
 }
 
-// ReadRawMessages performs a lock-free read by loading the current snapshot
-// atomically. No RWMutex contention with writers. Page faults on mmap data
-// cannot block other goroutines because there is no shared lock held.
+// ReadRawMessages loads the current snapshot atomically (no RWMutex).
+// Page faults on mmap cannot block writers because no shared lock is held.
 func (p *PartitionLog) ReadRawMessages(startOffset uint64, maxBytes uint32) ([]byte, *[]byte, error) {
 	s := p.snap.Load()
 	if s == nil || len(s.segments) == 0 {

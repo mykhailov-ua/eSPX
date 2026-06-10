@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"hash/crc32"
 	"io"
 	"net"
 	"net/http"
@@ -45,6 +46,7 @@ type Server struct {
 	active        atomic.Bool
 	httpSrv       *http.Server
 	coord         *Coordinator
+	registry      *protocol.TopicRegistry
 
 	connCount atomic.Int64
 
@@ -60,6 +62,7 @@ func NewServer(addr string, dataDir string, maxSegSize int64, indexInterval int6
 		maxSegSize:         maxSegSize,
 		indexInterval:      indexInterval,
 		closeChan:          make(chan struct{}),
+		registry:           protocol.NewTopicRegistry(),
 	}
 	s.diskOK.Store(true)
 	return s
@@ -235,7 +238,7 @@ func (s *Server) OnTraffic(c gnet.Conn) gnet.Action {
 		}
 		length := binary.BigEndian.Uint32(lenBuf)
 
-		if length < 10 {
+		if length < 14 {
 			if _, err := c.Discard(int(4 + length)); err != nil {
 				return gnet.Close
 			}
@@ -254,17 +257,92 @@ func (s *Server) OnTraffic(c gnet.Conn) gnet.Action {
 		framePayload := payloadBuf[4 : 4+length]
 		cmd := binary.BigEndian.Uint16(framePayload[0:2])
 		seq := binary.BigEndian.Uint64(framePayload[2:10])
-		reqPayload := framePayload[10:]
+		reqPayload := framePayload[10 : length-4]
+
+		expected := binary.BigEndian.Uint32(framePayload[length-4:])
+		calculated := crc32.ChecksumIEEE(reqPayload)
+		if calculated != expected {
+			return gnet.Close
+		}
 
 		switch cmd {
 		case protocol.CmdProduce:
 			s.handleProduce(c, seq, reqPayload)
 		case protocol.CmdFetch:
 			s.handleFetch(c, seq, reqPayload)
+		case protocol.CmdProduceBatch:
+			s.handleProduceBatch(c, seq, reqPayload)
+		case protocol.CmdRegisterTopic:
+			s.handleRegisterTopic(c, seq, reqPayload)
 		default:
 			return gnet.Close
 		}
 	}
+}
+
+func (s *Server) handleRegisterTopic(c gnet.Conn, seq uint64, payload []byte) {
+	bufPtr := bytePool.Get().(*[]byte)
+	defer bytePool.Put(bufPtr)
+	buf := (*bufPtr)[:32]
+
+	topicName, err := protocol.DecodeRegisterTopicRequest(payload)
+	if err != nil {
+		resp := protocol.EncodeRegisterTopicResponse(buf, seq, 1, 0)
+		_, _ = c.Write(resp)
+		return
+	}
+
+	id, err := s.registry.Register(topicName)
+	if err != nil {
+		resp := protocol.EncodeRegisterTopicResponse(buf, seq, 2, 0)
+		_, _ = c.Write(resp)
+		return
+	}
+
+	resp := protocol.EncodeRegisterTopicResponse(buf, seq, 0, id)
+	_, _ = c.Write(resp)
+}
+
+func (s *Server) handleProduceBatch(c gnet.Conn, seq uint64, payload []byte) {
+	bufPtr := bytePool.Get().(*[]byte)
+	defer bytePool.Put(bufPtr)
+	buf := (*bufPtr)[:32]
+
+	it := protocol.NewBatchIterator(payload)
+	var lastOffset uint64
+	var status byte = 0
+
+	for it.Next() {
+		meta, exists := s.registry.Lookup(it.TopicID)
+		if !exists {
+			status = 2
+			break
+		}
+
+		if s.coord != nil && !s.coord.IsLeader(meta.Name) {
+			hasLeader, _ := s.coord.HasLeader(meta.Name)
+			if hasLeader {
+				status = 4
+				break
+			}
+		}
+
+		pl, err := s.getOrCreatePartition(meta.Name)
+		if err != nil {
+			status = 2
+			break
+		}
+
+		offset, err := pl.Append(it.Payload)
+		if err != nil {
+			status = 3
+			break
+		}
+		lastOffset = offset
+	}
+
+	resp := protocol.EncodeProduceBatchResponse(buf, seq, status, lastOffset)
+	_, _ = c.Write(resp)
 }
 
 func (s *Server) handleProduce(c gnet.Conn, seq uint64, payload []byte) {
@@ -315,6 +393,10 @@ func (s *Server) handleFetch(c gnet.Conn, seq uint64, payload []byte) {
 	if err != nil {
 		header := protocol.EncodeFetchResponseHeader(buf, seq, 1, 0, 0)
 		_, _ = c.Write(header)
+		checksum := crc32.ChecksumIEEE(header[14:19])
+		var checksumBuf [4]byte
+		binary.BigEndian.PutUint32(checksumBuf[:], checksum)
+		_, _ = c.Write(checksumBuf[:])
 		return
 	}
 
@@ -322,6 +404,10 @@ func (s *Server) handleFetch(c gnet.Conn, seq uint64, payload []byte) {
 	if err != nil {
 		header := protocol.EncodeFetchResponseHeader(buf, seq, 2, 0, 0)
 		_, _ = c.Write(header)
+		checksum := crc32.ChecksumIEEE(header[14:19])
+		var checksumBuf [4]byte
+		binary.BigEndian.PutUint32(checksumBuf[:], checksum)
+		_, _ = c.Write(checksumBuf[:])
 		return
 	}
 
@@ -330,10 +416,18 @@ func (s *Server) handleFetch(c gnet.Conn, seq uint64, payload []byte) {
 		if errors.Is(err, io.EOF) || errors.Is(err, log.ErrSegmentNotFound) {
 			header := protocol.EncodeFetchResponseHeader(buf, seq, 0, 0, 0)
 			_, _ = c.Write(header)
+			checksum := crc32.ChecksumIEEE(header[14:19])
+			var checksumBuf [4]byte
+			binary.BigEndian.PutUint32(checksumBuf[:], checksum)
+			_, _ = c.Write(checksumBuf[:])
 			return
 		}
 		header := protocol.EncodeFetchResponseHeader(buf, seq, 3, 0, 0)
 		_, _ = c.Write(header)
+		checksum := crc32.ChecksumIEEE(header[14:19])
+		var checksumBuf [4]byte
+		binary.BigEndian.PutUint32(checksumBuf[:], checksum)
+		_, _ = c.Write(checksumBuf[:])
 		return
 	}
 	if dataBufPtr != nil {
@@ -347,6 +441,17 @@ func (s *Server) handleFetch(c gnet.Conn, seq uint64, payload []byte) {
 	if totalBytes > 0 {
 		_, _ = c.Write(data)
 	}
+
+	var checksum uint32
+	if totalBytes > 0 {
+		checksum = crc32.Update(0, crc32.IEEETable, header[14:19])
+		checksum = crc32.Update(checksum, crc32.IEEETable, data)
+	} else {
+		checksum = crc32.ChecksumIEEE(header[14:19])
+	}
+	var checksumBuf [4]byte
+	binary.BigEndian.PutUint32(checksumBuf[:], checksum)
+	_, _ = c.Write(checksumBuf[:])
 }
 
 func countMessages(buf []byte) (uint32, uint32) {
