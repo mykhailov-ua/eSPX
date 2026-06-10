@@ -115,8 +115,6 @@ func TestAuctionTopKHeap(t *testing.T) {
 	}
 }
 
-// TestAuctionStressSimulateNetworkAndDB simulates network jitters and database updates
-// under concurrent load to verify zero races, budget overspend safety, and deadlock immunity.
 func TestAuctionStressSimulateNetworkAndDB(t *testing.T) {
 	store := NewBudgetStore()
 	reg := NewRegistry(store)
@@ -140,14 +138,12 @@ func TestAuctionStressSimulateNetworkAndDB(t *testing.T) {
 	workers := 12
 	iterations := 500
 
-	// Simulating concurrent request streams with random network latency jitters
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
 			rnd := rand.New(rand.NewSource(int64(workerID)))
 			for i := 0; i < iterations; i++ {
-				// Jitter simulator (1-5 microseconds network delay simulation)
 				if i%50 == 0 {
 					time.Sleep(time.Duration(rnd.Intn(5)+1) * time.Microsecond)
 				}
@@ -162,13 +158,11 @@ func TestAuctionStressSimulateNetworkAndDB(t *testing.T) {
 		}(w)
 	}
 
-	// Simulating slow/delayed background DB updates executing RCU pointer swaps concurrently
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		rnd := rand.New(rand.NewSource(999))
 		for i := 0; i < 20; i++ {
-			// Simulate database sync latency (2-10 milliseconds wait)
 			time.Sleep(time.Duration(rnd.Intn(8)+2) * time.Millisecond)
 
 			updated := make([]CampaignData, n)
@@ -182,7 +176,6 @@ func TestAuctionStressSimulateNetworkAndDB(t *testing.T) {
 
 	wg.Wait()
 
-	// Enforce that atomic CAS prevented campaign budgets from ever going below 0 (no overspend)
 	for i := 0; i < n; i++ {
 		b := store.GetBudget(campaigns[i].ID)
 		if b < 0 {
@@ -298,12 +291,10 @@ func TestAuctionInvalidInput(t *testing.T) {
 	}
 	reg.UpdateCampaigns(campaigns)
 
-	// Case 1: Nil request
 	if _, ok := reg.RunAuction(nil); ok {
 		t.Error("expected nil request to be rejected")
 	}
 
-	// Case 2: Negative MinBid
 	req := &BidRequest{
 		DeviceType:   2,
 		CategoryMask: 1,
@@ -314,7 +305,6 @@ func TestAuctionInvalidInput(t *testing.T) {
 		t.Error("expected negative MinBid to be rejected")
 	}
 
-	// Verify budget was not modified
 	if budget := store.GetBudget(c1); budget != 1000 {
 		t.Errorf("expected budget to remain 1000, got %d", budget)
 	}
