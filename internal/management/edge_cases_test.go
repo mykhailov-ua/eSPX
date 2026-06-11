@@ -2,6 +2,8 @@ package management
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -115,4 +117,99 @@ func TestEdge_ResumingStuckSettlement(t *testing.T) {
 		_ = pool.QueryRow(context.Background(), "SELECT status FROM campaigns WHERE id = $1", campaignID).Scan(&status)
 		return status == "DELETED"
 	}, 2*time.Second, 20*time.Millisecond)
+}
+
+type failingRedisClient struct {
+	redis.UniversalClient
+	failCampaignID string
+}
+
+func (c *failingRedisClient) Pipelined(ctx context.Context, fn func(redis.Pipeliner) error) ([]redis.Cmder, error) {
+	failPipe := &failingPipeliner{
+		Pipeliner:      c.UniversalClient.Pipeline(),
+		failCampaignID: c.failCampaignID,
+	}
+	err := fn(failPipe)
+	if err != nil {
+		return nil, err
+	}
+	if failPipe.shouldFail {
+		return nil, errors.New("simulated redis pipeline failure")
+	}
+	return failPipe.Pipeliner.Exec(ctx)
+}
+
+type failingPipeliner struct {
+	redis.Pipeliner
+	failCampaignID string
+	shouldFail     bool
+}
+
+func (p *failingPipeliner) Publish(ctx context.Context, channel string, message interface{}) *redis.IntCmd {
+	if msgStr, ok := message.(string); ok && msgStr == p.failCampaignID {
+		p.shouldFail = true
+	}
+	return p.Pipeliner.Publish(ctx, channel, message)
+}
+
+func TestEdge_OutboxPartialRedisFailure(t *testing.T) {
+	pool, cleanupDB := database.SetupTestDB(t)
+	defer cleanupDB()
+	rdb, cleanupRedis := database.SetupTestRedis(t)
+	defer cleanupRedis()
+
+	failCampaignID := uuid.New().String()
+	wrappedRDB := &failingRedisClient{
+		UniversalClient: rdb,
+		failCampaignID:  failCampaignID,
+	}
+
+	cfg := &config.Config{
+		CampaignUpdateChannel: "campaigns:update-test",
+	}
+	svc := NewService(pool, []redis.UniversalClient{wrappedRDB}, ads.NewJumpHashSharder(1), cfg)
+	defer svc.Close()
+
+	ctx := context.Background()
+	queries := db.New(pool)
+
+	campaignIDs := []string{uuid.New().String(), failCampaignID, uuid.New().String()}
+	for _, cid := range campaignIDs {
+		payload := CampaignPayload{
+			CampaignID:  cid,
+			BudgetLimit: 100_500_000,
+		}
+		payloadBytes, err := json.Marshal(payload)
+		require.NoError(t, err)
+
+		_, err = queries.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{
+			EventType: "CREATE_CAMPAIGN",
+			Payload:   payloadBytes,
+		})
+		require.NoError(t, err)
+	}
+
+	worker := NewOutboxWorker(svc)
+	processed, err := worker.ProcessOutboxWithCount(ctx, 3)
+	require.NoError(t, err)
+	assert.Equal(t, 2, processed)
+
+	rows, err := pool.Query(ctx, "SELECT id, status, payload FROM outbox_events ORDER BY id ASC")
+	require.NoError(t, err)
+	defer rows.Close()
+
+	var statuses []string
+	for rows.Next() {
+		var id int64
+		var status string
+		var payload []byte
+		err := rows.Scan(&id, &status, &payload)
+		require.NoError(t, err)
+		statuses = append(statuses, status)
+	}
+
+	require.Len(t, statuses, 3)
+	assert.Equal(t, "PROCESSED", statuses[0])
+	assert.Equal(t, "PROCESSED", statuses[2])
+	assert.Equal(t, "PENDING", statuses[1])
 }

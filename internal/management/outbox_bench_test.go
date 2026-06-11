@@ -13,6 +13,7 @@ import (
 	"espx/internal/database"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
@@ -34,13 +35,12 @@ func TestOutboxPerformanceMetrics(t *testing.T) {
 	svc.Close()
 
 	ctx := context.Background()
-	queries := db.New(pool)
 
 	const eventCount = 100
 
 	t.Log("MEASURING TRANSACTION TIMES: Standard Outbox vs Decoupled Outbox")
 
-	seedEvents(t, queries, eventCount)
+	seedEvents(t, pool, eventCount)
 
 	worker := NewOutboxWorker(svc)
 
@@ -53,13 +53,14 @@ func TestOutboxPerformanceMetrics(t *testing.T) {
 
 	t.Log("\nSIMULATING LOCK CONTENTION & CONNECTION STARVATION UNDER REDIS LATENCY (50ms)")
 
-	seedEvents(t, queries, 10)
+	seedEvents(t, pool, 10)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	var tx1Start, tx1End, tx2Start, tx2End time.Time
 	lockedSignal := make(chan struct{})
+	tx2Started := make(chan struct{})
 
 	go func() {
 		defer wg.Done()
@@ -73,6 +74,13 @@ func TestOutboxPerformanceMetrics(t *testing.T) {
 
 			close(lockedSignal)
 
+			// Wait for Worker 2 to start its transaction
+			select {
+			case <-tx2Started:
+			case <-time.After(2 * time.Second):
+			}
+
+			// Sleep a tiny bit to let Worker 2 get blocked on the lock
 			time.Sleep(50 * time.Millisecond)
 
 			for _, ev := range events {
@@ -93,6 +101,7 @@ func TestOutboxPerformanceMetrics(t *testing.T) {
 
 		tx2Start = time.Now()
 		_ = pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			close(tx2Started) // Signal that Worker 2 is about to block on Exec
 
 			_, _ = tx.Exec(ctx, "SELECT id FROM outbox_events WHERE status = 'PENDING' FOR UPDATE")
 			return nil
@@ -107,20 +116,109 @@ func TestOutboxPerformanceMetrics(t *testing.T) {
 	require.True(t, tx2End.Sub(tx2Start) >= 30*time.Millisecond, "Worker 2 should have been blocked waiting for Worker 1's lock release")
 }
 
-func seedEvents(t *testing.T, queries *db.Queries, count int) {
+func seedEvents(t *testing.T, pool *pgxpool.Pool, count int) {
 	ctx := context.Background()
+	payloads := make([][]byte, count)
 	for i := 0; i < count; i++ {
 		payload := CampaignPayload{
 			CampaignID:  uuid.New().String(),
 			BudgetLimit: 100_500_000,
 		}
-		payloadBytes, err := json.Marshal(payload)
+		var err error
+		payloads[i], err = json.Marshal(payload)
 		require.NoError(t, err)
+	}
 
-		_, err = queries.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{
-			EventType: "CREATE_CAMPAIGN",
-			Payload:   payloadBytes,
-		})
+	_, err := pool.Exec(ctx, `
+		INSERT INTO outbox_events (event_type, payload)
+		SELECT 'CREATE_CAMPAIGN', unnest($1::jsonb[])
+	`, payloads)
+	require.NoError(t, err)
+}
+
+func TestOutboxExplainAnalyze(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping outbox EXPLAIN ANALYZE in short mode")
+	}
+
+	pool, cleanupDB := database.SetupTestDB(t)
+	defer cleanupDB()
+
+	ctx := context.Background()
+
+	seedEvents(t, pool, 1000)
+
+	row, err := pool.Query(ctx, `EXPLAIN (ANALYZE, COSTS, VERBOSE, BUFFERS)
+SELECT id, event_type, payload, status, created_at FROM outbox_events
+WHERE status = 'PENDING'
+ORDER BY created_at ASC
+LIMIT 1000
+FOR UPDATE SKIP LOCKED;`)
+	require.NoError(t, err)
+	defer row.Close()
+
+	t.Log("================ EXPLAIN ANALYZE ================")
+	for row.Next() {
+		var planLine string
+		err := row.Scan(&planLine)
 		require.NoError(t, err)
+		t.Log(planLine)
+	}
+	t.Log("=================================================")
+}
+
+func BenchmarkProcessOutbox(b *testing.B) {
+	pool, cleanupDB := database.SetupTestDB(b)
+	defer cleanupDB()
+	rdb, cleanupRedis := database.SetupTestRedis(b)
+	defer cleanupRedis()
+
+	cfg := &config.Config{
+		CampaignUpdateChannel: "campaigns:update-bench",
+	}
+	svc := NewService(pool, []redis.UniversalClient{rdb}, ads.NewJumpHashSharder(1), cfg)
+	defer svc.Close()
+
+	worker := NewOutboxWorker(svc)
+	ctx := context.Background()
+
+	b.StopTimer()
+	seedEventsForBench(pool, b.N*1000)
+	b.StartTimer()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := worker.ProcessOutboxWithCount(ctx, 1000)
+		if err != nil {
+			b.Fatalf("ProcessOutbox failed: %v", err)
+		}
+	}
+}
+
+func seedEventsForBench(pool *pgxpool.Pool, count int) {
+	ctx := context.Background()
+	const batchSize = 10000
+	for i := 0; i < count; i += batchSize {
+		currentBatch := batchSize
+		if i+currentBatch > count {
+			currentBatch = count - i
+		}
+
+		payloads := make([][]byte, currentBatch)
+		for j := 0; j < currentBatch; j++ {
+			payload := CampaignPayload{
+				CampaignID:  uuid.New().String(),
+				BudgetLimit: 100_500_000,
+			}
+			payloads[j], _ = json.Marshal(payload)
+		}
+
+		_, err := pool.Exec(ctx, `
+			INSERT INTO outbox_events (event_type, payload)
+			SELECT 'CREATE_CAMPAIGN', unnest($1::jsonb[])
+		`, payloads)
+		if err != nil {
+			panic(err)
+		}
 	}
 }
