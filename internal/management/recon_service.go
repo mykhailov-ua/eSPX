@@ -153,14 +153,11 @@ func (s *ReconService) adjustRedisBudgetAtomically(ctx context.Context, campID u
 	script := `
 		local key = KEYS[1]
 		local delta = tonumber(ARGV[1])
-		local current = redis.call("GET", key)
-		if not current then current = "0" end
-		local newVal = tonumber(current) + delta
+		local newVal = redis.call("INCRBY", key, delta)
 		if newVal <= 0 then
 			redis.call("DEL", key)
 			return 0
 		end
-		redis.call("SET", key, tostring(newVal))
 		return newVal
 	`
 	_, err := s.rdb.Eval(ctx, script, []string{"budget:sync:campaign:" + campID.String()}, delta).Result()

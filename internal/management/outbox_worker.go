@@ -85,7 +85,7 @@ func (w *OutboxWorker) Start(ctx context.Context, interval time.Duration) {
 			return
 		case <-ticker.C:
 
-			_, _ = w.svc.pool.Exec(ctx, "UPDATE outbox_events SET status = 'PENDING' WHERE status = 'PROCESSING' AND created_at < NOW() - INTERVAL '5 minutes'")
+			_, _ = w.svc.pool.Exec(ctx, "UPDATE outbox_events SET status = 'PENDING' WHERE status = 'PROCESSING' AND created_at < NOW() - INTERVAL '1 minute'")
 
 			if err := w.ProcessOutbox(ctx); err != nil {
 				if strings.Contains(err.Error(), "closed pool") {
