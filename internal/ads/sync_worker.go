@@ -77,34 +77,35 @@ if redis.call("EXISTS", KEYS[3]) == 1 then
     return {"0", ""}
 end
 
-local txID = redis.call("GET", KEYS[4])
+local batch = redis.call("MGET", KEYS[4], KEYS[2], KEYS[1])
+local txID = batch[1]
+local inflight = batch[2]
+local current = batch[3]
+
 if not txID or txID == "" then
     txID = ARGV[2]
     redis.call("SET", KEYS[4], txID)
 end
 
-local inflight = redis.call("GET", KEYS[2])
-local current = redis.call("GET", KEYS[1])
-
-local total = 0
-if inflight then total = total + tonumber(inflight) end
-if current then total = total + tonumber(current) end
+local total = (tonumber(inflight) or 0) + (tonumber(current) or 0)
 
 if total <= 0 then
-    if current and tonumber(current) <= 0 then
+    local cur_num = tonumber(current)
+    if cur_num and cur_num <= 0 then
         redis.call("DEL", KEYS[1])
     end
     redis.call("DEL", KEYS[4])
     return {"0", ""}
 end
 
-if current and tonumber(current) > 0 then
-    local remaining = redis.call("INCRBY", KEYS[1], -tonumber(current))
-    redis.call("INCRBY", KEYS[2], tonumber(current))
+local cur_num = tonumber(current) or 0
+if cur_num > 0 then
+    local remaining = redis.call("INCRBY", KEYS[1], -cur_num)
+    redis.call("INCRBY", KEYS[2], cur_num)
     if tonumber(remaining) <= 0 then
         redis.call("DEL", KEYS[1])
     end
-elseif current and tonumber(current) <= 0 then
+elseif cur_num <= 0 and current then
     redis.call("DEL", KEYS[1])
 end
 
@@ -118,14 +119,12 @@ if tonumber(remaining) <= 0 then
     redis.call("DEL", KEYS[1])
 end
 
-local sync_val = redis.call("GET", KEYS[5])
-local inflight_val = redis.call("GET", KEYS[1])
+local batch = redis.call("MGET", KEYS[5], KEYS[1])
+local sync_val = batch[1]
+local inflight_val = batch[2]
 
-local sync_num = 0
-if sync_val then sync_num = tonumber(sync_val) end
-
-local inflight_num = 0
-if inflight_val then inflight_num = tonumber(inflight_val) end
+local sync_num = tonumber(sync_val) or 0
+local inflight_num = tonumber(inflight_val) or 0
 
 if sync_num <= 0 and inflight_num <= 0 then
     redis.call("SREM", KEYS[2], ARGV[2])

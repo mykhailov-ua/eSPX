@@ -21,6 +21,32 @@ type mockRedisClient struct {
 	redis.UniversalClient
 }
 
+type mockPipeliner struct {
+	redis.Pipeliner
+	incrCmd *redis.IntCmd
+	doCmd   *redis.Cmd
+}
+
+func (m *mockPipeliner) Incr(ctx context.Context, key string) *redis.IntCmd {
+	m.incrCmd.SetVal(1)
+	return m.incrCmd
+}
+
+func (m *mockPipeliner) Do(ctx context.Context, args ...any) *redis.Cmd {
+	return m.doCmd
+}
+
+func (m *mockPipeliner) Exec(ctx context.Context) ([]redis.Cmder, error) {
+	return nil, nil
+}
+
+func (m *mockRedisClient) Pipeline() redis.Pipeliner {
+	return &mockPipeliner{
+		incrCmd: redis.NewIntCmd(context.Background()),
+		doCmd:   redis.NewCmd(context.Background()),
+	}
+}
+
 func (m *mockRedisClient) Set(ctx context.Context, key string, value any, expiration time.Duration) *redis.StatusCmd {
 	return staticStatusCmd
 }

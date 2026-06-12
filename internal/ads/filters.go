@@ -249,47 +249,22 @@ func (e *FilterEngine) Check(ctx context.Context, evt *domain.Event) error {
 }
 
 type IPRateLimiter struct {
-	rdb       redis.Cmdable
+	rdb       redis.UniversalClient
 	limit     int
 	window    time.Duration
 	limitAny  any
 	windowAny any
-	keysPool  sync.Pool
-	argsPool  sync.Pool
 }
 
-func NewIPRateLimiter(rdb redis.Cmdable, limit int, window time.Duration) *IPRateLimiter {
+func NewIPRateLimiter(rdb redis.UniversalClient, limit int, window time.Duration) *IPRateLimiter {
 	return &IPRateLimiter{
 		rdb:       rdb,
 		limit:     limit,
 		window:    window,
 		limitAny:  limit,
 		windowAny: int64(window.Milliseconds()),
-		keysPool: sync.Pool{
-			New: func() any {
-				s := make([]string, 1)
-				return &s
-			},
-		},
-		argsPool: sync.Pool{
-			New: func() any {
-				s := make([]any, 2)
-				return &s
-			},
-		},
 	}
 }
-
-const rateLimitScript = `
-local current = redis.call("INCR", KEYS[1])
-if current == 1 then
-    redis.call("PEXPIRE", KEYS[1], ARGV[1])
-end
-if current > tonumber(ARGV[2]) then
-    return 1 -- limit exceeded
-end
-return 0 -- allowed
-`
 
 func (l *IPRateLimiter) Check(ctx context.Context, evt *domain.Event) error {
 	if evt.IP == "" {
@@ -302,25 +277,17 @@ func (l *IPRateLimiter) Check(ctx context.Context, evt *domain.Event) error {
 	w.buf = append(w.buf, evt.IP...)
 	key := unsafeString(w.buf)
 
-	keysPtr := l.keysPool.Get().(*[]string)
-	keys := *keysPtr
-	keys[0] = key
-
-	argsPtr := l.argsPool.Get().(*[]any)
-	args := *argsPtr
-	args[0] = l.windowAny
-	args[1] = l.limitAny
-
-	res, err := l.rdb.Eval(ctx, rateLimitScript, keys, args...).Result()
+	pipe := l.rdb.Pipeline()
+	incr := pipe.Incr(ctx, key)
+	pipe.Do(ctx, "PEXPIRE", key, l.windowAny, "NX")
+	_, err := pipe.Exec(ctx)
 	bufPool.Put(w)
-	l.keysPool.Put(keysPtr)
-	l.argsPool.Put(argsPtr)
 
 	if err != nil {
 		return err
 	}
 
-	if res.(int64) == 1 {
+	if incr.Val() > int64(l.limit) {
 		return ErrRateLimitExceeded
 	}
 
