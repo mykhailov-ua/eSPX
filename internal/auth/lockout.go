@@ -19,29 +19,16 @@ func NewRedisLimiter(rdb *redis.Client) Limiter {
 	return &RedisLimiter{rdb: rdb}
 }
 
-const rateLimitScript = `
-local key = KEYS[1]
-local limit = tonumber(ARGV[1])
-local window = tonumber(ARGV[2])
-
-local current = redis.call("INCR", key)
-if current == 1 then
-    redis.call("EXPIRE", key, window)
-end
-
-if current > limit then
-    return 0
-end
-return 1
-`
-
 func (l *RedisLimiter) Allow(ctx context.Context, key string, limit int, window time.Duration) (bool, error) {
-	res, err := l.rdb.Eval(ctx, rateLimitScript, []string{key}, limit, int(window.Seconds())).Result()
+	pipe := l.rdb.Pipeline()
+	incr := pipe.Incr(ctx, key)
+	pipe.ExpireNX(ctx, key, window)
+	_, err := pipe.Exec(ctx)
 	if err != nil {
 		return false, err
 	}
 
-	return res.(int64) == 1, nil
+	return incr.Val() <= int64(limit), nil
 }
 
 type LockoutLimiter struct {
@@ -66,12 +53,13 @@ local lockout_duration = tonumber(ARGV[2])
 local attempt_window = tonumber(ARGV[3])
 local max_global_attempts = tonumber(ARGV[4])
 
-local global_fails = tonumber(redis.call("GET", global_fail_key) or "0")
+local batch = redis.call("MGET", global_fail_key, fail_key)
+local global_fails = tonumber(batch[1]) or 0
 if global_fails >= max_global_attempts then
     return -1
 end
 
-local fails = tonumber(redis.call("GET", fail_key) or "0")
+local fails = tonumber(batch[2]) or 0
 if fails >= max_attempts then
     return 0
 end
@@ -135,11 +123,14 @@ return attempts
 
 func (l *LockoutLimiter) AllowIP(ctx context.Context, clientIP string, limit int, window time.Duration) (bool, error) {
 	key := "ratelimit:ip:" + clientIP
-	res, err := l.rdb.Eval(ctx, rateLimitScript, []string{key}, limit, int(window.Seconds())).Result()
+	pipe := l.rdb.Pipeline()
+	incr := pipe.Incr(ctx, key)
+	pipe.ExpireNX(ctx, key, window)
+	_, err := pipe.Exec(ctx)
 	if err != nil {
 		return false, err
 	}
-	return res.(int64) == 1, nil
+	return incr.Val() <= int64(limit), nil
 }
 
 func (l *LockoutLimiter) Allow(ctx context.Context, clientIP, email string, maxAttempts int, lockoutDuration, attemptWindow time.Duration) (int64, error) {

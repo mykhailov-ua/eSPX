@@ -74,6 +74,32 @@ func (m *mockRedisClient) Del(ctx context.Context, keys ...string) *redis.IntCmd
 	return cmd
 }
 
+type mockPipeliner struct {
+	redis.Pipeliner
+	incrCmd *redis.IntCmd
+}
+
+func (m *mockPipeliner) Incr(ctx context.Context, key string) *redis.IntCmd {
+	m.incrCmd.SetVal(1)
+	return m.incrCmd
+}
+
+func (m *mockPipeliner) ExpireNX(ctx context.Context, key string, expiration time.Duration) *redis.BoolCmd {
+	cmd := redis.NewBoolCmd(ctx)
+	cmd.SetVal(true)
+	return cmd
+}
+
+func (m *mockPipeliner) Exec(ctx context.Context) ([]redis.Cmder, error) {
+	return nil, nil
+}
+
+func (m *mockRedisClient) Pipeline() redis.Pipeliner {
+	return &mockPipeliner{
+		incrCmd: redis.NewIntCmd(context.Background()),
+	}
+}
+
 func (m *mockRedisClient) Pipelined(ctx context.Context, fn func(redis.Pipeliner) error) ([]redis.Cmder, error) {
 	if m.pipelinedFunc != nil {
 		return m.pipelinedFunc(ctx, fn)
