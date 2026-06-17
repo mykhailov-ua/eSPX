@@ -13,6 +13,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestBudgetFlow_Integration guards the revenue path: Redis hot decrements,
+// click deduplication, and SyncWorker reconciliation must keep campaign spend
+// and customer balance consistent with Postgres.
 func TestBudgetFlow_Integration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")

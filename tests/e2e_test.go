@@ -22,6 +22,8 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// TestE2EFlow is the JSON wire-format smoke test for the full ingest chain:
+// HTTP accept, Redis filter/stream, async consumer, and Postgres persistence.
 func TestE2EFlow(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")
@@ -79,13 +81,13 @@ func TestE2EFlow(t *testing.T) {
 		"test-stream",
 		100000,
 	)
-	filterEngine := ads.NewFilterEngine(unifiedFilter)
+	filterEngine := ads.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, unifiedFilter)
 	consumer := ads.NewStreamConsumer(store, rdb, "test-stream", "test-group", "test-c1", cfg.EventBatchSize, cfg.MaxWorkers, 100*time.Millisecond, 1*time.Second, 100*time.Millisecond, 5*time.Second, 5, 5*time.Minute, 1*time.Second)
 	consumer.Start(ctx)
 	defer consumer.Close()
 
 	sharder := ads.NewJumpHashSharder(1)
-	router := ads.NewRouter(cfg, registry, filterEngine, pool, []redis.UniversalClient{rdb}, sharder, cfg.FraudStreamName)
+	router := ads.NewRouter(cfg, registry, filterEngine, pool, []redis.UniversalClient{rdb}, sharder, cfg.FraudStreamName, nil)
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -115,6 +117,8 @@ func TestE2EFlow(t *testing.T) {
 	}, 5*time.Second, 100*time.Millisecond, "Should have 1 event in events table")
 }
 
+// TestE2EFlow_Protobuf covers the production ingest codec; JSON-only e2e would
+// miss vtproto unmarshaling and Content-Type routing on the hot /track path.
 func TestE2EFlow_Protobuf(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")
@@ -166,13 +170,13 @@ func TestE2EFlow_Protobuf(t *testing.T) {
 		"test-proto-stream",
 		100000,
 	)
-	filterEngine := ads.NewFilterEngine(unifiedFilter)
+	filterEngine := ads.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, unifiedFilter)
 	consumer := ads.NewStreamConsumer(store, rdb, "test-proto-stream", "test-proto-group", "test-c2", cfg.EventBatchSize, cfg.MaxWorkers, 100*time.Millisecond, 1*time.Second, 100*time.Millisecond, 5*time.Second, 5, 5*time.Minute, 1*time.Second)
 	consumer.Start(ctx)
 	defer consumer.Close()
 
 	sharder := ads.NewJumpHashSharder(1)
-	router := ads.NewRouter(cfg, registry, filterEngine, pool, []redis.UniversalClient{rdb}, sharder, cfg.FraudStreamName)
+	router := ads.NewRouter(cfg, registry, filterEngine, pool, []redis.UniversalClient{rdb}, sharder, cfg.FraudStreamName, nil)
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
