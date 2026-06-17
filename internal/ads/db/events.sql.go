@@ -13,9 +13,9 @@ import (
 
 const createCampaign = `-- name: CreateCampaign :one
 
-INSERT INTO campaigns (id, name, budget_limit, status, customer_id, pacing_mode, daily_budget, timezone, freq_limit, freq_window, target_countries, brand_id, brand_fcap_key)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-RETURNING id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend, deleted_at, pacing_mode, daily_budget, timezone, freq_limit, freq_window, target_countries, brand_id, brand_fcap_key
+INSERT INTO campaigns (id, name, budget_limit, status, customer_id, pacing_mode, daily_budget, timezone, freq_limit, freq_window, target_countries, brand_id, brand_fcap_key, start_at, end_at, daypart_hours, template_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+RETURNING id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend, deleted_at, pacing_mode, daily_budget, timezone, freq_limit, freq_window, target_countries, brand_id, brand_fcap_key, start_at, end_at, daypart_hours, template_id
 `
 
 type CreateCampaignParams struct {
@@ -32,6 +32,10 @@ type CreateCampaignParams struct {
 	TargetCountries []string           `json:"target_countries"`
 	BrandID         pgtype.UUID        `json:"brand_id"`
 	BrandFcapKey    string             `json:"brand_fcap_key"`
+	StartAt         pgtype.Timestamptz `json:"start_at"`
+	EndAt           pgtype.Timestamptz `json:"end_at"`
+	DaypartHours    []int16            `json:"daypart_hours"`
+	TemplateID      pgtype.UUID        `json:"template_id"`
 }
 
 // events.sql: sqlc query definitions for campaign and event persistence.
@@ -60,6 +64,10 @@ func (q *Queries) CreateCampaign(ctx context.Context, arg CreateCampaignParams) 
 		arg.TargetCountries,
 		arg.BrandID,
 		arg.BrandFcapKey,
+		arg.StartAt,
+		arg.EndAt,
+		arg.DaypartHours,
+		arg.TemplateID,
 	)
 	var i Campaign
 	err := row.Scan(
@@ -80,12 +88,16 @@ func (q *Queries) CreateCampaign(ctx context.Context, arg CreateCampaignParams) 
 		&i.TargetCountries,
 		&i.BrandID,
 		&i.BrandFcapKey,
+		&i.StartAt,
+		&i.EndAt,
+		&i.DaypartHours,
+		&i.TemplateID,
 	)
 	return i, err
 }
 
 const getCampaign = `-- name: GetCampaign :one
-SELECT id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend, deleted_at, pacing_mode, daily_budget, timezone, freq_limit, freq_window, target_countries, brand_id, brand_fcap_key FROM campaigns WHERE id = $1 LIMIT 1
+SELECT id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend, deleted_at, pacing_mode, daily_budget, timezone, freq_limit, freq_window, target_countries, brand_id, brand_fcap_key, start_at, end_at, daypart_hours, template_id FROM campaigns WHERE id = $1 LIMIT 1
 `
 
 func (q *Queries) GetCampaign(ctx context.Context, id pgtype.UUID) (Campaign, error) {
@@ -109,6 +121,10 @@ func (q *Queries) GetCampaign(ctx context.Context, id pgtype.UUID) (Campaign, er
 		&i.TargetCountries,
 		&i.BrandID,
 		&i.BrandFcapKey,
+		&i.StartAt,
+		&i.EndAt,
+		&i.DaypartHours,
+		&i.TemplateID,
 	)
 	return i, err
 }

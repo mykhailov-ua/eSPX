@@ -1,3 +1,4 @@
+// Package httpresponse provides cold-path JSON and HTMX error helpers for management APIs.
 package httpresponse
 
 import (
@@ -26,6 +27,7 @@ var (
 	}
 )
 
+// JSON writes a standard API envelope; used where reflection cost on success paths is acceptable.
 func JSON(w http.ResponseWriter, status int, data any) {
 	w.Header()["Content-Type"] = contentTypeJsonHeader
 	w.WriteHeader(status)
@@ -38,6 +40,7 @@ func JSON(w http.ResponseWriter, status int, data any) {
 	}
 }
 
+// Error builds the error JSON by hand and pools buffers to avoid Marshal on failure paths.
 func Error(w http.ResponseWriter, status int, code, message string) {
 	w.Header()["Content-Type"] = contentTypeJsonHeader
 	w.WriteHeader(status)

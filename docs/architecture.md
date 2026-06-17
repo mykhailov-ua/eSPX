@@ -36,6 +36,15 @@ The pipeline consists of five layers:
   - Leases pending event batches using `SELECT * FROM outbox_events WHERE status = 'PENDING' ORDER BY created_at ASC LIMIT 1000 FOR UPDATE SKIP LOCKED` inside a short database transaction, setting status to `'PROCESSING'`. This avoids the RAM overhead and potential queue bloat of LISTEN/NOTIFY under heavy consumer lag.
   - Commits the transaction, then executes Redis I/O (pipelining updates) outside Postgres transaction boundaries to prevent connection pool starvation.
   - Updates the outbox event state to `'PROCESSED'` in a final batch write.
+- **Campaign Templates**:
+  - Allows creating reusable presets (`CampaignTemplate`) that bundle configurations (daily budgets, timezones, frequency caps, targeted countries, and daypart hours).
+  - Supports instantiating active campaigns from templates with optional overrides, utilizing client-supplied idempotency keys to ensure exactly-once instantiation under network retries.
+  - Permits snapshotting of live campaign configurations into reusable templates.
+- **Campaign Delivery Schedule Worker (`ScheduleWorker`)**:
+  - Drives automatic pause and resume of campaigns based on designated delivery hours (start/end windows and dayparts).
+  - Runs in a background loop executing once every minute.
+  - Claims scheduled campaigns inside a transaction via `ClaimScheduledCampaignForUpdate` to prevent concurrent execution conflicts, resolves target status, and transitions campaign state.
+  - Transitions log status changes in campaign history and emit corresponding `PAUSE_CAMPAIGN` or `RESUME_CAMPAIGN` outbox events to synchronize the Redis caching state.
 - **Closed-Loop Pacing Controller**:
   - A background `PacingControllerWorker` executes at designated intervals.
   - Compares actual spend against targeted profiles, adjusting pacing state (ASAP/EVEN) in PostgreSQL and emitting outbox invalidation signals to Redis.
@@ -47,6 +56,21 @@ The pipeline consists of five layers:
   - Tracker replicas load publisher floor limits per country into a thread-safe `geoFloors sync.Map`.
   - Client IPs are mapped to ISO country codes via MaxMind databases.
   - If a floor is configured, a DFA scanner `parseBidMicro` traverses the raw payload linearly to extract the bid value without reflection or allocation. Bids below the floor are rejected with `ErrBidFloorNotMet`.
+- **Dynamic Brand Creatives & Weighted Landing URLs**:
+  - For accepted clicks, the system resolves a landing URL from a weighted creative inventory assigned to the campaign's brand.
+  - Creatives are managed via `BrandCreativeStore`, which caches variants in-memory inside an `atomic.Value` map, allowing lock-free reads.
+  - To select a URL, the tracker executes FNV-1a hashing over `userID` and `brandID` to map users deterministically to creative segments, preventing random variation across page refreshes.
+  - Modifications to creatives emit `SYNC_BRAND_CREATIVES` outbox events, causing background workers to rebuild and publish updated lists to the Redis shards.
+- **Budget Cache Warmer & Miss Recovery**:
+  - Prevents database read spikes under Redis key eviction or script flushes via a proactive `BudgetCacheWarmer`.
+  - On startup and registry updates, it executes pipelined `SetNX` operations across Redis shards to seed active remaining campaign budgets.
+  - If a Redis evaluation reports a budget cache-miss, the hot path attempts recovery via `tryRecoverBudgetFromRegistry`. It queries the in-memory campaign registry snapshot to re-seed Redis via a lock-free `SetNX` write, completely bypassing PostgreSQL database queries.
+- **High-Performance Telemetry & Lossy Buffering**:
+  - **`go:linkname` Monotonic Clock**: Acquires monotonic nanoseconds directly from the Go runtime assembly `nanotime` (linked as `monotonicNano()`) to avoid heap escapes, memory allocations, and wall-clock time drift.
+  - **`LatencyRing`**: Replaces inline Prometheus observations in the `gnet` event loops with a lock-free, power-of-two ring buffer. Latency samples are flushed to Prometheus collectors asynchronously during scrapings, eliminating mutex and atomic CAS overhead.
+  - **`FraudStreamWriter`**: Decouples fraud logging from the hot path using an asynchronous, lock-free MPSC ring buffer of capacity 4096. To guarantee `0 B/op` allocations under throughput spikes, slots utilize preallocated fixed-size arrays. A background worker drains the ring and flushes events to Redis streams in pipelined `XAdd` batches. Under buffer overflow, events are dropped gracefully.
+  - **Pre-Bound Metrics**: Resolves Prometheus metric label values once at startup in `preboundTrackMetrics`, eliminating string formatting and map lookup overhead on the request execution path.
+  - **Preloaded Lua Scripts**: Compiles and pre-registers the unified filter Lua script on all Redis shards at startup. If a script cache flush occurs, the handler catches the `NOSCRIPT` error, falls back to full `EVAL` once to re-cache the script, and tracks NOSCRIPT occurrences via `ad_redis_lua_noscript_total`.
 - **Atomic Edge Evaluation & Rate Limiting**:
   - Tracker computes a static slot index: `crc32Castagnoli(&id) & 1023`.
   - Executes atomic pipelined Redis operations on the designated shard to verify IP blacklists, deduplicate clicks (45s TTL), enforce frequency capping, and reserve micro-budget.

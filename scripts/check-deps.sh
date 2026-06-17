@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Preflight for local dev and integration tests.
+# Fails fast when the compose stack is down instead of obscure connection errors later.
 
 set -eo pipefail
 
@@ -17,6 +19,7 @@ REDIS_PORTS=(6479 6480 6481 6482 6483 6484)
 
 echo "Checking Local Environment Dependencies..."
 
+# Returns 0 when host:port accepts a TCP connection.
 check_port() {
     local host=$1
     local port=$2

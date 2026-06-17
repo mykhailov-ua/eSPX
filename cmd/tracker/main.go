@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -17,9 +18,11 @@ import (
 	"espx/pkg/logger"
 
 	"github.com/panjf2000/gnet/v2"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 )
 
+// main boots the gnet tracker hot path with StaticSlot Redis sharding and a dedicated metrics listener.
 func main() {
 	if len(os.Args) > 2 && os.Args[1] == "--health-probe" {
 		resp, err := http.Get(os.Args[2])
@@ -29,7 +32,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	slogLogger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slogLogger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	slog.SetDefault(slogLogger)
 
 	cfg, err := config.Load()
@@ -74,15 +77,16 @@ func main() {
 	registry.StartSync(ctx, time.Duration(cfg.RegistrySyncIntervalMs)*time.Millisecond)
 
 	var rdbs []redis.UniversalClient
-	for _, addr := range cfg.RedisAddrs {
-		rdb := redis.NewUniversalClient(&redis.UniversalOptions{
-			Addrs:    []string{addr},
-			Password: string(cfg.RedisPassword),
-			PoolSize: cfg.RedisPoolSize,
-		})
+	for i, addr := range cfg.RedisAddrs {
+		rdb := redis.NewUniversalClient(ads.FilterRedisOptions(
+			[]string{addr},
+			string(cfg.RedisPassword),
+			cfg.RedisPoolSize,
+			cfg.FilterTimeoutMs,
+		))
 
 		var rdbErr error
-		for i := 0; i < 30; i++ {
+		for j := 0; j < 30; j++ {
 			if rdbErr = rdb.Ping(ctx).Err(); rdbErr == nil {
 				break
 			}
@@ -94,8 +98,12 @@ func main() {
 			slog.Error("failed to connect to redis shard", "addr", addr, "error", rdbErr)
 			os.Exit(1)
 		}
-		breaker := database.NewRedisBreaker(10000, 10, 5*time.Second)
-		rdb.AddHook(database.NewRedisCircuitBreakerHook(breaker))
+		breaker := database.NewRedisBreaker(
+			int64(cfg.RedisBreakerFailThreshold),
+			int64(cfg.RedisBreakerHalfOpen),
+			time.Duration(cfg.RedisBreakerOpenTimeoutMs)*time.Millisecond,
+		)
+		rdb.AddHook(database.NewRedisCircuitBreakerHook(breaker, strconv.Itoa(i)))
 		rdbs = append(rdbs, rdb)
 	}
 
@@ -103,10 +111,18 @@ func main() {
 	if channel == "" {
 		channel = "campaigns:update"
 	}
-	registry.StartWatch(ctx, rdbs[0], channel)
-
 	campaignRepo := ads.NewCampaignRepo(queries)
 	sharder := ads.NewStaticSlotSharder(len(rdbs))
+
+	budgetWarmer := ads.NewBudgetCacheWarmer(rdbs, sharder)
+	registry.SetBudgetWarmer(budgetWarmer)
+	if warmed, err := budgetWarmer.WarmFromRegistry(ctx, registry); err != nil {
+		slog.Error("initial budget cache warm failed", "error", err)
+	} else {
+		slog.Info("budget cache warmed", "keys_inserted", warmed)
+	}
+
+	registry.StartWatch(ctx, rdbs[0], channel)
 
 	var geoProvider ads.GeoProvider
 	geoProvider, err = ads.NewMaxMindProvider("deploy/geoip/GeoLite2-Country.mmdb")
@@ -127,7 +143,8 @@ func main() {
 	}
 
 	geoFilter := ads.NewGeoFilter(geoProvider, registry)
-	fraudFilter := ads.NewFraudFilter(geoProvider, rdbs[0], time.Duration(cfg.TTCMinMs)*time.Millisecond)
+	scheduleFilter := ads.NewScheduleFilter(registry)
+	fraudFilter := ads.NewFraudFilter(geoProvider)
 
 	settingsWatcher := ads.NewSettingsWatcher(rdbs[0], cfg)
 	go settingsWatcher.Start(ctx, time.Second)
@@ -148,10 +165,21 @@ func main() {
 		cfg.RedisStreamName,
 		cfg.StreamMaxLen,
 	)
+	if err := unifiedFilter.PreloadScripts(ctx); err != nil {
+		slog.Error("failed to preload redis lua scripts on all shards", "error", err)
+		os.Exit(1)
+	}
+	unifiedFilter.SetTTCMin(time.Duration(cfg.TTCMinMs) * time.Millisecond)
+	unifiedFilter.SetTTCFailClosed(cfg.TTCFailClosed)
+	if cfg.TTCFailClosed {
+		slog.Info("TTC fail-closed enabled: clicks without impression timestamp are rejected")
+	}
+	slog.Info("redis lua scripts preloaded", "shards", len(rdbs))
 
-	filterEngine := ads.NewFilterEngine(breakerFilter, geoFilter, fraudFilter, unifiedFilter)
+	creativeStore := ads.NewBrandCreativeStore(rdbs[0])
+	filterEngine := ads.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, breakerFilter, geoFilter, scheduleFilter, fraudFilter, unifiedFilter)
 
-	gnetHandler := ads.NewAdsPacketHandler(cfg, registry, filterEngine, pool, rdbs, sharder, cfg.FraudStreamName)
+	gnetHandler := ads.NewAdsPacketHandler(cfg, registry, filterEngine, pool, rdbs, sharder, cfg.FraudStreamName, creativeStore)
 	gnetHandler.SetLogger(appLogger)
 	gnetHandler.StartHealthProbe(ctx)
 
@@ -174,6 +202,31 @@ func main() {
 		}
 	}()
 
+	// Dedicated /metrics listener (P2-9): offloads LatencyRing.FlushTo + prom gather from gnet event loops.
+	// Scrape this port (default :9090) from Prometheus; main app port serves /track + /health only.
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("/metrics", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gnetHandler.FlushLatency()
+		promhttp.Handler().ServeHTTP(w, r)
+	}))
+	metricsMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK"))
+	})
+	metricsSrv := &http.Server{
+		Addr:              ":" + cfg.MetricsPort,
+		Handler:           metricsMux,
+		ReadHeaderTimeout: 2 * time.Second,
+		ReadTimeout:       5 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       30 * time.Second,
+	}
+	go func() {
+		if err := metricsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("metrics sidecar server failed", "error", err)
+		}
+	}()
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	sig := <-stop
@@ -187,6 +240,11 @@ func main() {
 	if err := gnetHandler.Stop(shutdownCtx); err != nil {
 		slog.Error("gnet server shutdown failed", "error", err)
 	}
+
+	// Shutdown metrics sidecar gracefully (P2-9).
+	metricsShutdownCtx, metricsCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_ = metricsSrv.Shutdown(metricsShutdownCtx)
+	metricsCancel()
 
 	workerPool.Shutdown()
 

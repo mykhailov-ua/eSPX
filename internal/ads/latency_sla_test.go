@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// DB health stub with configurable ping delay for SLA tests.
 type MockDBHealthWithDelay struct {
 	Healthy atomic.Bool
 	Delay   atomic.Int64
@@ -33,6 +34,7 @@ func (m *MockDBHealthWithDelay) Ping(ctx context.Context) error {
 	return nil
 }
 
+// Guards unified filter enforces latency SLA when Redis ping is slow.
 func TestUnifiedFilter_LatencySLA(t *testing.T) {
 	campID := uuid.New()
 	custID := uuid.New()

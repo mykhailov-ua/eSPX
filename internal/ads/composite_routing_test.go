@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Reference hash used to verify JSON and protobuf routing alignment.
 func ComputeCompositeHash(campaignID, userID string) uint32 {
 	if campaignID == "" && userID == "" {
 		return 0
@@ -19,6 +20,7 @@ func ComputeCompositeHash(campaignID, userID string) uint32 {
 	return crc32.ChecksumIEEE([]byte(key))
 }
 
+// Guards JSON and protobuf ingest compute the same composite routing hash.
 func TestCompositeRouting_JSONAndProtoAlignment(t *testing.T) {
 	campaignUUID := uuid.New()
 	userID := "user_987654321"
@@ -77,6 +79,7 @@ func TestCompositeRouting_JSONAndProtoAlignment(t *testing.T) {
 	t.Logf("Composite Routing Hash (CRC32): %d (0x%x)", jsonHash, jsonHash)
 }
 
+// Tracks JSON composite hash cost against protobuf for format migration decisions.
 func BenchmarkCompositeRouting_JSON(b *testing.B) {
 	campaignUUID := uuid.New()
 	userID := "user_987654321"
@@ -108,6 +111,7 @@ func BenchmarkCompositeRouting_JSON(b *testing.B) {
 	}
 }
 
+// Tracks protobuf composite hash as baseline for routing hot path.
 func BenchmarkCompositeRouting_Protobuf(b *testing.B) {
 	campaignUUID := uuid.New()
 	userID := "user_987654321"

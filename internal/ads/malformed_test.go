@@ -10,13 +10,14 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// Guards malformed protobuf, oversize body, and bad campaign ID return 400 not 500.
 func TestTrackHandlerMalformed(t *testing.T) {
 	cfg := &config.Config{
 		MaxRequestBodySize: 1024,
 	}
 	registry := &mockRegistry{}
 	sharder := NewJumpHashSharder(1)
-	handler := NewRouter(cfg, registry, nil, nil, nil, sharder, "fraud-stream")
+	handler := NewRouter(cfg, registry, nil, nil, nil, sharder, "fraud-stream", nil)
 
 	t.Run("Malformed Protobuf", func(t *testing.T) {
 		body := []byte{0xFF, 0xEE, 0xDD}

@@ -647,13 +647,19 @@ func (h *AdsPacketHandler) writeGnetTrackAccepted(ctx *connContext, req parsedHT
 		metrics.GnetPacketsSent.Inc()
 		h.write(c, outSlice, ctx)
 	} else {
-		var jsonBody string
-		if landingURL != "" {
-			jsonBody = `{"request_id":"` + requestIDStr + `","status":"accepted","landing_url":"` + landingURL + `"}`
-		} else {
-			jsonBody = `{"request_id":"` + requestIDStr + `","status":"accepted"}`
+		reqID := wReqID.buf
+		if requestIDStr != "" {
+			reqID = UnsafeBytes(requestIDStr)
 		}
-		respSize := len(jsonBody)
+
+		const jsonPrefix = `{"request_id":"`
+		const jsonMid = `","status":"accepted"`
+		respSize := len(jsonPrefix) + len(reqID) + len(jsonMid) + 1
+		if landingURL != "" {
+			const jsonLand = `,"landing_url":"`
+			respSize += len(jsonLand) + len(landingURL) + 1
+		}
+
 		bufSlice := ctx.bufSlice
 		if cap(bufSlice) < 200+respSize {
 			bufSlice = make([]byte, 200+respSize)
@@ -665,7 +671,17 @@ func (h *AdsPacketHandler) writeGnetTrackAccepted(ctx *connContext, req parsedHT
 		offset := copy(bufSlice, "HTTP/1.1 202 Accepted\r\nContent-Type: application/json\r\nContent-Length: ")
 		offset += copy(bufSlice[offset:], strconv.Itoa(respSize))
 		offset += copy(bufSlice[offset:], "\r\nConnection: keep-alive\r\n\r\n")
-		offset += copy(bufSlice[offset:], jsonBody)
+		offset += copy(bufSlice[offset:], jsonPrefix)
+		offset += copy(bufSlice[offset:], reqID)
+		offset += copy(bufSlice[offset:], jsonMid)
+		if landingURL != "" {
+			offset += copy(bufSlice[offset:], `,"landing_url":"`)
+			offset += copy(bufSlice[offset:], landingURL)
+			bufSlice[offset] = '"'
+			offset++
+		}
+		bufSlice[offset] = '}'
+		offset++
 
 		metrics.GnetBytesSent.Add(float64(offset))
 		metrics.GnetPacketsSent.Inc()

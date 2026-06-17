@@ -32,6 +32,7 @@ type AlertmanagerPayload struct {
 	ExternalURL       string            `json:"externalURL"`
 }
 
+// main runs an Alertmanager webhook proxy that forwards firing alerts to Telegram.
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
@@ -70,10 +71,8 @@ func main() {
 
 		for _, alert := range payload.Alerts {
 			var message string
-			statusEmoji := "🔥"
 			statusText := "ALERT ACTIVE"
 			if alert.Status == "resolved" {
-				statusEmoji = "✅"
 				statusText = "ALERT RESOLVED"
 			}
 
@@ -83,8 +82,7 @@ func main() {
 			}
 
 			message = fmt.Sprintf(
-				"%s <b>%s</b>\n\n<b>Alert:</b> %s\n<b>Severity:</b> <code>%s</code>\n<b>Description:</b> %s\n<b>Time:</b> <code>%s</code>\n",
-				statusEmoji,
+				"<b>%s</b>\n\n<b>Alert:</b> %s\n<b>Severity:</b> <code>%s</code>\n<b>Description:</b> %s\n<b>Time:</b> <code>%s</code>\n",
 				statusText,
 				alert.Annotations["summary"],
 				severity,
@@ -135,6 +133,7 @@ func main() {
 	slog.Info("proxy shutdown complete")
 }
 
+// sendTelegramMessage posts an HTML-formatted alert to the Telegram Bot API.
 func sendTelegramMessage(token, chatID, htmlMessage string) error {
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
 	payload := map[string]interface{}{

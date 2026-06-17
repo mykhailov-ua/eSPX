@@ -5,15 +5,17 @@ import (
 	"time"
 )
 
-// Zero value is CircuitClosed (intentional).
+// CircuitState tracks whether downstream writes are allowed after repeated failures.
 type CircuitState int32
 
+// Circuit breaker states for store write protection.
 const (
 	CircuitClosed   CircuitState = 0
 	CircuitOpen     CircuitState = 1
 	CircuitHalfOpen CircuitState = 2
 )
 
+// String returns a stable label for metrics and logs.
 func (s CircuitState) String() string {
 	switch s {
 	case CircuitClosed:
@@ -27,7 +29,7 @@ func (s CircuitState) String() string {
 	}
 }
 
-// failThreshold is per workerID, not global.
+// CircuitBreaker isolates failing store workers so one bad shard does not stall the whole consumer.
 type CircuitBreaker struct {
 	mu            sync.Mutex
 	state         CircuitState
@@ -37,6 +39,7 @@ type CircuitBreaker struct {
 	openTimeout   time.Duration
 }
 
+// NewCircuitBreaker creates a per-worker failure gate for stream flush retries.
 func NewCircuitBreaker(failThreshold int, openTimeout time.Duration) *CircuitBreaker {
 	return &CircuitBreaker{
 		state:         CircuitClosed,
@@ -46,6 +49,7 @@ func NewCircuitBreaker(failThreshold int, openTimeout time.Duration) *CircuitBre
 	}
 }
 
+// Allow reports whether a worker may attempt another store flush.
 func (cb *CircuitBreaker) Allow() bool {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
@@ -69,6 +73,7 @@ func (cb *CircuitBreaker) Allow() bool {
 	}
 }
 
+// RecordSuccess clears worker failures and closes the circuit after a probe succeeds.
 func (cb *CircuitBreaker) RecordSuccess(workerID string) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
@@ -81,6 +86,7 @@ func (cb *CircuitBreaker) RecordSuccess(workerID string) {
 	}
 }
 
+// RecordFailure opens the circuit when a worker exceeds the failure threshold.
 func (cb *CircuitBreaker) RecordFailure(workerID string) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
@@ -99,6 +105,7 @@ func (cb *CircuitBreaker) RecordFailure(workerID string) {
 	}
 }
 
+// RecordCancellation reopens the circuit when a half-open probe is cancelled mid-flight.
 func (cb *CircuitBreaker) RecordCancellation(workerID string) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
@@ -109,18 +116,21 @@ func (cb *CircuitBreaker) RecordCancellation(workerID string) {
 	}
 }
 
+// State returns the current circuit state for observability.
 func (cb *CircuitBreaker) State() CircuitState {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 	return cb.state
 }
 
+// Failures returns the failure count for a specific worker.
 func (cb *CircuitBreaker) Failures(workerID string) int {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 	return int(cb.failures[workerID])
 }
 
+// WaitDuration returns time until the open circuit may probe again.
 func (cb *CircuitBreaker) WaitDuration() time.Duration {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()

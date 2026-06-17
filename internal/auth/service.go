@@ -15,12 +15,14 @@ import (
 	"espx/internal/auth/db"
 	"espx/internal/auth/pb"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// Domain errors keep auth responses stable for clients, metrics, and gRPC mapping without leaking internals.
 var (
 	ErrUserAlreadyExists  = errors.New("user already exists")
 	ErrInvalidCredentials = errors.New("invalid credentials")
@@ -29,21 +31,26 @@ var (
 	ErrValidation         = errors.New("validation failed")
 	ErrSessionBlocked     = errors.New("session is blocked")
 	ErrPasswordReuse      = errors.New("password reuse not allowed")
+	ErrEmailNotVerified   = errors.New("email not verified")
 )
 
+// idempotentResultError carries a cached refresh rotation result out of a transaction without treating it as a failure.
 type idempotentResultError struct {
 	accessToken  string
 	refreshToken string
 }
 
+// Error signals a duplicate refresh that already produced tokens so the caller can return them.
 func (e *idempotentResultError) Error() string {
 	return "idempotency hit"
 }
 
+// emailRegex rejects malformed registration and login addresses before they hit the database.
 var (
 	emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
 )
 
+// AuthLoginAttempts and AuthTokenErrors expose auth health signals for monitoring brute force and token failures.
 var (
 	AuthLoginAttempts = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -61,11 +68,13 @@ var (
 	)
 )
 
+// init registers auth counters at startup so Prometheus scrapes see them from the first request.
 func init() {
 	prometheus.MustRegister(AuthLoginAttempts)
 	prometheus.MustRegister(AuthTokenErrors)
 }
 
+// Service owns registration, login, token lifecycle, and credential policy for the auth domain.
 type Service struct {
 	repo       db.Store
 	tokenMaker Maker
@@ -77,6 +86,7 @@ type Service struct {
 	mailer     Mailer
 }
 
+// NewService sizes crypto concurrency from Argon2 parallelism to avoid CPU saturation under login bursts.
 func NewService(repo db.Store, tokenMaker Maker, hasher *PasswordHasher, lockout *LockoutLimiter, rdb redis.UniversalClient) *Service {
 	gomaxprocs := runtime.GOMAXPROCS(0)
 	p := 1
@@ -102,10 +112,12 @@ func NewService(repo db.Store, tokenMaker Maker, hasher *PasswordHasher, lockout
 	}
 }
 
+// SetMailer swaps the log-only default for a real provider before security notifications matter.
 func (s *Service) SetMailer(mailer Mailer) {
 	s.mailer = mailer
 }
 
+// RegisterDTO carries validated registration input from HTTP and gRPC adapters.
 type RegisterDTO struct {
 	Email      string
 	Password   string
@@ -113,6 +125,7 @@ type RegisterDTO struct {
 	CustomerID uuid.UUID
 }
 
+// Register seeds password history on creation so later rotations can detect reuse.
 func (s *Service) Register(ctx context.Context, req RegisterDTO) (uuid.UUID, error) {
 	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
 	if !emailRegex.MatchString(req.Email) {
@@ -124,6 +137,12 @@ func (s *Service) Register(ctx context.Context, req RegisterDTO) (uuid.UUID, err
 		return uuid.Nil, ErrValidation
 	}
 
+	role, err := ValidateRegisterRole(req.Role)
+	if err != nil {
+		slog.Warn("registration failed", slog.String("reason", "invalid role"), slog.String("email", req.Email), slog.String("role", req.Role))
+		return uuid.Nil, ErrValidation
+	}
+
 	hashedPassword, err := s.hasher.HashPassword(req.Password)
 	if err != nil {
 		slog.Error("failed to hash password during registration", slog.String("email", req.Email), slog.Any("error", err))
@@ -131,9 +150,10 @@ func (s *Service) Register(ctx context.Context, req RegisterDTO) (uuid.UUID, err
 	}
 
 	arg := db.CreateUserParams{
-		Email:        req.Email,
-		PasswordHash: hashedPassword,
-		Role:         "user",
+		Email:         req.Email,
+		PasswordHash:  hashedPassword,
+		Role:          role,
+		EmailVerified: true,
 	}
 	if req.CustomerID != uuid.Nil {
 		arg.CustomerID.Bytes = req.CustomerID
@@ -155,20 +175,26 @@ func (s *Service) Register(ctx context.Context, req RegisterDTO) (uuid.UUID, err
 	})
 
 	if err != nil {
-
-		slog.Warn("registration failed", slog.String("reason", "user already exists"), slog.String("email", req.Email))
-		return uuid.Nil, ErrUserAlreadyExists
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			slog.Warn("registration failed", slog.String("reason", "user already exists"), slog.String("email", req.Email))
+			return uuid.Nil, ErrUserAlreadyExists
+		}
+		slog.Error("registration failed", slog.String("email", req.Email), slog.Any("error", err))
+		return uuid.Nil, err
 	}
 
 	return userID, nil
 }
 
+// LoginDTO groups login outputs for callers that need tokens plus the authenticated user record.
 type LoginDTO struct {
 	AccessToken  string
 	RefreshToken string
 	User         db.User
 }
 
+// Login centralizes lockout, constant-time verification, and session binding for every client.
 func (s *Service) Login(ctx context.Context, email, password, userAgent, clientIP string, duration time.Duration) (pb.LoginResponse, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if !emailRegex.MatchString(email) {
@@ -178,24 +204,43 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, clientI
 
 	if s.lockout != nil {
 		allowedIP, errIP := s.lockout.AllowIP(ctx, clientIP, 20, time.Minute)
-		if errIP == nil && !allowedIP {
+		if errIP != nil {
+			AuthLoginAttempts.WithLabelValues("failure", "lockout_check_failed").Inc()
+			slog.Error("failed to check ip rate limit in redis (fail-closed)", slog.String("ip", clientIP), slog.String("email", email), slog.Any("error", errIP))
+			return pb.LoginResponse{}, ErrSessionBlocked
+		}
+		if !allowedIP {
 			AuthLoginAttempts.WithLabelValues("failure", "ratelimit").Inc()
 			slog.Warn("security_audit_event", slog.String("event", "auth_failure"), slog.String("ip", clientIP), slog.String("email", email), slog.String("reason", "ip rate limit exceeded"))
 			return pb.LoginResponse{}, ErrRateLimitExceeded
 		}
 
 		allowed, err := s.lockout.Allow(ctx, clientIP, email, 5, 15*time.Minute, 10*time.Minute)
-		if err == nil {
-			if allowed == 0 {
-				AuthLoginAttempts.WithLabelValues("failure", "locked").Inc()
-				slog.Warn("security_audit_event", slog.String("event", "auth_failure"), slog.String("ip", clientIP), slog.String("email", email), slog.String("reason", "account locked by ip"))
-				return pb.LoginResponse{}, ErrAccountLocked
-			} else if allowed == -1 {
-				AuthLoginAttempts.WithLabelValues("failure", "global_locked").Inc()
-				slog.Warn("security_audit_event", slog.String("event", "auth_failure"), slog.String("ip", clientIP), slog.String("email", email), slog.String("reason", "global account lockout triggered"))
-
-				return pb.LoginResponse{}, ErrAccountLocked
+		if err != nil {
+			AuthLoginAttempts.WithLabelValues("failure", "lockout_check_failed").Inc()
+			slog.Error("failed to check lockout in redis (fail-closed)", slog.String("ip", clientIP), slog.String("email", email), slog.Any("error", err))
+			return pb.LoginResponse{}, ErrSessionBlocked
+		}
+		if allowed == 0 {
+			AuthLoginAttempts.WithLabelValues("failure", "locked").Inc()
+			slog.Warn("security_audit_event", slog.String("event", "auth_failure"), slog.String("ip", clientIP), slog.String("email", email), slog.String("reason", "account locked by ip"))
+			if s.mailer != nil {
+				if mailErr := s.mailer.SendAccountLockedEmail(ctx, email, clientIP, "10 minutes"); mailErr != nil {
+					slog.Error("failed to send account locked notification", slog.String("email", email), slog.Any("error", mailErr))
+				}
 			}
+			return pb.LoginResponse{}, ErrAccountLocked
+		}
+		if allowed == -1 {
+			AuthLoginAttempts.WithLabelValues("failure", "global_locked").Inc()
+			slog.Warn("security_audit_event", slog.String("event", "auth_failure"), slog.String("ip", clientIP), slog.String("email", email), slog.String("reason", "global account lockout triggered"))
+			if s.mailer != nil {
+				if mailErr := s.mailer.SendAccountLockedEmail(ctx, email, clientIP, "1 hour"); mailErr != nil {
+					slog.Error("failed to send global account locked notification", slog.String("email", email), slog.Any("error", mailErr))
+				}
+			}
+
+			return pb.LoginResponse{}, ErrAccountLocked
 		}
 		defer func() {
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
@@ -294,6 +339,14 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, clientI
 		}
 	}
 
+	if user.IsBlocked {
+		return pb.LoginResponse{}, ErrSessionBlocked
+	}
+	if !user.EmailVerified {
+		AuthLoginAttempts.WithLabelValues("failure", "email_not_verified").Inc()
+		return pb.LoginResponse{}, ErrEmailNotVerified
+	}
+
 	refreshTokenId := uuid.Must(uuid.NewV7())
 
 	accessToken, err := s.tokenMaker.CreateToken(
@@ -333,6 +386,8 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, clientI
 		return pb.LoginResponse{}, err
 	}
 
+	s.notifyNewIPLogin(ctx, user, clientIP, userAgent)
+
 	return pb.LoginResponse{
 		AccessToken:  accessToken,
 		RefreshToken: refreshTokenStr,
@@ -346,6 +401,7 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, clientI
 	}, nil
 }
 
+// VerifyToken rejects revoked or blocked principals before downstream services trust the token.
 func (s *Service) VerifyToken(ctx context.Context, accessToken string) (db.User, error) {
 	payload, err := s.tokenMaker.VerifyToken(accessToken)
 	if err != nil {
@@ -354,57 +410,35 @@ func (s *Service) VerifyToken(ctx context.Context, accessToken string) (db.User,
 	}
 
 	if s.rdb != nil {
-		ctxRevoked, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
-		cmds, errPipe := s.rdb.Pipelined(ctxRevoked, func(pipe redis.Pipeliner) error {
-			pipe.Exists(ctxRevoked, "revoked:token:"+payload.ID.String())
-			pipe.Exists(ctxRevoked, "revoked:session:"+payload.SessionID.String())
-			pipe.Exists(ctxRevoked, "revoked:user:"+payload.UserID.String())
-			return nil
-		})
-		cancel()
-
-		if errPipe != nil {
+		revoked, errRev := CheckTokenRevocation(ctx, s.rdb, payload)
+		if errRev != nil {
 			AuthTokenErrors.WithLabelValues("revocation_check_failed").Inc()
-			slog.Error("failed to check token revocation in redis (fail-closed)", slog.Any("error", errPipe))
+			slog.Error("failed to check token revocation in redis (fail-closed)", slog.Any("error", errRev))
 			return db.User{}, ErrSessionBlocked
 		}
-		if len(cmds) != 3 {
-			AuthTokenErrors.WithLabelValues("revocation_check_failed").Inc()
-			slog.Error("unexpected pipeline commands count in redis (fail-closed)", slog.Int("expected", 3), slog.Int("got", len(cmds)))
+		if revoked {
 			return db.User{}, ErrSessionBlocked
-		}
-
-		for _, cmd := range cmds {
-			intCmd, ok := cmd.(*redis.IntCmd)
-			if !ok {
-				AuthTokenErrors.WithLabelValues("revocation_check_failed").Inc()
-				slog.Error("unexpected command type in redis pipeline (fail-closed)")
-				return db.User{}, ErrSessionBlocked
-			}
-			exists, errExists := intCmd.Result()
-			if errExists != nil {
-				AuthTokenErrors.WithLabelValues("revocation_check_failed").Inc()
-				slog.Error("failed to get pipeline result in redis (fail-closed)", slog.Any("error", errExists))
-				return db.User{}, ErrSessionBlocked
-			}
-			if exists > 0 {
-				return db.User{}, ErrSessionBlocked
-			}
 		}
 	}
 
 	user, err := s.repo.GetUserByID(ctx, pgtype.UUID{Bytes: payload.UserID, Valid: true})
 	if err != nil {
-		return db.User{}, err
+		AuthTokenErrors.WithLabelValues("user_lookup_failed").Inc()
+		slog.Error("failed to load user during verify (fail-closed)", slog.Any("error", err))
+		return db.User{}, ErrSessionBlocked
 	}
 
 	if user.IsBlocked {
 		return db.User{}, ErrSessionBlocked
 	}
+	if !user.EmailVerified {
+		return db.User{}, ErrEmailNotVerified
+	}
 
 	return user, nil
 }
 
+// RefreshToken blocks refresh-token reuse and caches rotation results for concurrent retries.
 func (s *Service) RefreshToken(ctx context.Context, refreshTokenStr string, duration time.Duration) (string, string, error) {
 	if s.rdb != nil {
 		cached, err := s.rdb.Get(ctx, "idempotency:refresh:"+refreshTokenStr).Result()
@@ -423,7 +457,7 @@ func (s *Service) RefreshToken(ctx context.Context, refreshTokenStr string, dura
 		session, err := q.GetSessionByRefreshTokenForUpdate(ctx, refreshTokenStr)
 		if err != nil {
 			slog.Warn("refresh token failed", slog.String("reason", "invalid refresh token"), slog.Any("error", err))
-			return errors.New("invalid refresh token")
+			return ErrInvalidToken
 		}
 
 		if session.IsBlocked {
@@ -445,24 +479,27 @@ func (s *Service) RefreshToken(ctx context.Context, refreshTokenStr string, dura
 
 		if session.ExpiresAt.Time.Before(time.Now()) {
 			slog.Warn("refresh token failed", slog.String("reason", "refresh token expired"), slog.String("session_id", uuid.UUID(session.ID.Bytes).String()))
-			return errors.New("refresh token expired")
+			return ErrExpiredToken
 		}
 
 		user, err := q.GetUserByID(ctx, session.UserID)
 		if err != nil {
 			slog.Error("refresh token failed", slog.String("reason", "user not found"), slog.Any("error", err))
-			return errors.New("user not found")
+			return ErrInvalidToken
 		}
 
 		if user.IsBlocked {
 			slog.Warn("refresh token failed", slog.String("reason", "user is blocked"), slog.String("email", user.Email))
 			return ErrSessionBlocked
 		}
+		if !user.EmailVerified {
+			return ErrEmailNotVerified
+		}
 
 		err = q.BlockSession(ctx, session.ID)
 		if err != nil {
 			slog.Error("refresh token failed", slog.String("reason", "failed to block old session"), slog.Any("error", err))
-			return errors.New("failed to block old session")
+			return err
 		}
 
 		newRefreshTokenId := uuid.Must(uuid.NewV7())
@@ -492,7 +529,7 @@ func (s *Service) RefreshToken(ctx context.Context, refreshTokenStr string, dura
 			ExpiresAt:    pgtype.Timestamptz{Time: expiresAt, Valid: true},
 		}); err != nil {
 			slog.Error("refresh token failed", slog.String("reason", "failed to create new session"), slog.Any("error", err))
-			return errors.New("failed to create new session")
+			return err
 		}
 
 		return nil
@@ -515,6 +552,7 @@ func (s *Service) RefreshToken(ctx context.Context, refreshTokenStr string, dura
 	return accessToken, newRefreshTokenStr, nil
 }
 
+// RevokeToken ends the refresh chain and marks in-flight access tokens via Redis before session block.
 func (s *Service) RevokeToken(ctx context.Context, refreshTokenStr string) error {
 	session, err := s.repo.GetSessionByRefreshToken(ctx, refreshTokenStr)
 	if err == nil && s.rdb != nil {
@@ -533,6 +571,7 @@ func (s *Service) RevokeToken(ctx context.Context, refreshTokenStr string) error
 	return s.repo.BlockSessionByRefreshToken(ctx, refreshTokenStr)
 }
 
+// AuditLog must never break primary auth flows when the audit store is down.
 func (s *Service) AuditLog(ctx context.Context, userID uuid.UUID, action, targetType, targetID, clientIP, userAgent string, changes, metadata map[string]any) {
 	changesJSON, err := json.Marshal(changes)
 	if err != nil {
@@ -566,6 +605,7 @@ func (s *Service) AuditLog(ctx context.Context, userID uuid.UUID, action, target
 	}
 }
 
+// ChangePassword enforces reuse policy and alerts the owner because stolen sessions may trigger rotation.
 func (s *Service) ChangePassword(ctx context.Context, userID uuid.UUID, oldPassword, newPassword, clientIP, userAgent string) error {
 	if err := ValidatePassword(newPassword); err != nil {
 		return ErrValidation
@@ -631,6 +671,7 @@ func (s *Service) ChangePassword(ctx context.Context, userID uuid.UUID, oldPassw
 	return nil
 }
 
+// CreateAPIKey returns the raw secret once because only a hash is persisted.
 func (s *Service) CreateAPIKey(ctx context.Context, userID uuid.UUID, name string, expiresAt *time.Time) (id uuid.UUID, rawKey string, err error) {
 
 	raw := make([]byte, 32)
@@ -665,10 +706,12 @@ func (s *Service) CreateAPIKey(ctx context.Context, userID uuid.UUID, name strin
 	return id, rawKey, nil
 }
 
+// ListUserAPIKeys exposes metadata only; stored secrets are never retrievable after creation.
 func (s *Service) ListUserAPIKeys(ctx context.Context, userID uuid.UUID) ([]db.ListUserAPIKeysRow, error) {
 	return s.repo.ListUserAPIKeys(ctx, pgtype.UUID{Bytes: userID, Valid: true})
 }
 
+// RequestEmailVerification stores a short-lived token in Redis to prove mailbox ownership out of band.
 func (s *Service) RequestEmailVerification(ctx context.Context, userID uuid.UUID) (string, error) {
 	token := uuid.NewString()
 	key := "auth:email_verify:" + token
@@ -679,6 +722,7 @@ func (s *Service) RequestEmailVerification(ctx context.Context, userID uuid.UUID
 	return token, nil
 }
 
+// ConfirmEmailVerification deletes the token on use so ownership claims cannot be replayed.
 func (s *Service) ConfirmEmailVerification(ctx context.Context, token string) (uuid.UUID, error) {
 	key := "auth:email_verify:" + token
 	userIDStr, err := s.rdb.Get(ctx, key).Result()
@@ -700,4 +744,64 @@ func (s *Service) ConfirmEmailVerification(ctx context.Context, token string) (u
 	}
 	s.AuditLog(ctx, uid, "EMAIL_VERIFIED", "user", uid.String(), "", "", nil, nil)
 	return uid, nil
+}
+
+// BlockUser must invalidate in-flight access tokens because Postgres block alone is not checked on every request.
+func (s *Service) BlockUser(ctx context.Context, email string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	user, err := s.repo.GetUserByEmail(ctx, email)
+	if err != nil {
+		return err
+	}
+	if err := s.repo.BlockUser(ctx, email); err != nil {
+		return err
+	}
+	userID := uuid.UUID(user.ID.Bytes)
+	if err := RevokeUserAccess(ctx, s.rdb, userID, defaultUserRevocationTTL); err != nil {
+		slog.Error("failed to publish user revocation marker", slog.String("email", email), slog.Any("error", err))
+	}
+	s.AuditLog(ctx, userID, "USER_BLOCKED", "user", userID.String(), "", "", nil, nil)
+	return nil
+}
+
+// UnblockUser clears the Redis marker so restored accounts are not rejected by stale revocation state.
+func (s *Service) UnblockUser(ctx context.Context, email string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	user, err := s.repo.GetUserByEmail(ctx, email)
+	if err != nil {
+		return err
+	}
+	if err := s.repo.UnblockUser(ctx, email); err != nil {
+		return err
+	}
+	userID := uuid.UUID(user.ID.Bytes)
+	if err := ClearUserRevocation(ctx, s.rdb, userID); err != nil {
+		slog.Error("failed to clear user revocation marker", slog.String("email", email), slog.Any("error", err))
+	}
+	s.AuditLog(ctx, userID, "USER_UNBLOCKED", "user", userID.String(), "", "", nil, nil)
+	return nil
+}
+
+// notifyNewIPLogin warns owners about credential use from a new network location.
+func (s *Service) notifyNewIPLogin(ctx context.Context, user db.User, clientIP, userAgent string) {
+	if s.rdb == nil || s.mailer == nil || clientIP == "" || clientIP == "unknown" {
+		return
+	}
+	userID := uuid.UUID(user.ID.Bytes).String()
+	knownKey := "auth:known_ips:" + userID
+	added, err := s.rdb.SAdd(ctx, knownKey, clientIP).Result()
+	if err != nil {
+		slog.Error("failed to record known login IP", slog.String("user_id", userID), slog.Any("error", err))
+		return
+	}
+	if added == 0 {
+		return
+	}
+	count, err := s.rdb.SCard(ctx, knownKey).Result()
+	if err != nil || count <= 1 {
+		return
+	}
+	if mailErr := s.mailer.SendNewIPLoginEmail(ctx, user.Email, clientIP, userAgent); mailErr != nil {
+		slog.Error("failed to send new IP login notification", slog.String("email", user.Email), slog.Any("error", mailErr))
+	}
 }

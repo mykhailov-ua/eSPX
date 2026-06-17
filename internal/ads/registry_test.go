@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Guards lock-free registry reads stay correct under concurrent stress.
 func TestRegistry_LockFreeReadsStress(t *testing.T) {
 	mock := &MockRepo{}
 	r := newTestRegistry(t, mock)
@@ -54,6 +55,7 @@ func TestRegistry_LockFreeReadsStress(t *testing.T) {
 	assert.Equal(t, customerID1, cust)
 }
 
+// Guards registry file replication survives primary failover without stale reads.
 func TestRegistry_FileReplicationAndFailover(t *testing.T) {
 	replicaPath := filepath.Join(t.TempDir(), "campaigns_replica.json")
 

@@ -9,36 +9,14 @@ import (
 	"time"
 
 	"espx/internal/config"
-	"espx/internal/domain"
+	"espx/internal/database"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-type errFilter struct {
-	err error
-}
-
-func (f *errFilter) Check(ctx context.Context, evt *domain.Event) error {
-	return f.err
-}
-
-type slowFilter struct {
-	delay time.Duration
-}
-
-func (f *slowFilter) Check(ctx context.Context, evt *domain.Event) error {
-	timer := time.NewTimer(f.delay)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
+// Redis stub with injectable XAdd for fraud stream error tests.
 type mockRedisXAdd struct {
 	mockRedisClient
 }
@@ -49,6 +27,7 @@ func (m *mockRedisXAdd) XAdd(ctx context.Context, args *redis.XAddArgs) *redis.S
 	return cmd
 }
 
+// Guards gnet handler maps filter errors to correct HTTP status and metrics.
 func TestAdsPacketHandler_FilterErrors(t *testing.T) {
 	cfg := &config.Config{
 		MaxRequestBodySize: 1024 * 1024,
@@ -71,21 +50,21 @@ func TestAdsPacketHandler_FilterErrors(t *testing.T) {
 	}
 
 	t.Run("ErrCampaignNotFound -> 404", func(t *testing.T) {
-		h := NewAdsPacketHandler(cfg, registry, NewFilterEngine(&errFilter{err: ErrCampaignNotFound}), nil, nil, sharder, "fraud")
+		h := NewAdsPacketHandler(cfg, registry, NewFilterEngine(0, &errFilter{err: ErrCampaignNotFound}), nil, nil, sharder, "fraud", nil)
 		conn := &mockGnetConn{written: make([]byte, 0, 512)}
 		h.React(makeReq(), conn)
 		assert.True(t, bytes.HasPrefix(conn.written, []byte("HTTP/1.1 404")))
 	})
 
 	t.Run("ErrBidFloorNotMet -> 402", func(t *testing.T) {
-		h := NewAdsPacketHandler(cfg, registry, NewFilterEngine(&errFilter{err: ErrBidFloorNotMet}), nil, nil, sharder, "fraud")
+		h := NewAdsPacketHandler(cfg, registry, NewFilterEngine(0, &errFilter{err: ErrBidFloorNotMet}), nil, nil, sharder, "fraud", nil)
 		conn := &mockGnetConn{written: make([]byte, 0, 512)}
 		h.React(makeReq(), conn)
 		assert.True(t, bytes.HasPrefix(conn.written, []byte("HTTP/1.1 402")))
 	})
 
 	t.Run("filter timeout -> 504", func(t *testing.T) {
-		h := NewAdsPacketHandler(cfg, registry, NewFilterEngine(&slowFilter{delay: 200 * time.Millisecond}), nil, nil, sharder, "fraud")
+		h := NewAdsPacketHandler(cfg, registry, NewFilterEngine(50*time.Millisecond, &slowFilter{delay: 200 * time.Millisecond}), nil, nil, sharder, "fraud", nil)
 		conn := &mockGnetConn{written: make([]byte, 0, 512)}
 		h.React(makeReq(), conn)
 		assert.True(t, bytes.HasPrefix(conn.written, []byte("HTTP/1.1 504")))
@@ -93,13 +72,22 @@ func TestAdsPacketHandler_FilterErrors(t *testing.T) {
 
 	t.Run("ErrFraudDetected -> 202 silent accept", func(t *testing.T) {
 		rdb := &mockRedisXAdd{}
-		h := NewAdsPacketHandler(cfg, registry, NewFilterEngine(&errFilter{err: ErrFraudDetected}), nil, []redis.UniversalClient{rdb}, sharder, "fraud-stream")
+		h := NewAdsPacketHandler(cfg, registry, NewFilterEngine(0, &errFilter{err: ErrFraudDetected}), nil, []redis.UniversalClient{rdb}, sharder, "fraud-stream", nil)
 		conn := &mockGnetConn{written: make([]byte, 0, 512)}
 		h.React(makeReq(), conn)
 		assert.True(t, bytes.HasPrefix(conn.written, []byte("HTTP/1.1 202")))
 	})
+
+	t.Run("redis circuit open -> 503 Retry-After", func(t *testing.T) {
+		h := NewAdsPacketHandler(cfg, registry, NewFilterEngine(0, &errFilter{err: database.ErrRedisCircuitOpen}), nil, nil, sharder, "fraud", nil)
+		conn := &mockGnetConn{written: make([]byte, 0, 512)}
+		h.React(makeReq(), conn)
+		assert.True(t, bytes.HasPrefix(conn.written, []byte("HTTP/1.1 503")))
+		assert.True(t, bytes.Contains(conn.written, []byte("Retry-After: 1")))
+	})
 }
 
+// Guards HTTP track handler maps filter errors to correct status codes.
 func TestTrackHandler_FilterErrors(t *testing.T) {
 	cfg := &config.Config{
 		MaxRequestBodySize: 1024 * 1024,
@@ -111,7 +99,7 @@ func TestTrackHandler_FilterErrors(t *testing.T) {
 	body := []byte(`{"campaign_id":"` + uuid.NewString() + `","type":"click","click_id":"c1"}`)
 
 	t.Run("ErrCampaignNotFound -> 404", func(t *testing.T) {
-		handler := NewRouter(cfg, registry, NewFilterEngine(&errFilter{err: ErrCampaignNotFound}), nil, nil, sharder, "fraud")
+		handler := NewRouter(cfg, registry, NewFilterEngine(0, &errFilter{err: ErrCampaignNotFound}), nil, nil, sharder, "fraud", nil)
 		req := httptest.NewRequest(http.MethodPost, "/track", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
@@ -120,7 +108,7 @@ func TestTrackHandler_FilterErrors(t *testing.T) {
 	})
 
 	t.Run("ErrBidFloorNotMet -> 402", func(t *testing.T) {
-		handler := NewRouter(cfg, registry, NewFilterEngine(&errFilter{err: ErrBidFloorNotMet}), nil, nil, sharder, "fraud")
+		handler := NewRouter(cfg, registry, NewFilterEngine(0, &errFilter{err: ErrBidFloorNotMet}), nil, nil, sharder, "fraud", nil)
 		req := httptest.NewRequest(http.MethodPost, "/track", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
@@ -129,7 +117,7 @@ func TestTrackHandler_FilterErrors(t *testing.T) {
 	})
 
 	t.Run("filter timeout -> 504", func(t *testing.T) {
-		handler := NewRouter(cfg, registry, NewFilterEngine(&slowFilter{delay: 200 * time.Millisecond}), nil, nil, sharder, "fraud")
+		handler := NewRouter(cfg, registry, NewFilterEngine(50*time.Millisecond, &slowFilter{delay: 200 * time.Millisecond}), nil, nil, sharder, "fraud", nil)
 		req := httptest.NewRequest(http.MethodPost, "/track", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
@@ -139,11 +127,21 @@ func TestTrackHandler_FilterErrors(t *testing.T) {
 
 	t.Run("ErrFraudDetected -> 202 silent accept", func(t *testing.T) {
 		rdb := &mockRedisXAdd{}
-		handler := NewRouter(cfg, registry, NewFilterEngine(&errFilter{err: ErrFraudDetected}), nil, []redis.UniversalClient{rdb}, sharder, "fraud-stream")
+		handler := NewRouter(cfg, registry, NewFilterEngine(0, &errFilter{err: ErrFraudDetected}), nil, []redis.UniversalClient{rdb}, sharder, "fraud-stream", nil)
 		req := httptest.NewRequest(http.MethodPost, "/track", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, req)
 		assert.Equal(t, http.StatusAccepted, w.Code)
+	})
+
+	t.Run("redis circuit open -> 503 Retry-After", func(t *testing.T) {
+		handler := NewRouter(cfg, registry, NewFilterEngine(0, &errFilter{err: database.ErrRedisCircuitOpen}), nil, nil, sharder, "fraud", nil)
+		req := httptest.NewRequest(http.MethodPost, "/track", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+		assert.Equal(t, "1", w.Header().Get("Retry-After"))
 	})
 }

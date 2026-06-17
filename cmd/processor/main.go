@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// main starts per-shard stream consumers that drain Redis into Postgres and ClickHouse.
 func main() {
 	if len(os.Args) > 2 && os.Args[1] == "--health-probe" {
 		resp, err := http.Get(os.Args[2])
@@ -77,7 +79,7 @@ func main() {
 	defer chConn.Close()
 
 	var rdbs []redis.UniversalClient
-	for _, addr := range cfg.RedisAddrs {
+	for i, addr := range cfg.RedisAddrs {
 		rdb := redis.NewUniversalClient(&redis.UniversalOptions{
 			Addrs:    []string{addr},
 			Password: string(cfg.RedisPassword),
@@ -85,7 +87,7 @@ func main() {
 		})
 
 		var rdbErr error
-		for i := 0; i < 30; i++ {
+		for j := 0; j < 30; j++ {
 			if rdbErr = rdb.Ping(ctx).Err(); rdbErr == nil {
 				break
 			}
@@ -97,8 +99,12 @@ func main() {
 			slog.Error("failed to connect to redis shard", "addr", addr, "error", rdbErr)
 			os.Exit(1)
 		}
-		breaker := database.NewRedisBreaker(10000, 10, 5*time.Second)
-		rdb.AddHook(database.NewRedisCircuitBreakerHook(breaker))
+		breaker := database.NewRedisBreaker(
+			int64(cfg.RedisBreakerFailThreshold),
+			int64(cfg.RedisBreakerHalfOpen),
+			time.Duration(cfg.RedisBreakerOpenTimeoutMs)*time.Millisecond,
+		)
+		rdb.AddHook(database.NewRedisCircuitBreakerHook(breaker, strconv.Itoa(i)))
 		rdbs = append(rdbs, rdb)
 	}
 
@@ -136,6 +142,7 @@ func main() {
 			time.Duration(cfg.Lifecycle.DrainTimeoutMs)*time.Millisecond,
 		)
 		pc.SetLogger(appLogger)
+		pc.SetAuditLogSampleMask(cfg.AuditLogSampleMask)
 		pgConsumers = append(pgConsumers, pc)
 		pc.Start(procCtx)
 
@@ -156,6 +163,7 @@ func main() {
 			time.Duration(cfg.Lifecycle.DrainTimeoutMs)*time.Millisecond,
 		)
 		cc.SetLogger(appLogger)
+		cc.SetAuditLogSampleMask(cfg.AuditLogSampleMask)
 		chConsumers = append(chConsumers, cc)
 		cc.Start(procCtx)
 
@@ -176,6 +184,7 @@ func main() {
 			time.Duration(cfg.Lifecycle.DrainTimeoutMs)*time.Millisecond,
 		)
 		fc.SetLogger(appLogger)
+		fc.SetAuditLogSampleMask(cfg.AuditLogSampleMask)
 		chConsumers = append(chConsumers, fc)
 		fc.Start(procCtx)
 	}

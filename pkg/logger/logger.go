@@ -1,3 +1,5 @@
+// Package logger is a sharded lock-free ring logger for hot-path telemetry.
+// Producers never block on disk; drain, persist, compress, and encrypt run offline.
 package logger
 
 import (
@@ -48,11 +50,13 @@ type LogPayload struct {
 	Data     [500]byte
 }
 
+// LogShard is a fixed-size MPSC ring. Cache-line padding isolates producer,
+// drainer, and reader cursors to avoid false sharing under parallel writers.
 type LogShard struct {
 	_           [64]byte
-	writeCursor uint64 // published tail (visible to drainer)
+	writeCursor uint64
 	_           [64]byte
-	allocCursor uint64 // reserved tail (producers CAS)
+	allocCursor uint64
 	_           [64]byte
 	readCursor  uint64
 	_           [64]byte
@@ -67,6 +71,10 @@ const (
 
 func NewLogShard() *LogShard {
 	return &LogShard{}
+}
+
+func (s *LogShard) WriteCursor() uint64 {
+	return atomic.LoadUint64(&s.writeCursor)
 }
 
 func (s *LogShard) Write(priority uint8, data []byte) bool {
@@ -129,6 +137,8 @@ const (
 	defaultPersistEnqueueDur = 25 * time.Millisecond
 )
 
+// ComputePersistQueueDepth sizes the persist channel so a flush burst survives
+// brief disk stalls without blocking the drainer goroutine.
 func ComputePersistQueueDepth(cfg Config) int {
 	if cfg.PersistQueueDepth > 0 {
 		if cfg.PersistQueueDepth > maxPersistQueueDepth {
@@ -191,6 +201,8 @@ func (l *Logger) incrementNonce() {
 	}
 }
 
+// NewLogger starts background drain, persist, disk monitor, and compress workers.
+// Callers use Write/WriteToShard from the hot path only.
 func NewLogger(cfg Config, numShards int) *Logger {
 	if cfg.PersistEnqueueTimeout <= 0 {
 		cfg.PersistEnqueueTimeout = defaultPersistEnqueueDur
@@ -246,6 +258,8 @@ func NewLogger(cfg Config, numShards int) *Logger {
 	return l
 }
 
+// StartCompressorWorker rotates plaintext segments to encrypted .zst.ready archives
+// for log-evacuate.sh without blocking the active append file.
 func (l *Logger) StartCompressorWorker() {
 	defer l.wg.Done()
 	ticker := time.NewTicker(50 * time.Millisecond)
@@ -384,6 +398,7 @@ func DeriveKey(passphrase string) []byte {
 	return pbkdf2.Key([]byte(passphrase), salt, 4096, 32, sha256.New)
 }
 
+// DecryptSegment reverses on-disk segment format for ops tooling and evac verification.
 func DecryptSegment(filePath string, key []byte) ([]byte, error) {
 	file, err := os.Open(filePath)
 	if err != nil {

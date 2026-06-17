@@ -16,6 +16,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
+// slicePool recycles event batch slices for the ClickHouse background flusher.
 var slicePool = sync.Pool{
 	New: func() any {
 		s := make([]*domain.Event, 0, 20000)
@@ -23,7 +24,7 @@ var slicePool = sync.Pool{
 	},
 }
 
-// writeTimeout must cover worst-case round-trip under load; too low spuriously trips the circuit breaker.
+// ClickHouseStore batches telemetry writes to limit LSM part fragmentation under burst load.
 type ClickHouseStore struct {
 	conn          driver.Conn
 	writeTimeout  time.Duration
@@ -35,6 +36,7 @@ type ClickHouseStore struct {
 	cancel        context.CancelFunc
 }
 
+// NewClickHouseStore starts the async flusher with default batch size and interval.
 func NewClickHouseStore(conn driver.Conn, writeTimeout time.Duration) *ClickHouseStore {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &ClickHouseStore{
@@ -53,19 +55,23 @@ func NewClickHouseStore(conn driver.Conn, writeTimeout time.Duration) *ClickHous
 	return s
 }
 
+// getBatchSize returns the current flush batch size atomically.
 func (s *ClickHouseStore) getBatchSize() int {
 	return int(s.batchSize.Load())
 }
 
+// getFlushInterval returns the current time-based flush interval atomically.
 func (s *ClickHouseStore) getFlushInterval() time.Duration {
 	return time.Duration(s.flushInterval.Load())
 }
 
+// SetBatching tunes batch size and flush interval at runtime.
 func (s *ClickHouseStore) SetBatching(size int, interval time.Duration) {
 	s.batchSize.Store(int64(size))
 	s.flushInterval.Store(int64(interval))
 }
 
+// StoreBatch enqueues events for async flush or writes synchronously when batching is disabled.
 func (s *ClickHouseStore) StoreBatch(ctx context.Context, events []*domain.Event) error {
 	if len(events) == 0 {
 		return nil
@@ -113,6 +119,7 @@ func (s *ClickHouseStore) StoreBatch(ctx context.Context, events []*domain.Event
 	return nil
 }
 
+// backgroundFlusher drains the event channel into table-specific batches with retry.
 func (s *ClickHouseStore) backgroundFlusher() {
 	defer s.wg.Done()
 
@@ -244,6 +251,7 @@ func (s *ClickHouseStore) backgroundFlusher() {
 	}
 }
 
+// flushTableWithRetry inserts one table batch with exponential backoff on failure.
 func (s *ClickHouseStore) flushTableWithRetry(table string, evts []*domain.Event, isFraud bool) {
 	if len(evts) == 0 {
 		return
@@ -282,6 +290,7 @@ func (s *ClickHouseStore) flushTableWithRetry(table string, evts []*domain.Event
 	metrics.DbWriteErrors.WithLabelValues("clickhouse").Inc()
 }
 
+// getDeduplicationToken supplies ClickHouse insert deduplication for at-least-once retries.
 func (s *ClickHouseStore) getDeduplicationToken(ctx context.Context, events []*domain.Event) string {
 	if token, ok := ctx.Value(domain.DeduplicationTokenKey).(string); ok && token != "" {
 		return token
@@ -299,6 +308,7 @@ func (s *ClickHouseStore) getDeduplicationToken(ctx context.Context, events []*d
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// insertTable sends one prepared batch to a single ClickHouse table.
 func (s *ClickHouseStore) insertTable(ctx context.Context, table string, evts []*domain.Event, isFraud bool) error {
 	start := time.Now()
 
@@ -351,6 +361,7 @@ func (s *ClickHouseStore) insertTable(ctx context.Context, table string, evts []
 	return nil
 }
 
+// insertToClickHouse writes a multi-table batch synchronously for low-latency mode.
 func (s *ClickHouseStore) insertToClickHouse(ctx context.Context, events []*domain.Event) error {
 	start := time.Now()
 
@@ -487,6 +498,7 @@ func (s *ClickHouseStore) insertToClickHouse(ctx context.Context, events []*doma
 	return nil
 }
 
+// Close stops the flusher and closes the ClickHouse connection.
 func (s *ClickHouseStore) Close() error {
 	s.cancel()
 	s.wg.Wait()

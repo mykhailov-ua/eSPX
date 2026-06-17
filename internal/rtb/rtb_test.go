@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 )
 
+// TestAuctionBasic locks in second-price clearing and budget deduction on a small known fixture.
 func TestAuctionBasic(t *testing.T) {
 	store := NewBudgetStore()
 	reg := NewRegistry(store)
@@ -74,6 +75,7 @@ func TestAuctionBasic(t *testing.T) {
 	}
 }
 
+// TestAuctionTopKHeap guards winner selection when more than 128 campaigns qualify and heap pruning runs.
 func TestAuctionTopKHeap(t *testing.T) {
 	store := NewBudgetStore()
 	reg := NewRegistry(store)
@@ -115,6 +117,7 @@ func TestAuctionTopKHeap(t *testing.T) {
 	}
 }
 
+// TestAuctionStressSimulateNetworkAndDB exercises concurrent bidding alongside shard rebuilds without budget overspend.
 func TestAuctionStressSimulateNetworkAndDB(t *testing.T) {
 	store := NewBudgetStore()
 	reg := NewRegistry(store)
@@ -184,6 +187,7 @@ func TestAuctionStressSimulateNetworkAndDB(t *testing.T) {
 	}
 }
 
+// BenchmarkAuction measures hot-path auction latency with campaigns spread across geo shards.
 func BenchmarkAuction(b *testing.B) {
 	store := NewBudgetStore()
 	reg := NewRegistry(store)
@@ -217,6 +221,7 @@ func BenchmarkAuction(b *testing.B) {
 	}
 }
 
+// BenchmarkAuctionHighDensity measures worst-case scan cost when many campaigns share one geo shard.
 func BenchmarkAuctionHighDensity(b *testing.B) {
 	store := NewBudgetStore()
 	reg := NewRegistry(store)
@@ -249,6 +254,7 @@ func BenchmarkAuctionHighDensity(b *testing.B) {
 	}
 }
 
+// BenchmarkUpdateCampaigns measures cold-path cost of rebuilding every shard from a full campaign sync.
 func BenchmarkUpdateCampaigns(b *testing.B) {
 	store := NewBudgetStore()
 	reg := NewRegistry(store)
@@ -273,6 +279,7 @@ func BenchmarkUpdateCampaigns(b *testing.B) {
 	}
 }
 
+// TestAuctionInvalidInput rejects malformed requests without mutating campaign budgets.
 func TestAuctionInvalidInput(t *testing.T) {
 	store := NewBudgetStore()
 	reg := NewRegistry(store)

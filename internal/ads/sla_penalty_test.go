@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// DB health stub toggling ping success for SLA penalty tests.
 type MockDBHealth struct {
 	Healthy atomic.Bool
 }
@@ -24,6 +25,7 @@ func (m *MockDBHealth) Ping(ctx context.Context) error {
 	return nil
 }
 
+// Guards SLA penalty reduces bid when Redis latency exceeds threshold.
 func TestUnifiedFilter_SLAPenalty_Discount(t *testing.T) {
 	campID := uuid.New()
 	custID := uuid.New()
@@ -100,6 +102,7 @@ func TestUnifiedFilter_SLAPenalty_Discount(t *testing.T) {
 	_ = rdb.Del(ctx, "sla:penalty:active").Err()
 }
 
+// Guards SLA sentinel auto-detects slow Redis and applies discount.
 func TestUnifiedFilter_SLASentinel_AutoDetection(t *testing.T) {
 	rdb, cleanup := setupTestRedis(t)
 	defer cleanup()
@@ -158,6 +161,7 @@ func TestUnifiedFilter_SLASentinel_AutoDetection(t *testing.T) {
 	assert.ErrorIs(t, err, redis.Nil)
 }
 
+// Guards SLA sentinel handles missing Redis without panicking filter path.
 func TestSLASentinel_NoRedisPanic(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

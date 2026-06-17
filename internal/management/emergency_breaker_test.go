@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestEmergencyCircuitBreaker guards breaker toggle flows through outbox, Redis, watcher, and hot-path filter.
 func TestEmergencyCircuitBreaker(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")

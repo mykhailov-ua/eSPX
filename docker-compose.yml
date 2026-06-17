@@ -1,4 +1,9 @@
+# eSPX local stack. Default NET_MODE=host binds services on loopback ports documented in docs/development.md.
+# Ingestion (trackers + nginx) and observability use host networking; stateful stores sit on the database network.
+
 services:
+  # Ingestion plane: stateless gnet trackers, one process per port (8181-8184)
+  # SO_REUSEPORT is configured in the binary; host mode avoids Docker NAT on the hot path.
   tracker-0:
     build:
       context: .
@@ -12,8 +17,8 @@ services:
       - GOMEMLIMIT=700MiB   # hard memory limit; triggers GC before OOM killer fires
       - GOGC=50             # aggressive GC target: trade CPU for lower heap steady-state
     volumes:
-      - ./deploy/geoip:/deploy/geoip:ro
-      - espx_logs:/var/log/espx:rw
+      - ./deploy/geoip:/deploy/geoip:ro   # MaxMind DBs for geo filter and bid floor lookup
+      - espx_logs:/var/log/espx:rw        # mmap audit log segments written by tracker
     ulimits:
       nofile:
         # gnet opens one fd per TCP connection; 100 000 allows ~100 k concurrent connections per instance
@@ -51,6 +56,7 @@ services:
         max-file: "3"
 
 
+  # Replica; same image and deps as tracker-0, different SERVER_PORT.
   tracker-1:
     build:
       context: .
@@ -102,6 +108,7 @@ services:
         max-file: "3"
 
 
+  # Replica; same image and deps as tracker-0, SERVER_PORT=8183.
   tracker-2:
     build:
       context: .
@@ -153,6 +160,7 @@ services:
         max-file: "3"
 
 
+  # Replica; same image and deps as tracker-0, SERVER_PORT=8184.
   tracker-3:
     build:
       context: .
@@ -204,6 +212,7 @@ services:
         max-file: "3"
 
 
+  # Edge LB: /track/* to trackers, /admin/* to management. Lua parses bodies for shard routing and blacklist cache.
   nginx:
     image: openresty/openresty:alpine
     network_mode: "${NET_MODE:-host}"
@@ -241,6 +250,7 @@ services:
         max-file: "3"
 
 
+  # Settlement: Redis stream consumer groups -> Postgres (ledger/stats) + ClickHouse (telemetry).
   processor:
     build:
       context: .
@@ -285,6 +295,7 @@ services:
         max-file: "3"
 
 
+  # Control plane: gRPC auth (Argon2id + PASETO). Single Redis shard is enough for session/lockout keys.
   auth:
     build:
       context: .
@@ -314,6 +325,7 @@ services:
         max-file: "3"
 
 
+  # Control plane: REST admin API, outbox workers, pacing/schedule/recon background jobs.
   management:
     build:
       context: .
@@ -347,6 +359,7 @@ services:
         max-file: "3"
 
 
+  # Relational source of truth: campaigns, ledger, outbox, audit. Tuned for many short tracker connections.
   db:
     image: postgres:${POSTGRES_VERSION}
     env_file:
@@ -384,6 +397,8 @@ services:
         max-file: "3"
 
 
+  # Redis shards (client-side StaticSlotSharder, ports 6479-6484)
+  # AOF everysec + noeviction: budget/pacing keys must not be silently dropped under memory pressure.
   redis-0:
     image: redis:${REDIS_VERSION}
     env_file:
@@ -522,6 +537,7 @@ services:
       timeout: ${HEALTHCHECK_TIMEOUT}
       retries: ${HEALTHCHECK_RETRIES}
 
+  # Columnar event store. Processor batches inserts; insert_deduplicate handles at-least-once from streams.
   clickhouse:
     image: clickhouse/clickhouse-server:${CH_VERSION}
     env_file:
@@ -562,6 +578,7 @@ services:
         max-file: "3"
 
 
+  # Observability (host network, scrapes tracker/mgmt/processor metrics on loopback)
   prometheus:
     image: prom/prometheus:latest
     network_mode: "${NET_MODE:-host}"
@@ -582,6 +599,7 @@ services:
   grafana:
     image: grafana/grafana:latest
     network_mode: "${NET_MODE:-host}"
+    # Anonymous admin is dev-only; lock down before any non-local exposure.
     volumes:
       - ./deploy/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
     environment:
@@ -601,6 +619,7 @@ services:
   alertmanager:
     image: prom/alertmanager:latest
     network_mode: "${NET_MODE:-host}"
+    # Routes firing alerts to alertmanager-telegram on :8222.
     command: ["--config.file=/etc/alertmanager/alertmanager.yml", "--web.listen-address=:9093"]
     volumes:
       - ./deploy/monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
@@ -614,6 +633,7 @@ services:
         max-size: "100m"
         max-file: "3"
 
+  # Webhook proxy: Alertmanager JSON -> Telegram Bot API HTML messages.
   alertmanager-telegram:
     build:
       context: .
@@ -634,6 +654,7 @@ services:
         max-size: "100m"
         max-file: "3"
 
+  # Off-path rsync of rotated .log.zst.ready segments to remote storage. Profile "tools" only.
   log-evacuator:
     build:
       context: .
@@ -656,18 +677,18 @@ services:
         max-file: "3"
 
 networks:
-  frontend:
-  backend:
-  database:
-  monitoring:
+  frontend:   # reserved; not wired in this compose file
+  backend:    # reserved; not wired in this compose file
+  database:   # postgres, redis, clickhouse
+  monitoring: # clickhouse metrics export
 
 volumes:
-  db_data:
-  clickhouse_data:
-  redis_0_data:
+  db_data:           # postgres data dir
+  clickhouse_data:   # clickhouse parts and metadata
+  redis_0_data:      # per-shard AOF/RDB; keys are not shared across shards
   redis_1_data:
   redis_2_data:
   redis_3_data:
   redis_4_data:
   redis_5_data:
-  espx_logs:
+  espx_logs:         # shared mmap audit logs from all trackers/processor

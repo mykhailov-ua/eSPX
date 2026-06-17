@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// Guards bid floor strings parse to micros without float drift on the hot path.
 func TestParseBidMicro(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -32,6 +33,7 @@ func TestParseBidMicro(t *testing.T) {
 	}
 }
 
+// Tracks ParseBidMicro cost because bid parsing runs per auction request.
 func BenchmarkParseBidMicro(b *testing.B) {
 	payload := []byte(`{"bid_micro": 1500000, "pub_id": "pub-12345"}`)
 	b.ResetTimer()
@@ -42,6 +44,7 @@ func BenchmarkParseBidMicro(b *testing.B) {
 	}
 }
 
+// Guards sub-floor bids are rejected while valid geo bids pass unified filter.
 func TestUnifiedFilter_GeoBidFloor(t *testing.T) {
 	campID := uuid.New()
 	reg := &mockRegistry{}

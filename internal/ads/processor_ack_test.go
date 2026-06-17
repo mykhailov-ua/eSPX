@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// Redis client with injectable XAck behavior for ack error tests.
 type mockRedisClientAck struct {
 	redis.UniversalClient
 	xAckFunc func(ctx context.Context, stream, group string, ids ...string) *redis.IntCmd
@@ -24,6 +25,7 @@ func (m *mockRedisClientAck) XAck(ctx context.Context, stream, group string, ids
 	return redis.NewIntCmd(ctx)
 }
 
+// Guards XAck failure surfaces after store flush so messages are not lost silently.
 func TestStreamConsumer_FlushBatch_XAckError(t *testing.T) {
 	mockStore := &MockEventStore{}
 	mockRdb := &mockRedisClientAck{

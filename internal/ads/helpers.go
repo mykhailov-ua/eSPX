@@ -16,12 +16,41 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-var (
-	nodeID          uint16
-	idSequence      uint64
-	cachedUnixMilli atomic.Int64
-)
+// nodeID identifies this process in fast UUID generation.
+var nodeID uint16
 
+// idSequence is the per-process counter mixed into fast UUIDs.
+var idSequence uint64
+
+// cachedUnixMilli avoids time.Now syscalls for TTC and timestamp fields on the hot path.
+var cachedUnixMilli atomic.Int64
+
+// cachedNowUTC holds wall time refreshed once per second for schedule and pacing checks.
+var cachedNowUTC atomic.Pointer[time.Time]
+
+// storeCachedNowUTC snapshots the current UTC instant for cached time readers.
+func storeCachedNowUTC() {
+	t := time.Now().UTC()
+	cachedNowUTC.Store(&t)
+}
+
+// CachedTimeUTC returns wall time in UTC without a syscall on the filter hot path.
+func CachedTimeUTC() time.Time {
+	if p := cachedNowUTC.Load(); p != nil {
+		return *p
+	}
+	return time.Now().UTC()
+}
+
+// CachedTimeIn converts the cached UTC instant into a campaign timezone.
+func CachedTimeIn(loc *time.Location) time.Time {
+	if loc == nil || loc == time.UTC {
+		return CachedTimeUTC()
+	}
+	return CachedTimeUTC().In(loc)
+}
+
+// init seeds fast UUID node identity and starts background time refresh goroutines.
 func init() {
 	hostname, _ := os.Hostname()
 	h := uint32(os.Getpid())
@@ -31,6 +60,7 @@ func init() {
 	nodeID = uint16(h ^ (h >> 16))
 
 	cachedUnixMilli.Store(time.Now().UnixMilli())
+	storeCachedNowUTC()
 	go func() {
 		ticker := time.NewTicker(time.Millisecond)
 		defer ticker.Stop()
@@ -38,8 +68,16 @@ func init() {
 			cachedUnixMilli.Store(time.Now().UnixMilli())
 		}
 	}()
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			storeCachedNowUTC()
+		}
+	}()
 }
 
+// NewFastUUID generates click IDs without crypto/rand or uuid library overhead.
 func NewFastUUID() (uuid.UUID, error) {
 	seq := atomic.AddUint64(&idSequence, 1)
 	now := cachedUnixMilli.Load()
@@ -72,12 +110,15 @@ func NewFastUUID() (uuid.UUID, error) {
 	return u, nil
 }
 
+// ToUUID wraps a uuid.UUID for pgtype query parameters.
 func ToUUID(u uuid.UUID) pgtype.UUID {
 	return pgtype.UUID{Bytes: u, Valid: true}
 }
 
+// MicroUnitFactor converts dollar floats to micro-dollar integers.
 const MicroUnitFactor = 1_000_000
 
+// SliceToMap builds O(1) country lookup sets from string slices.
 func SliceToMap(slice []string) map[string]struct{} {
 	if slice == nil {
 		return nil
@@ -89,15 +130,17 @@ func SliceToMap(slice []string) map[string]struct{} {
 	return m
 }
 
-// UpdateSpend is exactly-once via sync_idempotency txID guard.
+// CampaignRepo loads campaigns and applies idempotent budget sync updates from Redis.
 type CampaignRepo struct {
 	queries db.Querier
 }
 
+// NewCampaignRepo wraps sqlc queries for campaign persistence.
 func NewCampaignRepo(queries db.Querier) *CampaignRepo {
 	return &CampaignRepo{queries: queries}
 }
 
+// GetByID loads full campaign fields for budget cache reload paths.
 func (r *CampaignRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Campaign, error) {
 	row, err := r.queries.GetCampaignFull(ctx, pgtype.UUID{Bytes: id, Valid: true})
 	if err != nil {
@@ -125,6 +168,7 @@ func (r *CampaignRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Campa
 	}, nil
 }
 
+// UpdateStatus changes campaign lifecycle state in Postgres.
 func (r *CampaignRepo) UpdateStatus(ctx context.Context, id uuid.UUID, status domain.CampaignStatus) error {
 	_, err := r.queries.UpdateCampaignStatus(ctx, db.UpdateCampaignStatusParams{
 		ID:     pgtype.UUID{Bytes: id, Valid: true},
@@ -133,6 +177,7 @@ func (r *CampaignRepo) UpdateStatus(ctx context.Context, id uuid.UUID, status do
 	return err
 }
 
+// UpdateSpend applies a Redis sync delta exactly once per sync transaction id.
 func (r *CampaignRepo) UpdateSpend(ctx context.Context, id uuid.UUID, amount int64, txID string) error {
 	var dbtx db.DBTX
 	if getter, ok := r.queries.(interface{ DB() db.DBTX }); ok {
@@ -193,6 +238,7 @@ func (r *CampaignRepo) UpdateSpend(ctx context.Context, id uuid.UUID, amount int
 	return nil
 }
 
+// ListActive returns all active campaigns for reconciliation and admin paths.
 func (r *CampaignRepo) ListActive(ctx context.Context) ([]*domain.Campaign, error) {
 	rows, err := r.queries.ListActiveCampaigns(ctx)
 	if err != nil {
@@ -225,14 +271,17 @@ func (r *CampaignRepo) ListActive(ctx context.Context) ([]*domain.Campaign, erro
 	return campaigns, nil
 }
 
+// CustomerRepo loads customers and applies idempotent balance sync updates from Redis.
 type CustomerRepo struct {
 	queries db.Querier
 }
 
+// NewCustomerRepo wraps sqlc queries for customer persistence.
 func NewCustomerRepo(queries db.Querier) *CustomerRepo {
 	return &CustomerRepo{queries: queries}
 }
 
+// GetByID loads a customer record by primary key.
 func (r *CustomerRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Customer, error) {
 	row, err := r.queries.GetCustomerByID(ctx, pgtype.UUID{Bytes: id, Valid: true})
 	if err != nil {
@@ -247,6 +296,7 @@ func (r *CustomerRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Custo
 	}, nil
 }
 
+// UpdateBalance applies a Redis sync delta exactly once per sync transaction id.
 func (r *CustomerRepo) UpdateBalance(ctx context.Context, id uuid.UUID, amount int64, txID string) error {
 	var dbtx db.DBTX
 	if getter, ok := r.queries.(interface{ DB() db.DBTX }); ok {
@@ -307,7 +357,7 @@ func (r *CustomerRepo) UpdateBalance(ctx context.Context, id uuid.UUID, amount i
 	return nil
 }
 
-// Returned string must not outlive b.
+// UnsafeString views bytes as a string without copy when the backing slice outlives use.
 func UnsafeString(b []byte) string {
 	if len(b) == 0 {
 		return ""
@@ -315,7 +365,7 @@ func UnsafeString(b []byte) string {
 	return unsafe.String(unsafe.SliceData(b), len(b))
 }
 
-// Returned slice must not be modified.
+// UnsafeBytes views a string as bytes without copy when the string is not mutated.
 func UnsafeBytes(s string) []byte {
 	if s == "" {
 		return nil
@@ -323,20 +373,24 @@ func UnsafeBytes(s string) []byte {
 	return unsafe.Slice(unsafe.StringData(s), len(s))
 }
 
+// ByteSliceValue adapts a byte slice for Redis binary marshaling without allocation.
 type ByteSliceValue struct {
 	b []byte
 }
 
+// MarshalBinary returns the wrapped bytes for Redis stream values.
 func (v *ByteSliceValue) MarshalBinary() ([]byte, error) {
 	return v.b, nil
 }
 
+// byteSliceValuePool recycles ByteSliceValue wrappers for stream XADD calls.
 var byteSliceValuePool = sync.Pool{
 	New: func() any {
 		return new(ByteSliceValue)
 	},
 }
 
+// DeepResetAdStreamEvent clears slice fields in place before returning protobuf objects to a pool.
 func DeepResetAdStreamEvent(m *pb.AdStreamEvent) {
 	if m == nil {
 		return
@@ -350,7 +404,7 @@ func DeepResetAdStreamEvent(m *pb.AdStreamEvent) {
 	m.CreatedAtUnix = 0
 }
 
-// Nil byte fields before sync.Pool Put to avoid retaining large payloads.
+// ClearAdStreamEvent nils large byte fields so pooled protobuf objects do not pin payload memory.
 func ClearAdStreamEvent(m *pb.AdStreamEvent) {
 	if m == nil {
 		return
@@ -364,6 +418,7 @@ func ClearAdStreamEvent(m *pb.AdStreamEvent) {
 	m.CreatedAtUnix = 0
 }
 
+// DeepResetAdDLQEvent clears nested stream events before returning DLQ protobuf objects to a pool.
 func DeepResetAdDLQEvent(m *pb.AdDLQEvent) {
 	if m == nil {
 		return

@@ -7,7 +7,10 @@ Event ingestion and pacing pipeline.
 - **Ingestion**: Event-driven network handler based on `github.com/panjf2000/gnet/v2` with `SO_REUSEPORT` and `TCP_NODELAY` socket configurations.
 - **Validation**: Sharded Redis cluster utilizing client-side static hash slot mapping for budget, pacing, and frequency checks.
 - **Anti-Fraud**: MaxMind DC/VPN/Proxy checks, Time-To-Click (TTC) velocity checks, and geo-targeting validation.
+- **Creative Routing**: Weight-based deterministic creative selection via FNV-1a user-session hashing.
 - **Persistence**: Transactional outbox pattern using a high-throughput Postgres polling loop (`SKIP LOCKED`) and asynchronous multi-row batch writers.
+- **Lossy Telemetry Rings & Queues**: Memory-preallocated MPSC ring buffers for asynchronous fraud logs and latency tracking.
+- **Cache Warming**: Proactive budget cache warmer utilizing Redis SetNX pipelines and in-memory registry backup recovery to eliminate database contention during cache miss storms.
 - **Serialization**: Schema-optimized binary Protobuf formats utilizing zero-copy unmarshaling via `vtproto`.
 - **Infrastructure**: Automated PostgreSQL partition rotation, concurrent multi-shard Redis blacklist sync workers, and Nginx dynamic Lua-based load balancing.
 
@@ -46,6 +49,12 @@ Event ingestion and pacing pipeline.
 | **Log Broker** | Asynchronous Compressor | Decouples compression and encryption from the hot path. Writes raw files directly with `syscall.Fdatasync` and processes them asynchronously via background worker. |
 | **Zero-Copy Writes** | `unsafe.Pointer` + mmap | Employs memory-mapped files (`syscall.Mmap`) with unsafe pointers and CPU hardware assembly `CRC32Q` (SSE4.2) to achieve actual `0 B/op` writes. |
 | **Rate Limiting** | Pipelined Atomic Commands | Replaces custom Lua scripts with pipelined atomic commands (`INCR` + `EXPIRE NX`/`PEXPIRE NX`) to reduce Redis engine lock time. |
+| **Monotonic Time** | `go:linkname` to `runtime.nanotime` | Measures elapsed time immune to wall-clock jumps, bypassing stdlib time wrapper heap escapes. |
+| **Telemetry Sampling** | Power-of-two Mask Downsampling | Employs fast bitwise `seq & mask == 0` check to reduce Prometheus histogram / CPU audit log overhead on hot paths. |
+| **Fraud Stream Queue** | Preallocated MPSC Ring Buffer | Implements `FraudStreamWriter` using a power-of-two ring buffer with fixed-size arrays to completely avoid heap allocations under enqueue. |
+| **Prebound Metrics** | Pre-resolved Prometheus Counters | Resolves Prometheus metric labels once at startup to completely eliminate label lookup overhead on the hot path. |
+| **Creative Routing** | Weight-based Deterministic Mapping | Employs FNV-1a hashing on brandID and userID to map users to brand creative landing URLs with actual `0 B/op` allocations. |
+| **Budget Cache Warmer** | Proactive `SetNX` pipeline | Seeds Redis budget keys prior to hot path evaluation and uses in-memory registry backup for cache-miss recoveries instead of hitting Postgres. |
 
 ---
 

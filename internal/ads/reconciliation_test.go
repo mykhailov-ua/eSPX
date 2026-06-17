@@ -15,6 +15,7 @@ import (
 	"espx/internal/metrics"
 )
 
+// Campaign repo stub with configurable spend for drift detection tests.
 type MockCampaignRepository struct {
 	campaigns []*domain.Campaign
 }
@@ -40,6 +41,7 @@ func (m *MockCampaignRepository) ListActive(ctx context.Context) ([]*domain.Camp
 	return m.campaigns, nil
 }
 
+// Guards reconciliation worker detects spend drift between Postgres and ClickHouse.
 func TestReconciliationWorker_DataDriftDetection(t *testing.T) {
 	ctx := context.Background()
 

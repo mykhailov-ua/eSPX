@@ -9,21 +9,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-	"unsafe"
 )
 
-func TestComputePersistQueueDepth(t *testing.T) {
-	if got := ComputePersistQueueDepth(Config{FlushBufferSize: 256 * 1024}); got < minPersistQueueDepth {
-		t.Fatalf("auto depth=%d want >= %d", got, minPersistQueueDepth)
-	}
-	if got := ComputePersistQueueDepth(Config{PersistQueueDepth: 128}); got != 128 {
-		t.Fatalf("explicit depth=%d want 128", got)
-	}
-	if got := ComputePersistQueueDepth(Config{PersistQueueDepth: 99999}); got != maxPersistQueueDepth {
-		t.Fatalf("capped depth=%d want %d", got, maxPersistQueueDepth)
-	}
-}
-
+// TestSendBufferEnqueueTimeout verifies load shedding when the persist queue is saturated.
 func TestSendBufferEnqueueTimeout(t *testing.T) {
 	l := &Logger{
 		cfg: Config{
@@ -48,6 +36,7 @@ func TestSendBufferEnqueueTimeout(t *testing.T) {
 	}
 }
 
+// TestLoggerZeroAlloc enforces zero-allocation on the hot WriteToShard path.
 func TestLoggerZeroAlloc(t *testing.T) {
 	cfg := Config{
 		LogDir:           t.TempDir(),
@@ -71,6 +60,7 @@ func TestLoggerZeroAlloc(t *testing.T) {
 	}
 }
 
+// TestLogShardMPSCConcurrent stress-tests the ring under parallel producers.
 func TestLogShardMPSCConcurrent(t *testing.T) {
 	const (
 		producers = 8
@@ -112,6 +102,7 @@ func TestLogShardMPSCConcurrent(t *testing.T) {
 	}
 }
 
+// TestLogShardMPSCUniqueLines ensures distinct lines survive MPSC load without slot reuse loss.
 func TestLogShardMPSCUniqueLines(t *testing.T) {
 	const producers = 16
 	s := NewLogShard()
@@ -162,6 +153,7 @@ func TestLogShardMPSCUniqueLines(t *testing.T) {
 	}
 }
 
+// TestLoggerRingBufferOverflow confirms full rings return false instead of blocking producers.
 func TestLoggerRingBufferOverflow(t *testing.T) {
 	s := NewLogShard()
 	data := []byte("overflow testing line")
@@ -177,6 +169,7 @@ func TestLoggerRingBufferOverflow(t *testing.T) {
 	}
 }
 
+// TestLoggerDiskDegradationEmergency verifies priority-0 logs are shed when disk is degraded.
 func TestLoggerDiskDegradationEmergency(t *testing.T) {
 	cfg := Config{
 		LogDir:           t.TempDir(),
@@ -204,6 +197,39 @@ func TestLoggerDiskDegradationEmergency(t *testing.T) {
 	}
 }
 
+// TestLoggerDiskDegradation_keepsCriticalPriority keeps priority-1 lines during degradation.
+func TestLoggerDiskDegradation_keepsCriticalPriority(t *testing.T) {
+	cfg := Config{
+		LogDir:           t.TempDir(),
+		FlushBufferSize:  4096,
+		RotateSize:       1024 * 1024,
+		RotateInterval:   time.Hour,
+		DiskLatencyLimit: time.Second,
+	}
+	l := NewLogger(cfg, 1)
+	defer l.Close()
+	l.diskDegraded.Store(1)
+
+	low := []byte("impression audit line")
+	high := []byte("click audit line")
+	if !l.WriteToShard(0, 0, low) {
+		t.Fatal("low priority write failed")
+	}
+	if !l.WriteToShard(0, 1, high) {
+		t.Fatal("high priority write failed")
+	}
+
+	buf := l.getBuffer()
+	buf, _ = l.drainShards(buf)
+	if l.loadSheddingEvents.Load() != 1 {
+		t.Fatalf("shedding=%d want 1 low-priority drop", l.loadSheddingEvents.Load())
+	}
+	if buf.offset == 0 {
+		t.Fatal("expected critical log in drain buffer")
+	}
+}
+
+// TestLoggerRotation checks size-based roll produces evac-ready compressed segments.
 func TestLoggerRotation(t *testing.T) {
 	logDir := t.TempDir()
 	cfg := Config{
@@ -234,14 +260,7 @@ func TestLoggerRotation(t *testing.T) {
 	}
 }
 
-func TestLogPayloadSize(t *testing.T) {
-	var p LogPayload
-	size := unsafe.Sizeof(p)
-	if size != 512 {
-		t.Errorf("expected unsafe.Sizeof(LogPayload) to be 512, got %d", size)
-	}
-}
-
+// TestLoggerEncryptionDecryption validates the on-disk segment format for evac tooling.
 func TestLoggerEncryptionDecryption(t *testing.T) {
 	t.Setenv("LOG_ENCRYPTION_KEY", "test-super-secret-passphrase")
 

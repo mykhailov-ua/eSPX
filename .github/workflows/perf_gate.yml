@@ -46,11 +46,13 @@ jobs:
 
       - name: Run PR Benchmarks
         run: |
+          go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate
           go test -run=^$ -bench=BenchmarkAdsPacketHandler -benchmem -count=10 ./internal/ads > "$GITHUB_WORKSPACE/pr_bench.txt"
 
       - name: Run Baseline Benchmarks
         run: |
           cd ../baseline
+          go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate
           go test -run=^$ -bench=BenchmarkAdsPacketHandler -benchmem -count=10 ./internal/ads > "$GITHUB_WORKSPACE/baseline_bench.txt"
 
       - name: Execute Performance Gate

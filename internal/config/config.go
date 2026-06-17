@@ -9,73 +9,86 @@ import (
 	"time"
 )
 
-// Secret masks its value in slog output.
+// Secret wraps sensitive strings so structured logs never emit credentials in plain text.
 type Secret string
 
+// LogValue redacts secret fields when config values are logged through slog.
 func (s Secret) LogValue() slog.Value {
 	return slog.StringValue("**********")
 }
 
+// Config is the shared environment-backed settings object every service reads at startup.
 type Config struct {
-	ServerPort              string
-	ProcessorPort           string
-	ManagementPort          string
-	DBDSN                   Secret
-	RedisAddrs              []string
-	RedisPassword           Secret
-	RedisStreamName         string
-	FraudStreamName         string
-	RedisGroupName          string
-	RedisConsumerID         string
-	CHDSN                   Secret
-	AuthServerPort          string
-	AuthMetricsPort         string
-	Env                     string
-	TrustedProxies          []string
-	TokenSymmetricKey       Secret
-	MaxRequestBodySize      int64
-	ClickAmount             int64
-	ImpressionAmount        int64
-	EventBatchSize          int
-	EventFlushMs            int
-	StatsFlushMs            int
-	MaxWorkers              int
-	CHMaxWorkers            int
-	LogRetentionDays        int
-	DBTrackerMaxConns       int
-	DBProcessorMaxConns     int
-	DBMinConns              int
-	WriteTimeoutMs          int
-	FilterTimeoutMs         int
-	IdempotencyTTLHrs       int
-	RateLimitPerMin         int
-	RateLimitWindowMs       int
-	DuplicateTTLSec         int
-	TTCMinMs                int
-	CHBatchSize             int
-	CHFlushIntervalMs       int
-	PartitionPreCreateDays  int
-	RegistrySyncIntervalMs  int
-	BudgetSyncIntervalMs    int
-	HttpReadHeaderTimeoutMs int
-	HttpReadTimeoutMs       int
-	HttpWriteTimeoutMs      int
-	HttpIdleTimeoutMs       int
-	DefaultTokenDurationHrs int
-	StreamMaxLen            int
-	RetryInitialWaitMs      int
-	RetryMaxWaitMs          int
-	MaxRetries              int
-	StreamMinIdleMs         int
-	Argon2Memory            int
-	Argon2Iterations        int
-	Argon2Parallelism       int
-	RedisPoolSize           int
-	AdminAPIKey             Secret
-	AllowedOrigins          []string
-	Management              struct {
+	ServerPort                 string
+	ProcessorPort              string
+	ManagementPort             string
+	MetricsPort                string
+	DBDSN                      Secret
+	RedisAddrs                 []string
+	RedisPassword              Secret
+	RedisStreamName            string
+	FraudStreamName            string
+	RedisGroupName             string
+	RedisConsumerID            string
+	CHDSN                      Secret
+	AuthServerPort             string
+	AuthMetricsPort            string
+	Env                        string
+	TrustedProxies             []string
+	TokenSymmetricKey          Secret
+	MaxRequestBodySize         int64
+	ClickAmount                int64
+	ImpressionAmount           int64
+	EventBatchSize             int
+	EventFlushMs               int
+	StatsFlushMs               int
+	MaxWorkers                 int
+	CHMaxWorkers               int
+	LogRetentionDays           int
+	DBTrackerMaxConns          int
+	DBProcessorMaxConns        int
+	DBMinConns                 int
+	WriteTimeoutMs             int
+	FilterTimeoutMs            int
+	MetricsHistogramSampleMask int
+	AuditLogSampleMask         int
+	IdempotencyTTLHrs          int
+	RateLimitPerMin            int
+	RateLimitWindowMs          int
+	DuplicateTTLSec            int
+	TTCMinMs                   int
+	TTCFailClosed              bool
+	CHBatchSize                int
+	CHFlushIntervalMs          int
+	PartitionPreCreateDays     int
+	RegistrySyncIntervalMs     int
+	BudgetSyncIntervalMs       int
+	HttpReadHeaderTimeoutMs    int
+	HttpReadTimeoutMs          int
+	HttpWriteTimeoutMs         int
+	HttpIdleTimeoutMs          int
+	DefaultTokenDurationHrs    int
+	StreamMaxLen               int
+	RetryInitialWaitMs         int
+	RetryMaxWaitMs             int
+	MaxRetries                 int
+	StreamMinIdleMs            int
+	Argon2Memory               int
+	Argon2Iterations           int
+	Argon2Parallelism          int
+	RedisPoolSize              int
+	RedisBreakerFailThreshold  int
+	RedisBreakerHalfOpen       int
+	RedisBreakerOpenTimeoutMs  int
+	AdminAPIKey                Secret
+	AllowedOrigins             []string
+	Management                 struct {
 		RetentionDays          int
 		CancellationFeePercent float64
+		ReconIntervalMs        int
+		PacingIntervalMs       int
+		RateLimitRPS           float64
+		RateLimitBurst         int
 	}
 	CampaignUpdateChannel string
 
@@ -111,6 +124,20 @@ type Config struct {
 	}
 }
 
+// getEnvBool reads boolean env vars with safe parsing so mis-typed values fall back instead of crashing.
+func getEnvBool(key string, fallback bool) bool {
+	if value, ok := os.LookupEnv(key); ok {
+		switch strings.ToLower(value) {
+		case "1", "true", "yes", "on":
+			return true
+		case "0", "false", "no", "off":
+			return false
+		}
+	}
+	return fallback
+}
+
+// getEnvInt reads integer env vars with safe parsing so missing keys use service defaults.
 func getEnvInt(key string, fallback int) int {
 	if value, ok := os.LookupEnv(key); ok {
 		if intVal, err := strconv.Atoi(value); err == nil {
@@ -120,6 +147,7 @@ func getEnvInt(key string, fallback int) int {
 	return fallback
 }
 
+// getEnvFloat reads float env vars with safe parsing for tuning knobs like CTR thresholds.
 func getEnvFloat(key string, fallback float64) float64 {
 	if value, ok := os.LookupEnv(key); ok {
 		if floatVal, err := strconv.ParseFloat(value, 64); err == nil {
@@ -129,6 +157,7 @@ func getEnvFloat(key string, fallback float64) float64 {
 	return fallback
 }
 
+// getEnvMicro converts dollar env values to micro-units so billing code stays integer-only.
 func getEnvMicro(key string, fallback int64) int64 {
 	if value, ok := os.LookupEnv(key); ok {
 		if floatVal, err := strconv.ParseFloat(value, 64); err == nil {
@@ -138,6 +167,7 @@ func getEnvMicro(key string, fallback int64) int64 {
 	return fallback
 }
 
+// getEnvInt64 reads int64 env vars for limits and counters that exceed 32-bit range.
 func getEnvInt64(key string, fallback int64) int64 {
 	if value, ok := os.LookupEnv(key); ok {
 		if intVal, err := strconv.ParseInt(value, 10, 64); err == nil {
@@ -147,6 +177,7 @@ func getEnvInt64(key string, fallback int64) int64 {
 	return fallback
 }
 
+// Load builds a validated Config from the process environment so every binary shares one tuning surface.
 func Load() (*Config, error) {
 	cfg := &Config{
 		ServerPort:                  os.Getenv("SERVER_PORT"),
@@ -170,12 +201,15 @@ func Load() (*Config, error) {
 		DBMinConns:                  getEnvInt("DB_MIN_CONNS", 2),
 		WriteTimeoutMs:              getEnvInt("WRITE_TIMEOUT_MS", 5000),
 		FilterTimeoutMs:             getEnvInt("FILTER_TIMEOUT_MS", 0),
+		MetricsHistogramSampleMask:  getEnvInt("METRICS_HISTOGRAM_SAMPLE_MASK", 127),
+		AuditLogSampleMask:          getEnvInt("AUDIT_LOG_SAMPLE_RATE", 127),
 		IdempotencyTTLHrs:           getEnvInt("IDEMPOTENCY_TTL_HRS", 24),
 		RateLimitPerMin:             getEnvInt("RATE_LIMIT_PER_MIN", 100),
 		RateLimitWindowMs:           getEnvInt("RATE_LIMIT_WINDOW_MS", 60000),
 		MaxRequestBodySize:          getEnvInt64("MAX_REQUEST_BODY_SIZE", 1048576),
 		DuplicateTTLSec:             getEnvInt("DUPLICATE_TTL_SEC", 10),
 		TTCMinMs:                    getEnvInt("TTC_MIN_MS", 300),
+		TTCFailClosed:               getEnvBool("TTC_FAIL_CLOSED", false),
 		CHDSN:                       Secret(os.Getenv("CH_DSN")),
 		CHBatchSize:                 getEnvInt("CH_BATCH_SIZE", 50000),
 		CHFlushIntervalMs:           getEnvInt("CH_FLUSH_INTERVAL_MS", 10000),
@@ -200,6 +234,9 @@ func Load() (*Config, error) {
 		Argon2Iterations:            getEnvInt("ARGON2_ITERATIONS", 3),
 		Argon2Parallelism:           getEnvInt("ARGON2_PARALLELISM", 4),
 		RedisPoolSize:               getEnvInt("REDIS_POOL_SIZE", 0),
+		RedisBreakerFailThreshold:   getEnvInt("REDIS_BREAKER_FAIL_THRESHOLD", 150),
+		RedisBreakerHalfOpen:        getEnvInt("REDIS_BREAKER_HALF_OPEN", 10),
+		RedisBreakerOpenTimeoutMs:   getEnvInt("REDIS_BREAKER_OPEN_TIMEOUT_MS", 5000),
 		AdminAPIKey:                 Secret(os.Getenv("ADMIN_API_KEY")),
 		AllowedOrigins:              strings.Split(os.Getenv("ALLOWED_ORIGINS"), ","),
 		TrustedProxies:              strings.Split(os.Getenv("TRUSTED_PROXIES"), ","),
@@ -237,6 +274,10 @@ func Load() (*Config, error) {
 
 	cfg.Management.RetentionDays = getEnvInt("MANAGEMENT_RETENTION_DAYS", 90)
 	cfg.Management.CancellationFeePercent = getEnvFloat("MANAGEMENT_CANCELLATION_FEE_PERCENT", 5.0)
+	cfg.Management.ReconIntervalMs = getEnvInt("RECON_WORKER_INTERVAL_MS", 3_600_000)
+	cfg.Management.PacingIntervalMs = getEnvInt("PACING_CONTROLLER_INTERVAL_MS", 300_000)
+	cfg.Management.RateLimitRPS = getEnvFloat("MANAGEMENT_RATE_LIMIT_RPS", 10)
+	cfg.Management.RateLimitBurst = getEnvInt("MANAGEMENT_RATE_LIMIT_BURST", 50)
 
 	cfg.Lifecycle.ShutdownTimeoutMs = getEnvInt("SHUTDOWN_TIMEOUT_MS", 15000)
 	cfg.Lifecycle.DrainTimeoutMs = getEnvInt("DRAIN_TIMEOUT_MS", 10000)
@@ -250,6 +291,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.ManagementPort == "" {
 		cfg.ManagementPort = "8188"
+	}
+	if cfg.MetricsPort == "" {
+		cfg.MetricsPort = "9090"
 	}
 	if cfg.DBDSN == "" {
 		return nil, errors.New("DB_DSN is required")

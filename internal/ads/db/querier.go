@@ -11,9 +11,11 @@ import (
 )
 
 type Querier interface {
+	ClaimScheduledCampaignForUpdate(ctx context.Context) (Campaign, error)
 	CleanupAuditLogs(ctx context.Context, createdAt pgtype.Timestamptz) error
 	ConfigureBrandFcap(ctx context.Context, arg ConfigureBrandFcapParams) error
 	CountBlacklist(ctx context.Context) (int64, error)
+	CountCampaignTemplates(ctx context.Context, customerID pgtype.UUID) (int64, error)
 	CountCampaigns(ctx context.Context, arg CountCampaignsParams) (int64, error)
 	CountCustomerLedger(ctx context.Context, customerID pgtype.UUID) (int64, error)
 	CountCustomers(ctx context.Context) (int64, error)
@@ -21,6 +23,8 @@ type Querier interface {
 	CreateAuditLog(ctx context.Context, arg CreateAuditLogParams) (AdminAuditLog, error)
 	CreateBlacklistIP(ctx context.Context, arg CreateBlacklistIPParams) (IpBlacklist, error)
 	CreateBrand(ctx context.Context, arg CreateBrandParams) (AdvertiserBrand, error)
+	// Brand creatives
+	CreateBrandCreative(ctx context.Context, arg CreateBrandCreativeParams) (BrandCreative, error)
 	// events.sql: sqlc query definitions for campaign and event persistence.
 	// All event writes target the PARTITION BY RANGE (created_date) table; callers
 	// must supply created_date explicitly to guarantee correct partition routing.
@@ -33,16 +37,20 @@ type Querier interface {
 	// filters orphaned campaign_ids before the stats INSERT to avoid FK violations
 	// rolling back the entire batch.
 	CreateCampaign(ctx context.Context, arg CreateCampaignParams) (Campaign, error)
+	// Campaign templates
+	CreateCampaignTemplate(ctx context.Context, arg CreateCampaignTemplateParams) (CampaignTemplate, error)
 	CreateCustomer(ctx context.Context, arg CreateCustomerParams) (Customer, error)
 	CreateLedgerEntry(ctx context.Context, arg CreateLedgerEntryParams) (BalanceLedger, error)
 	CreateOutboxEvent(ctx context.Context, arg CreateOutboxEventParams) (OutboxEvent, error)
 	CreateReconRun(ctx context.Context, arg CreateReconRunParams) (ReconRun, error)
 	CreateStatusHistory(ctx context.Context, arg CreateStatusHistoryParams) error
 	DeleteBlacklistIP(ctx context.Context, ip string) error
+	DeleteBrandCreative(ctx context.Context, id pgtype.UUID) error
 	GetAllActiveCampaignsWithStats(ctx context.Context) ([]GetAllActiveCampaignsWithStatsRow, error)
 	GetAllBlacklist(ctx context.Context) ([]GetAllBlacklistRow, error)
 	GetAllSystemSettings(ctx context.Context) ([]GetAllSystemSettingsRow, error)
 	GetBrand(ctx context.Context, id pgtype.UUID) (AdvertiserBrand, error)
+	GetBrandCreative(ctx context.Context, id pgtype.UUID) (BrandCreative, error)
 	GetBrandForUpdate(ctx context.Context, id pgtype.UUID) (AdvertiserBrand, error)
 	GetCampaign(ctx context.Context, id pgtype.UUID) (Campaign, error)
 	// budget.sql: sqlc query definitions for budget and customer balance management.
@@ -55,6 +63,7 @@ type Querier interface {
 	GetCampaignForUpdate(ctx context.Context, id pgtype.UUID) (Campaign, error)
 	GetCampaignFull(ctx context.Context, id pgtype.UUID) (Campaign, error)
 	GetCampaignStats(ctx context.Context, campaignID pgtype.UUID) ([]CampaignStat, error)
+	GetCampaignTemplate(ctx context.Context, id pgtype.UUID) (CampaignTemplate, error)
 	GetCampaignsWithStats(ctx context.Context, customerID pgtype.UUID) ([]GetCampaignsWithStatsRow, error)
 	GetCustomerByID(ctx context.Context, id pgtype.UUID) (Customer, error)
 	GetCustomerForUpdate(ctx context.Context, id pgtype.UUID) (Customer, error)
@@ -73,25 +82,34 @@ type Querier interface {
 	// from rolling back the entire batch.
 	InsertEventsBatch(ctx context.Context, arg InsertEventsBatchParams) error
 	InsertReconDiscrepancy(ctx context.Context, arg InsertReconDiscrepancyParams) error
+	ListActiveBrandCreatives(ctx context.Context, brandID pgtype.UUID) ([]BrandCreative, error)
 	ListActiveCampaigns(ctx context.Context) ([]Campaign, error)
 	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AdminAuditLog, error)
 	ListBlacklist(ctx context.Context, arg ListBlacklistParams) ([]IpBlacklist, error)
+	ListBrandCreatives(ctx context.Context, brandID pgtype.UUID) ([]BrandCreative, error)
 	ListBrandsByCustomer(ctx context.Context, customerID pgtype.UUID) ([]AdvertiserBrand, error)
 	ListCampaignIDs(ctx context.Context) ([]pgtype.UUID, error)
+	ListCampaignTemplates(ctx context.Context, arg ListCampaignTemplatesParams) ([]CampaignTemplate, error)
 	ListCampaigns(ctx context.Context, arg ListCampaignsParams) ([]Campaign, error)
 	ListCustomerLedger(ctx context.Context, arg ListCustomerLedgerParams) ([]BalanceLedger, error)
 	ListCustomers(ctx context.Context, arg ListCustomersParams) ([]Customer, error)
 	ListCustomersForScoring(ctx context.Context) ([]ListCustomersForScoringRow, error)
+	ListScheduledCampaigns(ctx context.Context, limit int32) ([]Campaign, error)
 	ListStatusHistory(ctx context.Context, arg ListStatusHistoryParams) ([]CampaignStatusHistory, error)
 	MarkOutboxEventProcessed(ctx context.Context, id int64) error
+	PauseCampaign(ctx context.Context, id pgtype.UUID) (Campaign, error)
+	ResumeCampaign(ctx context.Context, id pgtype.UUID) (Campaign, error)
 	SetSystemSetting(ctx context.Context, arg SetSystemSettingParams) error
 	SoftDeleteCampaign(ctx context.Context, id pgtype.UUID) error
 	// Recon queries (financial integrity cold path)
 	// These queries power the background reconciliation worker. They are intentionally
 	// scoped to closed time windows to eliminate races with the hot SyncWorker path.
 	SumLedgerSpendByCampaignWindow(ctx context.Context, arg SumLedgerSpendByCampaignWindowParams) ([]SumLedgerSpendByCampaignWindowRow, error)
+	UpdateBrandCreative(ctx context.Context, arg UpdateBrandCreativeParams) (BrandCreative, error)
 	UpdateCampaignBudget(ctx context.Context, arg UpdateCampaignBudgetParams) (Campaign, error)
 	UpdateCampaignPacing(ctx context.Context, arg UpdateCampaignPacingParams) (Campaign, error)
+	// Campaign schedule / lifecycle
+	UpdateCampaignSchedule(ctx context.Context, arg UpdateCampaignScheduleParams) (Campaign, error)
 	UpdateCampaignSpend(ctx context.Context, arg UpdateCampaignSpendParams) error
 	UpdateCampaignStats(ctx context.Context, arg UpdateCampaignStatsParams) error
 	UpdateCampaignStatsBatch(ctx context.Context, arg UpdateCampaignStatsBatchParams) error

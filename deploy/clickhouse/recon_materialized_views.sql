@@ -1,14 +1,10 @@
--- deploy/clickhouse/recon_materialized_views.sql
--- Purpose: Provide fast, pre-aggregated volume signals for secondary reconciliation checks.
--- Primary financial reconciliation is performed against PostgreSQL ledger + Redis "budget:sync:*" keys
--- because the monetary value is known at the moment of budget reservation in the edge Lua script.
--- These views allow detection of event loss/duplication between ingestion and settlement.
+-- recon_materialized_views.sql: pre-aggregated ClickHouse signals for secondary recon checks.
+-- Primary financial reconciliation uses PostgreSQL ledger plus Redis budget:sync keys from Lua.
+-- These views detect event loss or duplication between ingestion and settlement without full scans.
 
 USE ad_event_processor;
 
--- Hourly campaign event counts (impressions + clicks + conversions).
--- This MV is populated in real time by ClickHouse and allows O(1) lookup of observed volume
--- without scanning the massive partitioned raw tables during recon runs.
+-- Hourly campaign event counts from impressions; O(1) volume lookup during recon runs.
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_campaign_hourly_events
 ENGINE = SummingMergeTree()
 PARTITION BY toYYYYMM(hour)
@@ -23,9 +19,7 @@ AS SELECT
 FROM impressions
 GROUP BY campaign_id, hour;
 
--- Similar view for clicks (can be extended with UNION or separate tables).
--- In production you would have separate MVs per event type or a single wide table.
-
--- Usage in recon:
+-- Extend with per-event-type MVs or a unified wide table before relying on this in prod recon.
+-- Example query:
 -- SELECT sum(event_count) FROM mv_campaign_hourly_events
 -- WHERE campaign_id = ? AND hour BETWEEN ? AND ?;

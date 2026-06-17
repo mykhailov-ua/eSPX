@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestChangePassword_EdgeCases guards password change against wrong old secrets and weak new passwords.
 func TestChangePassword_EdgeCases(t *testing.T) {
 	repo := &mockRepo{}
 	hasher, _ := NewPasswordHasher(32768, 2, 2)
@@ -49,6 +50,7 @@ func TestChangePassword_EdgeCases(t *testing.T) {
 	})
 }
 
+// TestCreateAPIKey_Secrecy ensures API keys are stored hashed and never returned in plaintext from persistence.
 func TestCreateAPIKey_Secrecy(t *testing.T) {
 	repo := &mockRepo{}
 	hasher, _ := NewPasswordHasher(32768, 2, 2)
@@ -71,6 +73,7 @@ func TestCreateAPIKey_Secrecy(t *testing.T) {
 	assert.True(t, match)
 }
 
+// TestAuditLog_NeverFailsCaller verifies audit persistence failures do not break primary auth flows.
 func TestAuditLog_NeverFailsCaller(t *testing.T) {
 	repo := &mockRepo{}
 	hasher, _ := NewPasswordHasher(32768, 2, 2)
@@ -82,6 +85,7 @@ func TestAuditLog_NeverFailsCaller(t *testing.T) {
 		map[string]any{"k": "v"}, nil)
 }
 
+// TestEmailVerification_ReplayAndConcurrency rejects reused verification tokens after first successful confirmation.
 func TestEmailVerification_ReplayAndConcurrency(t *testing.T) {
 	repo := &mockRepo{}
 	hasher, _ := NewPasswordHasher(32768, 2, 2)
@@ -132,6 +136,7 @@ func TestEmailVerification_ReplayAndConcurrency(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// TestConcurrentPasswordChange exercises concurrent password updates without requiring a single deterministic winner.
 func TestConcurrentPasswordChange(t *testing.T) {
 	repo := &mockRepo{}
 	hasher, _ := NewPasswordHasher(32768, 2, 2)

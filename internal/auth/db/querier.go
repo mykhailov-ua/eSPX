@@ -30,6 +30,7 @@ type Querier interface {
 	ListAuthAuditLogsByUser(ctx context.Context, arg ListAuthAuditLogsByUserParams) ([]AuthAuditLog, error)
 	ListUserAPIKeys(ctx context.Context, userID pgtype.UUID) ([]ListUserAPIKeysRow, error)
 	SetEmailVerified(ctx context.Context, id pgtype.UUID) error
+	UnblockUser(ctx context.Context, email string) error
 	UpdatePassword(ctx context.Context, arg UpdatePasswordParams) error
 }
 

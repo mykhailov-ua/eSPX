@@ -1,4 +1,6 @@
 #!/bin/bash
+# Resets the docker-compose stack to a known baseline for load and bench runs.
+# Truncates hot-path stores and re-seeds campaigns so every run starts from the same state.
 set -e
 
 echo "Stopping and cleaning up containers (including orphans)"
@@ -35,7 +37,6 @@ docker exec -i espx-db-1 psql -h localhost -p 5440 -U ad_event_processor_user -d
 TRUNCATE TABLE events CASCADE;
 TRUNCATE TABLE campaign_stats CASCADE;
 
--- Insert 100 customers with huge balance
 INSERT INTO customers (id, name, balance, currency, allowed_overdraft)
 SELECT 
     ('00000000-0000-0000-0000-' || LPAD(to_hex(i), 12, '0'))::uuid,
@@ -46,7 +47,6 @@ SELECT
 FROM generate_series(1, 100) s(i)
 ON CONFLICT (id) DO UPDATE SET balance = 100000000000000;
 
--- Insert 100 active campaigns with huge budget
 INSERT INTO campaigns (id, name, budget_limit, status, customer_id, pacing_mode, daily_budget, timezone, freq_limit, freq_window)
 SELECT 
     ('00000000-0000-0000-0000-' || LPAD(to_hex(i), 12, '0'))::uuid,

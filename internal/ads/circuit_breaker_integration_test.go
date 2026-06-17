@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Event store stub failing flush to trip stream consumer breaker.
 type FailingEventStore struct {
 	mu      sync.Mutex
 	flushes [][]*domain.Event
@@ -39,6 +40,7 @@ func (m *FailingEventStore) Close() error { return nil }
 
 func (m *FailingEventStore) Heal() { m.healed.Store(true) }
 
+// Guards open circuit breaker stops stream reads until backend recovers.
 func TestStreamConsumer_CircuitBreakerStopsReads(t *testing.T) {
 	if testing.Short() {
 		t.Skip()

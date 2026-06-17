@@ -44,14 +44,17 @@ var rootCmd = &cobra.Command{
 	},
 }
 
+// Execute runs the admin CLI root command tree.
 func Execute() error {
 	return rootCmd.Execute()
 }
 
+// init registers global flags shared by all admin subcommands.
 func init() {
 	rootCmd.PersistentFlags().StringVar(&envPath, "env-path", ".env", "path to .env configuration file")
 }
 
+// loadEnvFile seeds process env from a dotenv file without overriding variables already set.
 func loadEnvFile(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -85,10 +88,12 @@ func loadEnvFile(path string) error {
 	return scanner.Err()
 }
 
+// getDB opens a small Postgres pool for one-shot admin commands.
 func getDB(ctx context.Context) (*pgxpool.Pool, error) {
 	return database.Connect(ctx, string(cfg.DBDSN), 5, 1)
 }
 
+// getRedisShards connects to every configured Redis shard and pairs clients with JumpHash routing for cold-path ops.
 func getRedisShards(ctx context.Context) ([]redis.UniversalClient, *ads.JumpHashSharder, error) {
 	var clients []redis.UniversalClient
 	for _, addr := range cfg.RedisAddrs {

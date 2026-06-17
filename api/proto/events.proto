@@ -22,6 +22,7 @@ message EventMetadata {
 message TrackResponse {
   string request_id = 1;
   string status = 2;
+  string landing_url = 3;
 }
 
 message AdStreamEvent {

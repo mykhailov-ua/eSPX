@@ -10,6 +10,7 @@ import (
 	"espx/pkg/broker/server"
 )
 
+// main starts the ESPX log broker with Redis-backed leader coordination.
 func main() {
 	addr := flag.String("addr", "127.0.0.1:9092", "Address for gnet TCP traffic")
 	healthAddr := flag.String("health-addr", "127.0.0.1:8081", "Address for HTTP health checks")

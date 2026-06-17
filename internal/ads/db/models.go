@@ -175,6 +175,17 @@ type BalanceLedger struct {
 	CreatedAt       pgtype.Timestamp `json:"created_at"`
 }
 
+type BrandCreative struct {
+	ID         pgtype.UUID        `json:"id"`
+	BrandID    pgtype.UUID        `json:"brand_id"`
+	Name       string             `json:"name"`
+	LandingUrl string             `json:"landing_url"`
+	Weight     int32              `json:"weight"`
+	Status     string             `json:"status"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Campaign struct {
 	ID           pgtype.UUID        `json:"id"`
 	Name         string             `json:"name"`
@@ -193,9 +204,13 @@ type Campaign struct {
 	// Time window for frequency capping in seconds.
 	FreqWindow pgtype.Int4 `json:"freq_window"`
 	// Array of allowed ISO country codes. NULL or empty means all countries allowed.
-	TargetCountries []string    `json:"target_countries"`
-	BrandID         pgtype.UUID `json:"brand_id"`
-	BrandFcapKey    string      `json:"brand_fcap_key"`
+	TargetCountries []string           `json:"target_countries"`
+	BrandID         pgtype.UUID        `json:"brand_id"`
+	BrandFcapKey    string             `json:"brand_fcap_key"`
+	StartAt         pgtype.Timestamptz `json:"start_at"`
+	EndAt           pgtype.Timestamptz `json:"end_at"`
+	DaypartHours    []int16            `json:"daypart_hours"`
+	TemplateID      pgtype.UUID        `json:"template_id"`
 }
 
 type CampaignStat struct {
@@ -213,6 +228,23 @@ type CampaignStatusHistory struct {
 	NewStatus  CampaignStatusType     `json:"new_status"`
 	Reason     pgtype.Text            `json:"reason"`
 	CreatedAt  pgtype.Timestamp       `json:"created_at"`
+}
+
+type CampaignTemplate struct {
+	ID              pgtype.UUID        `json:"id"`
+	CustomerID      pgtype.UUID        `json:"customer_id"`
+	Name            string             `json:"name"`
+	BudgetLimit     int64              `json:"budget_limit"`
+	PacingMode      PacingModeType     `json:"pacing_mode"`
+	DailyBudget     int64              `json:"daily_budget"`
+	Timezone        string             `json:"timezone"`
+	FreqLimit       int32              `json:"freq_limit"`
+	FreqWindow      int32              `json:"freq_window"`
+	TargetCountries []string           `json:"target_countries"`
+	BrandID         pgtype.UUID        `json:"brand_id"`
+	DaypartHours    []int16            `json:"daypart_hours"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Customer struct {
@@ -256,11 +288,12 @@ type IpBlacklist struct {
 }
 
 type OutboxEvent struct {
-	ID        int64              `json:"id"`
-	EventType string             `json:"event_type"`
-	Payload   []byte             `json:"payload"`
-	Status    string             `json:"status"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ID                  int64              `json:"id"`
+	EventType           string             `json:"event_type"`
+	Payload             []byte             `json:"payload"`
+	Status              string             `json:"status"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	ProcessingStartedAt pgtype.Timestamptz `json:"processing_started_at"`
 }
 
 type ReconDiscrepancy struct {

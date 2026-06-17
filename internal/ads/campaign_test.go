@@ -13,10 +13,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// sqlc querier stub with configurable campaign budgets for registry tests.
 type MockRepo struct {
 	db.Querier
-	ids []pgtype.UUID
-	err error
+	ids     []pgtype.UUID
+	err     error
+	budgets map[uuid.UUID]db.GetCampaignBudgetRow
 }
 
 func (m *MockRepo) ListActiveCampaigns(ctx context.Context) ([]db.Campaign, error) {
@@ -31,6 +33,26 @@ func (m *MockRepo) ListActiveCampaigns(ctx context.Context) ([]db.Campaign, erro
 	return res, m.err
 }
 
+func (m *MockRepo) GetCampaignBudget(ctx context.Context, id pgtype.UUID) (db.GetCampaignBudgetRow, error) {
+	if m.err != nil {
+		return db.GetCampaignBudgetRow{}, m.err
+	}
+	uid := uuid.UUID(id.Bytes)
+	if m.budgets != nil {
+		if row, ok := m.budgets[uid]; ok {
+			return row, nil
+		}
+	}
+	return db.GetCampaignBudgetRow{
+		ID:           id,
+		CustomerID:   id,
+		BudgetLimit:  1000,
+		CurrentSpend: 100,
+		Status:       db.CampaignStatusTypeACTIVE,
+	}, nil
+}
+
+// Builds campaign registry backed by test repository.
 func newTestRegistry(t *testing.T, repo db.Querier) *CampaignRegistry {
 	t.Helper()
 	r := NewRegistry(repo)
@@ -38,6 +60,7 @@ func newTestRegistry(t *testing.T, repo db.Querier) *CampaignRegistry {
 	return r
 }
 
+// Guards registry sync loads active campaigns from Postgres into memory.
 func TestRegistry_Sync(t *testing.T) {
 	id1 := uuid.New()
 	id2 := uuid.New()
@@ -58,6 +81,7 @@ func TestRegistry_Sync(t *testing.T) {
 	assert.False(t, r.Exists(uuid.New()))
 }
 
+// Guards periodic sync keeps registry fresh without blocking readers.
 func TestRegistry_StartSync(t *testing.T) {
 	id1 := uuid.New()
 	mock := &MockRepo{

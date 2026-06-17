@@ -16,23 +16,25 @@ import (
 	"github.com/google/uuid"
 )
 
-// AlignedBudget prevents false sharing during concurrent atomic updates.
+// AlignedBudget pads each slot to its own cache line so concurrent atomic updates do not false-share.
 type AlignedBudget struct {
 	Value int64
 	_     [7]int64
 }
 
+// budgetSlice wraps the budget array so atomic.Pointer swaps can publish new backing storage safely.
 type budgetSlice struct {
 	data []AlignedBudget
 }
 
-// BudgetStore uses a flat backing array to avoid GC scanning and pointer chasing.
+// BudgetStore keeps campaign budgets in a flat slice so auction readers avoid map lookups and pointer chasing.
 type BudgetStore struct {
 	mu      sync.Mutex
 	slots   map[uuid.UUID]uint32
 	budgets atomic.Pointer[budgetSlice]
 }
 
+// NewBudgetStore prepares the shared budget backing store used by every geo shard during bidding.
 func NewBudgetStore() *BudgetStore {
 	s := &BudgetStore{
 		slots: make(map[uuid.UUID]uint32),
@@ -44,6 +46,7 @@ func NewBudgetStore() *BudgetStore {
 	return s
 }
 
+// GetOrAllocateSlot assigns a stable numeric index for a campaign so hot-path budget checks stay array-indexed.
 func (s *BudgetStore) GetOrAllocateSlot(id uuid.UUID, initialBudget int64) uint32 {
 	s.mu.Lock()
 	if idx, exists := s.slots[id]; exists {
@@ -73,6 +76,8 @@ func (s *BudgetStore) GetOrAllocateSlot(id uuid.UUID, initialBudget int64) uint3
 	return idx
 }
 
+// LoadBudget answers whether a campaign can afford its floor before it enters the candidate set,
+// so losers never contend on the atomic spend path.
 func (s *BudgetStore) LoadBudget(idx uint32) int64 {
 	slice := s.budgets.Load()
 	if idx >= uint32(len(slice.data)) {
@@ -81,7 +86,8 @@ func (s *BudgetStore) LoadBudget(idx uint32) int64 {
 	return atomic.LoadInt64(&slice.data[idx].Value)
 }
 
-// CheckAndSpend limits heap escape by avoiding exposing pointers to caller stack frames.
+// CheckAndSpend reserves the clearing price only after a winner is chosen, so parallel auctions
+// cannot overspend the same budget slot.
 func (s *BudgetStore) CheckAndSpend(idx uint32, limit int64) bool {
 	slice := s.budgets.Load()
 	if idx >= uint32(len(slice.data)) {
@@ -99,6 +105,7 @@ func (s *BudgetStore) CheckAndSpend(idx uint32, limit int64) bool {
 	}
 }
 
+// GetBudget exposes remaining budget for admin and sync paths that key campaigns by UUID.
 func (s *BudgetStore) GetBudget(id uuid.UUID) int64 {
 	s.mu.Lock()
 	idx, exists := s.slots[id]
@@ -110,6 +117,7 @@ func (s *BudgetStore) GetBudget(id uuid.UUID) int64 {
 	return atomic.LoadInt64(&slice.data[idx].Value)
 }
 
+// SetBudget updates or inserts a campaign budget from management without rebuilding auction shards.
 func (s *BudgetStore) SetBudget(id uuid.UUID, val int64) {
 	s.mu.Lock()
 	idx, exists := s.slots[id]
@@ -140,7 +148,7 @@ func (s *BudgetStore) SetBudget(id uuid.UUID, val int64) {
 	atomic.StoreInt64(&slice.data[idx].Value, val)
 }
 
-// CampaignAuctionRegistry organizes campaign metadata in a Structure of Arrays (SoA) layout.
+// CampaignAuctionRegistry stores each targeting dimension in parallel slices so shard scans stay sequential in memory.
 type CampaignAuctionRegistry struct {
 	Count         int
 	CampaignIDs   []uuid.UUID
@@ -152,6 +160,7 @@ type CampaignAuctionRegistry struct {
 	BudgetIndices []uint32
 }
 
+// CampaignData is the cold-path input shape used when management sync rebuilds auction shards.
 type CampaignData struct {
 	ID           uuid.UUID
 	BidFloor     int64
@@ -162,17 +171,19 @@ type CampaignData struct {
 	Budget       int64
 }
 
-// PaddedShard isolates partitions to prevent cache line bouncing during pointer swaps.
+// PaddedShard pads each shard pointer so concurrent atomic swaps do not bounce cache lines across cores.
 type PaddedShard struct {
 	pointer atomic.Pointer[CampaignAuctionRegistry]
 	_       [56]byte
 }
 
+// Registry is the in-memory auction catalog that bid handlers read without writer locks.
 type Registry struct {
 	shards [16]PaddedShard
 	store  *BudgetStore
 }
 
+// NewRegistry creates the geo-partitioned registry that auction readers query without writer locks.
 func NewRegistry(store *BudgetStore) *Registry {
 	r := &Registry{store: store}
 	for i := 0; i < 16; i++ {
@@ -182,14 +193,17 @@ func NewRegistry(store *BudgetStore) *Registry {
 	return r
 }
 
+// LoadShard routes a bid to the shard that owns its geo partition so scans touch only local campaign data.
 func (r *Registry) LoadShard(idx uint32) *CampaignAuctionRegistry {
 	return r.shards[idx&15].pointer.Load()
 }
 
+// Store returns the shared budget store so campaign sync can allocate slots alongside shard rebuilds.
 func (r *Registry) Store() *BudgetStore {
 	return r.store
 }
 
+// UpdateCampaigns rebuilds every shard off the hot path and swaps pointers atomically so readers never see torn state.
 func (r *Registry) UpdateCampaigns(campaigns []CampaignData) {
 	var counts [16]int
 	for i := range campaigns {
@@ -235,6 +249,7 @@ func (r *Registry) UpdateCampaigns(campaigns []CampaignData) {
 	}
 }
 
+// SaveSnapshot writes the in-memory registry to disk so process restarts can recover budgets and campaign targeting.
 func (r *Registry) SaveSnapshot(path string) error {
 	tmpPath := path + ".tmp"
 	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
@@ -362,6 +377,7 @@ func (r *Registry) SaveSnapshot(path string) error {
 	return os.Rename(tmpPath, path)
 }
 
+// LoadSnapshot restores registry and budget state from disk after a restart or crash.
 func (r *Registry) LoadSnapshot(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -494,6 +510,7 @@ func (r *Registry) LoadSnapshot(path string) error {
 	return nil
 }
 
+// StartPersistence reloads state on boot and keeps periodic snapshots so budget drift survives restarts.
 func (r *Registry) StartPersistence(ctx context.Context, path string, interval time.Duration) error {
 	if path == "" {
 		return nil
@@ -534,6 +551,7 @@ func (r *Registry) StartPersistence(ctx context.Context, path string, interval t
 	return nil
 }
 
+// writeUint32 encodes snapshot fields in a fixed little-endian layout for stable on-disk format.
 func writeUint32(w *bufio.Writer, val uint32) error {
 	if err := w.WriteByte(byte(val)); err != nil {
 		return err
@@ -547,6 +565,7 @@ func writeUint32(w *bufio.Writer, val uint32) error {
 	return w.WriteByte(byte(val >> 24))
 }
 
+// readUint32 decodes snapshot fields written by writeUint32 during restore.
 func readUint32(r *bufio.Reader) (uint32, error) {
 	b1, err := r.ReadByte()
 	if err != nil {

@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Must not be mutated after UpdateCampaigns; pointer is stored in the alias table snapshot.
+// CampaignMeta carries auction inputs for weighted campaign selection and sharding.
 type CampaignMeta struct {
 	ID                uuid.UUID
 	BidMicro          int64
@@ -21,29 +21,33 @@ type CampaignMeta struct {
 	PeakTrafficFactor float64
 }
 
+// voseAliasTable enables O(1) weighted random campaign selection after an offline rebuild.
 type voseAliasTable struct {
 	campaigns []*CampaignMeta
 	prob      []float64
 	alias     []int
 }
 
+// HybridBalancer selects campaigns and Redis shards for RTB traffic spreading.
 type HybridBalancer struct {
 	totalShards   int
 	maxRpsPerNode int64
 	aliasTable    atomic.Pointer[voseAliasTable]
 }
 
-var (
-	randSeedSeq atomic.Int64
-	randPool    = sync.Pool{
-		New: func() any {
+// randSeedSeq mixes per-goroutine RNG seeds to reduce collision under concurrency.
+var randSeedSeq atomic.Int64
 
-			seed := time.Now().UnixNano() ^ randSeedSeq.Add(1)
-			return rand.New(rand.NewSource(seed))
-		},
-	}
-)
+// randPool recycles math/rand sources for alias sampling on the hot path.
+var randPool = sync.Pool{
+	New: func() any {
 
+		seed := time.Now().UnixNano() ^ randSeedSeq.Add(1)
+		return rand.New(rand.NewSource(seed))
+	},
+}
+
+// NewHybridBalancer creates a balancer with shard count and hot-campaign RPS threshold.
 func NewHybridBalancer(totalShards int, maxRpsPerNode int) *HybridBalancer {
 	return &HybridBalancer{
 		totalShards:   totalShards,
@@ -51,6 +55,7 @@ func NewHybridBalancer(totalShards int, maxRpsPerNode int) *HybridBalancer {
 	}
 }
 
+// UpdateCampaigns rebuilds the alias table from current campaign weights and pacing state.
 func (hb *HybridBalancer) UpdateCampaigns(campaigns []*CampaignMeta, secondsElapsed int64, totalSeconds int64) {
 
 	validCampaigns := make([]*CampaignMeta, 0, len(campaigns))
@@ -150,7 +155,7 @@ func (hb *HybridBalancer) UpdateCampaigns(campaigns []*CampaignMeta, secondsElap
 	})
 }
 
-// Hot campaigns XOR user-keyed sub-shard into jump-hash to spread load across Redis keys.
+// SelectAndShard picks a campaign and spreads hot traffic across sub-shards by user.
 func (hb *HybridBalancer) SelectAndShard(userID string, currentCampaignRps int64) (*CampaignMeta, int) {
 	table := hb.aliasTable.Load()
 	if table == nil || len(table.prob) == 0 {

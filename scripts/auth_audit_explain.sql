@@ -1,3 +1,6 @@
+-- Local EXPLAIN probe for auth audit log access patterns.
+-- Run after index or schema changes to catch planner regressions before admin UI latency spikes.
+
 \set QUIET 1
 
 DROP TABLE IF EXISTS tmp_auth_audit_seed;

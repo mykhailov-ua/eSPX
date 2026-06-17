@@ -6,6 +6,7 @@ import (
 )
 
 var (
+	// HTTP ingress metrics exist so Grafana can alert on error rate and latency SLO breaches.
 	HttpRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ad_http_requests_total",
 		Help: "Total number of HTTP requests by status code",
@@ -17,6 +18,7 @@ var (
 		Buckets: prometheus.DefBuckets,
 	}, []string{"method", "path"})
 
+	// Event ingestion metrics exist so ops can detect silent data loss at the Redis Streams boundary before downstream consumers starve.
 	EventsProcessed = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ad_events_processed_total",
 		Help: "Total number of events successfully accepted into Redis Streams",
@@ -27,11 +29,13 @@ var (
 		Help: "Total number of events dropped due to Redis ingestion failure",
 	})
 
+	// Filter block metrics exist so on-call can spot fraud spikes, policy misconfiguration, or abnormal rejection mix by reason.
 	FilterBlockedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ad_filter_blocked_total",
 		Help: "Total number of events blocked by filters",
 	}, []string{"reason"})
 
+	// Database write metrics exist so persistence slowdowns and write failures page before the processor backlog grows.
 	DbWriteDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "ad_db_write_duration_seconds",
 		Help:    "Duration of database batch write operations",
@@ -43,16 +47,24 @@ var (
 		Help: "Total number of database write errors",
 	}, []string{"type"})
 
+	// Circuit breaker metrics exist so alerts fire when dependency protection opens and the hot path starts shedding load.
 	CircuitBreakerState = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "ad_circuit_breaker_state",
 		Help: "Current state of the circuit breaker (0=closed, 1=open, 2=half-open)",
 	}, []string{"group"})
 
+	RedisBreakerState = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ad_redis_breaker_state",
+		Help: "Current state of the Redis shard circuit breaker (0=closed, 1=open, 2=half-open)",
+	}, []string{"shard"})
+
+	// DLQ depth exists so unreplayable or stuck events trigger investigation before they accumulate without visibility.
 	DlqSize = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "ad_dlq_size_total",
 		Help: "Current number of events in the Dead Letter Queue",
 	})
 
+	// Management business metrics exist so finance and ops dashboards can track revenue flow and live campaign inventory.
 	CommissionsCollectedTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ad_management_commissions_total",
 		Help: "Total amount of commissions collected from campaign cancellations",
@@ -68,6 +80,7 @@ var (
 		Help: "Current number of active campaigns in the system",
 	})
 
+	// Reconciliation metrics exist so billing integrity alerts fire when Postgres and ClickHouse spend diverge or auto-corrections fail.
 	DataDriftRatio = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "ad_reconciliation_drift_ratio",
 		Help: "Ratio of discrepancy between Postgres and ClickHouse spend",
@@ -93,6 +106,7 @@ var (
 		Help: "Total number of errors during automated reconciliation corrections",
 	})
 
+	// gnet hot-path metrics exist so capacity alerts catch connection saturation, parse failures, and worker pool overload before requests are dropped.
 	GnetPacketsReceived = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ad_gnet_packets_received_total",
 		Help: "Total number of network packets received",
@@ -121,7 +135,22 @@ var (
 		Name: "ad_http_parse_errors_total",
 		Help: "Total number of HTTP/1.1 parsing errors",
 	}, []string{"error_type"})
+	WorkerPoolRejectTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_worker_pool_reject_total",
+		Help: "Requests rejected because pinned worker pool queue is full",
+	})
 
+	// Async side-effect drop metrics exist so audit and fraud pipelines surface ring-buffer overflow before compliance gaps go unnoticed.
+	HandlerLogDropTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_handler_log_drop_total",
+		Help: "Accepted events whose audit log write was dropped (logger ring full)",
+	})
+	FraudStreamDropTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_fraud_stream_drop_total",
+		Help: "Fraud reject events dropped because the async fraud stream ring is full",
+	})
+
+	// Filter engine metrics exist so delivery health dashboards expose pass/block mix, dependency blips, and geo lookup tail latency.
 	FilterThroughput = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ad_filter_throughput_total",
 		Help: "Total throughput through the filter engine",
@@ -130,21 +159,61 @@ var (
 		Name: "ad_filter_decisions_total",
 		Help: "Filter decisions made by the engine",
 	}, []string{"decision"})
+	FilterInternalErrors = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ad_filter_internal_errors_total",
+		Help: "Non-fatal filter dependency failures (geo lookup, redis side-effects)",
+	}, []string{"kind"})
+	FilterGeoDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "ad_filter_geo_duration_seconds",
+		Help:    "Geo filter MaxMind country lookup duration (sampled 1/128 by default)",
+		Buckets: []float64{0.000001, 0.000002, 0.000005, 0.00001, 0.000025, 0.00005, 0.0001, 0.00025, 0.0005, 0.001},
+	})
+	TTCBypassTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_ttc_bypass_total",
+		Help: "Clicks accepted without impression timestamp (TTC fail-open bypass)",
+	})
+
+	// Redis Lua metrics exist so shard-level script availability and EVAL latency alerts catch filter hot-path regressions early.
 	RedisLuaDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "ad_redis_lua_duration_seconds",
 		Help:    "Execution duration of Redis Lua filters",
 		Buckets: []float64{0.0005, 0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5},
 	}, []string{"shard"})
+	RedisLuaNoScriptTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ad_redis_lua_noscript_total",
+		Help: "EVALSHA NOSCRIPT fallbacks to full EVAL (script evicted or not preloaded)",
+	}, []string{"shard"})
+	RedisLuaScriptLoaded = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ad_redis_lua_script_loaded",
+		Help: "1 if unified_filter.lua is loaded on shard via SCRIPT LOAD, else 0",
+	}, []string{"shard"})
+
+	// Budget cache metrics exist so overspend risk is visible when warm paths miss and hot-path fallbacks hit PostgreSQL or the registry.
+	BudgetCacheWarmTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ad_budget_cache_warm_total",
+		Help: "Redis budget:campaign:* keys inserted via SET NX during registry sync warm",
+	}, []string{"type"})
+	BudgetCacheMissTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_budget_cache_miss_total",
+		Help: "Unified filter Lua budget key misses (return -1)",
+	})
+	BudgetCacheMissPGTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_budget_cache_miss_pg_total",
+		Help: "Budget cache misses resolved via PostgreSQL GetByID on hot path",
+	})
+	BudgetCacheRegistryRecoverTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_budget_cache_registry_recover_total",
+		Help: "Budget cache misses recovered from in-memory registry without PostgreSQL",
+	})
+
+	// Registry sync lag exists so stale campaign config in the hot path triggers alerts before delivery rules drift from the database.
 	RegistrySyncLag = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "ad_registry_sync_lag_seconds",
 		Help:    "Registry sync lag between database update and cache loading",
 		Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0},
 	})
-	UuidGenDuration = promauto.NewHistogram(prometheus.HistogramOpts{
-		Name:    "ad_uuid_generation_duration_nanoseconds",
-		Help:    "Execution duration of NewFastUUID in nanoseconds",
-		Buckets: []float64{10, 25, 50, 100, 250, 500, 1000, 2500, 5000},
-	})
+
+	// Geo provider status exists so production deploys that accidentally run the mock geo provider are caught before targeting goes wrong.
 	GeoProviderStatus = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "ad_geo_provider_status",
 		Help: "Status of the geo provider: 1 = real MaxMind, 0 = mock",

@@ -7,14 +7,17 @@ import (
 	"time"
 )
 
+// SessionCleanupWorker reclaims stale session rows so refresh-token storage does not grow without bound.
 type SessionCleanupWorker struct {
 	svc *Service
 }
 
+// NewSessionCleanupWorker attaches retention policy to the auth store without blocking request paths.
 func NewSessionCleanupWorker(svc *Service) *SessionCleanupWorker {
 	return &SessionCleanupWorker{svc: svc}
 }
 
+// Start runs cleanup on a ticker so expired refresh rows do not accumulate without bound.
 func (w *SessionCleanupWorker) Start(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -34,6 +37,7 @@ func (w *SessionCleanupWorker) Start(ctx context.Context, interval time.Duration
 	}
 }
 
+// Cleanup reclaims blocked and expired sessions in one pass per tick to cap table growth.
 func (w *SessionCleanupWorker) Cleanup(ctx context.Context) error {
 	rows, err := w.svc.repo.DeleteExpiredOrBlockedSessions(ctx)
 	if err != nil {

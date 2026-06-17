@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestEdge_RoundingAndSmallAmounts guards cancellation fee rounding on small campaign budgets.
 func TestEdge_RoundingAndSmallAmounts(t *testing.T) {
 	pool, cleanupDB := database.SetupTestDB(t)
 	defer cleanupDB()
@@ -35,7 +34,7 @@ func TestEdge_RoundingAndSmallAmounts(t *testing.T) {
 	_ = svc.CreateCustomer(context.Background(), customerID, "Small Saver", 100_000_000, "USD")
 
 	budget := int64(1_050_000)
-	id, err := svc.CreateCampaign(context.Background(), customerID, nil, "Tiny Camp", budget, db.PacingModeTypeASAP, 0, "UTC", 0, 0, nil, "idemp-1")
+	id, err := svc.CreateCampaign(context.Background(), testCampaignSpec(customerID, "Tiny Camp", budget, "idemp-1"))
 	require.NoError(t, err)
 
 	err = svc.CancelCampaign(context.Background(), id, "Too small")
@@ -48,49 +47,14 @@ func TestEdge_RoundingAndSmallAmounts(t *testing.T) {
 	}, 2*time.Second, 20*time.Millisecond)
 }
 
+// TestEdge_ConcurrentBalanceDepletion re-exports chaos balance depletion coverage for the edge-case suite.
 func TestEdge_ConcurrentBalanceDepletion(t *testing.T) {
-	pool, cleanupDB := database.SetupTestDB(t)
-	defer cleanupDB()
-	rdb, cleanupRedis := database.SetupTestRedis(t)
-	defer cleanupRedis()
-
-	svc := NewService(pool, []redis.UniversalClient{rdb}, ads.NewJumpHashSharder(1), &config.Config{})
-	defer svc.Close()
-
-	customerID := uuid.New()
-	_ = svc.CreateCustomer(context.Background(), customerID, "Poor db.User", 500_000_000, "USD")
-
-	const workers = 10
-	campaignBudget := int64(100_000_000)
-
-	var wg sync.WaitGroup
-	wg.Add(workers)
-	results := make(chan error, workers)
-
-	for i := 0; i < workers; i++ {
-		go func(idx int) {
-			defer wg.Done()
-			_, err := svc.CreateCampaign(context.Background(), customerID, nil, fmt.Sprintf("Camp-%d", idx), campaignBudget, db.PacingModeTypeASAP, 0, "UTC", 0, 0, nil, fmt.Sprintf("idemp-%d", idx))
-			results <- err
-		}(i)
-	}
-
-	wg.Wait()
-	close(results)
-
-	var successCount, failureCount int
-	for err := range results {
-		if err == nil {
-			successCount++
-		} else {
-			failureCount++
-		}
-	}
-
-	assert.Equal(t, 5, successCount)
-	assert.Equal(t, 5, failureCount)
+	t.Run("delegatesToChaosTest", func(t *testing.T) {
+		TestChaos_ConcurrentBalanceDepletion(t)
+	})
 }
 
+// TestEdge_ResumingStuckSettlement guards cancel can finish settlement when a campaign is stuck in DRAINING.
 func TestEdge_ResumingStuckSettlement(t *testing.T) {
 	pool, cleanupDB := database.SetupTestDB(t)
 	defer cleanupDB()
@@ -105,7 +69,7 @@ func TestEdge_ResumingStuckSettlement(t *testing.T) {
 
 	customerID := uuid.New()
 	_ = svc.CreateCustomer(context.Background(), customerID, "Crash Test", 1_000_000_000, "USD")
-	campaignID, _ := svc.CreateCampaign(context.Background(), customerID, nil, "Zombie", 500_000_000, db.PacingModeTypeASAP, 0, "UTC", 0, 0, nil, "idemp-crash")
+	campaignID, _ := svc.CreateCampaign(context.Background(), testCampaignSpec(customerID, "Zombie", 500_000_000, "idemp-crash"))
 
 	_, _ = pool.Exec(context.Background(), "UPDATE campaigns SET status = 'DRAINING' WHERE id = $1", campaignID)
 
@@ -152,6 +116,7 @@ func (p *failingPipeliner) Publish(ctx context.Context, channel string, message 
 	return p.Pipeliner.Publish(ctx, channel, message)
 }
 
+// TestEdge_OutboxPartialRedisFailure guards partial Redis failures leave failed events pending for retry.
 func TestEdge_OutboxPartialRedisFailure(t *testing.T) {
 	pool, cleanupDB := database.SetupTestDB(t)
 	defer cleanupDB()
@@ -214,6 +179,7 @@ func TestEdge_OutboxPartialRedisFailure(t *testing.T) {
 	assert.Equal(t, "PENDING", statuses[1])
 }
 
+// TestEdge_OutboxWorkerRecoveryOfProcessingEvents guards stale PROCESSING leases revert to PENDING and reprocess.
 func TestEdge_OutboxWorkerRecoveryOfProcessingEvents(t *testing.T) {
 	pool, cleanupDB := database.SetupTestDB(t)
 	defer cleanupDB()
@@ -242,7 +208,10 @@ func TestEdge_OutboxWorkerRecoveryOfProcessingEvents(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = pool.Exec(ctx, "UPDATE outbox_events SET status = 'PROCESSING', created_at = NOW() - INTERVAL '10 minutes' WHERE id = $1", row.ID)
+	_, err = pool.Exec(ctx, `
+		UPDATE outbox_events
+		SET status = 'PROCESSING', processing_started_at = NOW() - INTERVAL '10 minutes'
+		WHERE id = $1`, row.ID)
 	require.NoError(t, err)
 
 	worker := NewOutboxWorker(svc)
@@ -256,7 +225,12 @@ func TestEdge_OutboxWorkerRecoveryOfProcessingEvents(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "PROCESSING", status)
 
-	_, err = pool.Exec(ctx, "UPDATE outbox_events SET status = 'PENDING' WHERE status = 'PROCESSING' AND created_at < NOW() - INTERVAL '1 minute'")
+	_, err = pool.Exec(ctx, `
+		UPDATE outbox_events
+		SET status = 'PENDING', processing_started_at = NULL
+		WHERE status = 'PROCESSING'
+		  AND processing_started_at IS NOT NULL
+		  AND processing_started_at < NOW() - INTERVAL '1 minute'`)
 	require.NoError(t, err)
 
 	err = pool.QueryRow(ctx, "SELECT status FROM outbox_events WHERE id = $1", row.ID).Scan(&status)
@@ -270,4 +244,55 @@ func TestEdge_OutboxWorkerRecoveryOfProcessingEvents(t *testing.T) {
 	err = pool.QueryRow(ctx, "SELECT status FROM outbox_events WHERE id = $1", row.ID).Scan(&status)
 	require.NoError(t, err)
 	assert.Equal(t, "PROCESSED", status)
+}
+
+// TestEdge_OutboxSetsRemainingBudget guards resume outbox handler sets Redis budget to limit minus spend.
+func TestEdge_OutboxSetsRemainingBudget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	pool, cleanupDB := database.SetupTestDB(t)
+	defer cleanupDB()
+	rdb, cleanupRedis := database.SetupTestRedis(t)
+	defer cleanupRedis()
+
+	cfg := &config.Config{CampaignUpdateChannel: "campaigns:update-test"}
+	svc := NewService(pool, []redis.UniversalClient{rdb}, ads.NewJumpHashSharder(1), cfg)
+	defer svc.Close()
+
+	ctx := context.Background()
+	customerID := uuid.New()
+	require.NoError(t, svc.CreateCustomer(ctx, customerID, "Budget Test", 1_000_000_000, "USD"))
+
+	budget := int64(100_000_000)
+	spend := int64(30_000_000)
+	spec := testCampaignSpec(customerID, "Spend Camp", budget, "remaining-idem")
+	spec.DaypartHours = []int16{}
+	campaignID, err := svc.CreateCampaign(ctx, spec)
+	require.NoError(t, err)
+
+	_, err = pool.Exec(ctx, "DELETE FROM outbox_events")
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, "UPDATE campaigns SET current_spend = $1 WHERE id = $2", spend, campaignID)
+	require.NoError(t, err)
+	_, err = rdb.Del(ctx, "budget:campaign:"+campaignID.String()).Result()
+	require.NoError(t, err)
+
+	payload, err := json.Marshal(CampaignPayload{CampaignID: campaignID.String(), BudgetLimit: budget})
+	require.NoError(t, err)
+	_, err = db.New(pool).CreateOutboxEvent(ctx, db.CreateOutboxEventParams{
+		EventType: "RESUME_CAMPAIGN",
+		Payload:   payload,
+	})
+	require.NoError(t, err)
+
+	worker := NewOutboxWorker(svc)
+	processed, err := worker.ProcessOutboxWithCount(ctx, 10)
+	require.NoError(t, err)
+	assert.Equal(t, 1, processed)
+
+	remaining, err := rdb.Get(ctx, "budget:campaign:"+campaignID.String()).Int64()
+	require.NoError(t, err)
+	assert.Equal(t, budget-spend, remaining)
 }

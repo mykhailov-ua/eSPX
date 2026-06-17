@@ -17,6 +17,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// setupRateTestRedis spins up an ephemeral Redis for DLQ rate-limit integration tests.
 func setupRateTestRedis(t *testing.T) (*redis.Client, func()) {
 	ctx := context.Background()
 
@@ -40,6 +41,7 @@ func setupRateTestRedis(t *testing.T) (*redis.Client, func()) {
 	}
 }
 
+// TestRequeueDLQ_RateLimiting proves requeue honors unlimited vs throttled throughput on a real Redis.
 func TestRequeueDLQ_RateLimiting(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -142,6 +144,7 @@ func TestRequeueDLQ_RateLimiting(t *testing.T) {
 	}
 }
 
+// TestRestoreDLQ_RateLimiting proves archive restore respects the configured events-per-second cap.
 func TestRestoreDLQ_RateLimiting(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")

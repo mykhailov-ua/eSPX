@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestSnapshotSaveAndLoad ensures round-trip persistence keeps budgets and every shard column intact.
 func TestSnapshotSaveAndLoad(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "espx-rtb-snap-*")
 	require.NoError(t, err)
@@ -50,7 +51,7 @@ func TestSnapshotSaveAndLoad(t *testing.T) {
 			BidFloor:     80,
 			DeviceMask:   2,
 			CategoryMask: 1,
-			GeoHashVal:   11, // different shard
+			GeoHashVal:   11,
 			Weight:       5,
 			Budget:       1500,
 		},
@@ -102,6 +103,7 @@ func TestSnapshotSaveAndLoad(t *testing.T) {
 	}
 }
 
+// TestStartPersistence verifies periodic snapshots and shutdown flush produce a restorable registry file.
 func TestStartPersistence(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "espx-rtb-persist-*")
 	require.NoError(t, err)
@@ -155,6 +157,7 @@ func TestStartPersistence(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 }
 
+// BenchmarkSaveSnapshot tracks cold-path snapshot write cost at production-scale campaign counts.
 func BenchmarkSaveSnapshot(b *testing.B) {
 	tmpDir, err := os.MkdirTemp("", "espx-rtb-bench-*")
 	if err != nil {
@@ -191,6 +194,7 @@ func BenchmarkSaveSnapshot(b *testing.B) {
 	}
 }
 
+// BenchmarkLoadSnapshot tracks startup restore cost from a production-scale snapshot file.
 func BenchmarkLoadSnapshot(b *testing.B) {
 	tmpDir, err := os.MkdirTemp("", "espx-rtb-bench-*")
 	if err != nil {

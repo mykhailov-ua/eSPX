@@ -12,6 +12,7 @@ import (
 	"espx/pkg/broker/client"
 )
 
+// main tails length-prefixed tracker logs and ships them to the ESPX broker with worker parallelism.
 func main() {
 	brokerAddr := flag.String("broker", "127.0.0.1:9092", "Broker address")
 	redisURL := flag.String("redis-url", "redis://127.0.0.1:6379/0", "Redis URL for leader discovery")

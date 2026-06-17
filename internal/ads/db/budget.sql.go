@@ -70,7 +70,7 @@ func (q *Queries) GetCustomerByID(ctx context.Context, id pgtype.UUID) (Customer
 }
 
 const listActiveCampaigns = `-- name: ListActiveCampaigns :many
-SELECT id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend, deleted_at, pacing_mode, daily_budget, timezone, freq_limit, freq_window, target_countries, brand_id, brand_fcap_key FROM campaigns WHERE status = 'ACTIVE'
+SELECT id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend, deleted_at, pacing_mode, daily_budget, timezone, freq_limit, freq_window, target_countries, brand_id, brand_fcap_key, start_at, end_at, daypart_hours, template_id FROM campaigns WHERE status = 'ACTIVE'
 `
 
 func (q *Queries) ListActiveCampaigns(ctx context.Context) ([]Campaign, error) {
@@ -100,6 +100,10 @@ func (q *Queries) ListActiveCampaigns(ctx context.Context) ([]Campaign, error) {
 			&i.TargetCountries,
 			&i.BrandID,
 			&i.BrandFcapKey,
+			&i.StartAt,
+			&i.EndAt,
+			&i.DaypartHours,
+			&i.TemplateID,
 		); err != nil {
 			return nil, err
 		}

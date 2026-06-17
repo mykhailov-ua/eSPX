@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestBrandFrequencyCapping guards brand-level frequency caps aggregate clicks across campaigns under one Redis key.
 func TestBrandFrequencyCapping(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")

@@ -11,10 +11,12 @@ import (
 	"espx/internal/auth/db"
 	"espx/internal/database"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stretchr/testify/assert"
 )
 
+// mockRepo stubs persistence for unit tests of auth service flows.
 type mockRepo struct {
 	db.Querier
 	user             db.User
@@ -26,14 +28,17 @@ type mockRepo struct {
 	createSessionErr error
 }
 
+// GetUserByEmail returns the configured user or error for login tests.
 func (m *mockRepo) GetUserByEmail(ctx context.Context, email string) (db.User, error) {
 	return m.user, m.err
 }
 
+// GetUserByID returns the configured user or error for token verification tests.
 func (m *mockRepo) GetUserByID(ctx context.Context, id pgtype.UUID) (db.User, error) {
 	return m.getUserByID, m.getUserByIDErr
 }
 
+// CreateUser returns a synthetic user row or a configured creation error.
 func (m *mockRepo) CreateUser(ctx context.Context, arg db.CreateUserParams) (db.CreateUserRow, error) {
 	if m.createUserErr != nil {
 		return db.CreateUserRow{}, m.createUserErr
@@ -41,6 +46,7 @@ func (m *mockRepo) CreateUser(ctx context.Context, arg db.CreateUserParams) (db.
 	return db.CreateUserRow{ID: pgtype.UUID{Bytes: uuid.New(), Valid: true}}, nil
 }
 
+// CreateSession returns a synthetic session or a configured creation error.
 func (m *mockRepo) CreateSession(ctx context.Context, arg db.CreateSessionParams) (db.Session, error) {
 	if m.createSessionErr != nil {
 		return db.Session{}, m.createSessionErr
@@ -48,74 +54,97 @@ func (m *mockRepo) CreateSession(ctx context.Context, arg db.CreateSessionParams
 	return m.session, m.err
 }
 
+// GetSessionByRefreshTokenForUpdate returns the configured session for refresh rotation tests.
 func (m *mockRepo) GetSessionByRefreshTokenForUpdate(ctx context.Context, refreshToken string) (db.Session, error) {
 	return m.session, m.err
 }
 
+// BlockSession applies the configured error for session blocking tests.
 func (m *mockRepo) BlockSession(ctx context.Context, id pgtype.UUID) error {
 	return m.err
 }
 
+// BlockSessionByRefreshToken applies the configured error for revoke tests.
 func (m *mockRepo) BlockSessionByRefreshToken(ctx context.Context, refreshToken string) error {
 	return m.err
 }
 
+// DeleteExpiredOrBlockedSessions returns a fixed cleanup count for worker tests.
 func (m *mockRepo) DeleteExpiredOrBlockedSessions(ctx context.Context) (int64, error) {
 	return 5, m.err
 }
 
+// GetSessionByRefreshToken returns the configured session for revoke tests.
 func (m *mockRepo) GetSessionByRefreshToken(ctx context.Context, refreshToken string) (db.Session, error) {
 	return m.session, m.err
 }
 
+// BlockUser applies the configured error for lockout regression tests.
 func (m *mockRepo) BlockUser(ctx context.Context, email string) error {
 	return m.err
 }
 
+// UnblockUser applies the configured error for unblock tests.
+func (m *mockRepo) UnblockUser(ctx context.Context, email string) error {
+	return m.err
+}
+
+// UpdatePassword applies the configured error for password change tests.
 func (m *mockRepo) UpdatePassword(ctx context.Context, arg db.UpdatePasswordParams) error {
 	return m.err
 }
 
+// ExecTx runs the callback against this mock without a real transaction.
 func (m *mockRepo) ExecTx(ctx context.Context, fn func(db.Querier) error) error {
 	return fn(m)
 }
 
+// CreatePasswordHistoryEntry applies the configured error for password history tests.
 func (m *mockRepo) CreatePasswordHistoryEntry(ctx context.Context, arg db.CreatePasswordHistoryEntryParams) error {
 	return m.err
 }
 
+// GetPasswordHistory returns the configured history or error for reuse checks.
 func (m *mockRepo) GetPasswordHistory(ctx context.Context, arg db.GetPasswordHistoryParams) ([]string, error) {
 	return nil, m.err
 }
 
+// SetEmailVerified applies the configured error for email verification tests.
 func (m *mockRepo) SetEmailVerified(ctx context.Context, id pgtype.UUID) error { return m.err }
 
+// CreateAuthAuditLog applies the configured error for audit tests.
 func (m *mockRepo) CreateAuthAuditLog(ctx context.Context, arg db.CreateAuthAuditLogParams) (db.CreateAuthAuditLogRow, error) {
 	return db.CreateAuthAuditLogRow{}, m.err
 }
 
+// ListAuthAuditLogsByUser returns the configured audit rows or error.
 func (m *mockRepo) ListAuthAuditLogsByUser(ctx context.Context, arg db.ListAuthAuditLogsByUserParams) ([]db.AuthAuditLog, error) {
 	return nil, m.err
 }
 
+// CreateAPIKey returns a synthetic API key row for key creation tests.
 func (m *mockRepo) CreateAPIKey(ctx context.Context, arg db.CreateAPIKeyParams) (db.CreateAPIKeyRow, error) {
 	return db.CreateAPIKeyRow{ID: pgtype.UUID{Bytes: uuid.New(), Valid: true}}, nil
 }
 
+// mockTokenMaker stubs token issuance and verification for service unit tests.
 type mockTokenMaker struct {
 	Maker
 	createErr error
 	verifyErr error
 }
 
+// CreateToken returns a fixed token or a configured creation error.
 func (m *mockTokenMaker) CreateToken(userID uuid.UUID, sessionID uuid.UUID, role string, customerID uuid.UUID, duration time.Duration) (string, error) {
 	return "token", m.createErr
 }
 
+// VerifyToken returns a synthetic payload or a configured verification error.
 func (m *mockTokenMaker) VerifyToken(t string) (*Payload, error) {
 	return &Payload{UserID: uuid.New()}, m.verifyErr
 }
 
+// TestRegister covers registration validation and duplicate-user handling.
 func TestRegister(t *testing.T) {
 	repo := &mockRepo{}
 	hasher, err := NewPasswordHasher(65536, 3, 4)
@@ -148,7 +177,7 @@ func TestRegister(t *testing.T) {
 	})
 
 	t.Run("Idempotency_AlreadyExists", func(t *testing.T) {
-		repo.createUserErr = errors.New("unique constraint")
+		repo.createUserErr = &pgconn.PgError{Code: "23505"}
 		repo.user = db.User{ID: pgtype.UUID{Bytes: uuid.New(), Valid: true}}
 		repo.err = nil
 		_, err := service.Register(context.Background(), RegisterDTO{
@@ -169,6 +198,7 @@ func TestRegister(t *testing.T) {
 	})
 }
 
+// TestLogin covers credential validation, dummy-hash behavior, and session creation failures.
 func TestLogin(t *testing.T) {
 	repo := &mockRepo{}
 	tokenMaker := &mockTokenMaker{}
@@ -181,8 +211,9 @@ func TestLogin(t *testing.T) {
 
 	t.Run("Success", func(t *testing.T) {
 		repo.user = db.User{
-			ID:           pgtype.UUID{Bytes: uuid.New(), Valid: true},
-			PasswordHash: hash,
+			ID:            pgtype.UUID{Bytes: uuid.New(), Valid: true},
+			PasswordHash:  hash,
+			EmailVerified: true,
 		}
 		repo.err = nil
 		repo.createSessionErr = nil
@@ -190,6 +221,17 @@ func TestLogin(t *testing.T) {
 		resp, err := service.Login(context.Background(), "user@example.com", password, "ua", "ip", time.Hour)
 		assert.NoError(t, err)
 		assert.NotEmpty(t, resp.AccessToken)
+	})
+
+	t.Run("EmailNotVerified", func(t *testing.T) {
+		repo.user = db.User{
+			ID:            pgtype.UUID{Bytes: uuid.New(), Valid: true},
+			PasswordHash:  hash,
+			EmailVerified: false,
+		}
+		repo.err = nil
+		_, err := service.Login(context.Background(), "user@example.com", password, "ua", "ip", time.Hour)
+		assert.ErrorIs(t, err, ErrEmailNotVerified)
 	})
 
 	t.Run("InvalidEmail", func(t *testing.T) {
@@ -210,7 +252,7 @@ func TestLogin(t *testing.T) {
 	})
 
 	t.Run("TokenMakerError", func(t *testing.T) {
-		repo.user = db.User{PasswordHash: hash, ID: pgtype.UUID{Bytes: uuid.New(), Valid: true}}
+		repo.user = db.User{PasswordHash: hash, ID: pgtype.UUID{Bytes: uuid.New(), Valid: true}, EmailVerified: true}
 		repo.err = nil
 		tokenMaker.createErr = errors.New("token error")
 		_, err := service.Login(context.Background(), "user@example.com", password, "ua", "ip", time.Hour)
@@ -218,7 +260,7 @@ func TestLogin(t *testing.T) {
 	})
 
 	t.Run("CreateSessionError", func(t *testing.T) {
-		repo.user = db.User{PasswordHash: hash, ID: pgtype.UUID{Bytes: uuid.New(), Valid: true}}
+		repo.user = db.User{PasswordHash: hash, ID: pgtype.UUID{Bytes: uuid.New(), Valid: true}, EmailVerified: true}
 		repo.err = nil
 		tokenMaker.createErr = nil
 		repo.createSessionErr = errors.New("session error")
@@ -227,13 +269,14 @@ func TestLogin(t *testing.T) {
 	})
 }
 
+// TestVerifyToken covers successful access-token validation and invalid token handling.
 func TestVerifyToken(t *testing.T) {
 	repo := &mockRepo{}
 	tokenMaker := &mockTokenMaker{}
 	service := NewService(repo, tokenMaker, nil, nil, nil)
 
 	t.Run("Success", func(t *testing.T) {
-		repo.getUserByID = db.User{Email: "user@example.com"}
+		repo.getUserByID = db.User{Email: "user@example.com", EmailVerified: true}
 		repo.getUserByIDErr = nil
 		tokenMaker.verifyErr = nil
 		user, err := service.VerifyToken(context.Background(), "valid-token")
@@ -246,8 +289,16 @@ func TestVerifyToken(t *testing.T) {
 		_, err := service.VerifyToken(context.Background(), "invalid-token")
 		assert.Error(t, err)
 	})
+
+	t.Run("UserLookupFailClosed", func(t *testing.T) {
+		tokenMaker.verifyErr = nil
+		repo.getUserByIDErr = errors.New("connection refused")
+		_, err := service.VerifyToken(context.Background(), "valid-token")
+		assert.ErrorIs(t, err, ErrSessionBlocked)
+	})
 }
 
+// TestRefreshToken covers rotation, blocked sessions, expiry, and downstream failures.
 func TestRefreshToken(t *testing.T) {
 	repo := &mockRepo{}
 	tokenMaker := &mockTokenMaker{}
@@ -259,7 +310,7 @@ func TestRefreshToken(t *testing.T) {
 			ExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
 			IsBlocked: false,
 		}
-		repo.getUserByID = db.User{ID: repo.session.UserID}
+		repo.getUserByID = db.User{ID: repo.session.UserID, EmailVerified: true}
 		repo.err = nil
 		repo.getUserByIDErr = nil
 		repo.createSessionErr = nil
@@ -283,8 +334,7 @@ func TestRefreshToken(t *testing.T) {
 			IsBlocked: false,
 		}
 		_, _, err := service.RefreshToken(context.Background(), "expired-token", time.Hour)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "expired")
+		assert.ErrorIs(t, err, ErrExpiredToken)
 	})
 
 	t.Run("UserNotFound", func(t *testing.T) {
@@ -293,7 +343,7 @@ func TestRefreshToken(t *testing.T) {
 		}
 		repo.getUserByIDErr = errors.New("user not found")
 		_, _, err := service.RefreshToken(context.Background(), "token", time.Hour)
-		assert.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidToken)
 	})
 
 	t.Run("TokenMakerError", func(t *testing.T) {
@@ -301,7 +351,7 @@ func TestRefreshToken(t *testing.T) {
 			UserID:    pgtype.UUID{Bytes: uuid.New(), Valid: true},
 			ExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
 		}
-		repo.getUserByID = db.User{ID: repo.session.UserID}
+		repo.getUserByID = db.User{ID: repo.session.UserID, EmailVerified: true}
 		tokenMaker.createErr = errors.New("token error")
 		_, _, err := service.RefreshToken(context.Background(), "token", time.Hour)
 		assert.Error(t, err)
@@ -312,7 +362,7 @@ func TestRefreshToken(t *testing.T) {
 			UserID:    pgtype.UUID{Bytes: uuid.New(), Valid: true},
 			ExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
 		}
-		repo.getUserByID = db.User{ID: repo.session.UserID}
+		repo.getUserByID = db.User{ID: repo.session.UserID, EmailVerified: true}
 		tokenMaker.createErr = nil
 		repo.createSessionErr = errors.New("session error")
 		_, _, err := service.RefreshToken(context.Background(), "token", time.Hour)
@@ -320,6 +370,7 @@ func TestRefreshToken(t *testing.T) {
 	})
 }
 
+// TestRevokeToken verifies refresh revocation succeeds against the mock store.
 func TestRevokeToken(t *testing.T) {
 	repo := &mockRepo{}
 	service := NewService(repo, nil, nil, nil, nil)
@@ -329,6 +380,7 @@ func TestRevokeToken(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// TestSessionCleanupWorker verifies expired session cleanup delegates to the service store.
 func TestSessionCleanupWorker(t *testing.T) {
 	repo := &mockRepo{}
 	service := NewService(repo, nil, nil, nil, nil)
@@ -338,6 +390,7 @@ func TestSessionCleanupWorker(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// TestLoginFlood ensures concurrent failed logins trigger Redis lockout and rate limiting under load.
 func TestLoginFlood(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")

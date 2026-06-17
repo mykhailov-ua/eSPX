@@ -6,11 +6,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"sync"
+	"strconv"
 	"syscall"
 	"time"
 
 	"espx/internal/ads"
+	"espx/internal/ads/db"
 	"espx/internal/auth"
 	"espx/internal/auth/pb"
 	"espx/internal/config"
@@ -21,6 +22,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
+// main starts the management HTTP gateway with auth, RBAC, background workers, and ops endpoints.
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
@@ -42,7 +44,7 @@ func main() {
 	defer pool.Close()
 
 	var rdbs []redis.UniversalClient
-	for _, addr := range cfg.RedisAddrs {
+	for i, addr := range cfg.RedisAddrs {
 		rdb := redis.NewUniversalClient(&redis.UniversalOptions{
 			Addrs:    []string{addr},
 			Password: string(cfg.RedisPassword),
@@ -50,7 +52,7 @@ func main() {
 		})
 
 		var rdbErr error
-		for i := 0; i < 30; i++ {
+		for j := 0; j < 30; j++ {
 			if rdbErr = rdb.Ping(ctx).Err(); rdbErr == nil {
 				break
 			}
@@ -62,8 +64,12 @@ func main() {
 			slog.Error("failed to connect to redis shard", "addr", addr, "error", rdbErr)
 			os.Exit(1)
 		}
-		breaker := database.NewRedisBreaker(10000, 10, 5*time.Second)
-		rdb.AddHook(database.NewRedisCircuitBreakerHook(breaker))
+		breaker := database.NewRedisBreaker(
+			int64(cfg.RedisBreakerFailThreshold),
+			int64(cfg.RedisBreakerHalfOpen),
+			time.Duration(cfg.RedisBreakerOpenTimeoutMs)*time.Millisecond,
+		)
+		rdb.AddHook(database.NewRedisCircuitBreakerHook(breaker, strconv.Itoa(i)))
 		rdbs = append(rdbs, rdb)
 	}
 
@@ -88,24 +94,51 @@ func main() {
 		os.Exit(1)
 	}
 
-	authHandler := management.NewAuthHandler(authClient, tokenMaker, rdbs[0], cfg)
 	authMiddleware := management.NewAuthMiddleware(tokenMaker, rdbs[0], cfg)
+	authHandler := management.NewAuthHandler(authClient, tokenMaker, rdbs[0], cfg, authMiddleware)
 
 	svc := management.NewService(pool, rdbs, sharder, cfg)
-	var bgWg sync.WaitGroup
-	bgWg.Add(1)
-	go func() {
-		defer bgWg.Done()
-		svc.RunSystemStateSyncer(ctx)
-	}()
+
+	queries := db.New(pool)
+	campaignRepo := ads.NewCampaignRepo(queries)
+	customerRepo := ads.NewCustomerRepo(queries)
+	var syncWorkers []*ads.SyncWorker
+	for _, rdb := range rdbs {
+		sw := ads.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond)
+		syncWorkers = append(syncWorkers, sw)
+		svc.StartBackgroundWorker(func() {
+			sw.Start(ctx)
+		})
+	}
+
+	reconInterval := time.Duration(cfg.Management.ReconIntervalMs) * time.Millisecond
+	svc.StartReconWorker(reconInterval)
+	slog.Info("started recon worker", "interval", reconInterval)
+
+	pacingInterval := time.Duration(cfg.Management.PacingIntervalMs) * time.Millisecond
+	svc.StartPacingController(syncWorkers, pacingInterval)
+	slog.Info("started pacing controller", "interval", pacingInterval)
+
+	svc.StartAuditCleaner(management.Days(cfg.Management.RetentionDays))
+	slog.Info("started audit cleaner", "retention_days", cfg.Management.RetentionDays)
+
+	if exportPath := os.Getenv("NGINX_DENY_EXPORT_PATH"); exportPath != "" {
+		nginxWorker := management.NewNginxConfigWorker(svc, exportPath)
+		svc.StartBackgroundWorker(func() {
+			nginxWorker.Start(ctx, time.Minute)
+		})
+		slog.Info("started nginx deny export worker", "path", exportPath)
+	}
+
 	mgmtHandler := management.NewHandler(svc, cfg, authMiddleware)
 
 	mux := http.NewServeMux()
+	management.RegisterOpsRoutes(mux, pool, rdbs)
 	authHandler.RegisterRoutes(mux)
 	mgmtHandler.RegisterRoutes(mux)
 
 	corsMdl := management.NewCORSMiddleware(cfg.AllowedOrigins)
-	csrfMdl := management.NewCSRFMiddleware()
+	csrfMdl := management.NewCSRFMiddleware(string(cfg.AdminAPIKey))
 	gatewayHandler := corsMdl(csrfMdl(mux))
 
 	slog.Info("starting management gateway server", "port", cfg.ManagementPort, "auth_target", authTarget)
@@ -138,19 +171,6 @@ func main() {
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		slog.Error("management server shutdown failed", "error", err)
-	}
-
-	bgDone := make(chan struct{})
-	go func() {
-		bgWg.Wait()
-		close(bgDone)
-	}()
-
-	select {
-	case <-bgDone:
-		slog.Info("background workers stopped cleanly")
-	case <-shutdownCtx.Done():
-		slog.Warn("background workers shutdown timed out")
 	}
 
 	svc.Close()

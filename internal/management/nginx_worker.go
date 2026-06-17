@@ -11,11 +11,13 @@ import (
 	"time"
 )
 
+// NginxConfigWorker exports Redis blacklists to nginx deny files and signals reload when they change.
 type NginxConfigWorker struct {
 	svc        *Service
 	exportPath string
 }
 
+// NewNginxConfigWorker configures the worker with the directory where nginx reads generated deny rules.
 func NewNginxConfigWorker(svc *Service, exportPath string) *NginxConfigWorker {
 	return &NginxConfigWorker{
 		svc:        svc,
@@ -23,6 +25,7 @@ func NewNginxConfigWorker(svc *Service, exportPath string) *NginxConfigWorker {
 	}
 }
 
+// Start periodically exports blacklist snapshots until the context is cancelled.
 func (w *NginxConfigWorker) Start(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -39,6 +42,7 @@ func (w *NginxConfigWorker) Start(ctx context.Context, interval time.Duration) {
 	}
 }
 
+// ExportAndReload writes manual and auto deny configs from all Redis shards and sets a reload flag.
 func (w *NginxConfigWorker) ExportAndReload(ctx context.Context) error {
 	if len(w.svc.rdbs) == 0 {
 		return fmt.Errorf("no redis client available")
@@ -77,6 +81,7 @@ func (w *NginxConfigWorker) ExportAndReload(ctx context.Context) error {
 	return nil
 }
 
+// writeDenyFile atomically writes validated deny directives so nginx never reads a partial config.
 func (w *NginxConfigWorker) writeDenyFile(filename string, ips []string) (err error) {
 	if err := os.MkdirAll(w.exportPath, 0755); err != nil {
 		return err

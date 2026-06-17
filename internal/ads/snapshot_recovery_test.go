@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// Postgres stub for snapshot recovery spend reconciliation tests.
 type MockPostgresDB struct {
 	mu           sync.RWMutex
 	spends       map[uuid.UUID]int64
@@ -66,6 +67,7 @@ func (m *MockPostgresDB) MarkEventIdempotent(ctx context.Context, clickID string
 	return true, nil
 }
 
+// ClickHouse stub returning aggregated spend for recovery replay tests.
 type MockClickHouseDB struct {
 	mu     sync.RWMutex
 	events []*domain.Event
@@ -115,6 +117,7 @@ func (m *MockClickHouseDB) LogEvent(e *domain.Event) {
 	m.events = append(m.events, eCopy)
 }
 
+// Guards disaster replay reconciles Postgres spend from ClickHouse aggregate.
 func TestSnapshotRecovery_DisasterStressReplay(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping heavy HA/DR PITR stress integration test")

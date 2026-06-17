@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Smoke checks for local docker-compose / host-network stack.
+# Post-deploy smoke for local docker-compose / host-network stack.
+# Catches broken health endpoints and Redis persistence before manual QA or load tests.
 # Usage: ./scripts/smoke-local.sh
 set -euo pipefail
 
@@ -22,6 +23,7 @@ REDIS_PASSWORD="${REDIS_PASSWORD:-}"
 pass=0
 fail=0
 
+# Records pass/fail for a named smoke check.
 check() {
   local name="$1"
   shift
@@ -34,6 +36,7 @@ check() {
   fi
 }
 
+# Fetches HTTP status code without printing the body.
 http_code() {
   curl -sf -o /dev/null -w '%{http_code}' "$1"
 }

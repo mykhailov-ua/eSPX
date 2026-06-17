@@ -19,6 +19,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// In-memory campaign registry stub for handler and filter tests.
 type mockRegistry struct{}
 
 func (m *mockRegistry) Exists(id uuid.UUID) bool { return true }
@@ -66,19 +67,21 @@ func (m *mockRegistry) Sync(ctx context.Context) (int, error)                 { 
 func (m *mockRegistry) StartSync(ctx context.Context, interval time.Duration) {}
 func (m *mockRegistry) Wait(ctx context.Context) error                        { return nil }
 
+// io.ReadCloser stub returning fixed body bytes for handler benchmarks.
 type mockBody struct {
 	*bytes.Reader
 }
 
 func (m mockBody) Close() error { return nil }
 
+// Tracks JSON track handler cost as legacy ingest baseline.
 func BenchmarkTrackHandlerJSON(b *testing.B) {
 	cfg := &config.Config{
 		MaxRequestBodySize: 1024 * 1024,
 	}
 	registry := &mockRegistry{}
 	sharder := NewJumpHashSharder(1)
-	handler := NewRouter(cfg, registry, nil, nil, nil, sharder, "fraud-stream")
+	handler := NewRouter(cfg, registry, nil, nil, nil, sharder, "fraud-stream", nil)
 
 	payload := map[string]interface{}{
 		"campaign_id": uuid.New(),
@@ -106,13 +109,14 @@ func BenchmarkTrackHandlerJSON(b *testing.B) {
 	})
 }
 
+// Tracks protobuf track handler cost for ingest migration gates.
 func BenchmarkTrackHandlerProto(b *testing.B) {
 	cfg := &config.Config{
 		MaxRequestBodySize: 1024 * 1024,
 	}
 	registry := &mockRegistry{}
 	sharder := NewJumpHashSharder(1)
-	handler := NewRouter(cfg, registry, nil, nil, nil, sharder, "fraud-stream")
+	handler := NewRouter(cfg, registry, nil, nil, nil, sharder, "fraud-stream", nil)
 
 	pbPayload := &pb.AdEvent{
 		CampaignId: []byte(uuid.NewString()),
@@ -143,6 +147,7 @@ func BenchmarkTrackHandlerProto(b *testing.B) {
 
 var staticRemoteAddr = &net.TCPAddr{IP: net.IPv4(1, 1, 1, 1), Port: 1234}
 
+// gnet.Conn stub capturing writes for packet handler benchmarks.
 type mockGnetConn struct {
 	gnet.Conn
 	written []byte
@@ -161,13 +166,14 @@ func (m *mockGnetConn) RemoteAddr() net.Addr {
 	return staticRemoteAddr
 }
 
+// Tracks JSON gnet packet handler cost as legacy hot path baseline.
 func BenchmarkAdsPacketHandlerJSON(b *testing.B) {
 	cfg := &config.Config{
 		MaxRequestBodySize: 1024 * 1024,
 	}
 	registry := &mockRegistry{}
 	sharder := NewJumpHashSharder(1)
-	handler := NewAdsPacketHandler(cfg, registry, nil, nil, nil, sharder, "fraud-stream")
+	handler := NewAdsPacketHandler(cfg, registry, nil, nil, nil, sharder, "fraud-stream", nil)
 
 	payload := []byte(`{"campaign_id":"` + uuid.NewString() + `","user_id":"user123","type":"click","click_id":"click123","payload":{}}`)
 	req := parsedHTTPRequest{
@@ -189,13 +195,14 @@ func BenchmarkAdsPacketHandlerJSON(b *testing.B) {
 	}
 }
 
+// Tracks protobuf gnet packet handler cost for production hot path.
 func BenchmarkAdsPacketHandlerProto(b *testing.B) {
 	cfg := &config.Config{
 		MaxRequestBodySize: 1024 * 1024,
 	}
 	registry := &mockRegistry{}
 	sharder := NewJumpHashSharder(1)
-	handler := NewAdsPacketHandler(cfg, registry, nil, nil, nil, sharder, "fraud-stream")
+	handler := NewAdsPacketHandler(cfg, registry, nil, nil, nil, sharder, "fraud-stream", nil)
 
 	pbPayload := &pb.AdEvent{
 		CampaignId: []byte(uuid.NewString()),

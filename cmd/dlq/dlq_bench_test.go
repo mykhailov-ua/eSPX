@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// TestDLQBackupMetrics compares JSONL vs length-prefixed protobuf backup size and decode cost.
 func TestDLQBackupMetrics(t *testing.T) {
 	const count = 10000
 	t.Logf("Generating %d mock DLQ events for metrics analysis...", count)

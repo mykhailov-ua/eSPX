@@ -264,7 +264,7 @@ func (q *Queries) CreateLedgerEntry(ctx context.Context, arg CreateLedgerEntryPa
 const createOutboxEvent = `-- name: CreateOutboxEvent :one
 INSERT INTO outbox_events (event_type, payload)
 VALUES ($1, $2)
-RETURNING id, event_type, payload, status, created_at
+RETURNING id, event_type, payload, status, created_at, processing_started_at
 `
 
 type CreateOutboxEventParams struct {
@@ -281,6 +281,7 @@ func (q *Queries) CreateOutboxEvent(ctx context.Context, arg CreateOutboxEventPa
 		&i.Payload,
 		&i.Status,
 		&i.CreatedAt,
+		&i.ProcessingStartedAt,
 	)
 	return i, err
 }
@@ -518,7 +519,7 @@ func (q *Queries) GetBrandForUpdate(ctx context.Context, id pgtype.UUID) (Advert
 }
 
 const getCampaignForUpdate = `-- name: GetCampaignForUpdate :one
-SELECT id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend, deleted_at, pacing_mode, daily_budget, timezone, freq_limit, freq_window, target_countries, brand_id, brand_fcap_key FROM campaigns
+SELECT id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend, deleted_at, pacing_mode, daily_budget, timezone, freq_limit, freq_window, target_countries, brand_id, brand_fcap_key, start_at, end_at, daypart_hours, template_id FROM campaigns
 WHERE id = $1
 FOR UPDATE
 `
@@ -544,12 +545,16 @@ func (q *Queries) GetCampaignForUpdate(ctx context.Context, id pgtype.UUID) (Cam
 		&i.TargetCountries,
 		&i.BrandID,
 		&i.BrandFcapKey,
+		&i.StartAt,
+		&i.EndAt,
+		&i.DaypartHours,
+		&i.TemplateID,
 	)
 	return i, err
 }
 
 const getCampaignFull = `-- name: GetCampaignFull :one
-SELECT id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend, deleted_at, pacing_mode, daily_budget, timezone, freq_limit, freq_window, target_countries, brand_id, brand_fcap_key FROM campaigns
+SELECT id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend, deleted_at, pacing_mode, daily_budget, timezone, freq_limit, freq_window, target_countries, brand_id, brand_fcap_key, start_at, end_at, daypart_hours, template_id FROM campaigns
 WHERE id = $1
 `
 
@@ -574,6 +579,10 @@ func (q *Queries) GetCampaignFull(ctx context.Context, id pgtype.UUID) (Campaign
 		&i.TargetCountries,
 		&i.BrandID,
 		&i.BrandFcapKey,
+		&i.StartAt,
+		&i.EndAt,
+		&i.DaypartHours,
+		&i.TemplateID,
 	)
 	return i, err
 }
@@ -709,7 +718,7 @@ func (q *Queries) GetCustomerStats(ctx context.Context, customerIds []pgtype.UUI
 }
 
 const getDrainingCampaignsForUpdate = `-- name: GetDrainingCampaignsForUpdate :many
-SELECT id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend, deleted_at, pacing_mode, daily_budget, timezone, freq_limit, freq_window, target_countries, brand_id, brand_fcap_key FROM campaigns
+SELECT id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend, deleted_at, pacing_mode, daily_budget, timezone, freq_limit, freq_window, target_countries, brand_id, brand_fcap_key, start_at, end_at, daypart_hours, template_id FROM campaigns
 WHERE status = 'DRAINING' AND updated_at < $1
 ORDER BY updated_at ASC
 LIMIT $2
@@ -748,6 +757,10 @@ func (q *Queries) GetDrainingCampaignsForUpdate(ctx context.Context, arg GetDrai
 			&i.TargetCountries,
 			&i.BrandID,
 			&i.BrandFcapKey,
+			&i.StartAt,
+			&i.EndAt,
+			&i.DaypartHours,
+			&i.TemplateID,
 		); err != nil {
 			return nil, err
 		}
@@ -801,7 +814,7 @@ func (q *Queries) GetLedgerByHashForUpdate(ctx context.Context, idempotencyHash 
 }
 
 const getPendingOutboxEventsForUpdate = `-- name: GetPendingOutboxEventsForUpdate :many
-SELECT id, event_type, payload, status, created_at FROM outbox_events
+SELECT id, event_type, payload, status, created_at, processing_started_at FROM outbox_events
 WHERE status = 'PENDING'
 ORDER BY created_at ASC
 LIMIT $1
@@ -823,6 +836,7 @@ func (q *Queries) GetPendingOutboxEventsForUpdate(ctx context.Context, limit int
 			&i.Payload,
 			&i.Status,
 			&i.CreatedAt,
+			&i.ProcessingStartedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -974,7 +988,7 @@ func (q *Queries) ListBrandsByCustomer(ctx context.Context, customerID pgtype.UU
 }
 
 const listCampaigns = `-- name: ListCampaigns :many
-SELECT id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend, deleted_at, pacing_mode, daily_budget, timezone, freq_limit, freq_window, target_countries, brand_id, brand_fcap_key FROM campaigns
+SELECT id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend, deleted_at, pacing_mode, daily_budget, timezone, freq_limit, freq_window, target_countries, brand_id, brand_fcap_key, start_at, end_at, daypart_hours, template_id FROM campaigns
 WHERE ($3::uuid IS NULL OR customer_id = $3::uuid)
   AND ($4::text IS NULL OR status::text = $4::text)
 ORDER BY created_at DESC
@@ -1020,6 +1034,10 @@ func (q *Queries) ListCampaigns(ctx context.Context, arg ListCampaignsParams) ([
 			&i.TargetCountries,
 			&i.BrandID,
 			&i.BrandFcapKey,
+			&i.StartAt,
+			&i.EndAt,
+			&i.DaypartHours,
+			&i.TemplateID,
 		); err != nil {
 			return nil, err
 		}
@@ -1278,7 +1296,7 @@ UPDATE campaigns
 SET budget_limit = $2,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = $1
-RETURNING id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend, deleted_at, pacing_mode, daily_budget, timezone, freq_limit, freq_window, target_countries, brand_id, brand_fcap_key
+RETURNING id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend, deleted_at, pacing_mode, daily_budget, timezone, freq_limit, freq_window, target_countries, brand_id, brand_fcap_key, start_at, end_at, daypart_hours, template_id
 `
 
 type UpdateCampaignBudgetParams struct {
@@ -1307,6 +1325,10 @@ func (q *Queries) UpdateCampaignBudget(ctx context.Context, arg UpdateCampaignBu
 		&i.TargetCountries,
 		&i.BrandID,
 		&i.BrandFcapKey,
+		&i.StartAt,
+		&i.EndAt,
+		&i.DaypartHours,
+		&i.TemplateID,
 	)
 	return i, err
 }
@@ -1316,7 +1338,7 @@ UPDATE campaigns
 SET pacing_mode = $2,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = $1
-RETURNING id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend, deleted_at, pacing_mode, daily_budget, timezone, freq_limit, freq_window, target_countries, brand_id, brand_fcap_key
+RETURNING id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend, deleted_at, pacing_mode, daily_budget, timezone, freq_limit, freq_window, target_countries, brand_id, brand_fcap_key, start_at, end_at, daypart_hours, template_id
 `
 
 type UpdateCampaignPacingParams struct {
@@ -1345,6 +1367,10 @@ func (q *Queries) UpdateCampaignPacing(ctx context.Context, arg UpdateCampaignPa
 		&i.TargetCountries,
 		&i.BrandID,
 		&i.BrandFcapKey,
+		&i.StartAt,
+		&i.EndAt,
+		&i.DaypartHours,
+		&i.TemplateID,
 	)
 	return i, err
 }
@@ -1354,7 +1380,7 @@ UPDATE campaigns
 SET status = $2,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = $1
-RETURNING id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend, deleted_at, pacing_mode, daily_budget, timezone, freq_limit, freq_window, target_countries, brand_id, brand_fcap_key
+RETURNING id, name, status, budget_limit, created_at, updated_at, customer_id, current_spend, deleted_at, pacing_mode, daily_budget, timezone, freq_limit, freq_window, target_countries, brand_id, brand_fcap_key, start_at, end_at, daypart_hours, template_id
 `
 
 type UpdateCampaignStatusParams struct {
@@ -1383,6 +1409,10 @@ func (q *Queries) UpdateCampaignStatus(ctx context.Context, arg UpdateCampaignSt
 		&i.TargetCountries,
 		&i.BrandID,
 		&i.BrandFcapKey,
+		&i.StartAt,
+		&i.EndAt,
+		&i.DaypartHours,
+		&i.TemplateID,
 	)
 	return i, err
 }

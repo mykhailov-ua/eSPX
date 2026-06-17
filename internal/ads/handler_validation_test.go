@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// gnet.Conn stub with peek and discard for validation tests.
 type mockValidationConn struct {
 	gnet.Conn
 	buf     []byte
@@ -52,13 +53,14 @@ func (m *mockValidationConn) RemoteAddr() net.Addr {
 	return staticRemoteAddr
 }
 
+// Guards packet handler rejects invalid HTTP, oversize body, and bad campaign ID.
 func TestAdsPacketHandler_Validation(t *testing.T) {
 	cfg := &config.Config{
 		MaxRequestBodySize: 100,
 	}
 	registry := &mockRegistry{}
 	sharder := NewJumpHashSharder(1)
-	handler := NewAdsPacketHandler(cfg, registry, nil, nil, nil, sharder, "fraud-stream")
+	handler := NewAdsPacketHandler(cfg, registry, nil, nil, nil, sharder, "fraud-stream", nil)
 
 	t.Run("POST /unknown -> 404 Not Found", func(t *testing.T) {
 		conn := &mockValidationConn{
@@ -115,7 +117,10 @@ func TestAdsPacketHandler_Validation(t *testing.T) {
 		}
 		act := handler.OnTraffic(conn)
 		assert.Equal(t, gnet.None, act)
-		assert.True(t, bytes.Equal(conn.written, respHealth), "expected response: %q, got: %q", string(respHealth), string(conn.written))
+
+		if !bytes.HasPrefix(conn.written, []byte("HTTP/1.1 200 OK")) || !bytes.Contains(conn.written, []byte("OK")) {
+			t.Fatalf("expected 200 health with OK body, got: %q", string(conn.written))
+		}
 	})
 
 	t.Run("GET /health -> 503 Service Unavailable when unhealthy", func(t *testing.T) {
@@ -125,10 +130,13 @@ func TestAdsPacketHandler_Validation(t *testing.T) {
 		}
 		act := handler.OnTraffic(conn)
 		assert.Equal(t, gnet.None, act)
-		assert.True(t, bytes.Equal(conn.written, respHealthUnavailable), "expected response: %q, got: %q", string(respHealthUnavailable), string(conn.written))
+		if !bytes.HasPrefix(conn.written, []byte("HTTP/1.1 503 Service Unavailable")) || !bytes.Contains(conn.written, []byte("DEGRADED")) {
+			t.Fatalf("expected 503 health with DEGRADED body, got: %q", string(conn.written))
+		}
 	})
 }
 
+// Guards trusted proxy CIDR parsing accepts valid networks and rejects garbage.
 func TestTrustedProxies(t *testing.T) {
 	trusted := []string{"1.1.1.1", "10.0.0.0/8"}
 

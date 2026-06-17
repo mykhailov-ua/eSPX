@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// Guards empty balancer returns no shard without panic.
 func TestHybridBalancer_Empty(t *testing.T) {
 	hb := NewHybridBalancer(10, 1000)
 	campaign, shard := hb.SelectAndShard("user123", 0)
@@ -30,6 +31,7 @@ func TestHybridBalancer_Empty(t *testing.T) {
 	assert.Equal(t, 0, shard)
 }
 
+// Guards hybrid balancer selects shard matching weight and hash rules.
 func TestHybridBalancer_Correctness(t *testing.T) {
 	c1 := &CampaignMeta{
 		ID:                uuid.New(),
@@ -65,6 +67,7 @@ func TestHybridBalancer_Correctness(t *testing.T) {
 	assert.Equal(t, iterations, counts[c1.ID]+counts[c2.ID], "Total selections must equal iterations")
 }
 
+// Guards concurrent balancer updates and selects stay race-free.
 func TestHybridBalancer_ConcurrencyAndRaces(t *testing.T) {
 	c1 := &CampaignMeta{
 		ID:              uuid.New(),
@@ -119,6 +122,7 @@ func TestHybridBalancer_ConcurrencyAndRaces(t *testing.T) {
 	close(stopWriter)
 }
 
+// Tracks hybrid balancer select plus shard cost on routing hot path.
 func BenchmarkHybridBalancer_SelectAndShard(b *testing.B) {
 	c1 := &CampaignMeta{
 		ID:                uuid.New(),
@@ -152,6 +156,7 @@ func BenchmarkHybridBalancer_SelectAndShard(b *testing.B) {
 	})
 }
 
+// Guards balancer select path stays allocation-free under pprof smoke load.
 func TestHybridBalancer_Pprof(t *testing.T) {
 	if os.Getenv("RUN_PPROF") != "true" {
 		t.Skip("Skipping pprof CPU profiling hook")
@@ -193,6 +198,7 @@ func TestHybridBalancer_Pprof(t *testing.T) {
 	}
 }
 
+// Guards balancer handles zero weight and single-shard edge cases.
 func TestHybridBalancer_EdgeCases(t *testing.T) {
 
 	t.Run("NilCampaign", func(t *testing.T) {

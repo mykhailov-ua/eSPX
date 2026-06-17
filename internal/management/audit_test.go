@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestAuditLog guards that audit entries persist and retention cleanup removes expired rows.
 func TestAuditLog(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")

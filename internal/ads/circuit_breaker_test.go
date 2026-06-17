@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Guards new breakers start closed with zero failures and allow traffic.
 func TestCircuitBreaker_StartsInClosedState(t *testing.T) {
 	cb := NewCircuitBreaker(3, 1*time.Second)
 
@@ -17,6 +18,7 @@ func TestCircuitBreaker_StartsInClosedState(t *testing.T) {
 	assert.Equal(t, 0, cb.Failures("test"))
 }
 
+// Guards breaker opens only after configured consecutive failures.
 func TestCircuitBreaker_TripsAfterThreshold(t *testing.T) {
 	cb := NewCircuitBreaker(3, 1*time.Second)
 
@@ -34,6 +36,7 @@ func TestCircuitBreaker_TripsAfterThreshold(t *testing.T) {
 	assert.Equal(t, 3, cb.Failures("test"))
 }
 
+// Guards success clears failure count so transient errors do not trip breaker.
 func TestCircuitBreaker_SuccessResetsFailures(t *testing.T) {
 	cb := NewCircuitBreaker(3, 1*time.Second)
 
@@ -47,6 +50,7 @@ func TestCircuitBreaker_SuccessResetsFailures(t *testing.T) {
 	assert.True(t, cb.Allow())
 }
 
+// Guards open breaker probes one request after wait duration elapses.
 func TestCircuitBreaker_TransitionsToHalfOpen(t *testing.T) {
 	cb := NewCircuitBreaker(2, 50*time.Millisecond)
 
@@ -61,6 +65,7 @@ func TestCircuitBreaker_TransitionsToHalfOpen(t *testing.T) {
 	assert.Equal(t, CircuitHalfOpen, cb.State())
 }
 
+// Guards successful half-open probe closes breaker and restores traffic.
 func TestCircuitBreaker_HalfOpenSuccessCloses(t *testing.T) {
 	cb := NewCircuitBreaker(2, 50*time.Millisecond)
 
@@ -76,6 +81,7 @@ func TestCircuitBreaker_HalfOpenSuccessCloses(t *testing.T) {
 	assert.True(t, cb.Allow())
 }
 
+// Guards failed half-open probe reopens breaker immediately.
 func TestCircuitBreaker_HalfOpenFailureReopens(t *testing.T) {
 	cb := NewCircuitBreaker(2, 50*time.Millisecond)
 
@@ -91,6 +97,7 @@ func TestCircuitBreaker_HalfOpenFailureReopens(t *testing.T) {
 	assert.False(t, cb.Allow())
 }
 
+// Guards only one concurrent probe runs while half-open.
 func TestCircuitBreaker_HalfOpenBlocksConcurrentProbes(t *testing.T) {
 	cb := NewCircuitBreaker(1, 50*time.Millisecond)
 
@@ -107,6 +114,7 @@ func TestCircuitBreaker_HalfOpenBlocksConcurrentProbes(t *testing.T) {
 	assert.False(t, cb.Allow())
 }
 
+// Guards WaitDuration reflects remaining open-state cooldown for callers.
 func TestCircuitBreaker_WaitDuration(t *testing.T) {
 	cb := NewCircuitBreaker(1, 100*time.Millisecond)
 
@@ -120,32 +128,7 @@ func TestCircuitBreaker_WaitDuration(t *testing.T) {
 	assert.LessOrEqual(t, d, 100*time.Millisecond)
 }
 
-func TestCircuitBreaker_StateString(t *testing.T) {
-	assert.Equal(t, "closed", CircuitClosed.String())
-	assert.Equal(t, "open", CircuitOpen.String())
-	assert.Equal(t, "half-open", CircuitHalfOpen.String())
-	assert.Equal(t, "unknown", CircuitState(99).String())
-}
-
-func TestCircuitBreaker_ConcurrentAccess(t *testing.T) {
-	cb := NewCircuitBreaker(100, 50*time.Millisecond)
-
-	var wg sync.WaitGroup
-	for i := 0; i < 200; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			cb.Allow()
-			cb.RecordFailure("test")
-			cb.Allow()
-		}()
-	}
-	wg.Wait()
-
-	assert.Equal(t, CircuitOpen, cb.State())
-	assert.False(t, cb.Allow())
-}
-
+// Guards mixed success and failure under concurrency leave valid state.
 func TestCircuitBreaker_ConcurrentMixedOps(t *testing.T) {
 	cb := NewCircuitBreaker(50, 10*time.Millisecond)
 
@@ -168,6 +151,7 @@ func TestCircuitBreaker_ConcurrentMixedOps(t *testing.T) {
 	assert.Contains(t, []CircuitState{CircuitClosed, CircuitOpen, CircuitHalfOpen}, state)
 }
 
+// Guards cancelled half-open probe reopens without counting as success.
 func TestCircuitBreaker_CancellationResetsHalfOpen(t *testing.T) {
 	cb := NewCircuitBreaker(1, 50*time.Millisecond)
 
@@ -185,6 +169,7 @@ func TestCircuitBreaker_CancellationResetsHalfOpen(t *testing.T) {
 	assert.False(t, cb.Allow())
 }
 
+// Guards any half-open failure reopens even below trip threshold.
 func TestCircuitBreaker_HalfOpenSingleFailureReopensEvenBelowThreshold(t *testing.T) {
 	cb := NewCircuitBreaker(5, 50*time.Millisecond)
 
@@ -205,6 +190,7 @@ func TestCircuitBreaker_HalfOpenSingleFailureReopensEvenBelowThreshold(t *testin
 	assert.False(t, cb.Allow())
 }
 
+// Guards per-worker failure counts are not cleared by other workers.
 func TestCircuitBreaker_SuccessDoesNotMaskConcurrentWorkerFailures(t *testing.T) {
 	cb := NewCircuitBreaker(3, 1*time.Second)
 

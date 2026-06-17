@@ -7,18 +7,22 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// Limiter abstracts fixed-window rate checks so auth can swap Redis for another backend in tests.
 type Limiter interface {
 	Allow(ctx context.Context, key string, limit int, window time.Duration) (bool, error)
 }
 
+// RedisLimiter counts attempts in Redis for simple per-key rate limiting outside login lockout.
 type RedisLimiter struct {
 	rdb *redis.Client
 }
 
+// NewRedisLimiter provides a swappable backend for simple rate checks in tests and auxiliary paths.
 func NewRedisLimiter(rdb *redis.Client) Limiter {
 	return &RedisLimiter{rdb: rdb}
 }
 
+// Allow throttles generic keys without the login-specific lockout semantics.
 func (l *RedisLimiter) Allow(ctx context.Context, key string, limit int, window time.Duration) (bool, error) {
 	pipe := l.rdb.Pipeline()
 	incr := pipe.Incr(ctx, key)
@@ -31,19 +35,23 @@ func (l *RedisLimiter) Allow(ctx context.Context, key string, limit int, window 
 	return incr.Val() <= int64(limit), nil
 }
 
+// LockoutLimiter tracks failed login attempts in Redis to throttle credential stuffing without blocking accounts in Postgres.
 type LockoutLimiter struct {
 	rdb redis.UniversalClient
 }
 
+// NewLockoutLimiter keeps brute-force state in Redis so Postgres is not written on every failure.
 func NewLockoutLimiter(rdb redis.UniversalClient) *LockoutLimiter {
 	return &LockoutLimiter{rdb: rdb}
 }
 
+// MaxGlobalAttempts and GlobalLockoutDuration cap email-wide probing before a longer global lock applies.
 const (
 	MaxGlobalAttempts     = 50
 	GlobalLockoutDuration = 3600
 )
 
+// lockoutScript atomically reserves a login attempt slot while respecting per-IP and global failure counters.
 const lockoutScript = `
 local fail_key = KEYS[1]
 local inflight_key = KEYS[2]
@@ -77,6 +85,7 @@ end
 return 1
 `
 
+// decrInflightScript releases an in-flight login slot after verification finishes.
 const decrInflightScript = `
 local key = KEYS[1]
 local val = tonumber(redis.call("GET", key) or "0")
@@ -92,6 +101,7 @@ else
 end
 `
 
+// incrementScript records a failed login and escalates lockout TTL when thresholds are crossed.
 const incrementScript = `
 local key = KEYS[1]
 local global_key = KEYS[2]
@@ -121,6 +131,7 @@ end
 return attempts
 `
 
+// AllowIP sheds credential-stuffing volume before expensive Argon2 verification runs.
 func (l *LockoutLimiter) AllowIP(ctx context.Context, clientIP string, limit int, window time.Duration) (bool, error) {
 	key := "ratelimit:ip:" + clientIP
 	pipe := l.rdb.Pipeline()
@@ -133,6 +144,7 @@ func (l *LockoutLimiter) AllowIP(ctx context.Context, clientIP string, limit int
 	return incr.Val() <= int64(limit), nil
 }
 
+// Allow reserves an attempt slot atomically so parallel guesses cannot bypass per-IP limits.
 func (l *LockoutLimiter) Allow(ctx context.Context, clientIP, email string, maxAttempts int, lockoutDuration, attemptWindow time.Duration) (int64, error) {
 	failKey := "lockout:ip_email:" + clientIP + ":{" + email + "}"
 	inflightKey := "lockout:inflight:" + clientIP + ":{" + email + "}"
@@ -144,12 +156,14 @@ func (l *LockoutLimiter) Allow(ctx context.Context, clientIP, email string, maxA
 	return res.(int64), nil
 }
 
+// DecrementInflight releases the slot reserved during verification so inflight counters do not leak.
 func (l *LockoutLimiter) DecrementInflight(ctx context.Context, clientIP, email string) error {
 	key := "lockout:inflight:" + clientIP + ":{" + email + "}"
 	_, err := l.rdb.Eval(ctx, decrInflightScript, []string{key}).Result()
 	return err
 }
 
+// Increment escalates lockout TTL when thresholds are crossed to slow distributed guessing.
 func (l *LockoutLimiter) Increment(ctx context.Context, clientIP, email string, maxAttempts int, lockoutDuration, attemptWindow time.Duration) (int64, error) {
 	key := "lockout:ip_email:" + clientIP + ":{" + email + "}"
 	globalKey := "lockout:global_email:{" + email + "}"
@@ -160,6 +174,7 @@ func (l *LockoutLimiter) Increment(ctx context.Context, clientIP, email string, 
 	return res.(int64), nil
 }
 
+// Reset clears per-IP counters after success so legitimate users are not penalized for past failures.
 func (l *LockoutLimiter) Reset(ctx context.Context, clientIP, email string) error {
 	key := "lockout:ip_email:" + clientIP + ":{" + email + "}"
 	return l.rdb.Del(ctx, key).Err()

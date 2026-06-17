@@ -597,6 +597,7 @@ var deleteBlacklistCmd = &cobra.Command{
 	},
 }
 
+// init wires database seed and CRUD subcommands into the admin CLI.
 func init() {
 	listCampaignsCmd.Flags().Int("limit", 20, "Number of campaigns to list")
 

@@ -9,30 +9,10 @@ import (
 
 	"espx/internal/domain"
 	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
-	rediscontainer "github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
-func setupTestRedis(t *testing.T) (redis.UniversalClient, func()) {
-	ctx := context.Background()
-	redisContainer, err := rediscontainer.Run(ctx, "redis:7-alpine")
-	if err != nil {
-		t.Fatalf("failed to start redis container: %s", err)
-	}
-	endpoint, err := redisContainer.Endpoint(ctx, "")
-	if err != nil {
-		t.Fatalf("failed to get redis endpoint: %s", err)
-	}
-	rdb := redis.NewUniversalClient(&redis.UniversalOptions{
-		Addrs: []string{endpoint},
-	})
-	return rdb, func() {
-		_ = rdb.Close()
-		_ = redisContainer.Terminate(ctx)
-	}
-}
-
+// Event store stub recording flushes for stream consumer tests.
 type MockEventStore struct {
 	mu      sync.Mutex
 	flushes [][]*domain.Event
@@ -55,6 +35,7 @@ func (m *MockEventStore) Close() error {
 	return nil
 }
 
+// Guards stream consumer ingests valid events into the event store.
 func TestStreamConsumer_Ingestion(t *testing.T) {
 	if testing.Short() {
 		t.Skip()
@@ -68,6 +49,7 @@ func TestStreamConsumer_Ingestion(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// Guards batch flush commits events and acknowledges stream IDs together.
 func TestStreamConsumer_BatchFlushing(t *testing.T) {
 	if testing.Short() {
 		t.Skip()
@@ -96,6 +78,7 @@ func TestStreamConsumer_BatchFlushing(t *testing.T) {
 	assert.GreaterOrEqual(t, count, 1)
 }
 
+// Guards unprocessable stream entries land in DLQ after retry exhaustion.
 func TestStreamConsumer_DLQ(t *testing.T) {
 	if testing.Short() {
 		t.Skip()

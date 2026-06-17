@@ -21,6 +21,7 @@ type JSONLogRecord struct {
 	Priority   int    `json:"priority"`
 }
 
+// unsafeBytes converts a string to a byte slice without allocation for bench fixtures.
 func unsafeBytes(s string) []byte {
 	if s == "" {
 		return nil
@@ -28,6 +29,7 @@ func unsafeBytes(s string) []byte {
 	return unsafe.Slice(unsafe.StringData(s), len(s))
 }
 
+// BenchmarkSerialization_JSON baselines JSON telemetry serialization cost.
 func BenchmarkSerialization_JSON(b *testing.B) {
 	campaignID := uuid.New()
 	clickID := "click_1234567890_abc"
@@ -63,6 +65,7 @@ func BenchmarkSerialization_JSON(b *testing.B) {
 	}
 }
 
+// BenchmarkSerialization_VtProto measures vtproto telemetry serialization on the hot path.
 func BenchmarkSerialization_VtProto(b *testing.B) {
 	campaignID := uuid.New()
 	clickID := "click_1234567890_abc"
@@ -114,6 +117,7 @@ func BenchmarkSerialization_VtProto(b *testing.B) {
 	}
 }
 
+// BenchmarkDeserialization_JSON baselines JSON parse cost for log ingest comparisons.
 func BenchmarkDeserialization_JSON(b *testing.B) {
 	jsonData := []byte(`{"level":"info","timestamp":"2026-06-05T22:36:16Z","msg":"event successfully processed","campaign_id":"12345678-1234-1234-1234-1234567890ab","click_id":"click_1234567890_abc","type":"click","priority":0}`)
 
@@ -129,6 +133,7 @@ func BenchmarkDeserialization_JSON(b *testing.B) {
 	}
 }
 
+// BenchmarkDeserialization_VtProto measures vtproto decode cost on the production path.
 func BenchmarkDeserialization_VtProto(b *testing.B) {
 	campID := uuid.New()
 	rec := &pb.AdLogRecord{

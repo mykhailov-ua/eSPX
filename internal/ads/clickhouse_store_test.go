@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// ClickHouse batch stub recording appended rows for store tests.
 type mockBatch struct {
 	driver.Batch
 	appendFn func(args ...any) error
@@ -33,6 +34,7 @@ func (m *mockBatch) Send() error {
 	return nil
 }
 
+// ClickHouse connection stub simulating batch send outcomes.
 type mockConn struct {
 	driver.Conn
 	prepareBatchFn func(ctx context.Context, query string) (driver.Batch, error)
@@ -53,6 +55,7 @@ func (m *mockConn) Close() error {
 	return nil
 }
 
+// Guards batch store uses deduplication token from context when present.
 func TestClickHouseStore_StoreBatch_DeduplicationTokenFromContext(t *testing.T) {
 	evt := &domain.Event{
 		ClickID:    "click-100",
@@ -82,6 +85,7 @@ func TestClickHouseStore_StoreBatch_DeduplicationTokenFromContext(t *testing.T) 
 	assert.Contains(t, preparedQueries[0], "insert_deduplication_token='my-custom-test-token'")
 }
 
+// Guards batch store generates deterministic dedup token from event batch.
 func TestClickHouseStore_StoreBatch_DeterministicTokenGeneration(t *testing.T) {
 	evt1 := &domain.Event{
 		ClickID:    "click-101",
@@ -127,6 +131,7 @@ func TestClickHouseStore_StoreBatch_DeterministicTokenGeneration(t *testing.T) {
 	assert.Equal(t, q2, preparedQueries[1], "Generated query for clicks must be identical")
 }
 
+// Guards partial ClickHouse batch failure triggers retry without duplicate insert.
 func TestClickHouseStore_StoreBatch_PartialFailureRetry(t *testing.T) {
 	evt1 := &domain.Event{
 		ClickID:    "click-201",
@@ -172,6 +177,7 @@ func TestClickHouseStore_StoreBatch_PartialFailureRetry(t *testing.T) {
 	assert.Contains(t, preparedQueries[1], "clicks")
 }
 
+// Guards context cancel during retry backoff aborts store cleanly.
 func TestClickHouseStore_StoreBatch_ContextCancellationDuringBackoff(t *testing.T) {
 	evt := &domain.Event{
 		ClickID:    "click-301",

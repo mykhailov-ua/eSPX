@@ -1,3 +1,6 @@
+-- access_check.lua: OpenResty edge gate for /track.
+-- Opens circuit on Redis error storms, checks IP blacklists on a CRC32-picked shard, then allows proxy.
+
 local redis = require "resty.redis"
 local cjson = require "cjson.safe"
 local bit = require "bit"
@@ -42,6 +45,7 @@ elseif cached_status == "c" then
     return
 end
 
+-- decode_varint reads one protobuf varint from data at pos; returns value and next offset.
 local function decode_varint(data, pos)
     local val = 0
     local shift = 0
@@ -61,6 +65,7 @@ local function decode_varint(data, pos)
     return nil, nil
 end
 
+-- bytes_to_uuid_string formats 16 raw bytes as canonical UUID text for Redis key composition.
 local function bytes_to_uuid_string(b)
     if not b or #b ~= 16 then return b end
     return string.format("%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
@@ -71,6 +76,7 @@ local function bytes_to_uuid_string(b)
         string.byte(b, 11), string.byte(b, 12), string.byte(b, 13), string.byte(b, 14), string.byte(b, 15), string.byte(b, 16))
 end
 
+-- parse_proto scans a minimal AdEvent protobuf body for campaign_id and nested user_id without full decode.
 local function parse_proto(body)
     if not body or #body == 0 then return nil, nil end
     local pos = 1

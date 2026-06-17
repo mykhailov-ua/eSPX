@@ -12,12 +12,16 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// AutoscaleBudgets shifts budget from low-CTR campaigns to high-CTR siblings under the same customer.
 func (s *Service) AutoscaleBudgets(ctx context.Context, syncWorkers []*ads.SyncWorker) error {
+	opCtx, cancel := workerContext(ctx, workerBatchTimeout)
+	defer cancel()
+
 	for _, sw := range syncWorkers {
-		sw.SyncAll(ctx)
+		sw.SyncAll(opCtx)
 	}
 
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	return pgx.BeginFunc(opCtx, s.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		rows, err := q.GetAllActiveCampaignsWithStats(ctx)
 		if err != nil {
@@ -75,15 +79,39 @@ func (s *Service) AutoscaleBudgets(ctx context.Context, syncWorkers []*ads.SyncW
 					continue
 				}
 
+				worstLocked, err := q.GetCampaignForUpdate(ctx, worstCamp.ID)
+				if err != nil {
+					return fmt.Errorf("failed to lock worst campaign %s: %w", worstID, err)
+				}
+				bestLocked, err := q.GetCampaignForUpdate(ctx, bestCamp.ID)
+				if err != nil {
+					return fmt.Errorf("failed to lock best campaign %s: %w", bestID, err)
+				}
+				if worstLocked.Status != db.CampaignStatusTypeACTIVE || bestLocked.Status != db.CampaignStatusTypeACTIVE {
+					continue
+				}
+
 				shiftAmount := s.cfg.AutoscaleShiftAmount
-				worstLimit := worstCamp.BudgetLimit
-				bestLimit := bestCamp.BudgetLimit
+				worstLimit := worstLocked.BudgetLimit
+				bestLimit := bestLocked.BudgetLimit
 
 				newWorstLimit := worstLimit - shiftAmount
 				newBestLimit := bestLimit + shiftAmount
 
+				if newWorstLimit < worstLocked.CurrentSpend {
+					slog.Debug("autoscale skipped: shift would put budget below current spend",
+						"campaign_id", worstID,
+						"current_spend", worstLocked.CurrentSpend,
+						"new_limit", newWorstLimit,
+					)
+					continue
+				}
+				if newWorstLimit <= 0 {
+					continue
+				}
+
 				_, err = q.UpdateCampaignBudget(ctx, db.UpdateCampaignBudgetParams{
-					ID:          worstCamp.ID,
+					ID:          worstLocked.ID,
 					BudgetLimit: newWorstLimit,
 				})
 				if err != nil {
@@ -91,7 +119,7 @@ func (s *Service) AutoscaleBudgets(ctx context.Context, syncWorkers []*ads.SyncW
 				}
 
 				_, err = q.UpdateCampaignBudget(ctx, db.UpdateCampaignBudgetParams{
-					ID:          bestCamp.ID,
+					ID:          bestLocked.ID,
 					BudgetLimit: newBestLimit,
 				})
 				if err != nil {

@@ -6,22 +6,25 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/redis/go-redis/v9"
 )
 
+// contextKey avoids collisions when storing auth values on request context.
 type contextKey string
 
+// AuthorizationPayloadKey is the request context key for the verified token payload downstream handlers read.
 const (
 	AuthorizationPayloadKey contextKey = "authorization_payload"
 )
 
+// authorizationHeaderKey and authorizationTypeBearer name the bearer scheme expected on protected HTTP routes.
 const (
 	authorizationHeaderKey  = "authorization"
 	authorizationTypeBearer = "bearer"
 )
 
+// AuthMiddleware protects HTTP routes because management UI cannot rely on gRPC metadata alone.
 func AuthMiddleware(tokenMaker Maker, rdb redis.UniversalClient, allowedRoles ...string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -45,56 +48,23 @@ func AuthMiddleware(tokenMaker Maker, rdb redis.UniversalClient, allowedRoles ..
 				return
 			}
 
-			if rdb != nil {
-				ctxRevoked, cancel := context.WithTimeout(r.Context(), 100*time.Millisecond)
-				cmds, errPipe := rdb.Pipelined(ctxRevoked, func(pipe redis.Pipeliner) error {
-					pipe.Exists(ctxRevoked, "revoked:token:"+payload.ID.String())
-					pipe.Exists(ctxRevoked, "revoked:session:"+payload.SessionID.String())
-					pipe.Exists(ctxRevoked, "revoked:user:"+payload.UserID.String())
-					return nil
-				})
-				cancel()
-
-				if errPipe != nil {
-					AuthTokenErrors.WithLabelValues("revocation_check_failed").Inc()
-					slog.Error("failed to check token revocation in redis (fail-closed)", slog.Any("error", errPipe))
-					http.Error(w, "authorization check failed", http.StatusUnauthorized)
-					return
-				}
-
-				if len(cmds) != 3 {
-					AuthTokenErrors.WithLabelValues("revocation_check_failed").Inc()
-					slog.Error("unexpected pipeline commands count in redis (fail-closed)", slog.Int("expected", 3), slog.Int("got", len(cmds)))
-					http.Error(w, "authorization check failed", http.StatusUnauthorized)
-					return
-				}
-
-				for _, cmd := range cmds {
-					intCmd, ok := cmd.(*redis.IntCmd)
-					if !ok {
-						AuthTokenErrors.WithLabelValues("revocation_check_failed").Inc()
-						slog.Error("unexpected command type in redis pipeline (fail-closed)")
-						http.Error(w, "authorization check failed", http.StatusUnauthorized)
-						return
-					}
-					exists, errExists := intCmd.Result()
-					if errExists != nil {
-						AuthTokenErrors.WithLabelValues("revocation_check_failed").Inc()
-						slog.Error("failed to get pipeline result in redis (fail-closed)", slog.Any("error", errExists))
-						http.Error(w, "authorization check failed", http.StatusUnauthorized)
-						return
-					}
-					if exists > 0 {
-						http.Error(w, "token revoked", http.StatusUnauthorized)
-						return
-					}
-				}
+			revoked, errRev := CheckTokenRevocation(r.Context(), rdb, payload)
+			if errRev != nil {
+				AuthTokenErrors.WithLabelValues("revocation_check_failed").Inc()
+				slog.Error("failed to check token revocation in redis (fail-closed)", slog.Any("error", errRev))
+				http.Error(w, "authorization check failed", http.StatusUnauthorized)
+				return
+			}
+			if revoked {
+				http.Error(w, "token revoked", http.StatusUnauthorized)
+				return
 			}
 
 			if len(allowedRoles) > 0 {
 				authorized := false
+				normalizedRole := NormalizeRole(payload.Role)
 				for _, role := range allowedRoles {
-					if payload.Role == role {
+					if normalizedRole == NormalizeRole(role) {
 						authorized = true
 						break
 					}
@@ -111,6 +81,7 @@ func AuthMiddleware(tokenMaker Maker, rdb redis.UniversalClient, allowedRoles ..
 	}
 }
 
+// GetPayload lets handlers read the verified principal without re-parsing the bearer header.
 func GetPayload(ctx context.Context) (*Payload, error) {
 	payload, ok := ctx.Value(AuthorizationPayloadKey).(*Payload)
 	if !ok {

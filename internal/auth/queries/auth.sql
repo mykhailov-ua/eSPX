@@ -9,9 +9,14 @@ FROM users
 WHERE id = $1;
 
 -- name: CreateUser :one
-INSERT INTO users (email, password_hash, role, customer_id)
-VALUES ($1, $2, $3, $4)
+INSERT INTO users (email, password_hash, role, customer_id, email_verified)
+VALUES ($1, $2, $3, $4, $5)
 RETURNING id, email, role, customer_id, created_at;
+
+-- name: UnblockUser :exec
+UPDATE users
+SET is_blocked = FALSE, updated_at = NOW()
+WHERE email = $1;
 
 -- name: UpdatePassword :exec
 UPDATE users

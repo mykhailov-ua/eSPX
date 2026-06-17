@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// Guards per-IP rate limit blocks excess events and resets after window expiry.
 func TestIPRateLimiter(t *testing.T) {
 	if testing.Short() {
 		t.Skip()
@@ -33,6 +34,7 @@ func TestIPRateLimiter(t *testing.T) {
 	assert.NoError(t, limiter.Check(ctx, evt1))
 }
 
+// Guards duplicate click IDs reject replays while empty IDs pass through.
 func TestDuplicateEventFilter(t *testing.T) {
 	if testing.Short() {
 		t.Skip()
@@ -59,6 +61,7 @@ func TestDuplicateEventFilter(t *testing.T) {
 	assert.NoError(t, filter.Check(ctx, evt))
 }
 
+// Guards filter chain applies duplicate and rate limits in configured order.
 func TestFilterEngine(t *testing.T) {
 	if testing.Short() {
 		t.Skip()
@@ -70,7 +73,7 @@ func TestFilterEngine(t *testing.T) {
 	limiter := NewIPRateLimiter(rdb, 3, 5*time.Second)
 	dupFilter := NewDuplicateEventFilter(rdb, 5*time.Second)
 
-	engine := NewFilterEngine(limiter, dupFilter)
+	engine := NewFilterEngine(0, limiter, dupFilter)
 
 	evt1 := &domain.Event{IP: "10.0.0.1", ClickID: "c_1"}
 	evt2 := &domain.Event{IP: "10.0.0.1", ClickID: "c_2"}

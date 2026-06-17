@@ -12,14 +12,17 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
+// ErrAuthenticationFailed, ErrInvalidPassword, and ErrInsecureHashParameters keep credential failures generic while still signaling policy violations.
 var (
 	ErrAuthenticationFailed   = errors.New("authentication failed")
 	ErrInvalidPassword        = errors.New("password cannot be empty or exceeds maximum length")
 	ErrInsecureHashParameters = errors.New("hash parameters are below minimum security thresholds")
 )
 
+// MaxPasswordLength caps password size to bound Argon2 memory use and reject denial-of-service payloads.
 const MaxPasswordLength = 72
 
+// ValidatePassword rejects weak secrets before Argon2 work or storage amplifies attacker cost.
 func ValidatePassword(password string) error {
 	if len(password) < 8 {
 		return errors.Join(ErrInvalidPassword, errors.New("password must be at least 8 characters"))
@@ -49,6 +52,7 @@ func ValidatePassword(password string) error {
 	return nil
 }
 
+// params holds decoded Argon2 settings from a stored hash so verification can replay the original work factor.
 type params struct {
 	memory      uint32
 	iterations  uint32
@@ -57,6 +61,7 @@ type params struct {
 	keyLength   uint32
 }
 
+// Argon2 parameter ceilings and floors bound verification cost and reject weak stored hashes.
 const (
 	maxMemory      uint32 = 256 * 1024
 	maxIterations  uint32 = 10
@@ -68,6 +73,7 @@ const (
 	minParallelism uint8  = 2
 )
 
+// PasswordHasher centralizes Argon2id hashing with a precomputed dummy hash to equalize login timing for unknown users.
 type PasswordHasher struct {
 	memory      uint32
 	iterations  uint32
@@ -77,6 +83,7 @@ type PasswordHasher struct {
 	dummyHash   string
 }
 
+// NewPasswordHasher precomputes a dummy hash so unknown emails still pay full verification cost.
 func NewPasswordHasher(memory, iterations uint32, parallelism uint8) (*PasswordHasher, error) {
 	h := &PasswordHasher{
 		memory:      memory,
@@ -93,14 +100,17 @@ func NewPasswordHasher(memory, iterations uint32, parallelism uint8) (*PasswordH
 	return h, nil
 }
 
+// GetDummyHash hides whether an email exists during failed login attempts.
 func (h *PasswordHasher) GetDummyHash() string {
 	return h.dummyHash
 }
 
+// GetParallelism feeds service-wide crypto limits derived from Argon2 thread count.
 func (h *PasswordHasher) GetParallelism() uint8 {
 	return h.parallelism
 }
 
+// HashPassword embeds Argon2 parameters in the string so verification can honor legacy work factors.
 func (h *PasswordHasher) HashPassword(password string) (string, error) {
 	if password == "" || len(password) > MaxPasswordLength {
 		return "", ErrInvalidPassword
@@ -140,6 +150,7 @@ func (h *PasswordHasher) HashPassword(password string) (string, error) {
 	return sb.String(), nil
 }
 
+// unsafeStringToBytes avoids per-verify allocations on the login hot path.
 func unsafeStringToBytes(s string) []byte {
 	if s == "" {
 		return nil
@@ -147,6 +158,7 @@ func unsafeStringToBytes(s string) []byte {
 	return unsafe.Slice(unsafe.StringData(s), len(s))
 }
 
+// VerifyPassword flags weak stored parameters so login can trigger transparent rehashing.
 func VerifyPassword(password, encodedHash string) (bool, error) {
 	if password == "" || len(password) > MaxPasswordLength {
 		return false, ErrAuthenticationFailed

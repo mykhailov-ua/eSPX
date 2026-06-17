@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+// AuditLog persists an admin action for compliance review without failing the primary transaction.
 func (s *Service) AuditLog(ctx context.Context, q db.Querier, adminID uuid.UUID, action string, targetType string, targetID *uuid.UUID, changes any, metadata any) {
 	changesJSON, _ := json.Marshal(changes)
 	metadataJSON, _ := json.Marshal(metadata)
@@ -39,6 +40,7 @@ func (s *Service) AuditLog(ctx context.Context, q db.Querier, adminID uuid.UUID,
 	}
 }
 
+// RunAuditCleaner periodically deletes audit rows older than the configured retention window.
 func (s *Service) RunAuditCleaner(ctx context.Context, retention Days) {
 	ticker := time.NewTicker(24 * time.Hour)
 	defer ticker.Stop()
@@ -53,8 +55,10 @@ func (s *Service) RunAuditCleaner(ctx context.Context, retention Days) {
 	}
 }
 
+// Days expresses audit retention duration in whole days for the cleaner worker.
 type Days int
 
+// cleanOldLogs removes audit entries older than the retention threshold to bound table growth.
 func (s *Service) cleanOldLogs(ctx context.Context, retention Days) {
 	threshold := time.Now().AddDate(0, 0, -int(retention))
 	err := db.New(s.pool).CleanupAuditLogs(ctx, pgtype.Timestamptz{Time: threshold, Valid: true})

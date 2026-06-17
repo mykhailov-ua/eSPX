@@ -15,7 +15,7 @@
 CREATE DATABASE IF NOT EXISTS ad_event_processor;
 USE ad_event_processor;
 
--- Impressions Table
+-- Impressions: deduplicated by click_id within campaign+timestamp for recon and reporting.
 CREATE TABLE IF NOT EXISTS impressions (
     click_id String,
     campaign_id UUID,
@@ -28,7 +28,7 @@ PARTITION BY toYYYYMM(created_at)
 ORDER BY (campaign_id, created_at, click_id)
 TTL toDateTime(created_at) + INTERVAL 180 DAY;
 
--- Clicks Table
+-- Clicks: same ordering key as impressions so hourly MVs can union event types later.
 CREATE TABLE IF NOT EXISTS clicks (
     click_id String,
     campaign_id UUID,
@@ -41,7 +41,7 @@ PARTITION BY toYYYYMM(created_at)
 ORDER BY (campaign_id, created_at, click_id)
 TTL toDateTime(created_at) + INTERVAL 180 DAY;
 
--- Conversions Table
+-- Conversions: post-click outcomes; TTL matches impressions for aligned retention windows.
 CREATE TABLE IF NOT EXISTS conversions (
     click_id String,
     campaign_id UUID,
@@ -54,7 +54,7 @@ PARTITION BY toYYYYMM(created_at)
 ORDER BY (campaign_id, created_at, click_id)
 TTL toDateTime(created_at) + INTERVAL 180 DAY;
 
--- Fraud Events Table
+-- Fraud events: shorter TTL because fraud stream volume is diagnostic, not billing source of truth.
 CREATE TABLE IF NOT EXISTS fraud_events (
     click_id String,
     campaign_id UUID,

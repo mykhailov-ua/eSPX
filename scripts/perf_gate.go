@@ -1,3 +1,5 @@
+// perf_gate compares baseline and PR benchmark output for CI.
+// Enforces zero-alloc hot-path policy and flags statistically significant CPU regression.
 package main
 
 import (
@@ -23,6 +25,7 @@ type CompareRow struct {
 	Status    string
 }
 
+// main runs zero-alloc verification and benchstat comparison for CI perf gate.
 func main() {
 	if len(os.Args) < 3 {
 		fmt.Fprintln(os.Stderr, "Usage: go run scripts/perf_gate.go <baseline.txt> <pr.txt>")
@@ -60,6 +63,7 @@ func main() {
 	fmt.Println("PASS: Performance gate cleared successfully.")
 }
 
+// verifyRawZeroAlloc fails the gate when any benchmark line reports heap allocations.
 func verifyRawZeroAlloc(filename string) error {
 	file, err := os.Open(filename)
 	if err != nil {
@@ -106,6 +110,7 @@ func verifyRawZeroAlloc(filename string) error {
 	return scanner.Err()
 }
 
+// runBenchstatCSVComparison pairs baseline and PR benchstat CSV output for regression detection.
 func runBenchstatCSVComparison(baseline, pr string) (bool, string, error) {
 	_, err := exec.LookPath("benchstat")
 	if err != nil {
@@ -126,6 +131,7 @@ func runBenchstatCSVComparison(baseline, pr string) (bool, string, error) {
 	return regressionDetected, table, nil
 }
 
+// parseCSVOutput flags CPU, memory, and allocation regressions from benchstat CSV rows.
 func parseCSVOutput(csvContent string) (bool, string) {
 	var rows []CompareRow
 	var regression bool
@@ -226,6 +232,7 @@ func parseCSVOutput(csvContent string) (bool, string) {
 	return regression, tableBuilder.String()
 }
 
+// formatValue renders benchstat metric values for the comparison table.
 func formatValue(valStr string, unit string) string {
 	if valStr == "" {
 		return "-"

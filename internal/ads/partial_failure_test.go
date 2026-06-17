@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// Postgres health double for partial failure health checks.
 type mockPinger struct {
 	fail bool
 }
@@ -25,6 +26,7 @@ func (m *mockPinger) Ping(ctx context.Context) error {
 	return nil
 }
 
+// Redis client that simulates shard ping success or failure.
 type mockFailRedis struct {
 	redis.UniversalClient
 	fail bool
@@ -40,6 +42,7 @@ func (m *mockFailRedis) Ping(ctx context.Context) *redis.StatusCmd {
 	return cmd
 }
 
+// Guards health endpoint reports 503 when Postgres or any Redis shard is down.
 func TestHealthCheckPartialFailure(t *testing.T) {
 	cfg := &config.Config{}
 	registry := &mockRegistry{}
@@ -50,7 +53,7 @@ func TestHealthCheckPartialFailure(t *testing.T) {
 		}
 		pool := &mockPinger{fail: false}
 		sharder := NewJumpHashSharder(1)
-		handler := NewRouter(cfg, registry, nil, pool, rdbs, sharder, "fraud-stream")
+		handler := NewRouter(cfg, registry, nil, pool, rdbs, sharder, "fraud-stream", nil)
 
 		req := httptest.NewRequest("GET", "/health", nil)
 		w := httptest.NewRecorder()
@@ -66,7 +69,7 @@ func TestHealthCheckPartialFailure(t *testing.T) {
 		}
 		pool := &mockPinger{fail: true}
 		sharder := NewJumpHashSharder(1)
-		handler := NewRouter(cfg, registry, nil, pool, rdbs, sharder, "fraud-stream")
+		handler := NewRouter(cfg, registry, nil, pool, rdbs, sharder, "fraud-stream", nil)
 
 		req := httptest.NewRequest("GET", "/health", nil)
 		w := httptest.NewRecorder()
@@ -83,7 +86,7 @@ func TestHealthCheckPartialFailure(t *testing.T) {
 		}
 		pool := &mockPinger{fail: false}
 		sharder := NewJumpHashSharder(1)
-		handler := NewRouter(cfg, registry, nil, pool, rdbs, sharder, "fraud-stream")
+		handler := NewRouter(cfg, registry, nil, pool, rdbs, sharder, "fraud-stream", nil)
 
 		req := httptest.NewRequest("GET", "/health", nil)
 		w := httptest.NewRecorder()

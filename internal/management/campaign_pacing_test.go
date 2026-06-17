@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestManagementAPI_CampaignPacing guards pacing update validation, tenant isolation, and Redis settings sync.
 func TestManagementAPI_CampaignPacing(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")
@@ -44,20 +45,18 @@ func TestManagementAPI_CampaignPacing(t *testing.T) {
 	err := svc.CreateCustomer(context.Background(), custID, "Advertiser Pacing", 500_000_000, "USD")
 	require.NoError(t, err)
 
-	campID, err := svc.CreateCampaign(
-		context.Background(),
-		custID,
-		nil,
-		"Spring Sale Pacing",
-		100_000_000,
-		db.PacingModeTypeEVEN,
-		10_000_000,
-		"UTC",
-		5,
-		3600,
-		[]string{"US", "GB"},
-		"idemp-camp-pacing-1",
-	)
+	campID, err := svc.CreateCampaign(context.Background(), CampaignCreateSpec{
+		CustomerID:      custID,
+		Name:            "Spring Sale Pacing",
+		BudgetLimit:     100_000_000,
+		PacingMode:      db.PacingModeTypeEVEN,
+		DailyBudget:     10_000_000,
+		Timezone:        "UTC",
+		FreqLimit:       5,
+		FreqWindow:      3600,
+		TargetCountries: []string{"US", "GB"},
+		IdempotencyKey:  "idemp-camp-pacing-1",
+	})
 	require.NoError(t, err)
 
 	t.Run("InvalidPacingMode_BadRequest", func(t *testing.T) {
@@ -78,7 +77,7 @@ func TestManagementAPI_CampaignPacing(t *testing.T) {
 
 		user := AuthenticatedUser{
 			UserID:     uuid.New(),
-			Role:       "C",
+			Role:       RoleUser,
 			CustomerID: otherCustID,
 		}
 		ctx := context.WithValue(req.Context(), UserContextKey, user)
@@ -96,7 +95,7 @@ func TestManagementAPI_CampaignPacing(t *testing.T) {
 
 		user := AuthenticatedUser{
 			UserID:     uuid.New(),
-			Role:       "C",
+			Role:       RoleUser,
 			CustomerID: custID,
 		}
 		ctx := context.WithValue(req.Context(), UserContextKey, user)

@@ -21,6 +21,7 @@ import (
 	"google.golang.org/grpc/reflection"
 )
 
+// main starts the auth gRPC service, session cleanup, and a sidecar metrics HTTP listener.
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)

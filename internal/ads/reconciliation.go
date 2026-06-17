@@ -11,7 +11,7 @@ import (
 	"espx/internal/metrics"
 )
 
-// lag avoids comparing against partially-flushed ClickHouse batches.
+// ReconciliationWorker detects spend drift between Postgres and ClickHouse for billing integrity.
 type ReconciliationWorker struct {
 	pgConn     PostgresConn
 	chConn     ClickHouseConn
@@ -21,6 +21,7 @@ type ReconciliationWorker struct {
 	interval   time.Duration
 }
 
+// NewReconciliationWorker builds a periodic drift checker with a flush lag guard.
 func NewReconciliationWorker(
 	pg PostgresConn,
 	ch ClickHouseConn,
@@ -39,6 +40,7 @@ func NewReconciliationWorker(
 	}
 }
 
+// Reconcile compares Postgres and ClickHouse spend for every active campaign.
 func (rw *ReconciliationWorker) Reconcile(ctx context.Context) error {
 	campaigns, err := rw.repo.ListActive(ctx)
 	if err != nil {
@@ -94,6 +96,7 @@ func (rw *ReconciliationWorker) Reconcile(ctx context.Context) error {
 	return nil
 }
 
+// Start runs periodic reconciliation until the context is cancelled.
 func (rw *ReconciliationWorker) Start(ctx context.Context) {
 	go func() {
 		ticker := time.NewTicker(rw.interval)

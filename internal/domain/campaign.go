@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 )
 
+// CampaignStatus is the shared lifecycle vocabulary for management, workers, and hot-path delivery checks.
 type CampaignStatus string
 
 const (
@@ -15,6 +16,7 @@ const (
 	CampaignStatusExhausted CampaignStatus = "EXHAUSTED"
 )
 
+// PacingMode is the delivery throttle mode propagated to Redis and the filter engine.
 type PacingMode string
 
 const (
@@ -22,6 +24,7 @@ const (
 	PacingModeEven PacingMode = "EVEN"
 )
 
+// Campaign is the hot-path campaign view with precomputed Redis keys and bound fields for allocation-free filter evaluation.
 type Campaign struct {
 	ID                  uuid.UUID
 	CustomerID          uuid.UUID
@@ -53,8 +56,13 @@ type Campaign struct {
 
 	FreqLimit  int32
 	FreqWindow int32
+
+	StartAt      *time.Time
+	EndAt        *time.Time
+	DaypartHours map[int16]struct{}
 }
 
+// Brand groups creatives and frequency caps under one advertiser for cross-campaign enforcement.
 type Brand struct {
 	ID         uuid.UUID
 	CustomerID uuid.UUID
@@ -63,6 +71,7 @@ type Brand struct {
 	UpdatedAt  time.Time
 }
 
+// CampaignRepository isolates campaign persistence from ads and management so spend updates stay transactional.
 type CampaignRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*Campaign, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status CampaignStatus) error
@@ -70,6 +79,7 @@ type CampaignRepository interface {
 	ListActive(ctx context.Context) ([]*Campaign, error)
 }
 
+// CampaignRegistry is the in-memory delivery catalog contract so handlers and sync workers share one lookup surface.
 type CampaignRegistry interface {
 	Exists(id uuid.UUID) bool
 	Add(id, customerID uuid.UUID, brandID *uuid.UUID, brandFcapKey string, pacingMode PacingMode, dailyBudget int64, timezone string, freqLimit, freqWindow int32, targetCountries []string)

@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestRegistryWatch guards registry watch syncs campaign create and cancel into the hot-path replica.
 func TestRegistryWatch(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")
@@ -48,7 +49,7 @@ func TestRegistryWatch(t *testing.T) {
 	customerID := uuid.New()
 	_ = svc.CreateCustomer(ctx, customerID, "Sync db.User", 1_000_000_000, "USD")
 
-	campaignID, err := svc.CreateCampaign(ctx, customerID, nil, "Sync Camp", 100_000_000, db.PacingModeTypeASAP, 0, "UTC", 0, 0, nil, "idemp-sync")
+	campaignID, err := svc.CreateCampaign(ctx, testCampaignSpec(customerID, "Sync Camp", 100_000_000, "idemp-sync"))
 	require.NoError(t, err)
 
 	assert.Eventually(t, func() bool {

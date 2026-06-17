@@ -9,11 +9,13 @@ import (
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
+// PasetoMaker is the production Maker that encrypts access tokens with symmetric PASETO v2.
 type PasetoMaker struct {
 	paseto       *paseto.V2
 	symmetricKey []byte
 }
 
+// NewPasetoMaker rejects mis-sized keys at startup instead of failing every token operation at runtime.
 func NewPasetoMaker(symmetricKey string) (Maker, error) {
 	if len(symmetricKey) != chacha20poly1305.KeySize {
 		return nil, errors.New("invalid key size")
@@ -26,6 +28,7 @@ func NewPasetoMaker(symmetricKey string) (Maker, error) {
 	return maker, nil
 }
 
+// CreateToken binds access tokens to session and tenant context for revocation and RBAC downstream.
 func (maker *PasetoMaker) CreateToken(userID uuid.UUID, sessionID uuid.UUID, role string, customerID uuid.UUID, duration time.Duration) (string, error) {
 	payload, err := NewPayload(userID, sessionID, role, customerID, duration)
 	if err != nil {
@@ -35,6 +38,7 @@ func (maker *PasetoMaker) CreateToken(userID uuid.UUID, sessionID uuid.UUID, rol
 	return maker.paseto.Encrypt(maker.symmetricKey, payload, nil)
 }
 
+// VerifyToken decrypts locally so callers never need direct access to the signing key material.
 func (maker *PasetoMaker) VerifyToken(token string) (*Payload, error) {
 	payload := &Payload{}
 

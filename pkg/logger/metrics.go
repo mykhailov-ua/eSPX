@@ -82,6 +82,7 @@ var (
 	)
 )
 
+// RegisterMetrics exposes ring saturation and load-shedding counters for ops alerts.
 func RegisterMetrics() {
 	_ = prometheus.Register(LogShardsSaturationRatio)
 	_ = prometheus.Register(LogNVMEWriteDurationSeconds)

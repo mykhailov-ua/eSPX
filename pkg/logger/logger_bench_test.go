@@ -5,6 +5,7 @@ import (
 	"time"
 )
 
+// BenchmarkLoggerWriteToShard tracks hot-path write regression for CI perf gate.
 func BenchmarkLoggerWriteToShard(b *testing.B) {
 	cfg := Config{
 		LogDir:           b.TempDir(),
@@ -22,6 +23,7 @@ func BenchmarkLoggerWriteToShard(b *testing.B) {
 	}
 }
 
+// BenchmarkLogShardWriteMPSC measures ring write cost under concurrent producers.
 func BenchmarkLogShardWriteMPSC(b *testing.B) {
 	s := NewLogShard()
 	l := &Logger{
@@ -54,6 +56,7 @@ func BenchmarkLogShardWriteMPSC(b *testing.B) {
 	})
 }
 
+// BenchmarkLoggerWriteParallel measures sharded Write under parallel load.
 func BenchmarkLoggerWriteParallel(b *testing.B) {
 	cfg := Config{
 		LogDir:           b.TempDir(),
@@ -62,7 +65,7 @@ func BenchmarkLoggerWriteParallel(b *testing.B) {
 		RotateInterval:   time.Hour,
 		DiskLatencyLimit: time.Second,
 	}
-	l := NewLogger(cfg, 4) // 4 shards
+	l := NewLogger(cfg, 4)
 	defer l.Close()
 	data := []byte("{\"level\":\"info\",\"msg\":\"click event successfully processed\",\"priority\":1}")
 	b.ResetTimer()
@@ -73,6 +76,7 @@ func BenchmarkLoggerWriteParallel(b *testing.B) {
 	})
 }
 
+// BenchmarkWriteBufferEncryption isolates persist-path cost from ring write overhead.
 func BenchmarkWriteBufferEncryption(b *testing.B) {
 	cfg := Config{
 		LogDir:           b.TempDir(),

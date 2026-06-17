@@ -23,7 +23,9 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
+// setupIntegrationDB starts Postgres, applies auth migrations, and returns a pool for end-to-end tests.
 func setupIntegrationDB(t testing.TB) (*pgxpool.Pool, func()) {
+	t.Helper()
 	ctx := context.Background()
 
 	pgContainer, err := postgres.Run(ctx,
@@ -50,6 +52,18 @@ func setupIntegrationDB(t testing.TB) (*pgxpool.Pool, func()) {
 		t.Fatalf("failed to connect to db: %s", err)
 	}
 
+	applyAuthMigrations(t, pool)
+
+	return pool, func() {
+		pool.Close()
+		_ = pgContainer.Terminate(ctx)
+	}
+}
+
+// applyAuthMigrations runs goose up SQL from internal/auth/migrations against pool.
+func applyAuthMigrations(t testing.TB, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
 	_, filename, _, _ := runtime.Caller(0)
 	migrationsDir := filepath.Join(filepath.Dir(filename), "migrations")
 
@@ -79,16 +93,12 @@ func setupIntegrationDB(t testing.TB) (*pgxpool.Pool, func()) {
 		upPart = strings.ReplaceAll(upPart, "-- +goose StatementEnd", "")
 
 		if _, err := pool.Exec(ctx, upPart); err != nil {
-			t.Fatalf("failed to apply migration %s: %s\nFull SQL attempted:\n%s", entry.Name(), err, upPart)
+			t.Fatalf("failed to apply migration %s: %s", entry.Name(), err)
 		}
-	}
-
-	return pool, func() {
-		pool.Close()
-		_ = pgContainer.Terminate(ctx)
 	}
 }
 
+// setupIntegrationRedis starts Redis for auth flows that depend on lockout or verification tokens.
 func setupIntegrationRedis(t testing.TB) (redis.UniversalClient, func()) {
 	ctx := context.Background()
 
@@ -112,6 +122,7 @@ func setupIntegrationRedis(t testing.TB) (redis.UniversalClient, func()) {
 	}
 }
 
+// TestAuthService_Integration exercises registration, login, password reuse, and email verification against real stores.
 func TestAuthService_Integration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping testcontainers-based integration test in short mode")
@@ -161,6 +172,12 @@ func TestAuthService_Integration(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, loginResp.AccessToken)
 
+	_, err = pool.Exec(ctx, "UPDATE users SET email_verified = FALSE WHERE email = $1", email)
+	require.NoError(t, err)
+
+	_, err = service.Login(ctx, email, initPassword, "Mozilla/Firefox", "192.168.1.100", time.Hour)
+	assert.ErrorIs(t, err, ErrEmailNotVerified)
+
 	err = service.ChangePassword(ctx, userID, initPassword, initPassword, "192.168.1.100", "Mozilla/Firefox")
 	assert.ErrorIs(t, err, ErrPasswordReuse, "Password reuse check must reject matching historical hashes")
 
@@ -204,6 +221,10 @@ func TestAuthService_Integration(t *testing.T) {
 	usr, err = store.GetUserByID(ctx, pgtype.UUID{Bytes: userID, Valid: true})
 	require.NoError(t, err)
 	assert.True(t, usr.EmailVerified, "Confirming email must persist the verified flag to Postgres")
+
+	loginResp, err = service.Login(ctx, email, newPassword2, "Mozilla/Firefox", "192.168.1.100", time.Hour)
+	require.NoError(t, err)
+	assert.NotEmpty(t, loginResp.AccessToken)
 
 	_, err = service.ConfirmEmailVerification(ctx, token)
 	assert.ErrorIs(t, err, ErrInvalidToken, "Replaying a verification token must be rejected because it was deleted on first use")

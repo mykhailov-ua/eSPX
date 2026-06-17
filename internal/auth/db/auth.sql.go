@@ -175,16 +175,17 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 }
 
 const createUser = `-- name: CreateUser :one
-INSERT INTO users (email, password_hash, role, customer_id)
-VALUES ($1, $2, $3, $4)
+INSERT INTO users (email, password_hash, role, customer_id, email_verified)
+VALUES ($1, $2, $3, $4, $5)
 RETURNING id, email, role, customer_id, created_at
 `
 
 type CreateUserParams struct {
-	Email        string      `json:"email"`
-	PasswordHash string      `json:"password_hash"`
-	Role         string      `json:"role"`
-	CustomerID   pgtype.UUID `json:"customer_id"`
+	Email         string      `json:"email"`
+	PasswordHash  string      `json:"password_hash"`
+	Role          string      `json:"role"`
+	CustomerID    pgtype.UUID `json:"customer_id"`
+	EmailVerified bool        `json:"email_verified"`
 }
 
 type CreateUserRow struct {
@@ -201,6 +202,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (CreateU
 		arg.PasswordHash,
 		arg.Role,
 		arg.CustomerID,
+		arg.EmailVerified,
 	)
 	var i CreateUserRow
 	err := row.Scan(
@@ -493,6 +495,17 @@ WHERE id = $1
 
 func (q *Queries) SetEmailVerified(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, setEmailVerified, id)
+	return err
+}
+
+const unblockUser = `-- name: UnblockUser :exec
+UPDATE users
+SET is_blocked = FALSE, updated_at = NOW()
+WHERE email = $1
+`
+
+func (q *Queries) UnblockUser(ctx context.Context, email string) error {
+	_, err := q.db.Exec(ctx, unblockUser, email)
 	return err
 }
 

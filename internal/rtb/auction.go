@@ -4,7 +4,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// BidRequest is ordered descending by field size to eliminate compiler padding.
+// BidRequest field order removes struct padding so each request stays compact in L1 cache lines.
 type BidRequest struct {
 	CategoryMask uint64
 	MinBid       int64
@@ -12,11 +12,14 @@ type BidRequest struct {
 	DeviceType   uint8
 }
 
+// AuctionResult carries the clearing outcome to callers without extra heap allocation on the hot path.
 type AuctionResult struct {
 	CampaignID uuid.UUID
 	Price      int64
 }
 
+// RunAuction selects a campaign on the hot bid path without locks, using second-price clearing
+// so winners pay above the floor only when competition requires it.
 func (r *Registry) RunAuction(req *BidRequest) (AuctionResult, bool) {
 	if req == nil || req.MinBid < 0 {
 		return AuctionResult{}, false
@@ -130,6 +133,8 @@ func (r *Registry) RunAuction(req *BidRequest) (AuctionResult, bool) {
 	}, true
 }
 
+// siftDown128 keeps only the strongest bid candidates when a shard exceeds the fixed
+// candidate cap, without allocating a growable slice on the auction hot path.
 func siftDown128(heap *[128]uint32, bids []int64, idx int) {
 	const n = 128
 	for {

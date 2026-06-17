@@ -6,6 +6,8 @@ import (
 	jlexer "github.com/mailru/easyjson/jlexer"
 )
 
+// TrackRequest is the JSON track payload parsed without reflection on the hot path.
+//
 //easyjson:skip
 type TrackRequest struct {
 	CampaignID uuid.UUID       `json:"campaign_id"`
@@ -15,6 +17,7 @@ type TrackRequest struct {
 	Payload    json.RawMessage `json:"payload"`
 }
 
+// UnmarshalEasyJSON parses track JSON with zero-copy string fields where safe.
 func (v *TrackRequest) UnmarshalEasyJSON(in *jlexer.Lexer) {
 	if in.IsNull() {
 		in.Skip()
@@ -50,6 +53,7 @@ func (v *TrackRequest) UnmarshalEasyJSON(in *jlexer.Lexer) {
 	in.Delim('}')
 }
 
+// UnmarshalJSON delegates to the easyjson parser for allocation-free decoding.
 func (v *TrackRequest) UnmarshalJSON(data []byte) error {
 	r := jlexer.Lexer{Data: data}
 	v.UnmarshalEasyJSON(&r)

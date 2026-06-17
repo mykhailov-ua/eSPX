@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Ships rotated compressed log segments to remote storage.
+# Renames .ready to .evacuating so active segments are never uploaded mid-write.
 set -euo pipefail
 
 LOG_DIR="${LOG_DIR:-/var/log/espx}"

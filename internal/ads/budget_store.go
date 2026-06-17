@@ -12,6 +12,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// budgetArgs holds stack-backed Redis key buffers reused across budget Lua calls.
 type budgetArgs struct {
 	campKeyBuf [64]byte
 	idemKeyBuf [64]byte
@@ -31,12 +32,14 @@ type budgetArgs struct {
 	args [4]any
 }
 
+// budgetArgsPool recycles budget Lua argument structs on the filter hot path.
 var budgetArgsPool = sync.Pool{
 	New: func() any {
 		return &budgetArgs{}
 	},
 }
 
+// budgetLuaScript atomically spends budget and records dirty sync keys in one round trip.
 const budgetLuaScript = `
 if redis.call("EXISTS", KEYS[2]) == 1 then
     return 1
@@ -64,13 +67,14 @@ redis.call("SET", KEYS[2], "1", "EX", ARGV[2])
 return 1
 `
 
-// unsafeString keys must not outlive Eval. Cache miss (-1) allows one PG reload.
+// RedisBudgetManager enforces per-click budget and idempotency in Redis with PG fallback.
 type RedisBudgetManager struct {
 	rdb            redis.Cmdable
 	campaignRepo   domain.CampaignRepository
 	idempotencyTTL time.Duration
 }
 
+// NewRedisBudgetManager wires Redis budget Lua with a PG reload path on cache miss.
 func NewRedisBudgetManager(rdb redis.Cmdable, repo domain.CampaignRepository, idempotencyTTL time.Duration) *RedisBudgetManager {
 	return &RedisBudgetManager{
 		rdb:            rdb,
@@ -79,6 +83,7 @@ func NewRedisBudgetManager(rdb redis.Cmdable, repo domain.CampaignRepository, id
 	}
 }
 
+// CheckAndSpend deducts budget once per click id, reloading from PG on cache miss.
 func (m *RedisBudgetManager) CheckAndSpend(ctx context.Context, customerID, campaignID uuid.UUID, clickID string, amount int64) (bool, error) {
 	ba := budgetArgsPool.Get().(*budgetArgs)
 	defer budgetArgsPool.Put(ba)
