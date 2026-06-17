@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// TestCORSMiddleware guards CORS allows listed origins and denies unknown ones.
 func TestCORSMiddleware(t *testing.T) {
 	origins := []string{"https://dashboard.example.com", "http://localhost:8188"}
 	mdl := NewCORSMiddleware(origins)

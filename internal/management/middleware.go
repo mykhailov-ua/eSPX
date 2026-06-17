@@ -4,8 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
-	"strings"
-	"time"
 
 	"espx/internal/auth"
 	"espx/internal/config"
@@ -14,27 +12,39 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// contextKey is a private type for request-scoped context values to avoid key collisions.
 type contextKey string
 
+// UserContextKey is the request context key for the authenticated admin or customer user.
 const UserContextKey contextKey = "authenticated_user"
 
+// AuthenticatedUser carries identity and tenancy resolved by auth middleware for downstream handlers.
 type AuthenticatedUser struct {
 	UserID     uuid.UUID
 	Role       string
 	CustomerID uuid.UUID
+	AuthSource string
 }
 
+// IsUser reports whether the caller is a customer-scoped user rather than staff.
+func (u AuthenticatedUser) IsUser() bool {
+	return u.Role == RoleUser
+}
+
+// GetUser reads the authenticated user from context when auth middleware ran successfully.
 func GetUser(ctx context.Context) (AuthenticatedUser, bool) {
 	u, ok := ctx.Value(UserContextKey).(AuthenticatedUser)
 	return u, ok
 }
 
+// AuthMiddleware validates tokens or admin API keys and enforces permission-based route access.
 type AuthMiddleware struct {
 	tokenMaker auth.Maker
 	rdb        redis.UniversalClient
 	cfg        *config.Config
 }
 
+// NewAuthMiddleware constructs middleware that checks JWT cookies, revocations, and optional API keys.
 func NewAuthMiddleware(tokenMaker auth.Maker, rdb redis.UniversalClient, cfg *config.Config) *AuthMiddleware {
 	return &AuthMiddleware{
 		tokenMaker: tokenMaker,
@@ -43,89 +53,88 @@ func NewAuthMiddleware(tokenMaker auth.Maker, rdb redis.UniversalClient, cfg *co
 	}
 }
 
-func (m *AuthMiddleware) RequireAuth(allowedRoles ...string) func(http.HandlerFunc) http.HandlerFunc {
+// RequirePermission wraps handlers with authentication and permission checks.
+func (m *AuthMiddleware) RequirePermission(permission string) func(http.HandlerFunc) http.HandlerFunc {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			if key := r.Header.Get("X-Admin-API-Key"); key != "" && m.cfg != nil && key == string(m.cfg.AdminAPIKey) {
-				user := AuthenticatedUser{
-					UserID:     uuid.Nil,
-					Role:       "SA",
-					CustomerID: uuid.Nil,
-				}
-				ctx := context.WithValue(r.Context(), UserContextKey, user)
-				next(w, r.WithContext(ctx))
+			user, ok := m.authenticate(w, r)
+			if !ok {
 				return
 			}
-
-			cookie, err := r.Cookie("accessToken")
-			if err != nil || cookie.Value == "" {
-				httpresponse.Error(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized: missing token")
-				return
-			}
-
-			payload, err := m.tokenMaker.VerifyToken(cookie.Value)
-			if err != nil {
-				httpresponse.Error(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized: invalid token")
-				return
-			}
-
-			if m.rdb != nil {
-				ctxTimeout, cancel := context.WithTimeout(r.Context(), 100*time.Millisecond)
-				defer cancel()
-
-				cmds, errPipe := m.rdb.Pipelined(ctxTimeout, func(pipe redis.Pipeliner) error {
-					pipe.Exists(ctxTimeout, "revoked:token:"+payload.ID.String())
-					pipe.Exists(ctxTimeout, "revoked:session:"+payload.SessionID.String())
-					pipe.Exists(ctxTimeout, "revoked:user:"+payload.UserID.String())
-					return nil
-				})
-
-				if errPipe != nil {
-					slog.Error("redis revocation check failed, blocking request to prevent security bypass", "error", errPipe)
-					httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", "internal server error: security subsystem unavailable")
-					return
-				}
-
-				for _, cmd := range cmds {
-					if exists, _ := cmd.(*redis.IntCmd).Result(); exists > 0 {
-						httpresponse.Error(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized: session revoked")
-						return
-					}
-				}
-			}
-
-			userRole := strings.ToUpper(payload.Role)
-			if userRole == "SUPERADMIN" || userRole == "ADMIN" || userRole == "SA" {
-				userRole = "SA"
-			} else if userRole == "MANAGER" || userRole == "M" {
-				userRole = "M"
-			} else if userRole == "CUSTOMER" || userRole == "USER" || userRole == "C" {
-				userRole = "C"
-			} else if userRole == "GUEST" || userRole == "G" {
-				userRole = "G"
-			}
-
-			roleAllowed := false
-			for _, allowed := range allowedRoles {
-				allowedClean := strings.ToUpper(allowed)
-				if userRole == allowedClean || userRole == "SA" {
-					roleAllowed = true
-					break
-				}
-			}
-
-			if !roleAllowed {
+			if !HasPermission(user.Role, permission) {
 				httpresponse.Error(w, http.StatusForbidden, "FORBIDDEN", "forbidden: insufficient permissions")
 				return
-			}
-
-			user := AuthenticatedUser{
-				UserID:     payload.UserID,
-				Role:       userRole,
-				CustomerID: payload.CustomerID,
 			}
 			ctx := context.WithValue(r.Context(), UserContextKey, user)
 			next(w, r.WithContext(ctx))
 		}
 	}
+}
+
+// RequireAuth wraps handlers with authentication and role checks for legacy call sites.
+func (m *AuthMiddleware) RequireAuth(allowedRoles ...string) func(http.HandlerFunc) http.HandlerFunc {
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			user, ok := m.authenticate(w, r)
+			if !ok {
+				return
+			}
+			roleAllowed := false
+			for _, allowed := range allowedRoles {
+				if user.Role == NormalizeRole(allowed) || user.Role == RoleAdmin {
+					roleAllowed = true
+					break
+				}
+			}
+			if !roleAllowed {
+				httpresponse.Error(w, http.StatusForbidden, "FORBIDDEN", "forbidden: insufficient permissions")
+				return
+			}
+			ctx := context.WithValue(r.Context(), UserContextKey, user)
+			next(w, r.WithContext(ctx))
+		}
+	}
+}
+
+func (m *AuthMiddleware) authenticate(w http.ResponseWriter, r *http.Request) (AuthenticatedUser, bool) {
+	if key := r.Header.Get("X-Admin-API-Key"); key != "" && m.cfg != nil && key == string(m.cfg.AdminAPIKey) {
+		return AuthenticatedUser{
+			UserID:     apiKeyPrincipalID(key),
+			Role:       RoleAdmin,
+			CustomerID: uuid.Nil,
+			AuthSource: "api_key",
+		}, true
+	}
+
+	cookie, err := r.Cookie("accessToken")
+	if err != nil || cookie.Value == "" {
+		httpresponse.Error(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized: missing token")
+		return AuthenticatedUser{}, false
+	}
+
+	payload, err := m.tokenMaker.VerifyToken(cookie.Value)
+	if err != nil {
+		httpresponse.Error(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized: invalid token")
+		return AuthenticatedUser{}, false
+	}
+
+	if m.rdb != nil {
+		revoked, errRev := auth.CheckTokenRevocation(r.Context(), m.rdb, payload)
+		if errRev != nil {
+			slog.Error("redis revocation check failed, blocking request to prevent security bypass", "error", errRev)
+			httpresponse.Error(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized: security check failed")
+			return AuthenticatedUser{}, false
+		}
+		if revoked {
+			httpresponse.Error(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized: session revoked")
+			return AuthenticatedUser{}, false
+		}
+	}
+
+	return AuthenticatedUser{
+		UserID:     payload.UserID,
+		Role:       NormalizeRole(payload.Role),
+		CustomerID: payload.CustomerID,
+		AuthSource: "session",
+	}, true
 }

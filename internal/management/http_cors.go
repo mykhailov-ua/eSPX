@@ -5,6 +5,7 @@ import (
 	"strings"
 )
 
+// NewCORSMiddleware allows browser clients from configured origins to call credentialed admin and auth endpoints.
 func NewCORSMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
 	originsMap := make(map[string]bool)
 	for _, o := range allowedOrigins {

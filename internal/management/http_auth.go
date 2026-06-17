@@ -2,7 +2,6 @@ package management
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -15,12 +14,14 @@ import (
 	"espx/internal/config"
 	"espx/pkg/httpresponse"
 	"github.com/redis/go-redis/v9"
+	"google.golang.org/grpc/metadata"
 )
 
 var bufferPool = sync.Pool{
 	New: func() any { return new(bytes.Buffer) },
 }
 
+// putBuffer returns a request body buffer to the pool when it is small enough to reuse safely.
 func putBuffer(buf *bytes.Buffer) {
 	if buf == nil || buf.Cap() > 64*1024 {
 		return
@@ -29,30 +30,40 @@ func putBuffer(buf *bytes.Buffer) {
 	bufferPool.Put(buf)
 }
 
+// AuthHandler exposes login, logout, refresh, and registration endpoints for the admin UI.
 type AuthHandler struct {
-	authClient pb.AuthServiceClient
-	tokenMaker auth.Maker
-	rdb        redis.UniversalClient
-	cfg        *config.Config
+	authClient     pb.AuthServiceClient
+	tokenMaker     auth.Maker
+	rdb            redis.UniversalClient
+	cfg            *config.Config
+	authMiddleware *AuthMiddleware
 }
 
-func NewAuthHandler(authClient pb.AuthServiceClient, tokenMaker auth.Maker, rdb redis.UniversalClient, cfg *config.Config) *AuthHandler {
+// NewAuthHandler wires auth HTTP endpoints to the gRPC auth service and token infrastructure.
+func NewAuthHandler(authClient pb.AuthServiceClient, tokenMaker auth.Maker, rdb redis.UniversalClient, cfg *config.Config, authMiddleware *AuthMiddleware) *AuthHandler {
 	return &AuthHandler{
-		authClient: authClient,
-		tokenMaker: tokenMaker,
-		rdb:        rdb,
-		cfg:        cfg,
+		authClient:     authClient,
+		tokenMaker:     tokenMaker,
+		rdb:            rdb,
+		cfg:            cfg,
+		authMiddleware: authMiddleware,
 	}
 }
 
+// RegisterRoutes mounts cookie-based auth endpoints on the provided mux.
 func (h *AuthHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/auth/login", h.login)
 	mux.HandleFunc("POST /api/v1/auth/logout", h.logout)
 	mux.HandleFunc("POST /api/v1/auth/refresh", h.refresh)
 	mux.HandleFunc("GET /api/v1/auth/me", h.me)
-	mux.HandleFunc("POST /api/v1/auth/register", h.register)
+	if h.authMiddleware != nil {
+		mux.HandleFunc("POST /api/v1/auth/register", h.authMiddleware.RequirePermission(PermUsersWrite)(h.register))
+	} else {
+		mux.HandleFunc("POST /api/v1/auth/register", h.register)
+	}
 }
 
+// setCookie writes hardened session cookies shared by login and logout flows.
 func setCookie(w http.ResponseWriter, name, value, path string, maxAge int, httpOnly bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     name,
@@ -65,11 +76,13 @@ func setCookie(w http.ResponseWriter, name, value, path string, maxAge int, http
 	})
 }
 
+// LoginRequest carries credentials for the cookie-based admin login endpoint.
 type LoginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
 }
 
+// UserDTO exposes identity, role, and permissions to the frontend after authentication.
 type UserDTO struct {
 	ID          string   `json:"id"`
 	Email       string   `json:"email,omitempty"`
@@ -78,6 +91,7 @@ type UserDTO struct {
 	Permissions []string `json:"permissions,omitempty"`
 }
 
+// login authenticates credentials, sets session cookies, and issues a CSRF token for mutating requests.
 func (h *AuthHandler) login(w http.ResponseWriter, r *http.Request) {
 	buf := bufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
@@ -119,7 +133,7 @@ func (h *AuthHandler) login(w http.ResponseWriter, r *http.Request) {
 	userDTO := UserDTO{
 		ID:          resp.User.Id,
 		Email:       resp.User.Email,
-		Role:        resp.User.Role,
+		Role:        NormalizeRole(resp.User.Role),
 		CustomerID:  resp.User.CustomerId,
 		Permissions: GetPermissionsForRole(resp.User.Role),
 	}
@@ -127,6 +141,7 @@ func (h *AuthHandler) login(w http.ResponseWriter, r *http.Request) {
 	httpresponse.JSON(w, http.StatusOK, map[string]any{"user": userDTO})
 }
 
+// logout revokes refresh tokens, blocklists access tokens, and clears session cookies.
 func (h *AuthHandler) logout(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie("refreshToken")
 	if err == nil && cookie.Value != "" {
@@ -157,6 +172,7 @@ func (h *AuthHandler) logout(w http.ResponseWriter, r *http.Request) {
 	httpresponse.JSON(w, http.StatusNoContent, nil)
 }
 
+// refresh rotates access and refresh cookies using a valid refresh token.
 func (h *AuthHandler) refresh(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie("refreshToken")
 	if err != nil || cookie.Value == "" {
@@ -179,6 +195,7 @@ func (h *AuthHandler) refresh(w http.ResponseWriter, r *http.Request) {
 	httpresponse.JSON(w, http.StatusOK, map[string]string{"status": "refreshed"})
 }
 
+// me returns the current user profile when the access token is valid and not revoked.
 func (h *AuthHandler) me(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie("accessToken")
 	if err != nil || cookie.Value == "" {
@@ -193,29 +210,21 @@ func (h *AuthHandler) me(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.rdb != nil {
-		ctxRevoked, cancel := context.WithTimeout(r.Context(), 100*time.Millisecond)
-		defer cancel()
-
-		cmds, errPipe := h.rdb.Pipelined(ctxRevoked, func(pipe redis.Pipeliner) error {
-			pipe.Exists(ctxRevoked, "revoked:token:"+payload.ID.String())
-			pipe.Exists(ctxRevoked, "revoked:session:"+payload.SessionID.String())
-			pipe.Exists(ctxRevoked, "revoked:user:"+payload.UserID.String())
-			return nil
-		})
-
-		if errPipe == nil && len(cmds) == 3 {
-			for _, cmd := range cmds {
-				if exists, _ := cmd.(*redis.IntCmd).Result(); exists > 0 {
-					httpresponse.Error(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized: token revoked")
-					return
-				}
-			}
+		revoked, errRev := auth.CheckTokenRevocation(r.Context(), h.rdb, payload)
+		if errRev != nil {
+			slog.Error("redis revocation check failed on /me, blocking request", "error", errRev)
+			httpresponse.Error(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized: security check failed")
+			return
+		}
+		if revoked {
+			httpresponse.Error(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized: token revoked")
+			return
 		}
 	}
 
 	dto := UserDTO{
 		ID:          payload.UserID.String(),
-		Role:        payload.Role,
+		Role:        NormalizeRole(payload.Role),
 		CustomerID:  payload.CustomerID.String(),
 		Permissions: GetPermissionsForRole(payload.Role),
 	}
@@ -223,6 +232,7 @@ func (h *AuthHandler) me(w http.ResponseWriter, r *http.Request) {
 	httpresponse.JSON(w, http.StatusOK, dto)
 }
 
+// RegisterRequest carries admin-provisioned user creation data for the register endpoint.
 type RegisterRequest struct {
 	Email      string `json:"email"`
 	Password   string `json:"password"`
@@ -230,6 +240,7 @@ type RegisterRequest struct {
 	CustomerID string `json:"customer_id,omitempty"`
 }
 
+// register creates manager or customer users and is restricted to authenticated admins.
 func (h *AuthHandler) register(w http.ResponseWriter, r *http.Request) {
 	buf := bufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
@@ -246,15 +257,25 @@ func (h *AuthHandler) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := h.authClient.Register(r.Context(), &pb.RegisterRequest{
+	reqRole := NormalizeRole(req.Role)
+	if reqRole != RoleManager && reqRole != RoleUser {
+		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "role must be M or U")
+		return
+	}
+	if reqRole == RoleUser && req.CustomerID == "" {
+		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "customer_id is required for user role")
+		return
+	}
+
+	resp, err := h.authClient.Register(metadata.AppendToOutgoingContext(r.Context(), "x-admin-api-key", string(h.cfg.AdminAPIKey)), &pb.RegisterRequest{
 		Email:      req.Email,
 		Password:   req.Password,
-		Role:       req.Role,
+		Role:       reqRole,
 		CustomerId: req.CustomerID,
 	})
 	if err != nil {
 		slog.Warn("registration failed", "email", req.Email, "error", err)
-		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "registration failed")
 		return
 	}
 

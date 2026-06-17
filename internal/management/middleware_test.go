@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestAuthMiddleware_RequireAuth guards RequireAuth accepts API key or token and enforces role checks.
 func TestAuthMiddleware_RequireAuth(t *testing.T) {
 	cfg := &config.Config{
 		TokenSymmetricKey: "01234567890123456789012345678901",
@@ -36,7 +37,7 @@ func TestAuthMiddleware_RequireAuth(t *testing.T) {
 	})
 
 	t.Run("APIKey_Success", func(t *testing.T) {
-		handler := m.RequireAuth("SA")(targetHandler)
+		handler := m.RequireAuth(RoleAdmin)(targetHandler)
 
 		req, _ := http.NewRequest("GET", "/protected", nil)
 		req.Header.Set("X-Admin-API-Key", "secret-api-key")
@@ -45,11 +46,33 @@ func TestAuthMiddleware_RequireAuth(t *testing.T) {
 		handler.ServeHTTP(resp, req)
 
 		assert.Equal(t, http.StatusOK, resp.Code)
-		assert.Equal(t, "role:SA", resp.Body.String())
+		assert.Equal(t, "role:"+RoleAdmin, resp.Body.String())
+	})
+
+	t.Run("APIKey_StablePrincipal", func(t *testing.T) {
+		var captured AuthenticatedUser
+		handler := m.RequirePermission(PermSettingsWrite)(func(w http.ResponseWriter, r *http.Request) {
+			u, ok := GetUser(r.Context())
+			if !ok {
+				http.Error(w, "missing user", http.StatusInternalServerError)
+				return
+			}
+			captured = u
+			w.WriteHeader(http.StatusOK)
+		})
+
+		req, _ := http.NewRequest("GET", "/protected", nil)
+		req.Header.Set("X-Admin-API-Key", "secret-api-key")
+		resp := httptest.NewRecorder()
+		handler.ServeHTTP(resp, req)
+
+		assert.Equal(t, http.StatusOK, resp.Code)
+		assert.Equal(t, apiKeyPrincipalID("secret-api-key"), captured.UserID)
+		assert.Equal(t, "api_key", captured.AuthSource)
 	})
 
 	t.Run("ValidToken_AllowedRole", func(t *testing.T) {
-		handler := m.RequireAuth("M", "SA")(targetHandler)
+		handler := m.RequireAuth(RoleManager, RoleAdmin)(targetHandler)
 
 		token, _ := tokenMaker.CreateToken(uuid.New(), uuid.New(), "manager", uuid.New(), time.Hour)
 		req, _ := http.NewRequest("GET", "/protected", nil)
@@ -63,7 +86,7 @@ func TestAuthMiddleware_RequireAuth(t *testing.T) {
 	})
 
 	t.Run("ValidToken_ForbiddenRole", func(t *testing.T) {
-		handler := m.RequireAuth("SA")(targetHandler)
+		handler := m.RequireAuth(RoleAdmin)(targetHandler)
 
 		token, _ := tokenMaker.CreateToken(uuid.New(), uuid.New(), "customer", uuid.New(), time.Hour)
 		req, _ := http.NewRequest("GET", "/protected", nil)
@@ -76,7 +99,7 @@ func TestAuthMiddleware_RequireAuth(t *testing.T) {
 	})
 
 	t.Run("MissingToken", func(t *testing.T) {
-		handler := m.RequireAuth("SA")(targetHandler)
+		handler := m.RequireAuth(RoleAdmin)(targetHandler)
 
 		req, _ := http.NewRequest("GET", "/protected", nil)
 		resp := httptest.NewRecorder()
@@ -87,9 +110,9 @@ func TestAuthMiddleware_RequireAuth(t *testing.T) {
 	})
 
 	t.Run("ExpiredToken", func(t *testing.T) {
-		handler := m.RequireAuth("SA")(targetHandler)
+		handler := m.RequireAuth(RoleAdmin)(targetHandler)
 
-		token, _ := tokenMaker.CreateToken(uuid.New(), uuid.New(), "SA", uuid.New(), -time.Hour)
+		token, _ := tokenMaker.CreateToken(uuid.New(), uuid.New(), RoleAdmin, uuid.New(), -time.Hour)
 		req, _ := http.NewRequest("GET", "/protected", nil)
 		req.AddCookie(&http.Cookie{Name: "accessToken", Value: token})
 		resp := httptest.NewRecorder()
@@ -100,6 +123,7 @@ func TestAuthMiddleware_RequireAuth(t *testing.T) {
 	})
 }
 
+// TestAuthMiddleware_RedisOutage guards RequireAuth fails closed when session Redis is unavailable.
 func TestAuthMiddleware_RedisOutage(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")
@@ -122,15 +146,14 @@ func TestAuthMiddleware_RedisOutage(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := m.RequireAuth("SA")(targetHandler)
+	handler := m.RequireAuth(RoleAdmin)(targetHandler)
 
-	token, _ := tokenMaker.CreateToken(uuid.New(), uuid.New(), "SA", uuid.New(), time.Hour)
+	token, _ := tokenMaker.CreateToken(uuid.New(), uuid.New(), RoleAdmin, uuid.New(), time.Hour)
 	req, _ := http.NewRequest("GET", "/protected", nil)
 	req.AddCookie(&http.Cookie{Name: "accessToken", Value: token})
 	resp := httptest.NewRecorder()
 
 	handler.ServeHTTP(resp, req)
 
-	assert.Equal(t, http.StatusInternalServerError, resp.Code)
-	assert.Contains(t, resp.Body.String(), "security subsystem unavailable")
+	assert.Equal(t, http.StatusUnauthorized, resp.Code)
 }

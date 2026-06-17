@@ -9,8 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestCSRFMiddleware guards CSRF rejects mutating requests without a matching cookie and header.
 func TestCSRFMiddleware(t *testing.T) {
-	mdl := NewCSRFMiddleware()
+	mdl := NewCSRFMiddleware("")
 
 	dummyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -74,6 +75,18 @@ func TestCSRFMiddleware(t *testing.T) {
 		req, _ := http.NewRequest("POST", "/admin/customers", nil)
 		req.AddCookie(&http.Cookie{Name: "csrfToken", Value: token})
 		req.Header.Set("X-CSRF-Token", token)
+		resp := httptest.NewRecorder()
+
+		handler.ServeHTTP(resp, req)
+
+		assert.Equal(t, http.StatusOK, resp.Code)
+	})
+
+	t.Run("POST_AdminAPIKey_SkipsCSRF", func(t *testing.T) {
+		mdl := NewCSRFMiddleware("secret-key")
+		handler := mdl(dummyHandler)
+		req, _ := http.NewRequest("POST", "/admin/customers", nil)
+		req.Header.Set("X-Admin-API-Key", "secret-key")
 		resp := httptest.NewRecorder()
 
 		handler.ServeHTTP(resp, req)

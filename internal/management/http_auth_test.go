@@ -14,6 +14,7 @@ import (
 	"espx/internal/auth"
 	"espx/internal/auth/pb"
 	"espx/internal/config"
+	"espx/internal/database"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -49,6 +50,7 @@ func (m *mockAuthClient) RefreshToken(ctx context.Context, in *pb.RefreshTokenRe
 	return nil, errors.New("unexpected call to RefreshToken")
 }
 
+// TestAuthHandler_Login guards login sets secure cookies, CSRF token, and role permissions on success.
 func TestAuthHandler_Login(t *testing.T) {
 	cfg := &config.Config{
 		TokenSymmetricKey: "01234567890123456789012345678901",
@@ -75,7 +77,7 @@ func TestAuthHandler_Login(t *testing.T) {
 		},
 	}
 
-	h := NewAuthHandler(mockClient, tokenMaker, nil, cfg)
+	h := NewAuthHandler(mockClient, tokenMaker, nil, cfg, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -125,7 +127,7 @@ func TestAuthHandler_Login(t *testing.T) {
 		err := json.NewDecoder(resp.Body).Decode(&res)
 		require.NoError(t, err)
 		assert.Equal(t, "user-123", res["user"].ID)
-		assert.Equal(t, "admin", res["user"].Role)
+		assert.Equal(t, RoleAdmin, res["user"].Role)
 		assert.Contains(t, res["user"].Permissions, "customers:write")
 	})
 
@@ -141,6 +143,7 @@ func TestAuthHandler_Login(t *testing.T) {
 	})
 }
 
+// TestAuthHandler_Logout guards logout revokes refresh token and clears session cookies.
 func TestAuthHandler_Logout(t *testing.T) {
 	cfg := &config.Config{
 		TokenSymmetricKey: "01234567890123456789012345678901",
@@ -155,7 +158,7 @@ func TestAuthHandler_Logout(t *testing.T) {
 		},
 	}
 
-	h := NewAuthHandler(mockClient, tokenMaker, nil, cfg)
+	h := NewAuthHandler(mockClient, tokenMaker, nil, cfg, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -174,6 +177,7 @@ func TestAuthHandler_Logout(t *testing.T) {
 	}
 }
 
+// TestAuthHandler_Refresh guards refresh rotates access and refresh cookies on valid token.
 func TestAuthHandler_Refresh(t *testing.T) {
 	cfg := &config.Config{
 		TokenSymmetricKey: "01234567890123456789012345678901",
@@ -192,7 +196,7 @@ func TestAuthHandler_Refresh(t *testing.T) {
 		},
 	}
 
-	h := NewAuthHandler(mockClient, tokenMaker, nil, cfg)
+	h := NewAuthHandler(mockClient, tokenMaker, nil, cfg, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -210,6 +214,7 @@ func TestAuthHandler_Refresh(t *testing.T) {
 	})
 }
 
+// TestAuthHandler_Me guards /me returns identity and permissions from a valid access token.
 func TestAuthHandler_Me(t *testing.T) {
 	cfg := &config.Config{
 		TokenSymmetricKey: "01234567890123456789012345678901",
@@ -222,7 +227,7 @@ func TestAuthHandler_Me(t *testing.T) {
 	token, err := tokenMaker.CreateToken(userID, sessionID, "admin", customerID, time.Hour)
 	require.NoError(t, err)
 
-	h := NewAuthHandler(nil, tokenMaker, nil, cfg)
+	h := NewAuthHandler(nil, tokenMaker, nil, cfg, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -238,7 +243,42 @@ func TestAuthHandler_Me(t *testing.T) {
 	err = json.NewDecoder(resp.Body).Decode(&dto)
 	require.NoError(t, err)
 	assert.Equal(t, userID.String(), dto.ID)
-	assert.Equal(t, "admin", dto.Role)
+	assert.Equal(t, RoleAdmin, dto.Role)
 	assert.Equal(t, customerID.String(), dto.CustomerID)
 	assert.Contains(t, dto.Permissions, "campaigns:write")
+}
+
+// TestAuthHandler_MeRedisOutage guards /me fails closed when session validation Redis is unavailable.
+func TestAuthHandler_MeRedisOutage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	rdb, cleanupRedis := database.SetupTestRedis(t)
+	defer cleanupRedis()
+	_ = rdb.Close()
+
+	cfg := &config.Config{
+		TokenSymmetricKey: "01234567890123456789012345678901",
+	}
+	tokenMaker, err := auth.NewPasetoMaker(string(cfg.TokenSymmetricKey))
+	require.NoError(t, err)
+
+	userID := uuid.New()
+	customerID := uuid.New()
+	token, err := tokenMaker.CreateToken(userID, uuid.New(), RoleAdmin, customerID, time.Hour)
+	require.NoError(t, err)
+
+	h := NewAuthHandler(nil, tokenMaker, rdb, cfg, nil)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req, _ := http.NewRequest("GET", "/api/v1/auth/me", nil)
+	req.AddCookie(&http.Cookie{Name: "accessToken", Value: token})
+	resp := httptest.NewRecorder()
+
+	mux.ServeHTTP(resp, req)
+
+	assert.Equal(t, http.StatusInternalServerError, resp.Code)
+	assert.Contains(t, resp.Body.String(), "security subsystem unavailable")
 }
