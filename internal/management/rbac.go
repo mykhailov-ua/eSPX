@@ -2,44 +2,64 @@ package management
 
 import "strings"
 
+const (
+	RoleAdmin   = "A"
+	RoleManager = "M"
+	RoleUser    = "U"
+)
+
 var rolePermissions = map[string][]string{
-	"SA": {
+	RoleAdmin: {
 		"customers:write", "customers:read",
 		"campaigns:write", "campaigns:read",
+		"brands:write", "brands:read",
 		"settings:write", "settings:read",
 		"blacklist:write", "blacklist:read",
 		"audit:read",
+		"users:write",
 	},
-	"M": {
+	RoleManager: {
 		"customers:write", "customers:read",
 		"campaigns:write", "campaigns:read",
+		"brands:write", "brands:read",
 		"audit:read",
 	},
-	"C": {
+	RoleUser: {
 		"campaigns:write", "campaigns:read",
 		"customers:read",
-	},
-	"G": {
-		"campaigns:read",
+		"brands:write", "brands:read",
 	},
 }
 
-func GetPermissionsForRole(role string) []string {
-	normalized := strings.ToUpper(strings.TrimSpace(role))
-	switch normalized {
-	case "SUPERADMIN", "ADMIN", "SA":
-		normalized = "SA"
+// NormalizeRole maps legacy and verbose role strings to the compact codes used internally.
+func NormalizeRole(role string) string {
+	switch strings.ToUpper(strings.TrimSpace(role)) {
+	case "SUPERADMIN", "ADMIN", "SA", "A":
+		return RoleAdmin
 	case "MANAGER", "M":
-		normalized = "M"
-	case "CUSTOMER", "USER", "C":
-		normalized = "C"
-	case "GUEST", "G":
-		normalized = "G"
+		return RoleManager
+	case "CUSTOMER", "USER", "C", "U":
+		return RoleUser
+	default:
+		return strings.ToUpper(strings.TrimSpace(role))
 	}
+}
 
-	perms, exists := rolePermissions[normalized]
+// GetPermissionsForRole returns the permission strings exposed to the frontend for a given role.
+func GetPermissionsForRole(role string) []string {
+	perms, exists := rolePermissions[NormalizeRole(role)]
 	if !exists {
 		return []string{}
 	}
 	return perms
+}
+
+// HasPermission checks whether a role may perform an action identified by a permission string.
+func HasPermission(role, permission string) bool {
+	for _, p := range rolePermissions[NormalizeRole(role)] {
+		if p == permission {
+			return true
+		}
+	}
+	return false
 }
