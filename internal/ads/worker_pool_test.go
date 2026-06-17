@@ -6,6 +6,7 @@ import (
 	"testing"
 )
 
+// Guards pinned worker pool executes jobs and rejects when queue is saturated.
 func TestPinnedWorkerPool(t *testing.T) {
 	pool := NewPinnedWorkerPool(4, 1024)
 	defer pool.Shutdown()
@@ -33,6 +34,7 @@ func TestPinnedWorkerPool(t *testing.T) {
 	}
 }
 
+// Tracks pinned worker pool submit cost for gnet handler capacity planning.
 func BenchmarkPinnedWorkerPool(b *testing.B) {
 	benchmarks := []struct {
 		name      string

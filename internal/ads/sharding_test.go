@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 )
 
+// Guards CRC32 Castagnoli hash matches expected values for routing keys.
 func TestCRC32Castagnoli(t *testing.T) {
 	table := crc32.MakeTable(crc32.Castagnoli)
 	ids := []uuid.UUID{uuid.Nil, uuid.New(), uuid.New(), uuid.New()}
@@ -18,6 +19,7 @@ func TestCRC32Castagnoli(t *testing.T) {
 	}
 }
 
+// Guards jump hash maps campaign IDs to valid shard indices.
 func TestJumpHashSharder_GetShard(t *testing.T) {
 	numShards := 10
 	sharder := NewJumpHashSharder(numShards)
@@ -52,6 +54,7 @@ func TestJumpHashSharder_GetShard(t *testing.T) {
 	}
 }
 
+// Guards same campaign ID always maps to the same shard.
 func TestJumpHashSharder_Consistency(t *testing.T) {
 	id := uuid.New()
 
@@ -66,6 +69,7 @@ func TestJumpHashSharder_Consistency(t *testing.T) {
 	}
 }
 
+// Guards shard mapping stays stable when shard count decreases.
 func TestJumpHashSharder_ScaleDown(t *testing.T) {
 	id := uuid.New()
 
@@ -86,6 +90,7 @@ func TestJumpHashSharder_ScaleDown(t *testing.T) {
 	}
 }
 
+// Guards jump hash handles min and max UUID boundary inputs.
 func TestJumpHashSharder_BoundaryValues(t *testing.T) {
 	tests := []struct {
 		numBuckets int
@@ -105,6 +110,7 @@ func TestJumpHashSharder_BoundaryValues(t *testing.T) {
 	}
 }
 
+// Guards nil UUID maps to a valid shard without panic.
 func TestJumpHashSharder_NilUUID(t *testing.T) {
 	s := NewJumpHashSharder(10)
 	shard1 := s.GetShard(uuid.Nil)
@@ -115,6 +121,7 @@ func TestJumpHashSharder_NilUUID(t *testing.T) {
 	}
 }
 
+// Tracks jump hash shard lookup cost at 10 shards.
 func BenchmarkJumpHashSharder_10(b *testing.B) {
 	s := NewJumpHashSharder(10)
 	id := uuid.New()
@@ -124,6 +131,7 @@ func BenchmarkJumpHashSharder_10(b *testing.B) {
 	}
 }
 
+// Tracks jump hash shard lookup cost at 1024 shards.
 func BenchmarkJumpHashSharder_1024(b *testing.B) {
 	s := NewJumpHashSharder(1024)
 	id := uuid.New()
@@ -133,6 +141,7 @@ func BenchmarkJumpHashSharder_1024(b *testing.B) {
 	}
 }
 
+// Guards static slot sharder maps IDs to configured slot range.
 func TestStaticSlotSharder_GetShard(t *testing.T) {
 	numShards := 10
 	sharder := NewStaticSlotSharder(numShards)
@@ -152,6 +161,7 @@ func TestStaticSlotSharder_GetShard(t *testing.T) {
 	}
 }
 
+// Tracks static slot shard lookup cost at 10 shards.
 func BenchmarkStaticSlotSharder_10(b *testing.B) {
 	s := NewStaticSlotSharder(10)
 	id := uuid.New()
@@ -161,11 +171,48 @@ func BenchmarkStaticSlotSharder_10(b *testing.B) {
 	}
 }
 
+// Tracks static slot shard lookup cost at 1024 shards.
 func BenchmarkStaticSlotSharder_1024(b *testing.B) {
 	s := NewStaticSlotSharder(1024)
 	id := uuid.New()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = s.GetShard(id)
+	}
+}
+
+// Documents shard migration blast radius when shard count changes for ops runbooks.
+func TestSharderRebalanceImpact(t *testing.T) {
+	const N = 6
+	const samples = 10000
+	ids := make([]uuid.UUID, samples)
+	for i := range ids {
+		ids[i] = uuid.New()
+	}
+
+	staticOld := NewStaticSlotSharder(N)
+	staticNew := NewStaticSlotSharder(N + 1)
+	jumpOld := NewJumpHashSharder(N)
+	jumpNew := NewJumpHashSharder(N + 1)
+
+	var staticMoves, jumpMoves int
+	for _, id := range ids {
+		if staticOld.GetShard(id) != staticNew.GetShard(id) {
+			staticMoves++
+		}
+		if jumpOld.GetShard(id) != jumpNew.GetShard(id) {
+			jumpMoves++
+		}
+	}
+
+	staticFrac := float64(staticMoves) / samples
+	jumpFrac := float64(jumpMoves) / samples
+	t.Logf("N=%d->%d samples=%d: static moved=%.1f%% jump moved=%.1f%%", N, N+1, samples, staticFrac*100, jumpFrac*100)
+
+	if staticFrac < 0.7 {
+		t.Errorf("static should move majority on reshard, got %.1f%%", staticFrac*100)
+	}
+	if jumpFrac > 0.25 {
+		t.Errorf("jump should move ~1/N fraction, got %.1f%%", jumpFrac*100)
 	}
 }

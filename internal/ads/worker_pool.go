@@ -7,23 +7,24 @@ import (
 	"time"
 )
 
+// Slot holds one queued task in the MPSC ring buffer.
 type Slot struct {
 	task  func()
 	ready atomic.Bool
 }
 
-// MPSCQueue is a lock-free MPSC ring buffer with cache-line padding between
-// producer write and consumer read indices to avoid false sharing.
+// MPSCQueue isolates producer and consumer cache lines to reduce false sharing under load.
 type MPSCQueue struct {
-	_     [8]uint64 // cache line padding (64 bytes)
+	_     [8]uint64
 	write uint64
-	_     [8]uint64 // cache line padding (64 bytes)
+	_     [8]uint64
 	read  uint64
-	_     [8]uint64 // cache line padding (64 bytes)
+	_     [8]uint64
 	mask  uint64
 	ring  []Slot
 }
 
+// NewMPSCQueue allocates a power-of-two MPSC ring for worker task submission.
 func NewMPSCQueue(size uint64) *MPSCQueue {
 	if size == 0 || (size&(size-1)) != 0 {
 		size = 4096
@@ -34,6 +35,7 @@ func NewMPSCQueue(size uint64) *MPSCQueue {
 	}
 }
 
+// Push enqueues a task from any producer goroutine; returns false when the ring is full.
 func (q *MPSCQueue) Push(fn func()) bool {
 	for {
 		w := atomic.LoadUint64(&q.write)
@@ -50,6 +52,7 @@ func (q *MPSCQueue) Push(fn func()) bool {
 	}
 }
 
+// Pop dequeues the next ready task for a pinned worker.
 func (q *MPSCQueue) Pop() (func(), bool) {
 	r := atomic.LoadUint64(&q.read)
 	w := atomic.LoadUint64(&q.write)
@@ -67,12 +70,14 @@ func (q *MPSCQueue) Pop() (func(), bool) {
 	return fn, true
 }
 
+// Worker runs tasks on a dedicated OS thread for predictable gnet offload latency.
 type Worker struct {
 	pool  *PinnedWorkerPool
 	id    int
 	queue *MPSCQueue
 }
 
+// start loops forever dequeuing and executing tasks on a locked OS thread.
 func (w *Worker) start() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -113,6 +118,7 @@ func (w *Worker) start() {
 	}
 }
 
+// PinnedWorkerPool offloads gnet React work to pinned threads to keep the event loop responsive.
 type PinnedWorkerPool struct {
 	workers []*Worker
 	round   uint64
@@ -120,6 +126,7 @@ type PinnedWorkerPool struct {
 	closed  int32
 }
 
+// NewPinnedWorkerPool starts pinned workers each with its own MPSC queue.
 func NewPinnedWorkerPool(size int, queueSize int) *PinnedWorkerPool {
 	if size <= 0 {
 		size = runtime.GOMAXPROCS(0)
@@ -144,6 +151,7 @@ func NewPinnedWorkerPool(size int, queueSize int) *PinnedWorkerPool {
 	return p
 }
 
+// Submit schedules fn on the next worker; returns false when all queues are saturated.
 func (p *PinnedWorkerPool) Submit(fn func()) bool {
 	if atomic.LoadInt32(&p.closed) == 1 {
 		return false
@@ -166,6 +174,7 @@ func (p *PinnedWorkerPool) Submit(fn func()) bool {
 	return false
 }
 
+// Shutdown closes the pool and waits for in-flight tasks to finish.
 func (p *PinnedWorkerPool) Shutdown() {
 	if atomic.CompareAndSwapInt32(&p.closed, 0, 1) {
 		p.wg.Wait()

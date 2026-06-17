@@ -2,6 +2,8 @@ package ads
 
 import (
 	"context"
+	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -10,72 +12,76 @@ import (
 	redis "github.com/redis/go-redis/v9"
 )
 
-var (
-	staticCmd       = redis.NewCmd(context.Background())
-	staticStatusCmd = redis.NewStatusCmd(context.Background())
-	staticStringCmd = redis.NewStringCmd(context.Background())
-	staticBoolCmd   = redis.NewBoolCmd(context.Background())
-)
+type errGeoProvider struct{}
 
-type mockRedisClient struct {
-	redis.UniversalClient
+func (errGeoProvider) GetCountry(ip string) (string, error) {
+	return "", errors.New("geo lookup failed")
 }
+func (errGeoProvider) IsAnonymous(ip string) (bool, error) { return false, nil }
+func (errGeoProvider) Close() error                        { return nil }
 
-type mockPipeliner struct {
-	redis.Pipeliner
-	incrCmd *redis.IntCmd
-	doCmd   *redis.Cmd
-}
+// Shared geo filter benchmark setup with configurable provider.
+func benchGeoFilterWithCountries(b *testing.B, geo GeoProvider) {
+	campID := uuid.New()
+	cachedMockCamp.Store(&domain.Campaign{
+		ID:              campID,
+		TargetCountries: map[string]struct{}{"US": {}},
+	})
+	b.Cleanup(func() { cachedMockCamp.Store(nil) })
 
-func (m *mockPipeliner) Incr(ctx context.Context, key string) *redis.IntCmd {
-	m.incrCmd.SetVal(1)
-	return m.incrCmd
-}
+	f := NewGeoFilter(geo, &mockRegistry{})
+	evt := &domain.Event{
+		IP:         "8.8.8.8",
+		CampaignID: campID,
+	}
+	ctx := context.Background()
 
-func (m *mockPipeliner) Do(ctx context.Context, args ...any) *redis.Cmd {
-	return m.doCmd
-}
-
-func (m *mockPipeliner) Exec(ctx context.Context) ([]redis.Cmder, error) {
-	return nil, nil
-}
-
-func (m *mockRedisClient) Pipeline() redis.Pipeliner {
-	return &mockPipeliner{
-		incrCmd: redis.NewIntCmd(context.Background()),
-		doCmd:   redis.NewCmd(context.Background()),
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = f.Check(ctx, evt)
 	}
 }
 
-func (m *mockRedisClient) Set(ctx context.Context, key string, value any, expiration time.Duration) *redis.StatusCmd {
-	return staticStatusCmd
+// Tracks geo filter cost when lookup returns error.
+func BenchmarkGeoFilter_lookupError(b *testing.B) {
+	benchGeoFilterWithCountries(b, errGeoProvider{})
 }
 
-func (m *mockRedisClient) Get(ctx context.Context, key string) *redis.StringCmd {
-	staticStringCmd.SetVal("1716223400000")
-	return staticStringCmd
+// Tracks geo filter cost on successful country match.
+func BenchmarkGeoFilter_lookupOK(b *testing.B) {
+	benchGeoFilterWithCountries(b, &MockGeoProvider{})
 }
 
-func (m *mockRedisClient) Eval(ctx context.Context, script string, keys []string, args ...any) *redis.Cmd {
-	staticCmd.SetVal(int64(0))
-	return staticCmd
+// Tracks geo filter cost with real MaxMind country lookup.
+func BenchmarkGeoFilter_MaxMindCountry(b *testing.B) {
+	const path = "deploy/geoip/GeoLite2-Country.mmdb"
+	if _, err := os.Stat(path); err != nil {
+		b.Skip("GeoLite2-Country.mmdb not present at " + path)
+	}
+	geo, err := NewMaxMindProvider(path)
+	if err != nil {
+		b.Fatalf("open mmdb: %v", err)
+	}
+	b.Cleanup(func() { _ = geo.Close() })
+	benchGeoFilterWithCountries(b, geo)
 }
 
-func (m *mockRedisClient) EvalSha(ctx context.Context, sha1 string, keys []string, args ...any) *redis.Cmd {
-	staticCmd.SetVal(int64(0))
-	return staticCmd
+// Tracks fraud filter datacenter IP check cost.
+func BenchmarkFraudFilter_DC(b *testing.B) {
+	geo := &MockGeoProvider{}
+	f := NewFraudFilter(geo)
+	evt := &domain.Event{
+		IP: "1.1.1.66",
+	}
+	ctx := context.Background()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = f.Check(ctx, evt)
+	}
 }
 
-func (m *mockRedisClient) ScriptLoad(ctx context.Context, script string) *redis.StringCmd {
-	staticStringCmd.SetVal("d3b07384d113edec49eaa6238ad5ff00")
-	return staticStringCmd
-}
-
-func (m *mockRedisClient) SetNX(ctx context.Context, key string, value any, expiration time.Duration) *redis.BoolCmd {
-	staticBoolCmd.SetVal(true)
-	return staticBoolCmd
-}
-
+// Tracks geo filter end-to-end check cost.
 func BenchmarkGeoFilter(b *testing.B) {
 	geo := &MockGeoProvider{}
 	registry := &mockRegistry{}
@@ -92,56 +98,7 @@ func BenchmarkGeoFilter(b *testing.B) {
 	}
 }
 
-func BenchmarkFraudFilter_DC(b *testing.B) {
-	geo := &MockGeoProvider{}
-	f := NewFraudFilter(geo, nil, 300*time.Millisecond)
-	evt := &domain.Event{
-		IP: "1.1.1.66",
-	}
-	ctx := context.Background()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = f.Check(ctx, evt)
-	}
-}
-
-func BenchmarkFraudFilter_CheckImpression(b *testing.B) {
-	geo := &MockGeoProvider{}
-	rdb := &mockRedisClient{}
-	f := NewFraudFilter(geo, rdb, 300*time.Millisecond)
-	evt := &domain.Event{
-		Type:       "impression",
-		IP:         "1.1.1.1",
-		UserID:     "user123",
-		CampaignID: uuid.New(),
-	}
-	ctx := context.Background()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = f.Check(ctx, evt)
-	}
-}
-
-func BenchmarkFraudFilter_CheckClick(b *testing.B) {
-	geo := &MockGeoProvider{}
-	rdb := &mockRedisClient{}
-	f := NewFraudFilter(geo, rdb, 300*time.Millisecond)
-	evt := &domain.Event{
-		Type:       "click",
-		IP:         "1.1.1.1",
-		UserID:     "user123",
-		CampaignID: uuid.New(),
-	}
-	ctx := context.Background()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = f.Check(ctx, evt)
-	}
-}
-
+// Tracks IP rate limiter Redis check cost per event.
 func BenchmarkIPRateLimiter_Check(b *testing.B) {
 	rdb := &mockRedisClient{}
 	l := NewIPRateLimiter(rdb, 100, 10*time.Minute)
@@ -156,6 +113,7 @@ func BenchmarkIPRateLimiter_Check(b *testing.B) {
 	}
 }
 
+// Tracks duplicate event filter Redis SET NX cost.
 func BenchmarkDuplicateEventFilter_Check(b *testing.B) {
 	rdb := &mockRedisClient{}
 	f := NewDuplicateEventFilter(rdb, 1*time.Hour)
@@ -171,7 +129,8 @@ func BenchmarkDuplicateEventFilter_Check(b *testing.B) {
 	}
 }
 
-func BenchmarkKeyFormatting_FraudFilter(b *testing.B) {
+// Tracks impression timestamp key format allocation cost.
+func BenchmarkKeyFormatting_impTSKey(b *testing.B) {
 	evt := &domain.Event{
 		UserID:     "user123",
 		CampaignID: uuid.New(),
@@ -190,6 +149,7 @@ func BenchmarkKeyFormatting_FraudFilter(b *testing.B) {
 	}
 }
 
+// Tracks IP rate limiter key format allocation cost.
 func BenchmarkKeyFormatting_IPRateLimiter(b *testing.B) {
 	evt := &domain.Event{
 		IP: "192.168.1.1",
@@ -206,6 +166,7 @@ func BenchmarkKeyFormatting_IPRateLimiter(b *testing.B) {
 	}
 }
 
+// Tracks duplicate event key format allocation cost.
 func BenchmarkKeyFormatting_DuplicateEventFilter(b *testing.B) {
 	evt := &domain.Event{
 		Type:    "click",
@@ -225,6 +186,7 @@ func BenchmarkKeyFormatting_DuplicateEventFilter(b *testing.B) {
 	}
 }
 
+// Tracks unified filter Lua check cost with mock Redis.
 func BenchmarkUnifiedFilter_Check(b *testing.B) {
 	rdb := &mockRedisClient{}
 	sharder := NewJumpHashSharder(1)
@@ -260,6 +222,7 @@ func BenchmarkUnifiedFilter_Check(b *testing.B) {
 	}
 }
 
+// Tracks Redis budget check-and-spend Lua cost.
 func BenchmarkRedisBudgetManager_CheckAndSpend(b *testing.B) {
 	rdb := &mockRedisClient{}
 	bm := NewRedisBudgetManager(rdb, nil, time.Hour)

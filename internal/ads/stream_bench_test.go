@@ -10,8 +10,10 @@ import (
 	"espx/internal/ads/pb"
 	"espx/internal/domain"
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/require"
 )
 
+// Tracks flat stream write cost as legacy serialization baseline.
 func BenchmarkStreamWriteFlat(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -24,6 +26,7 @@ func BenchmarkStreamWriteFlat(b *testing.B) {
 	}
 }
 
+// Tracks protobuf stream write cost for hot-path migration gates.
 func BenchmarkStreamWriteProto(b *testing.B) {
 	evt := &domain.Event{
 		ClickID:    "c_12345_67890_abcdef",
@@ -79,6 +82,7 @@ func BenchmarkStreamWriteProto(b *testing.B) {
 	}
 }
 
+// Tracks flat stream read and decode cost as legacy baseline.
 func BenchmarkStreamReadFlat(b *testing.B) {
 	cid := uuid.New()
 	values := map[string]interface{}{
@@ -133,6 +137,7 @@ func BenchmarkStreamReadFlat(b *testing.B) {
 	}
 }
 
+// Tracks protobuf stream read cost for consumer hot path.
 func BenchmarkStreamReadProto(b *testing.B) {
 	evtSetup := &domain.Event{
 		ClickID:    "c_12345_67890_abcdef",
@@ -196,6 +201,7 @@ func BenchmarkStreamReadProto(b *testing.B) {
 	}
 }
 
+// Guards protobuf stream payloads stay smaller than flat encoding for capacity planning.
 func TestStreamPayloadSizeComparison(t *testing.T) {
 	evt := &domain.Event{
 		ClickID:    "c_12345_67890_abcdef",
@@ -224,15 +230,16 @@ func TestStreamPayloadSizeComparison(t *testing.T) {
 		Ua:            []byte(evt.UA),
 		CreatedAtUnix: evt.CreatedAt.Unix(),
 	}
-	protoBytes, _ := pbEvt.MarshalVT()
+	protoBytes, err := pbEvt.MarshalVT()
+	require.NoError(t, err)
 	protoSize := len(protoBytes)
 
-	t.Logf("PAYLOAD SIZE COMPARISON")
-	t.Logf("Flat map raw size: %d bytes", flatSize)
-	t.Logf("Protobuf binary size: %d bytes", protoSize)
-	t.Logf("Size reduction: %.1f%%", float64(flatSize-protoSize)/float64(flatSize)*100.0)
+	require.Greater(t, flatSize, 0)
+	require.Less(t, protoSize, flatSize, "protobuf stream payload should be smaller than flat encoding")
+	t.Logf("flat=%d proto=%d reduction=%.1f%%", flatSize, protoSize, float64(flatSize-protoSize)/float64(flatSize)*100.0)
 }
 
+// Tracks flat DLQ write cost as legacy failure-path baseline.
 func BenchmarkDLQWriteFlat(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -245,6 +252,7 @@ func BenchmarkDLQWriteFlat(b *testing.B) {
 	}
 }
 
+// Tracks protobuf DLQ write cost for failure-path migration.
 func BenchmarkDLQWriteProto(b *testing.B) {
 	evt := &domain.Event{
 		ClickID:    "c_12345_67890_abcdef",
@@ -314,6 +322,7 @@ func BenchmarkDLQWriteProto(b *testing.B) {
 	}
 }
 
+// Guards DLQ protobuf payloads stay smaller than flat encoding for retention cost.
 func TestDLQPayloadSizeComparison(t *testing.T) {
 	evt := &domain.Event{
 		ClickID:    "c_12345_67890_abcdef",
@@ -358,11 +367,11 @@ func TestDLQPayloadSizeComparison(t *testing.T) {
 		WorkerId:     []byte(workerID),
 		RetryCount:   3,
 	}
-	protoBytes, _ := pbDLQ.MarshalVT()
+	protoBytes, err := pbDLQ.MarshalVT()
+	require.NoError(t, err)
 	protoSize := len(protoBytes)
 
-	t.Logf("DLQ PAYLOAD SIZE COMPARISON")
-	t.Logf("Flat map DLQ raw size: %d bytes", flatSize)
-	t.Logf("Protobuf DLQ binary size: %d bytes", protoSize)
-	t.Logf("Size reduction: %.1f%%", float64(flatSize-protoSize)/float64(flatSize)*100.0)
+	require.Greater(t, flatSize, 0)
+	require.Less(t, protoSize, flatSize, "protobuf DLQ payload should be smaller than flat encoding")
+	t.Logf("flat=%d proto=%d reduction=%.1f%%", flatSize, protoSize, float64(flatSize-protoSize)/float64(flatSize)*100.0)
 }

@@ -3,8 +3,6 @@ package ads
 import (
 	"context"
 	"errors"
-	"log/slog"
-	"strconv"
 	"sync"
 	"time"
 	"unsafe"
@@ -14,6 +12,7 @@ import (
 	redis "github.com/redis/go-redis/v9"
 )
 
+// Filter rejection errors returned to track handlers and metrics classifiers.
 var (
 	ErrRateLimitExceeded      = errors.New("rate limit exceeded")
 	ErrDuplicateEvent         = errors.New("duplicate event detected")
@@ -22,15 +21,18 @@ var (
 	ErrPacingExhausted        = errors.New("pacing exhausted")
 	ErrFreqLimitExceeded      = errors.New("frequency limit exceeded")
 	ErrGeoBlocked             = errors.New("geo-targeting blocked")
+	ErrScheduleBlocked        = errors.New("outside delivery schedule")
 	ErrFraudDetected          = errors.New("fraud detected")
 	ErrEmergencyBreakerActive = errors.New("service temporarily unavailable (emergency breaker active)")
 	ErrBidFloorNotMet         = errors.New("bid floor not met")
 )
 
+// bufWrapper holds a reusable byte buffer for zero-allocation Redis key construction.
 type bufWrapper struct {
 	buf []byte
 }
 
+// bufPool recycles key buffers shared across filter implementations.
 var bufPool = sync.Pool{
 	New: func() any {
 		return &bufWrapper{
@@ -39,8 +41,10 @@ var bufPool = sync.Pool{
 	},
 }
 
+// hexChars is the lookup table for allocation-free UUID string formatting.
 const hexChars = "0123456789abcdef"
 
+// appendUUID formats a UUID into dst without fmt or strconv allocations.
 func appendUUID(dst []byte, u uuid.UUID) []byte {
 	return append(dst,
 		hexChars[u[0]>>4], hexChars[u[0]&0xf],
@@ -66,6 +70,7 @@ func appendUUID(dst []byte, u uuid.UUID) []byte {
 	)
 }
 
+// unsafeString views a byte slice as a string without copying when lifetime is bounded.
 func unsafeString(b []byte) string {
 	if len(b) == 0 {
 		return ""
@@ -73,35 +78,19 @@ func unsafeString(b []byte) string {
 	return unsafe.String(&b[0], len(b))
 }
 
-type TimestampVal struct {
-	val int64
-	buf [32]byte
-}
-
-func (t *TimestampVal) MarshalBinary() ([]byte, error) {
-	return strconv.AppendInt(t.buf[:0], t.val, 10), nil
-}
-
-var timestampPool = sync.Pool{
-	New: func() any {
-		return &TimestampVal{}
-	},
-}
-
+// FraudFilter flags datacenter and proxy IPs before events enter billing paths.
 type FraudFilter struct {
-	geo    GeoProvider
-	rdb    redis.UniversalClient
-	ttcMin time.Duration
+	geo GeoProvider
 }
 
-func NewFraudFilter(geo GeoProvider, rdb redis.UniversalClient, ttcMin time.Duration) *FraudFilter {
+// NewFraudFilter builds an IP anonymity gate backed by a GeoProvider.
+func NewFraudFilter(geo GeoProvider) *FraudFilter {
 	return &FraudFilter{
-		geo:    geo,
-		rdb:    rdb,
-		ttcMin: ttcMin,
+		geo: geo,
 	}
 }
 
+// Check marks anonymous IPs as fraud without blocking on GeoIP lookup failures.
 func (f *FraudFilter) Check(ctx context.Context, evt *domain.Event) error {
 	isAnon, err := f.geo.IsAnonymous(evt.IP)
 	if err == nil && isAnon {
@@ -109,57 +98,16 @@ func (f *FraudFilter) Check(ctx context.Context, evt *domain.Event) error {
 		return ErrFraudDetected
 	}
 
-	if evt.Type == "impression" {
-		w := bufPool.Get().(*bufWrapper)
-		w.buf = w.buf[:0]
-		w.buf = append(w.buf, "imp_ts:"...)
-		w.buf = append(w.buf, evt.UserID...)
-		w.buf = append(w.buf, ':')
-		w.buf = appendUUID(w.buf, evt.CampaignID)
-		key := unsafeString(w.buf)
-
-		tVal := timestampPool.Get().(*TimestampVal)
-		tVal.val = time.Now().UnixMilli()
-		err := f.rdb.Set(ctx, key, tVal, 10*time.Minute).Err()
-		timestampPool.Put(tVal)
-		bufPool.Put(w)
-
-		if err != nil {
-			slog.Error("failed to store impression timestamp in redis", "error", err, "user_id", evt.UserID, "campaign_id", evt.CampaignID)
-		}
-		return nil
-	}
-
-	if evt.Type == "click" {
-		w := bufPool.Get().(*bufWrapper)
-		w.buf = w.buf[:0]
-		w.buf = append(w.buf, "imp_ts:"...)
-		w.buf = append(w.buf, evt.UserID...)
-		w.buf = append(w.buf, ':')
-		w.buf = appendUUID(w.buf, evt.CampaignID)
-		key := unsafeString(w.buf)
-
-		ts, err := f.rdb.Get(ctx, key).Int64()
-		bufPool.Put(w)
-
-		if err == nil {
-			delta := time.Since(time.UnixMilli(ts))
-			if delta < f.ttcMin {
-				evt.FraudReason = "low_ttc:" + delta.String()
-				return ErrFraudDetected
-			}
-		}
-	}
-
 	return nil
 }
 
-// Geo lookup failures are treated as pass to avoid false positives from DB gaps.
+// GeoFilter enforces campaign country targeting without rejecting on transient GeoIP gaps.
 type GeoFilter struct {
 	geo      GeoProvider
 	registry domain.CampaignRegistry
 }
 
+// NewGeoFilter builds a country gate using registry target lists and GeoIP lookups.
 func NewGeoFilter(geo GeoProvider, registry domain.CampaignRegistry) *GeoFilter {
 	return &GeoFilter{
 		geo:      geo,
@@ -167,7 +115,11 @@ func NewGeoFilter(geo GeoProvider, registry domain.CampaignRegistry) *GeoFilter 
 	}
 }
 
+// Check blocks events whose country is outside the campaign target set.
 func (f *GeoFilter) Check(ctx context.Context, evt *domain.Event) error {
+	start := monotonicNano()
+	defer observeHistogramSampled(&geoMetricsSeq, luaMetricsSampleMask, filterGeoDuration, start)
+
 	camp, ok := f.registry.GetCampaign(evt.CampaignID)
 	if !ok {
 		return ErrCampaignNotFound
@@ -179,7 +131,7 @@ func (f *GeoFilter) Check(ctx context.Context, evt *domain.Event) error {
 
 	country, err := f.geo.GetCountry(evt.IP)
 	if err != nil {
-		slog.Warn("geo lookup failed", "ip", evt.IP, "error", err)
+		filterGeoLookupErrors.Inc()
 		return nil
 	}
 
@@ -190,6 +142,7 @@ func (f *GeoFilter) Check(ctx context.Context, evt *domain.Event) error {
 	return ErrGeoBlocked
 }
 
+// BudgetFilter delegates spend checks to the configured budget manager.
 type BudgetFilter struct {
 	manager          domain.BudgetManager
 	registry         domain.CampaignRegistry
@@ -197,6 +150,7 @@ type BudgetFilter struct {
 	impressionAmount int64
 }
 
+// NewBudgetFilter creates a per-event spend gate with type-specific charge amounts.
 func NewBudgetFilter(manager domain.BudgetManager, registry domain.CampaignRegistry, clickAmount, impressionAmount int64) *BudgetFilter {
 	return &BudgetFilter{
 		manager:          manager,
@@ -206,6 +160,7 @@ func NewBudgetFilter(manager domain.BudgetManager, registry domain.CampaignRegis
 	}
 }
 
+// Check spends budget for the event type or returns ErrBudgetExhausted.
 func (f *BudgetFilter) Check(ctx context.Context, evt *domain.Event) error {
 	customerID, ok := f.registry.GetCustomerID(evt.CampaignID)
 	if !ok {
@@ -227,20 +182,29 @@ func (f *BudgetFilter) Check(ctx context.Context, evt *domain.Event) error {
 	return nil
 }
 
+// EventFilter is the interface for composable pre-stream event gates.
 type EventFilter interface {
 	Check(ctx context.Context, evt *domain.Event) error
 }
 
+// FilterEngine runs an ordered filter chain under one shared deadline budget.
 type FilterEngine struct {
 	filters []EventFilter
+	timeout time.Duration
 }
 
-func NewFilterEngine(filters ...EventFilter) *FilterEngine {
-	return &FilterEngine{filters: filters}
+// NewFilterEngine composes filters with a monotonic deadline enforced between checks.
+func NewFilterEngine(timeout time.Duration, filters ...EventFilter) *FilterEngine {
+	return &FilterEngine{filters: filters, timeout: timeout}
 }
 
+// Check runs filters in order until one rejects or the deadline expires.
 func (e *FilterEngine) Check(ctx context.Context, evt *domain.Event) error {
+	ctx = attachFilterDeadline(ctx, e.timeout)
 	for _, f := range e.filters {
+		if filterDeadlineExceeded(ctx) {
+			return context.DeadlineExceeded
+		}
 		if err := f.Check(ctx, evt); err != nil {
 			return err
 		}
@@ -248,6 +212,7 @@ func (e *FilterEngine) Check(ctx context.Context, evt *domain.Event) error {
 	return nil
 }
 
+// IPRateLimiter caps per-IP event rates to mitigate abuse on the track endpoint.
 type IPRateLimiter struct {
 	rdb       redis.UniversalClient
 	limit     int
@@ -256,6 +221,7 @@ type IPRateLimiter struct {
 	windowAny any
 }
 
+// NewIPRateLimiter creates a Redis-backed sliding window limiter for client IPs.
 func NewIPRateLimiter(rdb redis.UniversalClient, limit int, window time.Duration) *IPRateLimiter {
 	return &IPRateLimiter{
 		rdb:       rdb,
@@ -266,6 +232,7 @@ func NewIPRateLimiter(rdb redis.UniversalClient, limit int, window time.Duration
 	}
 }
 
+// Check increments the IP counter and rejects when the window limit is exceeded.
 func (l *IPRateLimiter) Check(ctx context.Context, evt *domain.Event) error {
 	if evt.IP == "" {
 		return nil
@@ -294,12 +261,13 @@ func (l *IPRateLimiter) Check(ctx context.Context, evt *domain.Event) error {
 	return nil
 }
 
-// duplicateTTL must cover max stream reprocessing lag to prevent double-billing on restart.
+// DuplicateEventFilter rejects replays using a TTL sized for worst-case stream recovery lag.
 type DuplicateEventFilter struct {
 	rdb redis.Cmdable
 	ttl time.Duration
 }
 
+// NewDuplicateEventFilter creates a Redis SETNX deduplicator for click and event type pairs.
 func NewDuplicateEventFilter(rdb redis.Cmdable, ttl time.Duration) *DuplicateEventFilter {
 	return &DuplicateEventFilter{
 		rdb: rdb,
@@ -307,6 +275,7 @@ func NewDuplicateEventFilter(rdb redis.Cmdable, ttl time.Duration) *DuplicateEve
 	}
 }
 
+// Check rejects events whose type and click id were seen within the TTL window.
 func (f *DuplicateEventFilter) Check(ctx context.Context, evt *domain.Event) error {
 	if evt.ClickID == "" {
 		return nil
@@ -334,14 +303,17 @@ func (f *DuplicateEventFilter) Check(ctx context.Context, evt *domain.Event) err
 	return nil
 }
 
+// EmergencyBreakerFilter stops ingestion when operators enable the global breaker flag.
 type EmergencyBreakerFilter struct {
 	watcher *SettingsWatcher
 }
 
+// NewEmergencyBreakerFilter gates events on the dynamic emergency breaker setting.
 func NewEmergencyBreakerFilter(watcher *SettingsWatcher) *EmergencyBreakerFilter {
 	return &EmergencyBreakerFilter{watcher: watcher}
 }
 
+// Check returns ErrEmergencyBreakerActive when the breaker is enabled in dynamic config.
 func (f *EmergencyBreakerFilter) Check(ctx context.Context, evt *domain.Event) error {
 	if f.watcher != nil && f.watcher.Get().EmergencyBreaker {
 		return ErrEmergencyBreakerActive

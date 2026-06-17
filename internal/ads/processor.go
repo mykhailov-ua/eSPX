@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"espx/internal/ads/pb"
@@ -19,33 +20,51 @@ import (
 	redis "github.com/redis/go-redis/v9"
 )
 
+// StreamConsumer reads accepted events from Redis streams and persists them in batches.
 type StreamConsumer struct {
-	store         domain.EventStore
-	rdb           redis.UniversalClient
-	streamName    string
-	groupName     string
-	consumerID    string
-	cancel        context.CancelFunc
-	wg            sync.WaitGroup
-	startMu       sync.Mutex
-	flushInt      time.Duration
-	writeTimeout  time.Duration
-	retryInitWait time.Duration
-	retryMaxWait  time.Duration
-	streamMinIdle time.Duration
-	drainTimeout  time.Duration
-	batchSize     int
-	maxWorkers    int
-	maxRetries    int
-	started       bool
-	cb            *CircuitBreaker
-	logger        *logger.Logger
+	store              domain.EventStore
+	rdb                redis.UniversalClient
+	streamName         string
+	groupName          string
+	consumerID         string
+	cancel             context.CancelFunc
+	wg                 sync.WaitGroup
+	startMu            sync.Mutex
+	flushInt           time.Duration
+	writeTimeout       time.Duration
+	retryInitWait      time.Duration
+	retryMaxWait       time.Duration
+	streamMinIdle      time.Duration
+	drainTimeout       time.Duration
+	batchSize          int
+	maxWorkers         int
+	maxRetries         int
+	started            bool
+	cb                 *CircuitBreaker
+	logger             *logger.Logger
+	auditLogSeq        atomic.Uint64
+	auditLogSampleMask uint64
 }
 
+// SetLogger attaches the audit log writer invoked after successful batch stores.
 func (p *StreamConsumer) SetLogger(l *logger.Logger) {
 	p.logger = l
 }
 
+// SetAuditLogSampleMask configures audit log downsampling for the consumer path.
+func (p *StreamConsumer) SetAuditLogSampleMask(mask int) {
+	p.auditLogSampleMask = auditLogSampleMaskFromConfig(mask)
+}
+
+// CircuitBreakerState exposes the store circuit state for chaos and integration tests.
+func (p *StreamConsumer) CircuitBreakerState() CircuitState {
+	if p == nil || p.cb == nil {
+		return CircuitClosed
+	}
+	return p.cb.State()
+}
+
+// logBufPool recycles audit log marshal buffers in the consumer path.
 var logBufPool = sync.Pool{
 	New: func() any {
 		b := make([]byte, 0, 512)
@@ -53,13 +72,14 @@ var logBufPool = sync.Pool{
 	},
 }
 
+// adLogRecordPool recycles protobuf audit records written after successful stores.
 var adLogRecordPool = sync.Pool{
 	New: func() any {
 		return &pb.AdLogRecord{}
 	},
 }
 
-// consumerID includes hostname and UUID suffix to avoid PEL conflicts across replicas.
+// NewStreamConsumer creates a sharded stream reader with unique consumer ids per replica.
 func NewStreamConsumer(
 	store domain.EventStore,
 	rdb redis.UniversalClient,
@@ -79,24 +99,26 @@ func NewStreamConsumer(
 	uniqueConsumerID := fmt.Sprintf("%s-%s-%s", consumerID, hostname, uuid.NewString()[:8])
 
 	return &StreamConsumer{
-		store:         store,
-		rdb:           rdb,
-		streamName:    streamName,
-		groupName:     groupName,
-		consumerID:    uniqueConsumerID,
-		batchSize:     batchSize,
-		flushInt:      flushInt,
-		writeTimeout:  writeTimeout,
-		maxWorkers:    maxWorkers,
-		retryInitWait: retryInitWait,
-		retryMaxWait:  retryMaxWait,
-		maxRetries:    maxRetries,
-		streamMinIdle: streamMinIdle,
-		drainTimeout:  drainTimeout,
-		cb:            NewCircuitBreaker(maxRetries, retryMaxWait*2),
+		store:              store,
+		rdb:                rdb,
+		streamName:         streamName,
+		groupName:          groupName,
+		consumerID:         uniqueConsumerID,
+		batchSize:          batchSize,
+		flushInt:           flushInt,
+		writeTimeout:       writeTimeout,
+		maxWorkers:         maxWorkers,
+		retryInitWait:      retryInitWait,
+		retryMaxWait:       retryMaxWait,
+		maxRetries:         maxRetries,
+		streamMinIdle:      streamMinIdle,
+		drainTimeout:       drainTimeout,
+		cb:                 NewCircuitBreaker(maxRetries, retryMaxWait*2),
+		auditLogSampleMask: auditLogSampleMaskDefault,
 	}
 }
 
+// Start launches consumer workers, pending recovery, and maintenance goroutines.
 func (p *StreamConsumer) Start(ctx context.Context) {
 	p.startMu.Lock()
 	defer p.startMu.Unlock()
@@ -133,12 +155,14 @@ func (p *StreamConsumer) Start(ctx context.Context) {
 	}()
 }
 
+// Close cancels the consumer context without waiting for workers.
 func (p *StreamConsumer) Close() {
 	if p.cancel != nil {
 		p.cancel()
 	}
 }
 
+// Wait blocks until all consumer goroutines exit or the context is cancelled.
 func (p *StreamConsumer) Wait(ctx context.Context) error {
 	done := make(chan struct{})
 	go func() {
@@ -154,10 +178,12 @@ func (p *StreamConsumer) Wait(ctx context.Context) error {
 	}
 }
 
+// workerConsumerID returns the Redis consumer name for a worker index.
 func (p *StreamConsumer) workerConsumerID(workerIdx int) string {
 	return fmt.Sprintf("%s-w%d", p.consumerID, workerIdx)
 }
 
+// worker reads stream batches, flushes to the store, and handles shutdown drain.
 func (p *StreamConsumer) worker(ctx context.Context, workerIdx int) {
 	workerID := p.workerConsumerID(workerIdx)
 	defer func() {
@@ -270,21 +296,25 @@ func (p *StreamConsumer) worker(ctx context.Context, workerIdx int) {
 	}
 }
 
+// recordSuccess clears the store circuit breaker after a successful flush.
 func (p *StreamConsumer) recordSuccess(workerID string) {
 	p.cb.RecordSuccess(workerID)
 	metrics.CircuitBreakerState.WithLabelValues(p.groupName).Set(float64(p.cb.State()))
 }
 
+// recordFailure opens the store circuit breaker after a failed flush.
 func (p *StreamConsumer) recordFailure(workerID string) {
 	p.cb.RecordFailure(workerID)
 	metrics.CircuitBreakerState.WithLabelValues(p.groupName).Set(float64(p.cb.State()))
 }
 
+// recordCancellation treats cancelled flushes as circuit failures during half-open probes.
 func (p *StreamConsumer) recordCancellation(workerID string) {
 	p.cb.RecordCancellation(workerID)
 	metrics.CircuitBreakerState.WithLabelValues(p.groupName).Set(float64(p.cb.State()))
 }
 
+// tryFlush persists the current batch with retry, poison-pill splitting, and DLQ routing.
 func (p *StreamConsumer) tryFlush(ctx context.Context, batch *[]*domain.Event, msgIDs *[]string, retryCount *int, workerID string, ticker *time.Ticker, retryWait *time.Duration) {
 	if !p.cb.Allow() {
 		wait := p.cb.WaitDuration()
@@ -437,6 +467,7 @@ func (p *StreamConsumer) tryFlush(ctx context.Context, batch *[]*domain.Event, m
 	}
 }
 
+// dlqEventPool recycles DLQ protobuf payloads before writing to the dead letter stream.
 var (
 	dlqEventPool = sync.Pool{
 		New: func() any {
@@ -452,6 +483,7 @@ var (
 	}
 )
 
+// moveToDLQ writes failed messages to the DLQ stream and acks them from the main PEL.
 func (p *StreamConsumer) moveToDLQ(ctx context.Context, batch []*domain.Event, msgIDs []string, workerID string, retryCount int, err error) error {
 	errStr := err.Error()
 
@@ -587,6 +619,7 @@ func (p *StreamConsumer) moveToDLQ(ctx context.Context, batch []*domain.Event, m
 	return nil
 }
 
+// parseMessage converts a Redis stream entry into a pooled domain event.
 func (p *StreamConsumer) parseMessage(id string, values map[string]interface{}) *domain.Event {
 	evt := domain.EventPool.Get().(*domain.Event)
 	evt.Reset()
@@ -597,16 +630,31 @@ func (p *StreamConsumer) parseMessage(id string, values map[string]interface{}) 
 
 		buf := UnsafeBytes(rawBytesStr)
 		if err := pbEvt.UnmarshalVT(buf); err == nil {
-			evt.ClickID = unsafeString(pbEvt.ClickId)
+			totalLen := len(pbEvt.ClickId) + len(pbEvt.EventType) + len(pbEvt.Ip) + len(pbEvt.Ua)
+			if cap(evt.StringBuffer) < totalLen {
+				evt.StringBuffer = make([]byte, 0, totalLen+128)
+			} else {
+				evt.StringBuffer = evt.StringBuffer[:0]
+			}
+
+			evt.StringBuffer = append(evt.StringBuffer, pbEvt.ClickId...)
+			evt.ClickID = unsafeString(evt.StringBuffer[len(evt.StringBuffer)-len(pbEvt.ClickId):])
+
+			evt.StringBuffer = append(evt.StringBuffer, pbEvt.EventType...)
+			evt.Type = unsafeString(evt.StringBuffer[len(evt.StringBuffer)-len(pbEvt.EventType):])
+
+			evt.StringBuffer = append(evt.StringBuffer, pbEvt.Ip...)
+			evt.IP = unsafeString(evt.StringBuffer[len(evt.StringBuffer)-len(pbEvt.Ip):])
+
+			evt.StringBuffer = append(evt.StringBuffer, pbEvt.Ua...)
+			evt.UA = unsafeString(evt.StringBuffer[len(evt.StringBuffer)-len(pbEvt.Ua):])
+
 			if len(pbEvt.CampaignId) == 16 {
 				copy(evt.CampaignID[:], pbEvt.CampaignId)
 			} else {
 				evt.CampaignID, _ = uuid.ParseBytes(pbEvt.CampaignId)
 			}
-			evt.Type = unsafeString(pbEvt.EventType)
 			evt.Payload = append(evt.Payload[:0], pbEvt.Payload...)
-			evt.IP = unsafeString(pbEvt.Ip)
-			evt.UA = unsafeString(pbEvt.Ua)
 			if pbEvt.CreatedAtUnix > 0 {
 				evt.CreatedAt = time.Unix(pbEvt.CreatedAtUnix, 0)
 			}
@@ -657,6 +705,7 @@ func (p *StreamConsumer) parseMessage(id string, values map[string]interface{}) 
 	return evt
 }
 
+// firstN returns up to n message ids for debug logging.
 func firstN(ids []string, n int) []string {
 	if len(ids) <= n {
 		return ids
@@ -664,12 +713,15 @@ func firstN(ids []string, n int) []string {
 	return ids[:n]
 }
 
+// flushBatch stores a batch and acks Redis only after a durable write succeeds.
 func (p *StreamConsumer) flushBatch(ctx context.Context, batch []*domain.Event, msgIDs []string, workerID string) error {
 	if len(batch) == 0 {
 		return nil
 	}
 
-	slog.Debug("flushing batch", "group", p.groupName, "batch_size", len(batch), "first_ids", firstN(msgIDs, 5))
+	if slog.Default().Enabled(ctx, slog.LevelDebug) {
+		slog.Debug("flushing batch", "group", p.groupName, "batch_size", len(batch), "first_ids", firstN(msgIDs, 5))
+	}
 
 	storeCtx, storeCancel := context.WithTimeout(ctx, p.writeTimeout)
 	if len(msgIDs) > 0 {
@@ -694,40 +746,7 @@ func (p *StreamConsumer) flushBatch(ctx context.Context, batch []*domain.Event, 
 			}
 		}
 		for _, e := range batch {
-			rec := adLogRecordPool.Get().(*pb.AdLogRecord)
-			rec.TimestampUnix = e.CreatedAt.Unix()
-			if cap(rec.CampaignId) < 16 {
-				rec.CampaignId = make([]byte, 16)
-			} else {
-				rec.CampaignId = rec.CampaignId[:16]
-			}
-			copy(rec.CampaignId, e.CampaignID[:])
-			rec.ClickId = UnsafeBytes(e.ClickID)
-			rec.EventType = UnsafeBytes(e.Type)
-			rec.Priority = 0
-
-			size := rec.SizeVT()
-			bufPtr := logBufPool.Get().(*[]byte)
-			buf := *bufPtr
-			if cap(buf) < size {
-				buf = make([]byte, size)
-			} else {
-				buf = buf[:size]
-			}
-
-			n, err := rec.MarshalToSizedBufferVT(buf)
-			if err == nil {
-				p.logger.WriteToShard(workerIdx, 0, buf[:n])
-			}
-			*bufPtr = buf
-			logBufPool.Put(bufPtr)
-
-			campIDSaved := rec.CampaignId
-			rec.Reset()
-			if cap(campIDSaved) >= 16 {
-				rec.CampaignId = campIDSaved[:0]
-			}
-			adLogRecordPool.Put(rec)
+			writeAuditLog(p.logger, &p.auditLogSeq, p.auditLogSampleMask, workerIdx, e.CreatedAt.Unix(), e.CampaignID, e.ClickID, e.Type)
 		}
 	}
 
@@ -742,6 +761,7 @@ func (p *StreamConsumer) flushBatch(ctx context.Context, batch []*domain.Event, 
 	return nil
 }
 
+// recoverPending replays orphaned PEL messages owned by this consumer on startup.
 func (p *StreamConsumer) recoverPending(ctx context.Context, consumerID string) {
 	for {
 		select {
@@ -788,6 +808,7 @@ func (p *StreamConsumer) recoverPending(ctx context.Context, consumerID string) 
 	}
 }
 
+// drainNewMessages flushes newly read messages during graceful shutdown.
 func (p *StreamConsumer) drainNewMessages(ctx context.Context, consumerID string) {
 	for {
 		select {
@@ -839,6 +860,7 @@ func (p *StreamConsumer) drainNewMessages(ctx context.Context, consumerID string
 	}
 }
 
+// janitor periodically claims stuck PEL messages and retries or routes them to the DLQ.
 func (p *StreamConsumer) janitor(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -859,6 +881,7 @@ func (p *StreamConsumer) janitor(ctx context.Context) {
 	}
 }
 
+// claimStuckMessages autoclaims idle PEL entries and applies retry or DLQ policy.
 func (p *StreamConsumer) claimStuckMessages(ctx context.Context) {
 	startID := "0-0"
 	for {
@@ -939,6 +962,7 @@ func (p *StreamConsumer) claimStuckMessages(ctx context.Context) {
 	}
 }
 
+// dlqMonitor publishes DLQ depth metrics for alerting.
 func (p *StreamConsumer) dlqMonitor(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {

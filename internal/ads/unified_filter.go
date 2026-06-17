@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,30 +16,35 @@ import (
 
 	"espx/internal/domain"
 	"espx/internal/metrics"
+	"github.com/prometheus/client_golang/prometheus"
 	redis "github.com/redis/go-redis/v9"
 )
 
 //go:embed unified_filter.lua
 var unifiedFilterLua string
 
+// keysPool recycles Redis key slices for unified filter Lua calls.
 var keysPool = sync.Pool{
 	New: func() any {
-		s := make([]string, 11)
+		s := make([]string, 12)
 		return &s
 	},
 }
 
+// argsPool recycles Redis argument slices for unified filter Lua calls.
 var argsPool = sync.Pool{
 	New: func() any {
-		s := make([]any, 19)
+		s := make([]any, 23)
 		return &s
 	},
 }
 
+// StringVal wraps a string for zero-copy Redis binary marshaling in Lua args.
 type StringVal struct {
 	s string
 }
 
+// MarshalBinary exposes the wrapped string bytes to go-redis without copying.
 func (sv *StringVal) MarshalBinary() ([]byte, error) {
 	if len(sv.s) == 0 {
 		return nil, nil
@@ -48,6 +52,7 @@ func (sv *StringVal) MarshalBinary() ([]byte, error) {
 	return unsafe.Slice(unsafe.StringData(sv.s), len(sv.s)), nil
 }
 
+// UnifiedStringWrappers groups pooled string adapters passed as Lua arguments.
 type UnifiedStringWrappers struct {
 	clickID StringVal
 	evtType StringVal
@@ -57,12 +62,14 @@ type UnifiedStringWrappers struct {
 	userID  StringVal
 }
 
+// unifiedWrappersPool recycles string wrapper structs for unified filter checks.
 var unifiedWrappersPool = sync.Pool{
 	New: func() any {
 		return &UnifiedStringWrappers{}
 	},
 }
 
+// appendDate formats YYYYMMDD into dst without time.Format allocations.
 func appendDate(dst []byte, t time.Time) []byte {
 	year, month, day := t.Date()
 	return append(dst,
@@ -77,25 +84,28 @@ func appendDate(dst []byte, t time.Time) []byte {
 	)
 }
 
+// zeroAny and oneAny are reused Lua numeric flag arguments.
 var (
 	zeroAny any = 0
 	oneAny  any = 1
 )
 
+// hourAnyCache pre-boxes hour integers passed to the unified filter Lua script.
 var hourAnyCache [25]any
 
+// init fills hourAnyCache so Lua args avoid per-request boxing allocations.
 func init() {
 	for i := 0; i <= 24; i++ {
 		hourAnyCache[i] = i
 	}
 }
 
+// DBHealthChecker supports SLA sentinel latency probes against Postgres.
 type DBHealthChecker interface {
 	Ping(ctx context.Context) error
 }
 
-// Budget, pacing, and fcap are decremented atomically in one Lua script.
-// unsafeString keys must not outlive the Eval call.
+// UnifiedFilter runs budget, pacing, dedup, and stream enqueue in one Redis Lua round trip.
 type UnifiedFilter struct {
 	rdbs                     []redis.UniversalClient
 	sharder                  Sharder
@@ -134,18 +144,44 @@ type UnifiedFilter struct {
 
 	clickAmountMicroHalfAny      any
 	impressionAmountMicroHalfAny any
+	ttcMinMsAny                  any
+	impTsTTLAny                  any
+	ttcFailClosedAny             any
+	dbLookupTimeout              time.Duration
+	luaMetricsSeq                atomic.Uint64
+
+	luaDurationObservers []prometheus.Observer
 }
 
+// SetTTCMin configures click fraud time-to-click thresholds for the Lua script.
+func (f *UnifiedFilter) SetTTCMin(d time.Duration) {
+	f.ttcMinMsAny = d.Milliseconds()
+	f.impTsTTLAny = int((10 * time.Minute).Seconds())
+}
+
+// SetTTCFailClosed toggles strict TTC enforcement when impression timestamps are missing.
+func (f *UnifiedFilter) SetTTCFailClosed(v bool) {
+	if v {
+		f.ttcFailClosedAny = oneAny
+	} else {
+		f.ttcFailClosedAny = zeroAny
+	}
+}
+
+// SetGeoProvider attaches GeoIP lookup for bid floor enforcement before Lua.
 func (f *UnifiedFilter) SetGeoProvider(geo GeoProvider) {
 	f.geo = geo
 }
 
+// SetGeoBidFloor registers a country-specific minimum bid for pre-Lua validation.
 func (f *UnifiedFilter) SetGeoBidFloor(country string, floor int64) {
 	f.geoFloors.Store(country, floor)
 }
 
+// parseBidMicroKey is the JSON field prefix scanned without full unmarshaling.
 var parseBidMicroKey = []byte(`"bid_micro"`)
 
+// parseBidMicro extracts bid_micro from JSON payload bytes on the hot path.
 func parseBidMicro(payload []byte) int64 {
 	n := len(payload)
 	kLen := len(parseBidMicroKey)
@@ -184,6 +220,7 @@ func parseBidMicro(payload []byte) int64 {
 	return 0
 }
 
+// NewUnifiedFilter constructs the primary tracker filter with sharded Redis clients.
 func NewUnifiedFilter(
 	rdbs []redis.UniversalClient,
 	sharder Sharder,
@@ -221,9 +258,13 @@ func NewUnifiedFilter(
 		impressionAmountMicroAny:     impressionAmount,
 		clickAmountMicroHalfAny:      clickAmount / 2,
 		impressionAmountMicroHalfAny: impressionAmount / 2,
+		ttcFailClosedAny:             zeroAny,
+		luaDurationObservers:         newRedisLuaObservers(len(rdbs)),
+		dbLookupTimeout:              2 * time.Second,
 	}
 }
 
+// SetSLATargets configures automatic spend throttling when DB latency exceeds SLA.
 func (f *UnifiedFilter) SetSLATargets(p95, recovery float64, stable time.Duration, alpha float64) {
 	f.p95ThresholdMs = p95
 	f.recoveryEmaMs = recovery
@@ -231,6 +272,7 @@ func (f *UnifiedFilter) SetSLATargets(p95, recovery float64, stable time.Duratio
 	f.emaAlpha = alpha
 }
 
+// ResizeTrackers reallocates the SLA latency sample ring used by the sentinel.
 func (f *UnifiedFilter) ResizeTrackers(size int) {
 	f.latencyMu.Lock()
 	defer f.latencyMu.Unlock()
@@ -238,10 +280,12 @@ func (f *UnifiedFilter) ResizeTrackers(size int) {
 	f.latencyIdx = 0
 }
 
+// SetDBHealthChecker attaches the Postgres ping target for SLA sentinel monitoring.
 func (f *UnifiedFilter) SetDBHealthChecker(checker DBHealthChecker) {
 	f.dbHealth = checker
 }
 
+// StartSLASentinel runs a background loop that toggles Redis SLA penalty flags.
 func (f *UnifiedFilter) StartSLASentinel(ctx context.Context, interval time.Duration) {
 	go func() {
 		ticker := time.NewTicker(interval)
@@ -320,6 +364,7 @@ func (f *UnifiedFilter) StartSLASentinel(ctx context.Context, interval time.Dura
 	}()
 }
 
+// getRDB returns the Redis client shard for a campaign id.
 func (f *UnifiedFilter) getRDB(campaignID uuid.UUID) redis.UniversalClient {
 	if len(f.rdbs) <= 1 {
 		return f.rdbs[0]
@@ -328,6 +373,27 @@ func (f *UnifiedFilter) getRDB(campaignID uuid.UUID) redis.UniversalClient {
 	return f.rdbs[idx%len(f.rdbs)]
 }
 
+// checkGeoBidFloor rejects bids below configured country floors before Lua spend.
+func (f *UnifiedFilter) checkGeoBidFloor(evt *domain.Event) error {
+	country, err := f.geo.GetCountry(evt.IP)
+	if err != nil || country == "" {
+		return nil
+	}
+	floorVal, ok := f.geoFloors.Load(country)
+	if !ok {
+		return nil
+	}
+	floor := floorVal.(int64)
+	if floor <= 0 {
+		return nil
+	}
+	if parseBidMicro(evt.Payload) < floor {
+		return ErrBidFloorNotMet
+	}
+	return nil
+}
+
+// Check runs the unified Lua filter, reloading budget from registry or Postgres on cache miss.
 func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 	campInfo, ok := f.registry.GetCampaign(evt.CampaignID)
 	if !ok {
@@ -343,17 +409,8 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 	}
 
 	if f.geo != nil {
-		country, err := f.geo.GetCountry(evt.IP)
-		if err == nil && country != "" {
-			if floorVal, found := f.geoFloors.Load(country); found {
-				floor := floorVal.(int64)
-				if floor > 0 {
-					bid := parseBidMicro(evt.Payload)
-					if bid < floor {
-						return ErrBidFloorNotMet
-					}
-				}
-			}
+		if err := f.checkGeoBidFloor(evt); err != nil {
+			return err
 		}
 	}
 
@@ -378,6 +435,7 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 	wDate := bufPool.Get().(*bufWrapper)
 	wDS := bufPool.Get().(*bufWrapper)
 	wFcap := bufPool.Get().(*bufWrapper)
+	wImpTS := bufPool.Get().(*bufWrapper)
 	keysPtr := keysPool.Get().(*[]string)
 	argsPtr := argsPool.Get().(*[]any)
 	wrappers := unifiedWrappersPool.Get().(*UnifiedStringWrappers)
@@ -389,6 +447,7 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 		bufPool.Put(wDate)
 		bufPool.Put(wDS)
 		bufPool.Put(wFcap)
+		bufPool.Put(wImpTS)
 		keysPool.Put(keysPtr)
 		argsPool.Put(argsPtr)
 		unifiedWrappersPool.Put(wrappers)
@@ -421,10 +480,10 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 	streamKey := f.streamName
 
 	var now time.Time
-	if campInfo.Location == time.UTC {
-		now = time.Now().UTC()
+	if campInfo.Location == nil || campInfo.Location == time.UTC {
+		now = CachedTimeUTC()
 	} else {
-		now = time.Now().In(campInfo.Location)
+		now = CachedTimeIn(campInfo.Location)
 	}
 
 	wDate.buf = wDate.buf[:0]
@@ -446,6 +505,13 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 		fcapKey = "fcap:ignored"
 	}
 
+	wImpTS.buf = wImpTS.buf[:0]
+	wImpTS.buf = append(wImpTS.buf, "imp_ts:"...)
+	wImpTS.buf = append(wImpTS.buf, evt.UserID...)
+	wImpTS.buf = append(wImpTS.buf, ':')
+	wImpTS.buf = appendUUID(wImpTS.buf, evt.CampaignID)
+	impTSKey := unsafeString(wImpTS.buf)
+
 	keys := *keysPtr
 	keys[0] = rlKey
 	keys[1] = dupKey
@@ -458,6 +524,7 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 	keys[8] = streamKey
 	keys[9] = dailySpendKey
 	keys[10] = fcapKey
+	keys[11] = impTSKey
 
 	isEven := zeroAny
 	if campInfo.PacingMode == domain.PacingModeEven {
@@ -499,16 +566,24 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 	args[16] = &wrappers.userID
 	args[17] = campInfo.FreqLimitAny
 	args[18] = campInfo.FreqWindowAny
+	args[19] = f.ttcMinMsAny
+	args[20] = cachedUnixMilli.Load()
+	args[21] = f.impTsTTLAny
+	args[22] = f.ttcFailClosedAny
 
-	shardIdx := strconv.Itoa(f.sharder.GetShard(evt.CampaignID))
+	shard := f.sharder.GetShard(evt.CampaignID)
 	for i := 0; i < 2; i++ {
-		luaStart := time.Now()
-		cmd := f.script.EvalSha(ctx, rdb, keys, args...)
-		if err := cmd.Err(); err != nil && (errors.Is(err, redis.ErrNoScript) || err.Error() == "NOSCRIPT No matching script. Please use EVAL.") {
-			cmd = f.script.Eval(ctx, rdb, keys, args...)
+		seq := f.luaMetricsSeq.Add(1)
+		sampleLua := shouldSampleLuaMetrics(seq)
+		var luaStart int64
+		if sampleLua {
+			luaStart = monotonicNano()
 		}
+		cmd := f.evalScript(ctx, rdb, shard, keys, args)
 
-		metrics.RedisLuaDuration.WithLabelValues(shardIdx).Observe(time.Since(luaStart).Seconds())
+		if sampleLua {
+			observeRedisLua(f.luaDurationObservers, shard, monoElapsedSeconds(luaStart))
+		}
 		res, err := cmd.Int64()
 
 		if err != nil {
@@ -516,12 +591,40 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 		}
 
 		if res == -1 {
+			metrics.BudgetCacheMissTotal.Inc()
+			if filterDeadlineExceeded(ctx) {
+				return context.DeadlineExceeded
+			}
 			if i > 0 {
 				return fmt.Errorf("budget cache miss on retry: %w", ErrBudgetExhausted)
 			}
 
-			camp, err := f.repo.GetByID(ctx, evt.CampaignID)
+			recovered, recErr := tryRecoverBudgetFromRegistry(ctx, rdb, f.registry, evt.CampaignID, budgetSourceKey)
+			if recErr != nil {
+				return recErr
+			}
+			if recovered {
+				continue
+			}
+
+			dbTimeout := f.dbLookupTimeout
+			if rem, ok := filterDeadlineRemaining(ctx); ok {
+				if rem <= 0 {
+					return context.DeadlineExceeded
+				}
+				if rem < dbTimeout {
+					dbTimeout = rem
+				}
+			}
+
+			metrics.BudgetCacheMissPGTotal.Inc()
+			dbCtx, cancel := context.WithTimeout(ctx, dbTimeout)
+			camp, err := f.repo.GetByID(dbCtx, evt.CampaignID)
+			cancel()
 			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) {
+					return context.DeadlineExceeded
+				}
 				return fmt.Errorf("failed to load campaign from db: %w", err)
 			}
 
@@ -530,7 +633,9 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 				remaining = 0
 			}
 
-			rdb.SetNX(ctx, budgetSourceKey, remaining, 24*time.Hour)
+			if err := warmBudgetKeyNX(ctx, rdb, budgetSourceKey, remaining); err != nil {
+				return fmt.Errorf("warm budget key after pg load: %w", err)
+			}
 			continue
 		}
 
@@ -545,6 +650,16 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 			return ErrPacingExhausted
 		case 5:
 			return ErrFreqLimitExceeded
+		case 6:
+			evt.FraudReason = "low_ttc"
+			return ErrFraudDetected
+		case 7:
+			evt.FraudReason = "missing_imp_ts"
+			return ErrFraudDetected
+		case 10:
+			metrics.TTCBypassTotal.Inc()
+			metrics.EventsProcessed.Inc()
+			return nil
 		default:
 			metrics.EventsProcessed.Inc()
 			return nil

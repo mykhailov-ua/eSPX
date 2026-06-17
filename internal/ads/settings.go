@@ -11,6 +11,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// DynamicConfig holds runtime-tunable limits pushed from the management plane.
 type DynamicConfig struct {
 	Version          int64 `json:"version"`
 	RateLimitPerMin  int   `json:"rate_limit_per_min"`
@@ -20,12 +21,14 @@ type DynamicConfig struct {
 	EmergencyBreaker bool  `json:"emergency_breaker"`
 }
 
+// SettingsWatcher polls Redis for config changes without restarting trackers.
 type SettingsWatcher struct {
 	rdb            redis.UniversalClient
 	currentVersion int64
 	snapshot       atomic.Value
 }
 
+// NewSettingsWatcher seeds dynamic config from static startup values.
 func NewSettingsWatcher(rdb redis.UniversalClient, initial *config.Config) *SettingsWatcher {
 	sw := &SettingsWatcher{
 		rdb: rdb,
@@ -43,11 +46,12 @@ func NewSettingsWatcher(rdb redis.UniversalClient, initial *config.Config) *Sett
 	return sw
 }
 
-// Callers must not mutate the returned pointer.
+// Get returns the current immutable config snapshot; callers must not mutate it.
 func (sw *SettingsWatcher) Get() *DynamicConfig {
 	return sw.snapshot.Load().(*DynamicConfig)
 }
 
+// Start polls Redis on interval until the context is cancelled.
 func (sw *SettingsWatcher) Start(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -62,6 +66,7 @@ func (sw *SettingsWatcher) Start(ctx context.Context, interval time.Duration) {
 	}
 }
 
+// sync reloads config from Redis when the version advances.
 func (sw *SettingsWatcher) sync(ctx context.Context) {
 	v, err := sw.rdb.Get(ctx, "config:version").Int64()
 	if err != nil {
@@ -88,6 +93,7 @@ func (sw *SettingsWatcher) sync(ctx context.Context) {
 	slog.Info("dynamic settings updated", "version", v)
 }
 
+// parseConfig merges Redis hash fields into a new config snapshot.
 func (sw *SettingsWatcher) parseConfig(version int64, data map[string]string) *DynamicConfig {
 	current := sw.Get()
 	next := *current
@@ -102,6 +108,7 @@ func (sw *SettingsWatcher) parseConfig(version int64, data map[string]string) *D
 	return &next
 }
 
+// updateInt applies a string int override when parsing succeeds.
 func updateInt(target *int, val string) {
 	if val == "" {
 		return
@@ -111,6 +118,7 @@ func updateInt(target *int, val string) {
 	}
 }
 
+// updateMicro applies a string float dollar amount converted to micro units.
 func updateMicro(target *int64, val string) {
 	if val == "" {
 		return
@@ -120,6 +128,7 @@ func updateMicro(target *int64, val string) {
 	}
 }
 
+// updateBool applies a string bool override when parsing succeeds.
 func updateBool(target *bool, val string) {
 	if val == "" {
 		return

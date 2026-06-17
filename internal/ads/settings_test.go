@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Guards runtime config reload from Redis updates hot-path amounts without restart.
 func TestSettingsWatcher(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")

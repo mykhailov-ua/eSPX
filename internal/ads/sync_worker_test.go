@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/mock"
 )
 
+// Campaign repo stub for sync worker budget tests.
 type mockCampaignRepo struct {
 	mock.Mock
 }
@@ -39,6 +40,7 @@ func (m *mockCampaignRepo) ListActive(ctx context.Context) ([]*domain.Campaign, 
 	return args.Get(0).([]*domain.Campaign), args.Error(1)
 }
 
+// Guards multi-shard budget sync writes remaining budget to correct Redis shard.
 func TestMultiShardBudgetSync(t *testing.T) {
 	ctx := context.Background()
 
