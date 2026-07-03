@@ -10,7 +10,7 @@ require (
 	github.com/cilium/ebpf v0.22.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/google/uuid v1.6.0
-	github.com/jackc/pgx/v5 v5.9.2
+	github.com/jackc/pgx/v5 v5.10.0
 	github.com/o1egl/paseto/v2 v2.1.1
 	github.com/oschwald/maxminddb-golang v1.13.0
 	github.com/panjf2000/gnet/v2 v2.9.8
