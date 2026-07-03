@@ -22,7 +22,7 @@ type RtbBudgetReconcileConfig struct {
 // RtbBudgetReconcileWorker samples Redis campaign budgets against the in-process RTB store.
 type RtbBudgetReconcileWorker struct {
 	cfg      RtbBudgetReconcileConfig
-	registry *CampaignRegistry
+	registry *Registry
 	catalog  *RtbCatalog
 	rdbs     []redis.UniversalClient
 	sharder  Sharder
@@ -33,7 +33,7 @@ type RtbBudgetReconcileWorker struct {
 // NewRtbBudgetReconcileWorker creates a cold-path budget divergence sampler.
 func NewRtbBudgetReconcileWorker(
 	cfg RtbBudgetReconcileConfig,
-	registry *CampaignRegistry,
+	registry *Registry,
 	catalog *RtbCatalog,
 	rdbs []redis.UniversalClient,
 	sharder Sharder,

@@ -782,7 +782,7 @@ func (consumer *StreamConsumer) flushBatch(ctx context.Context, batch []*domain.
 			}
 		}
 		for _, e := range batch {
-			writeAuditLog(consumer.logger, &consumer.auditLogSeq, consumer.auditLogSampleMask, workerIdx, e.CreatedAt.Unix(), e.CampaignID, e.ClickID, e.Type)
+			writeAuditLog(consumer.logger, &consumer.auditLogSeq, consumer.auditLogSampleMask, workerIdx, e)
 		}
 	}
 

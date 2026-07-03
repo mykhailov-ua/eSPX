@@ -48,7 +48,7 @@ type adsChaosInfra struct {
 type adsIngestStack struct {
 	Handler       *AdsPacketHandler
 	Consumer      *StreamConsumer
-	Registry      *CampaignRegistry
+	Registry      *Registry
 	UnifiedFilter *UnifiedFilter
 	CampaignID    uuid.UUID
 	Stream        string
@@ -173,7 +173,7 @@ func (infra *adsChaosInfra) dialRedisClient(t *testing.T, endpoint string) redis
 		ReadTimeout:  adsChaosRedisFastTimeout,
 		WriteTimeout: adsChaosRedisFastTimeout,
 	})
-	client.AddHook(database.NewRedisCircuitBreakerHook(infra.RedisBreaker, chaosRedisShardLabel))
+	client.AddHook(database.NewRedisCircuitBreakerHook(infra.RedisBreaker))
 	require.NoError(t, client.Ping(context.Background()).Err())
 	return client
 }
@@ -212,14 +212,14 @@ func requireAdsFaultActive(t *testing.T, faultActive func() bool, msg string) {
 	require.Eventually(t, faultActive, 10*time.Second, 100*time.Millisecond, msg)
 }
 
-func newChaosRegistry(t *testing.T, queries db.Querier) *CampaignRegistry {
+func newChaosRegistry(t *testing.T, queries db.Querier) *Registry {
 	t.Helper()
 	r := NewRegistry(queries)
 	r.SetReplicaPath(filepath.Join(t.TempDir(), "campaigns_replica.json"))
 	return r
 }
 
-func seedChaosCampaign(t *testing.T, infra *adsChaosInfra, registry *CampaignRegistry) uuid.UUID {
+func seedChaosCampaign(t *testing.T, infra *adsChaosInfra, registry *Registry) uuid.UUID {
 	t.Helper()
 	ctx := context.Background()
 	pm := database.NewPartitionManager(infra.Pool, 7, 1)

@@ -112,7 +112,7 @@ func (w *BudgetCacheWarmer) WarmOne(ctx context.Context, camp *domain.Campaign) 
 }
 
 // WarmFromRegistry warms all active campaigns from the in-memory registry snapshot.
-func (w *BudgetCacheWarmer) WarmFromRegistry(ctx context.Context, reg *CampaignRegistry) (int, error) {
+func (w *BudgetCacheWarmer) WarmFromRegistry(ctx context.Context, reg *Registry) (int, error) {
 	if reg == nil {
 		return 0, nil
 	}

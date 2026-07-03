@@ -54,7 +54,7 @@ func TestRtbBudgetReconcileWorker_sample(t *testing.T) {
 
 	campCopy := *camp
 	campCopy.ID = campID
-	registry := &CampaignRegistry{}
+	registry := &Registry{}
 	registry.data.Store(map[uuid.UUID]campaignInfo{
 		campID: {campaign: &campCopy, status: db.CampaignStatusTypeACTIVE},
 	})

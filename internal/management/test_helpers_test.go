@@ -61,7 +61,7 @@ func newBareService(t *testing.T, pool *pgxpool.Pool, rdbs []redis.UniversalClie
 		ctx:     ctx,
 		cancel:  cancel,
 	}
-	svc.pool.Store(pool)
+	svc.SetPool(pool)
 	t.Cleanup(func() {
 		cancel()
 		svc.Close()

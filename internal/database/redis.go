@@ -25,7 +25,7 @@ func ConnectRedisWithBreaker(ctx context.Context, addr string, password string, 
 	}
 
 	if breaker != nil {
-		rdb.AddHook(NewRedisCircuitBreakerHook(breaker, "0"))
+		rdb.AddHook(NewRedisCircuitBreakerHook(breaker))
 	}
 
 	return rdb, nil

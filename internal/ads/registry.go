@@ -56,6 +56,7 @@ type Registry struct {
 	mu            sync.Mutex // guards writes (updates to data map, manuallyAdded)
 	replicaPath   string
 	wg            sync.WaitGroup
+	budgetWarmer  *BudgetCacheWarmer
 }
 
 func NewRegistry(repo db.Querier) *Registry {
@@ -66,6 +67,43 @@ func NewRegistry(repo db.Querier) *Registry {
 	}
 	r.data.Store(make(map[uuid.UUID]campaignInfo, 100_000))
 	return r
+}
+
+// SetBudgetWarmer wires incremental Redis budget warming after registry updates.
+func (r *Registry) SetBudgetWarmer(w *BudgetCacheWarmer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.budgetWarmer = w
+}
+
+// UpdateAndWarmCampaign reloads one campaign from Postgres and warms its Redis budget key.
+func (r *Registry) UpdateAndWarmCampaign(ctx context.Context, id uuid.UUID) error {
+	camp, err := NewCampaignRepo(r.repo).GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	currentMap, _ := r.data.Load().(map[uuid.UUID]campaignInfo)
+	newMap := make(map[uuid.UUID]campaignInfo, len(currentMap)+1)
+	for k, v := range currentMap {
+		newMap[k] = v
+	}
+	if info, ok := newMap[id]; ok && info.campaign != nil {
+		info.campaign.BudgetLimit = camp.BudgetLimit
+		info.campaign.CurrentSpend = camp.CurrentSpend
+		info.campaign.DailyBudget = camp.DailyBudget
+		info.campaign.DailyBudgetMicro = camp.DailyBudgetMicro
+		info.campaign.DailyBudgetMicroAny = camp.DailyBudgetMicro
+		newMap[id] = info
+	}
+	r.data.Store(newMap)
+	w := r.budgetWarmer
+	r.mu.Unlock()
+	if w == nil {
+		return nil
+	}
+	_, err = w.WarmOne(ctx, camp)
+	return err
 }
 
 // SetReplicaPath updates the path used to persist the campaign cache replica.
@@ -109,6 +147,22 @@ func (r *Registry) GetCampaign(id uuid.UUID) (*domain.Campaign, bool) {
 		return nil, false
 	}
 	return info.campaign, true
+}
+
+// ActiveCampaigns returns a snapshot of active campaigns for RTB sync and budget warm paths.
+func (r *Registry) ActiveCampaigns() []*domain.Campaign {
+	m, _ := r.data.Load().(map[uuid.UUID]campaignInfo)
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]*domain.Campaign, 0, len(m))
+	for _, info := range m {
+		if info.status != db.CampaignStatusTypeACTIVE || info.campaign == nil {
+			continue
+		}
+		out = append(out, info.campaign)
+	}
+	return out
 }
 
 // Add manually inserts a campaign into the registry.

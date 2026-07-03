@@ -1,0 +1,14 @@
+version: v1
+name: buf.build/mykhailov-ua/espx-api
+deps:
+  - buf.build/googleapis/googleapis
+breaking:
+  use:
+    - FILE
+lint:
+  use:
+    - STANDARD
+  except:
+    - PACKAGE_DIRECTORY_MATCH
+    - DIRECTORY_SAME_PACKAGE
+    - PACKAGE_VERSION_SUFFIX

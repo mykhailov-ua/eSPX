@@ -1,0 +1,17 @@
+# Use scripts/gen.sh --proto (api/buf.gen.yml). Never set out to . or ..
+version: v1
+plugins:
+  - plugin: buf.build/protocolbuffers/go
+    out: gen
+    opt:
+      - module=espx
+  - plugin: buf.build/grpc/go
+    out: gen
+    opt:
+      - module=espx
+  - name: go-vtproto
+    out: gen
+    opt:
+      - module=espx
+      - features=marshal+unmarshal+size+pool
+

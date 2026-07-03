@@ -12,6 +12,7 @@ import (
 	"espx/internal/ads/db"
 	"espx/internal/config"
 	"espx/internal/database"
+
 	"github.com/panjf2000/gnet/v2"
 	"github.com/redis/go-redis/v9"
 )
@@ -90,9 +91,12 @@ func main() {
 	defer geoProvider.Close()
 
 	geoFilter := ads.NewGeoFilter(geoProvider, registry)
-	fraudFilter := ads.NewFraudFilter(geoProvider, rdbs[0], time.Duration(cfg.TTCMinMs)*time.Millisecond)
+	scheduleFilter := ads.NewScheduleFilter(registry)
+	fraudFilter := ads.NewFraudFilter(geoProvider)
+	l3Filter := ads.NewFraudBlacklistFilter(rdbs[0])
 
-	settingsWatcher := ads.NewSettingsWatcher(rdbs[0], cfg)
+	settingsWatcher := ads.NewSettingsWatcher(rdbs, cfg)
+	deviceFilter := ads.NewDeviceFilter(settingsWatcher)
 	go settingsWatcher.Start(ctx, time.Second)
 
 	breakerFilter := ads.NewEmergencyBreakerFilter(settingsWatcher)
@@ -112,9 +116,19 @@ func main() {
 		cfg.StreamMaxLen,
 	)
 
-	filterEngine := ads.NewFilterEngine(breakerFilter, geoFilter, fraudFilter, unifiedFilter)
+	filterEngine := ads.NewFilterEngine(
+		time.Duration(cfg.FilterTimeoutMs)*time.Millisecond,
+		breakerFilter,
+		geoFilter,
+		scheduleFilter,
+		l3Filter,
+		fraudFilter,
+		deviceFilter,
+		unifiedFilter,
+	)
 
-	gnetHandler := ads.NewAdsPacketHandler(cfg, registry, filterEngine, pool, rdbs, sharder, cfg.FraudStreamName)
+	creativeStore := ads.NewBrandCreativeStore(rdbs[0])
+	gnetHandler := ads.NewAdsPacketHandler(cfg, registry, filterEngine, pool, rdbs, sharder, cfg.FraudStreamName, creativeStore)
 
 	slog.Info("starting ad-event-tracker via gnet", "port", cfg.ServerPort)
 

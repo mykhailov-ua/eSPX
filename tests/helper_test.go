@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -24,7 +23,7 @@ import (
 
 // newTestRegistry isolates registry sync from production replica paths so tests
 // never overwrite or read live campaign snapshots on disk.
-func newTestRegistry(t *testing.T, repo db.Querier) *ads.CampaignRegistry {
+func newTestRegistry(t *testing.T, repo db.Querier) *ads.Registry {
 	t.Helper()
 	r := ads.NewRegistry(repo)
 	r.SetReplicaPath(filepath.Join(t.TempDir(), "campaigns_replica.json"))
@@ -197,7 +196,7 @@ func setupTestRedisShardsChaos(t *testing.T, n int) *redisShardChaosInfra {
 
 		breaker := database.NewRedisBreaker(3, 2, 300*time.Millisecond)
 		infra.Breakers[i] = breaker
-		infra.Clients[i].AddHook(database.NewRedisCircuitBreakerHook(breaker, strconv.Itoa(i)))
+		infra.Clients[i].AddHook(database.NewRedisCircuitBreakerHook(breaker))
 
 		require.NoError(t, infra.Clients[i].Ping(ctx).Err())
 	}
@@ -232,7 +231,7 @@ func (infra *redisShardChaosInfra) replaceShardClient(t *testing.T, idx int, rdb
 		WriteTimeout: 200 * time.Millisecond,
 	})
 	breaker := database.NewRedisBreaker(3, 2, 300*time.Millisecond)
-	client.AddHook(database.NewRedisCircuitBreakerHook(breaker, strconv.Itoa(idx)))
+	client.AddHook(database.NewRedisCircuitBreakerHook(breaker))
 
 	infra.Clients[idx] = client
 	infra.Breakers[idx] = breaker

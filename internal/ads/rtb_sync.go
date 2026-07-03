@@ -85,7 +85,7 @@ func buildCustomerBudgetPools(campaigns []*domain.Campaign) map[uuid.UUID]int64 
 
 // BuildRtbInputsFromRegistry materializes per-campaign auction catalog fields from registry snapshots.
 func BuildRtbInputsFromRegistry(
-	registry *CampaignRegistry,
+	registry *Registry,
 	cfg *config.Config,
 	metaByID map[uuid.UUID]*CampaignMeta,
 	customerPools map[uuid.UUID]int64,
@@ -178,7 +178,7 @@ func utcSecondsElapsed() int64 {
 // SyncRtbCatalog rebuilds the in-process RTB catalog from registry and optional hybrid metadata.
 func SyncRtbCatalog(
 	ctx context.Context,
-	registry *CampaignRegistry,
+	registry *Registry,
 	catalog *RtbCatalog,
 	cfg *config.Config,
 	hybrid *HybridBalancer,
@@ -203,7 +203,7 @@ func SyncRtbCatalog(
 // StartRtbCatalogSync rebuilds the in-process catalog on the registry sync interval.
 func StartRtbCatalogSync(
 	ctx context.Context,
-	registry *CampaignRegistry,
+	registry *Registry,
 	catalog *RtbCatalog,
 	cfg *config.Config,
 	hybrid *HybridBalancer,

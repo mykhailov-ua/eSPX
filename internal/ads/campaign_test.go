@@ -85,7 +85,7 @@ func (m *MockRepo) GetCampaignBudget(ctx context.Context, id pgtype.UUID) (db.Ge
 }
 
 // Builds campaign registry backed by test repository.
-func newTestRegistry(t *testing.T, repo db.Querier) *CampaignRegistry {
+func newTestRegistry(t *testing.T, repo db.Querier) *Registry {
 	t.Helper()
 	r := NewRegistry(repo)
 	r.SetReplicaPath(filepath.Join(t.TempDir(), "campaigns_replica.json"))

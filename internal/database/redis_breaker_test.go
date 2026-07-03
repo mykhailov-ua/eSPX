@@ -128,7 +128,7 @@ func TestRedisBreaker_ConcurrentStress(t *testing.T) {
 func TestRedisBreaker_FastFailWhenOpen(t *testing.T) {
 	const threshold = 5
 	b := NewRedisBreaker(threshold, 2, time.Minute)
-	hook := NewRedisCircuitBreakerHook(b, "0")
+	hook := NewRedisCircuitBreakerHook(b)
 
 	var redisCalls atomic.Int64
 	next := func(ctx context.Context, cmd redis.Cmder) error {

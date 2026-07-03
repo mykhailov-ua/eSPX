@@ -16,6 +16,7 @@ import (
 	"espx/internal/config"
 	"espx/internal/database"
 	"espx/internal/metrics"
+	"espx/internal/rtb"
 	"espx/pkg/logger"
 
 	"github.com/panjf2000/gnet/v2"
@@ -93,6 +94,23 @@ func main() {
 	}
 	campaignRepo := ads.NewCampaignRepo(queries)
 	sharder := ads.NewStaticSlotSharder(len(rdbs))
+	if version, loadErr := ads.LoadActiveSlotMap(ctx, pool, sharder, len(rdbs)); loadErr != nil {
+		slog.Warn("slot map load failed, using modulo fallback", "error", loadErr)
+	} else {
+		slog.Info("slot map loaded at startup", "version", version)
+	}
+
+	slotMapWatcher := ads.NewSlotMapWatcher(ads.SlotMapWatcherConfig{
+		Pool:           pool,
+		Sharder:        sharder,
+		NumShards:      len(rdbs),
+		PollInterval:   time.Duration(cfg.SlotMapPollIntervalMs) * time.Millisecond,
+		BrokerURL:      cfg.Broker.URL,
+		BrokerRedisURL: cfg.Broker.RedisURL,
+		BrokerTopic:    cfg.SlotMapReloadTopic,
+		BrokerTimeout:  time.Duration(cfg.Broker.TimeoutMs) * time.Millisecond,
+	})
+	go slotMapWatcher.Start(ctx)
 
 	budgetWarmer := ads.NewBudgetCacheWarmer(rdbs, sharder)
 	registry.SetBudgetWarmer(budgetWarmer)
@@ -126,9 +144,9 @@ func main() {
 	scheduleFilter := ads.NewScheduleFilter(registry)
 	fraudFilter := ads.NewFraudFilter(geoProvider)
 	l3Filter := ads.NewFraudBlacklistFilter(rdbs[0])
-	behaviorFilter := ads.NewBehaviorFilter(rdbs, sharder, registry)
 
 	settingsWatcher := ads.NewSettingsWatcher(rdbs, cfg)
+	deviceFilter := ads.NewDeviceFilter(settingsWatcher)
 	go settingsWatcher.Start(ctx, time.Second)
 
 	breakerFilter := ads.NewEmergencyBreakerFilter(settingsWatcher)
@@ -153,16 +171,68 @@ func main() {
 	}
 	unifiedFilter.SetTTCMin(time.Duration(cfg.TTCMinMs) * time.Millisecond)
 	unifiedFilter.SetTTCFailClosed(cfg.TTCFailClosed)
+	unifiedFilter.SetMetricsSampleMask(cfg.MetricsHistogramSampleMask)
+	unifiedFilter.SetQuotaConfig(cfg.QuotaMode, cfg.QuotaChunkSize, cfg.QuotaRefillThresholdPct)
 	if cfg.TTCFailClosed {
 		slog.Info("TTC fail-closed enabled: clicks without impression timestamp are rejected")
 	}
 	slog.Info("redis lua scripts preloaded", "shards", len(rdbs))
 
 	creativeStore := ads.NewBrandCreativeStore(rdbs[0])
-	filterEngine := ads.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, breakerFilter, geoFilter, scheduleFilter, l3Filter, fraudFilter, behaviorFilter, unifiedFilter)
+	filterEngine := ads.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, breakerFilter, geoFilter, scheduleFilter, l3Filter, fraudFilter, deviceFilter, unifiedFilter)
+
+	var rtbCatalog *ads.RtbCatalog
+	var rtbHybrid *ads.HybridBalancer
+	var rtbReconcile *ads.RtbBudgetReconcileWorker
+	rtbBudgetSync := ads.RtbBudgetSync{
+		Authority: ads.BudgetAuthorityShadow,
+		Redis:     rdbs,
+		Sharder:   sharder,
+	}
+	if cfg.RtbEnabled() {
+		rtb.SetMetricsEnabled(true)
+		rtbStore := rtb.NewBudgetStore()
+		rtbBudgetSync.Authority = ads.BudgetAuthorityFromConfig(cfg)
+		rtbCatalog = ads.NewRtbCatalog(rtbStore, rtbBudgetSync.Authority)
+		rtbHybrid = ads.NewHybridBalancer(len(rdbs), ads.HybridMaxRPSFromConfig(cfg))
+		if cfg.RtbClearingMode == "first" {
+			rtbCatalog.SetClearingMode(rtb.ClearingFirstPrice)
+		}
+		if cfg.RtbTargetingIndexEnabled() {
+			rtbCatalog.Registry().SetTargetingIndexEnabled(true)
+		}
+		ads.StartRtbCatalogSync(ctx, registry, rtbCatalog, cfg, rtbHybrid, rtbBudgetSync, time.Duration(cfg.RegistrySyncIntervalMs)*time.Millisecond)
+		rtbReconcile = ads.NewRtbBudgetReconcileWorker(
+			ads.RtbBudgetReconcileConfig{
+				Interval:            time.Duration(cfg.RtbReconcileIntervalMs) * time.Millisecond,
+				DivergenceThreshold: cfg.RtbBudgetDivergenceMicro,
+				SampleSize:          cfg.RtbReconcileSampleSize,
+			},
+			registry,
+			rtbCatalog,
+			rdbs,
+			sharder,
+		)
+		rtbReconcile.Start(ctx)
+		if snapPath := cfg.RtbSnapshotPath; snapPath != "" {
+			if err := rtbCatalog.Registry().StartPersistence(ctx, snapPath, time.Minute); err != nil {
+				slog.Warn("rtb snapshot persistence disabled", "error", err)
+			} else {
+				slog.Info("rtb snapshot persistence enabled", "path", snapPath)
+			}
+		}
+		slog.Info("rtb catalog enabled",
+			"mode", cfg.RtbMode,
+			"budget_authority", cfg.RtbBudgetAuthority,
+			"targeting_index", cfg.RtbTargetingIndexEnabled(),
+		)
+	}
 
 	gnetHandler := ads.NewAdsPacketHandler(cfg, registry, filterEngine, pool, rdbs, sharder, cfg.FraudStreamName, creativeStore)
-	gnetHandler.SetSettingsWatcher(settingsWatcher)
+	gnetHandler.ConfigureIngestGeo(geoProvider)
+	if rtbCatalog != nil {
+		gnetHandler.ConfigureRtb(rtbCatalog, geoProvider, unifiedFilter)
+	}
 	gnetHandler.SetLogger(appLogger)
 	gnetHandler.StartHealthProbe(ctx)
 
@@ -218,17 +288,30 @@ func main() {
 
 	cancel()
 
+	if rtbReconcile != nil {
+		rtbReconcile.Close()
+		reconcileWaitCtx, reconcileWaitCancel := context.WithTimeout(context.Background(), time.Duration(cfg.Lifecycle.WaitTimeoutMs)*time.Millisecond)
+		if err := rtbReconcile.Wait(reconcileWaitCtx); err != nil {
+			slog.Warn("rtb budget reconcile wait failed", "error", err)
+		}
+		reconcileWaitCancel()
+	}
+
 	if err := gnetHandler.Stop(shutdownCtx); err != nil {
 		slog.Error("gnet server shutdown failed", "error", err)
 	}
 
-	metricsShutdownCtx, metricsCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	_ = metricsSrv.Shutdown(metricsShutdownCtx)
+	metricsShutdownCtx, metricsCancel := context.WithTimeout(context.Background(), time.Duration(cfg.Lifecycle.WaitTimeoutMs)*time.Millisecond)
+	if err := metricsSrv.Shutdown(metricsShutdownCtx); err != nil {
+		slog.Error("metrics server shutdown failed", "error", err)
+	}
 	metricsCancel()
 
 	workerPool.Shutdown()
 
-	if err := registry.Wait(shutdownCtx); err != nil {
+	registryWaitCtx, registryWaitCancel := context.WithTimeout(context.Background(), time.Duration(cfg.Lifecycle.WaitTimeoutMs)*time.Millisecond)
+	defer registryWaitCancel()
+	if err := registry.Wait(registryWaitCtx); err != nil {
 		slog.Error("registry wait failed", "error", err)
 	}
 

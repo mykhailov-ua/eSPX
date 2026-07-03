@@ -73,7 +73,7 @@ func (catalog *RtbCatalog) SyncCampaignRows(campaigns []*domain.Campaign, rows [
 }
 
 // SyncFromRegistry reloads the rtb catalog from an ads CampaignRegistry snapshot.
-func (catalog *RtbCatalog) SyncFromRegistry(registry *CampaignRegistry, inputs map[uuid.UUID]RtbCampaignInput) {
+func (catalog *RtbCatalog) SyncFromRegistry(registry *Registry, inputs map[uuid.UUID]RtbCampaignInput) {
 	if registry == nil {
 		catalog.registry.UpdateCampaigns(nil)
 		return

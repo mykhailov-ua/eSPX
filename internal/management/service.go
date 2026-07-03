@@ -379,6 +379,23 @@ func (s *Service) campaignUpdateChannel() string {
 	return "campaigns:update"
 }
 
+// getPubSubRDB returns shard 0, the sole Redis instance trackers subscribe on for campaigns:update.
+func (s *Service) getPubSubRDB() redis.UniversalClient {
+	if len(s.rdbs) == 0 {
+		return nil
+	}
+	return s.rdbs[0]
+}
+
+// publishCampaignUpdate notifies trackers via pub/sub on shard 0 regardless of campaign key placement.
+func (s *Service) publishCampaignUpdate(ctx context.Context, campaignID string) error {
+	rdb := s.getPubSubRDB()
+	if rdb == nil {
+		return fmt.Errorf("no redis pubsub client available")
+	}
+	return rdb.Publish(ctx, s.campaignUpdateChannel(), campaignID).Err()
+}
+
 // getRDB selects the Redis shard that owns a campaign's budget and settings keys.
 func (s *Service) getRDB(campaignID uuid.UUID) redis.UniversalClient {
 	if len(s.rdbs) == 0 {

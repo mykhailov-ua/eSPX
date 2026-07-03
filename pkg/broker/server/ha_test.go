@@ -121,7 +121,7 @@ func TestHAClusterFailoverAndReplication(t *testing.T) {
 	msgCount := 20
 	for i := 0; i < msgCount; i++ {
 		payload := []byte(fmt.Sprintf("ha-msg-payload-%d", i))
-		offset, err := cli.Produce(topic, payload)
+		offset, err := cli.Produce(topic, 0, payload)
 		if err != nil {
 			t.Fatalf("produce failed on message %d: %v", i, err)
 		}
@@ -146,7 +146,7 @@ func TestHAClusterFailoverAndReplication(t *testing.T) {
 	time.Sleep(6 * time.Second)
 
 	payload := []byte("msg-after-failover")
-	offset, err := cli.Produce(topic, payload)
+	offset, err := cli.Produce(topic, 0, payload)
 	if err != nil {
 		t.Fatalf("failover produce failed: %v", err)
 	}

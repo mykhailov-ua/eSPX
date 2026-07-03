@@ -1,0 +1,16 @@
+# Generated files land in api/gen/ only (--clean cannot touch the repo root).
+version: v1
+plugins:
+  - plugin: buf.build/protocolbuffers/go
+    out: gen
+    opt:
+      - module=espx
+  - plugin: buf.build/grpc/go
+    out: gen
+    opt:
+      - module=espx
+  - name: go-vtproto
+    out: gen
+    opt:
+      - module=espx
+      - features=marshal+unmarshal+size+pool

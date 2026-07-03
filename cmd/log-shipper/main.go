@@ -49,7 +49,7 @@ func main() {
 			lastReport := time.Now()
 
 			for payload := range jobs {
-				_, err := cli.Produce(*topic, payload)
+				_, err := cli.Produce(*topic, 0, payload)
 				if err != nil {
 					log.Printf("[Worker %d] Error producing: %v", workerID, err)
 				} else {

@@ -102,17 +102,12 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), time.Duration(cfg.Lifecycle.ShutdownTimeoutMs)*time.Millisecond)
 	defer shutdownCancel()
 
-	waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Duration(cfg.Lifecycle.WaitTimeoutMs)*time.Millisecond)
-	defer waitCancel()
-
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		slog.Error("HTTP sidecar shutdown failed", "error", err)
 	}
 
 	cancel()
-	if err := outboxWorker.Wait(waitCtx); err != nil {
-		slog.Error("outbox worker wait failed", "error", err)
-	}
+	outboxWorker.Wait()
 
 	stopped := make(chan struct{})
 	go func() {

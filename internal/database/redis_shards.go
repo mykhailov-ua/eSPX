@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"time"
 
 	"espx/internal/config"
@@ -76,7 +75,7 @@ func connectRedisShard(ctx context.Context, cfg *config.Config, shardIdx int, ma
 		int64(cfg.RedisBreakerHalfOpen),
 		time.Duration(cfg.RedisBreakerOpenTimeoutMs)*time.Millisecond,
 	)
-	rdb.AddHook(NewRedisCircuitBreakerHook(breaker, strconv.Itoa(shardIdx)))
+	rdb.AddHook(NewRedisCircuitBreakerHook(breaker))
 	return rdb, nil
 }
 

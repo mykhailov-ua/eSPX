@@ -102,15 +102,3 @@ func (infra *authChaosInfra) registerAndLogin(t *testing.T, svc *Service, email,
 	require.NotEmpty(t, resp.RefreshToken)
 	return userID, resp.AccessToken, resp.RefreshToken
 }
-
-// countActiveSessions asserts session rotation left exactly one live refresh row per user.
-func countActiveSessions(t *testing.T, pool *pgxpool.Pool, userID uuid.UUID) int {
-	t.Helper()
-	var n int
-	err := pool.QueryRow(context.Background(),
-		`SELECT COUNT(*) FROM sessions WHERE user_id = $1 AND is_blocked = FALSE AND expires_at > NOW()`,
-		userID,
-	).Scan(&n)
-	require.NoError(t, err)
-	return n
-}
