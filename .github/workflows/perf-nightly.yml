@@ -36,7 +36,7 @@ jobs:
           mkdir -p .ci-baselines/escape
           bash scripts/escape-nightly-job.sh escape_report.txt .ci-baselines/escape/heap_lines.count
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: escape-analysis
           path: escape_report.txt
@@ -72,7 +72,7 @@ jobs:
       - name: Benchmark and regression gate
         run: bash scripts/nightly-bench-job.sh redis
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: redis-lua-bench
           path: |
@@ -110,7 +110,7 @@ jobs:
       - name: Benchmark and regression gate
         run: bash scripts/nightly-bench-job.sh broker
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: broker-protocol-bench
           path: |
