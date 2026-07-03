@@ -38,6 +38,8 @@ fi
 if [[ "$RUN_PROTO" -eq 1 ]]; then
 	echo "gen: buf..."
 	go run github.com/bufbuild/buf/cmd/buf@latest generate --template api/buf.gen.yaml api
+	# buf writes to api/gen/ (isolated); sync into internal/*/pb for go_package paths.
+	rsync -a api/gen/ "$ROOT/"
 fi
 
 if [[ "$RUN_BPF" -eq 1 ]]; then

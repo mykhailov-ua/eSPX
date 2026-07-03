@@ -1,16 +1,17 @@
+# Use scripts/gen.sh --proto (api/buf.gen.yaml). Never set out to . or ..
 version: v1
 plugins:
   - plugin: buf.build/protocolbuffers/go
-    out: .
+    out: gen
     opt:
-      - module=github.com/mykhailov-ua/ad-event-processor
+      - module=espx
   - plugin: buf.build/grpc/go
-    out: .
+    out: gen
     opt:
-      - module=github.com/mykhailov-ua/ad-event-processor
+      - module=espx
   - name: go-vtproto
-    out: .
+    out: gen
     opt:
-      - module=github.com/mykhailov-ua/ad-event-processor
+      - module=espx
       - features=marshal+unmarshal+size+pool
 

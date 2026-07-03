@@ -4,6 +4,8 @@ bin/
 vendor/
 .idea/
 .vscode/
+api/gen/
+gen/
 campaigns_replica.json
 campaigns_replica.json.tmp
 var/edge-baseline/
