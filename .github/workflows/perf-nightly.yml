@@ -21,7 +21,7 @@ jobs:
           cache: true
 
       - name: Restore escape baseline
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .ci-baselines/escape
           key: nightly-escape-${{ github.sha }}
@@ -42,7 +42,7 @@ jobs:
           path: escape_report.txt
 
       - name: Save escape baseline
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .ci-baselines/escape
           key: nightly-escape-${{ github.sha }}
@@ -59,7 +59,7 @@ jobs:
           cache: true
 
       - name: Restore redis bench baseline
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .ci-baselines/redis
           key: nightly-redis-${{ github.sha }}
@@ -80,7 +80,7 @@ jobs:
             redis_lua_gate.txt
 
       - name: Save redis bench baseline
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .ci-baselines/redis
           key: nightly-redis-${{ github.sha }}
@@ -97,7 +97,7 @@ jobs:
           cache: true
 
       - name: Restore broker bench baseline
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .ci-baselines/broker
           key: nightly-broker-${{ github.sha }}
@@ -118,7 +118,7 @@ jobs:
             broker_proto_gate.txt
 
       - name: Save broker bench baseline
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .ci-baselines/broker
           key: nightly-broker-${{ github.sha }}
