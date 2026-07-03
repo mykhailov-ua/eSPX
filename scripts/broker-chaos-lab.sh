@@ -27,18 +27,19 @@ test "$PROOFS" -ge 2
 
 if command -v docker >/dev/null 2>&1 && [ "${BROKER_CHAOS_SKIP_SENTINEL:-0}" != "1" ]; then
 	echo "=== Sentinel coordination lab (optional) ==="
-	COMPOSE_FILE="deploy/broker-lab/docker-compose.sentinel.yml"
-	docker compose -f "$COMPOSE_FILE" up -d
-	trap 'docker compose -f "$COMPOSE_FILE" down' EXIT
+	COMPOSE_BASE="deploy/broker/docker-compose.yml"
+	COMPOSE_SENTINEL="deploy/broker/docker-compose.sentinel.yml"
+	docker compose -f "$COMPOSE_BASE" -f "$COMPOSE_SENTINEL" up -d redis redis-replica redis-sentinel
+	trap 'docker compose -f "$COMPOSE_BASE" -f "$COMPOSE_SENTINEL" down' EXIT
 
 	echo "waiting for sentinel to monitor master..."
 	sleep 8
 
 	export BROKER_CHAOS_SENTINEL=1
 	export BROKER_REDIS_SENTINEL_MASTER=broker-coord
-	export BROKER_REDIS_SENTINEL_ADDRS=127.0.0.1:26390
-	export BROKER_REDIS_URL=redis://127.0.0.1:6380/0
-	export BROKER_CHAOS_SENTINEL_STOP_CONTAINER=broker-lab-redis-master-1
+	export BROKER_REDIS_SENTINEL_ADDRS=127.0.0.1:26379
+	export BROKER_REDIS_URL=redis://127.0.0.1:6379/0
+	export BROKER_CHAOS_SENTINEL_STOP_CONTAINER=espx-broker-redis
 
 	go test -count=1 -v -run 'TestChaos_RedisSentinelFailover' -timeout 10m ./pkg/broker/server/... 2>&1 | tee -a "$LOG"
 

@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"espx/internal/ads/repo"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
 	adsdb "espx/internal/ads/db"
 
 	"github.com/google/uuid"
@@ -96,7 +96,7 @@ func seedCustomerWithLedger(t testing.TB, pool *pgxpool.Pool, feeAt time.Time) u
 
 	customerID, _ := uuid.NewV7()
 	_, err := q.CreateCustomer(ctx, adsdb.CreateCustomerParams{
-		ID:       ads.ToUUID(customerID),
+		ID:       repo.ToUUID(customerID),
 		Name:     "billing-test",
 		Balance:  0,
 		Currency: "USD",
@@ -104,14 +104,14 @@ func seedCustomerWithLedger(t testing.TB, pool *pgxpool.Pool, feeAt time.Time) u
 	require.NoError(t, err)
 
 	_, err = q.CreateLedgerEntry(ctx, adsdb.CreateLedgerEntryParams{
-		CustomerID:      ads.ToUUID(customerID),
+		CustomerID:      repo.ToUUID(customerID),
 		Amount:          10_000_000,
 		Type:            adsdb.LedgerTypeTOPUP,
 		IdempotencyHash: pgtype.Text{String: "topup-" + customerID.String(), Valid: true},
 	})
 	require.NoError(t, err)
 	_, err = q.UpdateCustomerBalanceManagement(ctx, adsdb.UpdateCustomerBalanceManagementParams{
-		ID:      ads.ToUUID(customerID),
+		ID:      repo.ToUUID(customerID),
 		Balance: 10_000_000,
 	})
 	require.NoError(t, err)
@@ -122,7 +122,7 @@ func seedCustomerWithLedger(t testing.TB, pool *pgxpool.Pool, feeAt time.Time) u
 	`, customerID, -2_500_000, feeAt)
 	require.NoError(t, err)
 	_, err = q.UpdateCustomerBalanceManagement(ctx, adsdb.UpdateCustomerBalanceManagementParams{
-		ID:      ads.ToUUID(customerID),
+		ID:      repo.ToUUID(customerID),
 		Balance: -2_500_000,
 	})
 	require.NoError(t, err)

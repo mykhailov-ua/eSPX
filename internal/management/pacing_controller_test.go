@@ -5,8 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
 	"espx/internal/ads/db"
+	"espx/internal/ads/repo"
+	"espx/internal/ads/sharding"
+	adssync "espx/internal/ads/sync"
 	"espx/internal/config"
 	"espx/internal/database"
 
@@ -32,7 +34,7 @@ func TestClosedLoopPacingController(t *testing.T) {
 		CampaignUpdateChannel: "test:pacing-updates",
 	}
 
-	sharder := ads.NewJumpHashSharder(1)
+	sharder := sharding.NewJumpHashSharder(1)
 	svc := NewService(pool, []redis.UniversalClient{rdb}, sharder, cfg)
 	defer svc.Close()
 
@@ -52,18 +54,18 @@ func TestClosedLoopPacingController(t *testing.T) {
 	require.NoError(t, err)
 
 	queries := db.New(pool)
-	campaignRepo := ads.NewCampaignRepo(queries)
-	customerRepo := ads.NewCustomerRepo(queries)
-	syncWorker := ads.NewSyncWorker(rdb, campaignRepo, customerRepo, 100*time.Millisecond)
+	campaignRepo := repo.NewCampaignRepo(queries)
+	customerRepo := repo.NewCustomerRepo(queries)
+	syncWorker := adssync.NewSyncWorker(rdb, campaignRepo, customerRepo, 100*time.Millisecond)
 
-	_, err = pool.Exec(ctx, "UPDATE campaigns SET current_spend = 50000, pacing_mode = 'EVEN' WHERE id = $1", ads.ToUUID(campaignID))
+	_, err = pool.Exec(ctx, "UPDATE campaigns SET current_spend = 50000, pacing_mode = 'EVEN' WHERE id = $1", repo.ToUUID(campaignID))
 	require.NoError(t, err)
 
-	err = svc.ClosedLoopPacingController(ctx, []*ads.SyncWorker{syncWorker})
+	err = svc.ClosedLoopPacingController(ctx, []*adssync.SyncWorker{syncWorker})
 	require.NoError(t, err)
 
 	var pacing db.PacingModeType
-	err = pool.QueryRow(ctx, "SELECT pacing_mode FROM campaigns WHERE id = $1", ads.ToUUID(campaignID)).Scan(&pacing)
+	err = pool.QueryRow(ctx, "SELECT pacing_mode FROM campaigns WHERE id = $1", repo.ToUUID(campaignID)).Scan(&pacing)
 	require.NoError(t, err)
 	assert.Equal(t, db.PacingModeTypeASAP, pacing)
 
@@ -74,13 +76,13 @@ func TestClosedLoopPacingController(t *testing.T) {
 
 	_, err = pool.Exec(ctx, "DELETE FROM outbox_events")
 	require.NoError(t, err)
-	_, err = pool.Exec(ctx, "UPDATE campaigns SET current_spend = 150000000, pacing_mode = 'ASAP' WHERE id = $1", ads.ToUUID(campaignID))
+	_, err = pool.Exec(ctx, "UPDATE campaigns SET current_spend = 150000000, pacing_mode = 'ASAP' WHERE id = $1", repo.ToUUID(campaignID))
 	require.NoError(t, err)
 
-	err = svc.ClosedLoopPacingController(ctx, []*ads.SyncWorker{syncWorker})
+	err = svc.ClosedLoopPacingController(ctx, []*adssync.SyncWorker{syncWorker})
 	require.NoError(t, err)
 
-	err = pool.QueryRow(ctx, "SELECT pacing_mode FROM campaigns WHERE id = $1", ads.ToUUID(campaignID)).Scan(&pacing)
+	err = pool.QueryRow(ctx, "SELECT pacing_mode FROM campaigns WHERE id = $1", repo.ToUUID(campaignID)).Scan(&pacing)
 	require.NoError(t, err)
 	assert.Equal(t, db.PacingModeTypeEVEN, pacing)
 
@@ -105,7 +107,7 @@ func TestClosedLoopPacingController_EdgeCases(t *testing.T) {
 		CampaignUpdateChannel: "test:pacing-updates",
 	}
 
-	sharder := ads.NewJumpHashSharder(1)
+	sharder := sharding.NewJumpHashSharder(1)
 	svc := NewService(pool, []redis.UniversalClient{rdb}, sharder, cfg)
 	defer svc.Close()
 
@@ -130,24 +132,24 @@ func TestClosedLoopPacingController_EdgeCases(t *testing.T) {
 	_, err = pool.Exec(ctx, "DELETE FROM outbox_events")
 	require.NoError(t, err)
 
-	_, err = pool.Exec(ctx, "UPDATE campaigns SET current_spend = 50000, pacing_mode = 'EVEN' WHERE id = $1", ads.ToUUID(campaignID1))
+	_, err = pool.Exec(ctx, "UPDATE campaigns SET current_spend = 50000, pacing_mode = 'EVEN' WHERE id = $1", repo.ToUUID(campaignID1))
 	require.NoError(t, err)
 
 	queries := db.New(pool)
-	campaignRepo := ads.NewCampaignRepo(queries)
-	customerRepo := ads.NewCustomerRepo(queries)
-	syncWorker := ads.NewSyncWorker(rdb, campaignRepo, customerRepo, 100*time.Millisecond)
+	campaignRepo := repo.NewCampaignRepo(queries)
+	customerRepo := repo.NewCustomerRepo(queries)
+	syncWorker := adssync.NewSyncWorker(rdb, campaignRepo, customerRepo, 100*time.Millisecond)
 
-	err = svc.ClosedLoopPacingController(ctx, []*ads.SyncWorker{syncWorker})
+	err = svc.ClosedLoopPacingController(ctx, []*adssync.SyncWorker{syncWorker})
 	require.NoError(t, err)
 
 	var pacing1 db.PacingModeType
-	err = pool.QueryRow(ctx, "SELECT pacing_mode FROM campaigns WHERE id = $1", ads.ToUUID(campaignID1)).Scan(&pacing1)
+	err = pool.QueryRow(ctx, "SELECT pacing_mode FROM campaigns WHERE id = $1", repo.ToUUID(campaignID1)).Scan(&pacing1)
 	require.NoError(t, err)
 	assert.Equal(t, db.PacingModeTypeASAP, pacing1)
 
 	var pacing2 db.PacingModeType
-	err = pool.QueryRow(ctx, "SELECT pacing_mode FROM campaigns WHERE id = $1", ads.ToUUID(campaignID2)).Scan(&pacing2)
+	err = pool.QueryRow(ctx, "SELECT pacing_mode FROM campaigns WHERE id = $1", repo.ToUUID(campaignID2)).Scan(&pacing2)
 	require.NoError(t, err)
 	assert.Equal(t, db.PacingModeTypeEVEN, pacing2)
 }
@@ -168,7 +170,7 @@ func BenchmarkClosedLoopPacingController(b *testing.B) {
 		CampaignUpdateChannel: "test:pacing-updates",
 	}
 
-	sharder := ads.NewJumpHashSharder(1)
+	sharder := sharding.NewJumpHashSharder(1)
 	svc := NewService(pool, []redis.UniversalClient{rdb}, sharder, cfg)
 	defer svc.Close()
 
@@ -191,15 +193,15 @@ func BenchmarkClosedLoopPacingController(b *testing.B) {
 	}
 
 	queries := db.New(pool)
-	campaignRepo := ads.NewCampaignRepo(queries)
-	customerRepo := ads.NewCustomerRepo(queries)
-	syncWorker := ads.NewSyncWorker(rdb, campaignRepo, customerRepo, 100*time.Millisecond)
+	campaignRepo := repo.NewCampaignRepo(queries)
+	customerRepo := repo.NewCustomerRepo(queries)
+	syncWorker := adssync.NewSyncWorker(rdb, campaignRepo, customerRepo, 100*time.Millisecond)
 
 	b.ResetTimer()
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		err = svc.ClosedLoopPacingController(ctx, []*ads.SyncWorker{syncWorker})
+		err = svc.ClosedLoopPacingController(ctx, []*adssync.SyncWorker{syncWorker})
 		if err != nil {
 			b.Fatal(err)
 		}

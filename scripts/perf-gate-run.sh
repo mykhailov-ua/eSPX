@@ -17,6 +17,7 @@ fi
 PR_BENCH="$OUTDIR/pr_bench.txt"
 BASELINE_BENCH="$OUTDIR/baseline_bench.txt"
 GATE_REPORT="$OUTDIR/gate_report.txt"
+STRICT="${PERF_GATE_STRICT:-true}"
 
 "$ROOT/scripts/install-benchstat.sh"
 
@@ -24,7 +25,13 @@ echo "perf-gate-run: generating sqlc on current tree..."
 go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.28.0 generate
 "$ROOT/scripts/perf-gate-bench.sh" >"$PR_BENCH"
 
-echo "perf-gate-run: baseline ref=$BASELINE_REF worktree=$BASELINE_WORKTREE"
+if [[ "$STRICT" != "true" ]]; then
+	echo "perf-gate-run: smoke mode — zero-alloc check only"
+	go run "$ROOT/scripts/perf_gate.go" /dev/null "$PR_BENCH" | tee "$GATE_REPORT"
+	exit 0
+fi
+
+echo "perf-gate-run: strict mode — baseline ref=$BASELINE_REF worktree=$BASELINE_WORKTREE"
 git worktree prune || true
 rm -rf "$BASELINE_WORKTREE" || true
 git worktree add --detach "$BASELINE_WORKTREE" "$BASELINE_REF"

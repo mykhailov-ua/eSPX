@@ -7,15 +7,15 @@ import (
 	"log/slog"
 	"time"
 
-	"espx/internal/ads"
 	"espx/internal/ads/db"
+	adssync "espx/internal/ads/sync"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
 // ClosedLoopPacingController switches campaigns between ASAP and EVEN when spend diverges from the daily curve.
-func (s *Service) ClosedLoopPacingController(ctx context.Context, syncWorkers []*ads.SyncWorker) error {
+func (s *Service) ClosedLoopPacingController(ctx context.Context, syncWorkers []*adssync.SyncWorker) error {
 	opCtx, cancel := workerContext(ctx, workerBatchTimeout)
 	defer cancel()
 

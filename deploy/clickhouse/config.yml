@@ -1,0 +1,28 @@
+# Server overrides for docker compose (merged into config.d/).
+# Caps memory, disables heavy system logs, listens on all interfaces.
+
+max_server_memory_usage: 4294967296
+
+listen_host:
+  "@replace": replace
+  "#text": "0.0.0.0"
+
+listen_try: 1
+listen_reuse_port: 1
+async_load_databases: false
+
+query_log:
+  "@remove": remove
+query_thread_log:
+  "@remove": remove
+trace_log:
+  "@remove": remove
+metric_log:
+  "@remove": remove
+asynchronous_metric_log:
+  "@remove": remove
+text_log:
+  "@remove": remove
+
+skip_check_for_incorrect_settings: 1
+mlock_executable: false

@@ -2,6 +2,8 @@ package payment
 
 import (
 	"context"
+	"espx/internal/ads/repo"
+	"espx/internal/ads/sharding"
 	"fmt"
 	"net"
 	"os"
@@ -12,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
 	ads_db "espx/internal/ads/db"
 	"espx/internal/config"
 	"espx/internal/management"
@@ -163,7 +164,7 @@ func TestPaymentService_Integration(t *testing.T) {
 	customerID := uuid.New()
 	qAds := ads_db.New(pool)
 	_, err := qAds.CreateCustomer(ctx, ads_db.CreateCustomerParams{
-		ID:       ads.ToUUID(customerID),
+		ID:       repo.ToUUID(customerID),
 		Name:     "Test Payment Customer",
 		Balance:  0,
 		Currency: "USD",
@@ -216,7 +217,7 @@ func TestPaymentService_Integration(t *testing.T) {
 	require.Len(t, outboxEvents, 1)
 	assert.Equal(t, "SETTLE_BALANCE", outboxEvents[0].EventType)
 
-	sharder := ads.NewJumpHashSharder(1)
+	sharder := sharding.NewJumpHashSharder(1)
 	mgmtService := management.NewService(pool, []redis.UniversalClient{rdb}, sharder, cfg)
 	defer mgmtService.Close()
 
@@ -246,12 +247,12 @@ func TestPaymentService_Integration(t *testing.T) {
 		return err == nil && len(events) == 0
 	}, 5*time.Second, 100*time.Millisecond)
 
-	customer, err := qAds.GetCustomerForUpdate(ctx, ads.ToUUID(customerID))
+	customer, err := qAds.GetCustomerForUpdate(ctx, repo.ToUUID(customerID))
 	require.NoError(t, err)
 	assert.Equal(t, amountMicro, customer.Balance)
 
 	ledgerRows, err := qAds.ListCustomerLedger(ctx, ads_db.ListCustomerLedgerParams{
-		CustomerID: ads.ToUUID(customerID),
+		CustomerID: repo.ToUUID(customerID),
 		Limit:      10,
 		Offset:     0,
 	})
@@ -260,5 +261,5 @@ func TestPaymentService_Integration(t *testing.T) {
 	assert.Equal(t, amountMicro, ledgerRows[0].Amount)
 	assert.Equal(t, ads_db.LedgerType("PAYMENT_TOPUP"), ledgerRows[0].Type)
 	assert.Equal(t, "payment:"+uuid.UUID(intent.ID.Bytes).String(), ledgerRows[0].IdempotencyHash.String)
-	assert.Equal(t, ads.ToUUID(uuid.UUID(intent.ID.Bytes)), ledgerRows[0].PaymentIntentID)
+	assert.Equal(t, repo.ToUUID(uuid.UUID(intent.ID.Bytes)), ledgerRows[0].PaymentIntentID)
 }

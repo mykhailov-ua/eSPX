@@ -11,8 +11,10 @@ import (
 	"syscall"
 	"time"
 
-	"espx/internal/ads"
 	"espx/internal/ads/db"
+	"espx/internal/ads/repo"
+	"espx/internal/ads/sharding"
+	adssync "espx/internal/ads/sync"
 	"espx/internal/auth"
 	"espx/internal/auth/pb"
 	"espx/internal/config"
@@ -55,7 +57,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	sharder := ads.NewStaticSlotSharder(len(rdbs))
+	sharder := sharding.NewStaticSlotSharder(len(rdbs))
 
 	authTarget := "127.0.0.1:" + cfg.AuthServerPort
 	if host := os.Getenv("AUTH_SERVER_HOST"); host != "" {
@@ -82,11 +84,11 @@ func main() {
 	svc := management.NewService(pool, rdbs, sharder, cfg)
 
 	queries := db.New(pool)
-	campaignRepo := ads.NewCampaignRepo(queries)
-	customerRepo := ads.NewCustomerRepo(queries)
-	var syncWorkers []*ads.SyncWorker
+	campaignRepo := repo.NewCampaignRepo(queries)
+	customerRepo := repo.NewCustomerRepo(queries)
+	var syncWorkers []*adssync.SyncWorker
 	for _, rdb := range rdbs {
-		sw := ads.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond)
+		sw := adssync.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond)
 		syncWorkers = append(syncWorkers, sw)
 		svc.StartBackgroundWorker(func() {
 			sw.Start(ctx)

@@ -1,8 +1,0 @@
-# Production stub — no service overrides.
-#
-# RTB is disabled in production via .env (RTB_MODE=off).
-# Do not merge deploy/rtb-staging/docker-compose.override.yml here.
-#
-# See deploy/rtb-prod/README.md and .env.rtb-prod
-
-services: {}

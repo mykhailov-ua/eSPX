@@ -4,8 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"espx/internal/ads"
 	"espx/internal/ads/db"
+	"espx/internal/ads/repo"
+	"espx/internal/ads/sharding"
 	"espx/internal/config"
 	"espx/internal/database"
 
@@ -28,10 +29,10 @@ func TestSlotMigration_CopyAndActivate(t *testing.T) {
 	defer cleanup1()
 
 	cfg := &config.Config{SlotMigrationEnabled: false}
-	svc := NewService(pool, []redis.UniversalClient{rdb0, rdb1}, ads.NewStaticSlotSharder(2), cfg)
+	svc := NewService(pool, []redis.UniversalClient{rdb0, rdb1}, sharding.NewStaticSlotSharder(2), cfg)
 	defer svc.Close()
 
-	mapRepo := ads.NewSlotMapRepo(pool)
+	mapRepo := sharding.NewSlotMapRepo(pool)
 	active, err := mapRepo.GetActiveVersion(ctx)
 	require.NoError(t, err)
 
@@ -40,7 +41,7 @@ func TestSlotMigration_CopyAndActivate(t *testing.T) {
 	var slot int16 = 0
 	for {
 		campID = uuid.New()
-		if ads.CampaignSlotIndex(campID) == slot {
+		if sharding.CampaignSlotIndex(campID) == slot {
 			break
 		}
 	}
@@ -51,7 +52,7 @@ func TestSlotMigration_CopyAndActivate(t *testing.T) {
 	_, err = pool.Exec(ctx, `
 		INSERT INTO campaigns (id, name, budget_limit, current_spend, status, customer_id, pacing_mode, timezone, freq_window)
 		VALUES ($1, 'mig-test', 1000000, 0, 'ACTIVE', $2, 'ASAP', 'UTC', 86400)`,
-		ads.ToUUID(campID), ads.ToUUID(customerID))
+		repo.ToUUID(campID), repo.ToUUID(customerID))
 	require.NoError(t, err)
 
 	key := "budget:campaign:" + campID.String()

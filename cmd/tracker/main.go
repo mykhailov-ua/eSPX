@@ -11,8 +11,13 @@ import (
 	"syscall"
 	"time"
 
-	"espx/internal/ads"
+	"espx/internal/ads/catalog"
 	"espx/internal/ads/db"
+	"espx/internal/ads/filter"
+	"espx/internal/ads/ingest"
+	"espx/internal/ads/repo"
+	"espx/internal/ads/rtbbridge"
+	"espx/internal/ads/sharding"
 	"espx/internal/config"
 	"espx/internal/database"
 	"espx/internal/metrics"
@@ -69,7 +74,7 @@ func main() {
 	defer pool.Close()
 
 	queries := db.New(pool)
-	registry := ads.NewRegistry(queries)
+	registry := catalog.NewRegistry(queries)
 	count, err := registry.Sync(ctx)
 	if err != nil {
 		slog.Warn("initial campaign registry sync failed", "error", err)
@@ -92,15 +97,15 @@ func main() {
 	if channel == "" {
 		channel = "campaigns:update"
 	}
-	campaignRepo := ads.NewCampaignRepo(queries)
-	sharder := ads.NewStaticSlotSharder(len(rdbs))
-	if version, loadErr := ads.LoadActiveSlotMap(ctx, pool, sharder, len(rdbs)); loadErr != nil {
+	campaignRepo := repo.NewCampaignRepo(queries)
+	sharder := sharding.NewStaticSlotSharder(len(rdbs))
+	if version, loadErr := sharding.LoadActiveSlotMap(ctx, pool, sharder, len(rdbs)); loadErr != nil {
 		slog.Warn("slot map load failed, using modulo fallback", "error", loadErr)
 	} else {
 		slog.Info("slot map loaded at startup", "version", version)
 	}
 
-	slotMapWatcher := ads.NewSlotMapWatcher(ads.SlotMapWatcherConfig{
+	slotMapWatcher := sharding.NewSlotMapWatcher(sharding.SlotMapWatcherConfig{
 		Pool:           pool,
 		Sharder:        sharder,
 		NumShards:      len(rdbs),
@@ -112,7 +117,7 @@ func main() {
 	})
 	go slotMapWatcher.Start(ctx)
 
-	budgetWarmer := ads.NewBudgetCacheWarmer(rdbs, sharder)
+	budgetWarmer := catalog.NewBudgetCacheWarmer(rdbs, sharder)
 	registry.SetBudgetWarmer(budgetWarmer)
 	if warmed, err := budgetWarmer.WarmFromRegistry(ctx, registry); err != nil {
 		slog.Error("initial budget cache warm failed", "error", err)
@@ -122,36 +127,36 @@ func main() {
 
 	registry.StartWatch(ctx, rdbs[0], channel)
 
-	var geoProvider ads.GeoProvider
-	geoProvider, err = ads.NewMaxMindProvider("deploy/geoip/GeoLite2-Country.mmdb")
+	var geoProvider filter.GeoProvider
+	geoProvider, err = filter.NewMaxMindProvider("deploy/geoip/GeoLite2-Country.mmdb")
 	if err != nil {
 		if cfg.Env == "prod" || cfg.Env == "production" {
 			slog.Error("FATAL: MaxMind DB load failed in production", "error", err)
 			os.Exit(1)
 		}
 		slog.Warn("MaxMind DB load failed, using mock geo provider (development only)", "error", err)
-		geoProvider = &ads.MockGeoProvider{}
+		geoProvider = &filter.MockGeoProvider{}
 	}
 	defer geoProvider.Close()
 
-	if _, ok := geoProvider.(*ads.MaxMindProvider); ok {
+	if _, ok := geoProvider.(*filter.MaxMindProvider); ok {
 		metrics.GeoProviderStatus.Set(1)
 	} else {
 		metrics.GeoProviderStatus.Set(0)
 	}
 
-	geoFilter := ads.NewGeoFilter(geoProvider, registry)
-	scheduleFilter := ads.NewScheduleFilter(registry)
-	fraudFilter := ads.NewFraudFilter(geoProvider)
-	l3Filter := ads.NewFraudBlacklistFilter(rdbs[0])
+	geoFilter := filter.NewGeoFilter(geoProvider, registry)
+	scheduleFilter := filter.NewScheduleFilter(registry)
+	fraudFilter := filter.NewFraudFilter(geoProvider)
+	l3Filter := filter.NewFraudBlacklistFilter(rdbs[0])
 
-	settingsWatcher := ads.NewSettingsWatcher(rdbs, cfg)
-	deviceFilter := ads.NewDeviceFilter(settingsWatcher)
+	settingsWatcher := catalog.NewSettingsWatcher(rdbs, cfg)
+	deviceFilter := filter.NewDeviceFilter(settingsWatcher)
 	go settingsWatcher.Start(ctx, time.Second)
 
-	breakerFilter := ads.NewEmergencyBreakerFilter(settingsWatcher)
+	breakerFilter := filter.NewEmergencyBreakerFilter(settingsWatcher)
 
-	unifiedFilter := ads.NewUnifiedFilter(
+	unifiedFilter := filter.NewUnifiedFilter(
 		rdbs,
 		sharder,
 		registry,
@@ -178,32 +183,32 @@ func main() {
 	}
 	slog.Info("redis lua scripts preloaded", "shards", len(rdbs))
 
-	creativeStore := ads.NewBrandCreativeStore(rdbs[0])
-	filterEngine := ads.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, breakerFilter, geoFilter, scheduleFilter, l3Filter, fraudFilter, deviceFilter, unifiedFilter)
+	creativeStore := filter.NewBrandCreativeStore(rdbs[0])
+	filterEngine := filter.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, breakerFilter, geoFilter, scheduleFilter, l3Filter, fraudFilter, deviceFilter, unifiedFilter)
 
-	var rtbCatalog *ads.RtbCatalog
-	var rtbHybrid *ads.HybridBalancer
-	var rtbReconcile *ads.RtbBudgetReconcileWorker
-	rtbBudgetSync := ads.RtbBudgetSync{
-		Authority: ads.BudgetAuthorityShadow,
+	var rtbCatalog *rtbbridge.RtbCatalog
+	var rtbHybrid *ingest.HybridBalancer
+	var rtbReconcile *rtbbridge.RtbBudgetReconcileWorker
+	rtbBudgetSync := rtbbridge.RtbBudgetSync{
+		Authority: rtbbridge.BudgetAuthorityShadow,
 		Redis:     rdbs,
 		Sharder:   sharder,
 	}
 	if cfg.RtbEnabled() {
 		rtb.SetMetricsEnabled(true)
 		rtbStore := rtb.NewBudgetStore()
-		rtbBudgetSync.Authority = ads.BudgetAuthorityFromConfig(cfg)
-		rtbCatalog = ads.NewRtbCatalog(rtbStore, rtbBudgetSync.Authority)
-		rtbHybrid = ads.NewHybridBalancer(len(rdbs), ads.HybridMaxRPSFromConfig(cfg))
+		rtbBudgetSync.Authority = rtbbridge.BudgetAuthorityFromConfig(cfg)
+		rtbCatalog = rtbbridge.NewRtbCatalog(rtbStore, rtbBudgetSync.Authority)
+		rtbHybrid = ingest.NewHybridBalancer(len(rdbs), rtbbridge.HybridMaxRPSFromConfig(cfg))
 		if cfg.RtbClearingMode == "first" {
 			rtbCatalog.SetClearingMode(rtb.ClearingFirstPrice)
 		}
 		if cfg.RtbTargetingIndexEnabled() {
 			rtbCatalog.Registry().SetTargetingIndexEnabled(true)
 		}
-		ads.StartRtbCatalogSync(ctx, registry, rtbCatalog, cfg, rtbHybrid, rtbBudgetSync, time.Duration(cfg.RegistrySyncIntervalMs)*time.Millisecond)
-		rtbReconcile = ads.NewRtbBudgetReconcileWorker(
-			ads.RtbBudgetReconcileConfig{
+		rtbbridge.StartRtbCatalogSync(ctx, registry, rtbCatalog, cfg, rtbHybrid, rtbBudgetSync, time.Duration(cfg.RegistrySyncIntervalMs)*time.Millisecond)
+		rtbReconcile = rtbbridge.NewRtbBudgetReconcileWorker(
+			rtbbridge.RtbBudgetReconcileConfig{
 				Interval:            time.Duration(cfg.RtbReconcileIntervalMs) * time.Millisecond,
 				DivergenceThreshold: cfg.RtbBudgetDivergenceMicro,
 				SampleSize:          cfg.RtbReconcileSampleSize,
@@ -228,7 +233,7 @@ func main() {
 		)
 	}
 
-	gnetHandler := ads.NewAdsPacketHandler(cfg, registry, filterEngine, pool, rdbs, sharder, cfg.FraudStreamName, creativeStore)
+	gnetHandler := ingest.NewAdsPacketHandler(cfg, registry, filterEngine, pool, rdbs, sharder, cfg.FraudStreamName, creativeStore)
 	gnetHandler.ConfigureIngestGeo(geoProvider)
 	if rtbCatalog != nil {
 		gnetHandler.ConfigureRtb(rtbCatalog, geoProvider, unifiedFilter)
@@ -236,7 +241,7 @@ func main() {
 	gnetHandler.SetLogger(appLogger)
 	gnetHandler.StartHealthProbe(ctx)
 
-	workerPool := ads.NewPinnedWorkerPool(cfg.MaxWorkers, 8192)
+	workerPool := ingest.NewPinnedWorkerPool(cfg.MaxWorkers, 8192)
 	gnetHandler.SetWorkerPool(workerPool)
 
 	slog.Info("starting ad-event-tracker via gnet", "port", cfg.ServerPort)

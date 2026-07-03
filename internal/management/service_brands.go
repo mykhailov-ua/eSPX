@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"espx/internal/ads"
 	"espx/internal/ads/db"
+	"espx/internal/ads/repo"
 	"espx/pkg/cold"
 
 	"github.com/google/uuid"
@@ -46,14 +46,14 @@ func (s *Service) CreateBrand(ctx context.Context, customerID uuid.UUID, name st
 	}
 
 	q := db.New(s.GetPool())
-	_, err = q.GetCustomerByID(ctx, ads.ToUUID(customerID))
+	_, err = q.GetCustomerByID(ctx, repo.ToUUID(customerID))
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("customer not found: %w", err)
 	}
 
 	_, err = q.CreateBrand(ctx, db.CreateBrandParams{
-		ID:         ads.ToUUID(brandID),
-		CustomerID: ads.ToUUID(customerID),
+		ID:         repo.ToUUID(brandID),
+		CustomerID: repo.ToUUID(customerID),
 		Name:       name,
 	})
 	if err != nil {
@@ -66,7 +66,7 @@ func (s *Service) CreateBrand(ctx context.Context, customerID uuid.UUID, name st
 // GetBrandDTO loads a single brand for admin display and access checks.
 func (s *Service) GetBrandDTO(ctx context.Context, id uuid.UUID) (BrandDTO, error) {
 	q := db.New(s.GetPool())
-	b, err := q.GetBrand(ctx, ads.ToUUID(id))
+	b, err := q.GetBrand(ctx, repo.ToUUID(id))
 	if err != nil {
 		return BrandDTO{}, err
 	}
@@ -76,7 +76,7 @@ func (s *Service) GetBrandDTO(ctx context.Context, id uuid.UUID) (BrandDTO, erro
 // ListBrandsByCustomer returns all brands owned by a customer for the admin UI.
 func (s *Service) ListBrandsByCustomer(ctx context.Context, customerID uuid.UUID) ([]BrandDTO, error) {
 	q := db.New(s.GetPool())
-	rows, err := q.ListBrandsByCustomer(ctx, ads.ToUUID(customerID))
+	rows, err := q.ListBrandsByCustomer(ctx, repo.ToUUID(customerID))
 	if err != nil {
 		return nil, err
 	}
@@ -89,13 +89,13 @@ func (s *Service) ConfigureBrandFcap(ctx context.Context, brandID uuid.UUID, lim
 	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 
-		brand, err := q.GetBrandForUpdate(ctx, ads.ToUUID(brandID))
+		brand, err := q.GetBrandForUpdate(ctx, repo.ToUUID(brandID))
 		if err != nil {
 			return fmt.Errorf("brand not found: %w", err)
 		}
 
 		err = q.ConfigureBrandFcap(ctx, db.ConfigureBrandFcapParams{
-			ID:         ads.ToUUID(brandID),
+			ID:         repo.ToUUID(brandID),
 			FreqLimit:  limit,
 			FreqWindow: window,
 		})

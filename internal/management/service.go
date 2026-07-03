@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"errors"
-	"espx/internal/ads"
 	"espx/internal/ads/db"
+	"espx/internal/ads/repo"
+	"espx/internal/ads/sharding"
+	adssync "espx/internal/ads/sync"
 	"espx/internal/config"
 	"espx/internal/metrics"
 
@@ -27,7 +29,7 @@ import (
 type Service struct {
 	pool     *pgxpool.Pool
 	rdbs     []redis.UniversalClient
-	sharder  ads.Sharder
+	sharder  sharding.Sharder
 	cfg      *config.Config
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -59,7 +61,7 @@ func (s *Service) startWorker(fn func()) {
 }
 
 // NewService constructs the management service and starts core background workers.
-func NewService(pool *pgxpool.Pool, rdbs []redis.UniversalClient, sharder ads.Sharder, cfg *config.Config) *Service {
+func NewService(pool *pgxpool.Pool, rdbs []redis.UniversalClient, sharder sharding.Sharder, cfg *config.Config) *Service {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Service{
 		pool:    pool,
@@ -121,7 +123,7 @@ func (s *Service) Close() {
 }
 
 // StartPacingController starts the closed-loop pacing worker with budget sync dependencies.
-func (s *Service) StartPacingController(syncWorkers []*ads.SyncWorker, interval time.Duration) {
+func (s *Service) StartPacingController(syncWorkers []*adssync.SyncWorker, interval time.Duration) {
 	s.startWorker(func() {
 		NewPacingControllerWorker(s, syncWorkers).Start(s.ctx, interval)
 	})
@@ -129,13 +131,13 @@ func (s *Service) StartPacingController(syncWorkers []*ads.SyncWorker, interval 
 
 // GetCampaign loads the full campaign row for internal authorization and lifecycle checks.
 func (s *Service) GetCampaign(ctx context.Context, id uuid.UUID) (db.Campaign, error) {
-	return db.New(s.pool).GetCampaignFull(ctx, ads.ToUUID(id))
+	return db.New(s.pool).GetCampaignFull(ctx, repo.ToUUID(id))
 }
 
 // CreateCustomer registers a new billing account with an optional opening balance.
 func (s *Service) CreateCustomer(ctx context.Context, id uuid.UUID, name string, balance int64, currency string) error {
 	_, err := db.New(s.pool).CreateCustomer(ctx, db.CreateCustomerParams{
-		ID:       ads.ToUUID(id),
+		ID:       repo.ToUUID(id),
 		Name:     name,
 		Balance:  balance,
 		Currency: currency,
@@ -164,21 +166,21 @@ func (s *Service) TopUpBalance(ctx context.Context, customerID uuid.UUID, amount
 			return nil
 		}
 		_, err = q.UpdateCustomerBalanceManagement(ctx, db.UpdateCustomerBalanceManagementParams{
-			ID:      ads.ToUUID(customerID),
+			ID:      repo.ToUUID(customerID),
 			Balance: amount,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to update balance: %w", err)
 		}
 		_, err = q.CreateLedgerEntry(ctx, db.CreateLedgerEntryParams{
-			CustomerID:      ads.ToUUID(customerID),
+			CustomerID:      repo.ToUUID(customerID),
 			Amount:          amount,
 			Type:            db.LedgerTypeTOPUP,
 			IdempotencyHash: pgtype.Text{String: idempotencyKey, Valid: true},
 			PaymentIntentID: pgtype.UUID{},
 		})
 		if err == nil {
-			metrics.BalanceTopupsTotal.WithLabelValues("USD").Add(float64(amount) / ads.MicroUnitFactor)
+			metrics.BalanceTopupsTotal.WithLabelValues("USD").Add(float64(amount) / repo.MicroUnitFactor)
 			s.AuditLog(ctx, q, uuid.Nil, "TOPUP_BALANCE", "customer", &customerID, map[string]any{"amount": amount}, map[string]any{"idempotency_key": idempotencyKey})
 		}
 		return err
@@ -193,7 +195,7 @@ func (s *Service) ApplyPaymentCredit(ctx context.Context, customerID uuid.UUID, 
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
 
-		existingPI, err := q.GetLedgerByPaymentIntentForUpdate(ctx, ads.ToUUID(paymentIntentID))
+		existingPI, err := q.GetLedgerByPaymentIntentForUpdate(ctx, repo.ToUUID(paymentIntentID))
 		if err == nil {
 			ledgerEntryID = existingPI.ID
 			applied = false
@@ -214,7 +216,7 @@ func (s *Service) ApplyPaymentCredit(ctx context.Context, customerID uuid.UUID, 
 		}
 
 		_, err = q.UpdateCustomerBalanceManagement(ctx, db.UpdateCustomerBalanceManagementParams{
-			ID:      ads.ToUUID(customerID),
+			ID:      repo.ToUUID(customerID),
 			Balance: amount,
 		})
 		if err != nil {
@@ -225,15 +227,15 @@ func (s *Service) ApplyPaymentCredit(ctx context.Context, customerID uuid.UUID, 
 		}
 
 		row, err := q.CreateLedgerEntry(ctx, db.CreateLedgerEntryParams{
-			CustomerID:      ads.ToUUID(customerID),
+			CustomerID:      repo.ToUUID(customerID),
 			Amount:          amount,
 			Type:            db.LedgerType("PAYMENT_TOPUP"),
 			IdempotencyHash: pgtype.Text{String: ledgerIdempotencyKey, Valid: true},
-			PaymentIntentID: ads.ToUUID(paymentIntentID),
+			PaymentIntentID: repo.ToUUID(paymentIntentID),
 		})
 		if err != nil {
 			if isPgUniqueViolation(err) {
-				if existingPI, lookupErr := q.GetLedgerByPaymentIntentForUpdate(ctx, ads.ToUUID(paymentIntentID)); lookupErr == nil {
+				if existingPI, lookupErr := q.GetLedgerByPaymentIntentForUpdate(ctx, repo.ToUUID(paymentIntentID)); lookupErr == nil {
 					ledgerEntryID = existingPI.ID
 					applied = false
 					return nil
@@ -250,7 +252,7 @@ func (s *Service) ApplyPaymentCredit(ctx context.Context, customerID uuid.UUID, 
 		ledgerEntryID = row.ID
 		applied = true
 
-		metrics.BalanceTopupsTotal.WithLabelValues("USD").Add(float64(amount) / ads.MicroUnitFactor)
+		metrics.BalanceTopupsTotal.WithLabelValues("USD").Add(float64(amount) / repo.MicroUnitFactor)
 		s.AuditLog(ctx, q, uuid.Nil, "PAYMENT_SETTLEMENT", "customer", &customerID, map[string]any{"amount": amount, "payment_intent_id": paymentIntentID.String(), "provider": provider, "provider_ref": providerRef}, map[string]any{"idempotency_key": ledgerIdempotencyKey})
 		return nil
 	})
@@ -262,7 +264,7 @@ func (s *Service) ApplyPaymentCredit(ctx context.Context, customerID uuid.UUID, 
 func (s *Service) CancelCampaign(ctx context.Context, campaignID uuid.UUID, reason string) error {
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
-		camp, err := q.GetCampaignForUpdate(ctx, ads.ToUUID(campaignID))
+		camp, err := q.GetCampaignForUpdate(ctx, repo.ToUUID(campaignID))
 		if err != nil {
 			return err
 		}
@@ -270,14 +272,14 @@ func (s *Service) CancelCampaign(ctx context.Context, campaignID uuid.UUID, reas
 			return nil
 		}
 		_, err = q.UpdateCampaignStatus(ctx, db.UpdateCampaignStatusParams{
-			ID:     ads.ToUUID(campaignID),
+			ID:     repo.ToUUID(campaignID),
 			Status: db.CampaignStatusTypeDRAINING,
 		})
 		if err != nil {
 			return err
 		}
 		err = q.CreateStatusHistory(ctx, db.CreateStatusHistoryParams{
-			CampaignID: ads.ToUUID(campaignID),
+			CampaignID: repo.ToUUID(campaignID),
 			OldStatus:  db.NullCampaignStatusType{CampaignStatusType: camp.Status, Valid: true},
 			NewStatus:  db.CampaignStatusTypeDRAINING,
 			Reason:     pgtype.Text{String: reason, Valid: true},
@@ -299,7 +301,7 @@ func (s *Service) FinalizeCancelledCampaign(ctx context.Context, campaignID uuid
 			SELECT status, budget_limit, current_spend, customer_id 
 			FROM campaigns 
 			WHERE id = $1 
-			FOR UPDATE`, ads.ToUUID(campaignID)).Scan(&camp.Status, &camp.BudgetLimit, &camp.CurrentSpend, &camp.CustomerID)
+			FOR UPDATE`, repo.ToUUID(campaignID)).Scan(&camp.Status, &camp.BudgetLimit, &camp.CurrentSpend, &camp.CustomerID)
 		if err != nil {
 			return err
 		}
@@ -334,7 +336,7 @@ func (s *Service) finalizeDrainingCampaign(ctx context.Context, q db.Querier, ca
 		}
 		_, err = q.CreateLedgerEntry(ctx, db.CreateLedgerEntryParams{
 			CustomerID:      camp.CustomerID,
-			CampaignID:      ads.ToUUID(campaignID),
+			CampaignID:      repo.ToUUID(campaignID),
 			Amount:          refund,
 			Type:            db.LedgerTypeRELEASE,
 			PaymentIntentID: pgtype.UUID{},
@@ -346,7 +348,7 @@ func (s *Service) finalizeDrainingCampaign(ctx context.Context, q db.Querier, ca
 	if fee > 0 {
 		_, err := q.CreateLedgerEntry(ctx, db.CreateLedgerEntryParams{
 			CustomerID:      camp.CustomerID,
-			CampaignID:      ads.ToUUID(campaignID),
+			CampaignID:      repo.ToUUID(campaignID),
 			Amount:          fee,
 			Type:            db.LedgerTypeFEE,
 			PaymentIntentID: pgtype.UUID{},
@@ -354,13 +356,13 @@ func (s *Service) finalizeDrainingCampaign(ctx context.Context, q db.Querier, ca
 		if err != nil {
 			return err
 		}
-		metrics.CommissionsCollectedTotal.Add(float64(fee) / ads.MicroUnitFactor)
+		metrics.CommissionsCollectedTotal.Add(float64(fee) / repo.MicroUnitFactor)
 	}
-	if err := q.SoftDeleteCampaign(ctx, ads.ToUUID(campaignID)); err != nil {
+	if err := q.SoftDeleteCampaign(ctx, repo.ToUUID(campaignID)); err != nil {
 		return err
 	}
 	if err := q.CreateStatusHistory(ctx, db.CreateStatusHistoryParams{
-		CampaignID: ads.ToUUID(campaignID),
+		CampaignID: repo.ToUUID(campaignID),
 		OldStatus:  db.NullCampaignStatusType{CampaignStatusType: db.CampaignStatusTypeDRAINING, Valid: true},
 		NewStatus:  db.CampaignStatusTypeDELETED,
 		Reason:     pgtype.Text{String: "Finalized", Valid: true},
@@ -420,7 +422,7 @@ func (s *Service) ListAuditLogs(ctx context.Context, limit, offset int32) ([]db.
 func (s *Service) UpdateOverdraft(ctx context.Context, id uuid.UUID, newOverdraft int64) error {
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
-		cust, err := q.GetCustomerForUpdate(ctx, ads.ToUUID(id))
+		cust, err := q.GetCustomerForUpdate(ctx, repo.ToUUID(id))
 		if err != nil {
 			return fmt.Errorf("failed to fetch customer for overdraft update: %w", err)
 		}
@@ -436,7 +438,7 @@ func (s *Service) UpdateOverdraft(ctx context.Context, id uuid.UUID, newOverdraf
 				camps, err := q.ListCampaigns(ctx, db.ListCampaignsParams{
 					Limit:      10000,
 					Offset:     0,
-					CustomerID: ads.ToUUID(id),
+					CustomerID: repo.ToUUID(id),
 					Status:     pgtype.Text{String: string(db.CampaignStatusTypeACTIVE), Valid: true},
 				})
 				if err != nil {
@@ -483,7 +485,7 @@ func (s *Service) UpdateOverdraft(ctx context.Context, id uuid.UUID, newOverdraf
 
 					if remaining > 0 {
 						_, err = q.UpdateCustomerBalanceManagement(ctx, db.UpdateCustomerBalanceManagementParams{
-							ID:      ads.ToUUID(id),
+							ID:      repo.ToUUID(id),
 							Balance: remaining,
 						})
 						if err != nil {
@@ -491,7 +493,7 @@ func (s *Service) UpdateOverdraft(ctx context.Context, id uuid.UUID, newOverdraf
 						}
 
 						_, err = q.CreateLedgerEntry(ctx, db.CreateLedgerEntryParams{
-							CustomerID:      ads.ToUUID(id),
+							CustomerID:      repo.ToUUID(id),
 							CampaignID:      locked.ID,
 							Amount:          remaining,
 							Type:            db.LedgerTypeRELEASE,
@@ -520,7 +522,7 @@ func (s *Service) UpdateOverdraft(ctx context.Context, id uuid.UUID, newOverdraf
 		}
 
 		_, err = q.UpdateCustomerOverdraft(ctx, db.UpdateCustomerOverdraftParams{
-			ID:               ads.ToUUID(id),
+			ID:               repo.ToUUID(id),
 			AllowedOverdraft: newOverdraft,
 		})
 		if err != nil {
@@ -528,8 +530,8 @@ func (s *Service) UpdateOverdraft(ctx context.Context, id uuid.UUID, newOverdraf
 		}
 
 		s.AuditLog(ctx, q, uuid.Nil, "UPDATE_CUSTOMER_OVERDRAFT", "customer", &id, map[string]any{
-			"old_overdraft": fmt.Sprintf("%.2f", float64(prevOverdraft)/ads.MicroUnitFactor),
-			"new_overdraft": fmt.Sprintf("%.2f", float64(newOverdraft)/ads.MicroUnitFactor),
+			"old_overdraft": fmt.Sprintf("%.2f", float64(prevOverdraft)/repo.MicroUnitFactor),
+			"new_overdraft": fmt.Sprintf("%.2f", float64(newOverdraft)/repo.MicroUnitFactor),
 		}, nil)
 		return nil
 	})

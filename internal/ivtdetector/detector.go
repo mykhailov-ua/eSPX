@@ -11,10 +11,10 @@ import (
 
 // DetectorConfig tunes scan cadence and management outbox backpressure.
 type DetectorConfig struct {
-	ScanInterval         time.Duration
-	OutboxPendingLimit   int64
-	ManagementTimeout    time.Duration
-	Analyzer             AnalyzerConfig
+	ScanInterval       time.Duration
+	OutboxPendingLimit int64
+	ManagementTimeout  time.Duration
+	Analyzer           AnalyzerConfig
 }
 
 // DefaultDetectorConfig returns scan and backpressure defaults for production.

@@ -1,0 +1,14 @@
+# User overrides for docker compose (merged into users.d/).
+# Password from CH_PASSWORD in .env; networks restricted to private ranges.
+
+users:
+  default:
+    networks:
+      "@replace": replace
+      ip:
+        - 127.0.0.0/8
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+    password:
+      "@from_env": CH_PASSWORD

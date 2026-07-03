@@ -1,0 +1,51 @@
+# Optional RTB live soak overlay (all tracker replicas).
+#
+#   docker compose -f docker-compose.yml -f deploy/rtb/docker-compose.override.yml up -d tracker-0 tracker-1 tracker-2 tracker-3
+#
+# Default stack keeps RTB_MODE=off in .env. See deploy/rtb/env.example for variables.
+
+x-rtb-env: &rtb-env
+  RTB_MODE: live
+  RTB_BUDGET_AUTHORITY: rtb
+  RTB_CLEARING_MODE: second
+  RTB_TARGETING_INDEX: "false"
+  RTB_SNAPSHOT_PATH: /var/lib/espx/rtb_snapshot.bin
+  RTB_RECONCILE_INTERVAL_MS: "30000"
+  RTB_BUDGET_DIVERGENCE_THRESHOLD_MICRO: "1000"
+  RTB_RECONCILE_SAMPLE_SIZE: "32"
+
+services:
+  tracker-0:
+    environment:
+      <<: *rtb-env
+    volumes:
+      - ./deploy/geoip:/deploy/geoip:ro
+      - espx_logs:/var/log/espx:rw
+      - rtb_snapshot:/var/lib/espx
+
+  tracker-1:
+    environment:
+      <<: *rtb-env
+    volumes:
+      - ./deploy/geoip:/deploy/geoip:ro
+      - espx_logs:/var/log/espx:rw
+      - rtb_snapshot:/var/lib/espx
+
+  tracker-2:
+    environment:
+      <<: *rtb-env
+    volumes:
+      - ./deploy/geoip:/deploy/geoip:ro
+      - espx_logs:/var/log/espx:rw
+      - rtb_snapshot:/var/lib/espx
+
+  tracker-3:
+    environment:
+      <<: *rtb-env
+    volumes:
+      - ./deploy/geoip:/deploy/geoip:ro
+      - espx_logs:/var/log/espx:rw
+      - rtb_snapshot:/var/lib/espx
+
+volumes:
+  rtb_snapshot:

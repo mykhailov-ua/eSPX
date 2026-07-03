@@ -2,6 +2,8 @@ package payment
 
 import (
 	"context"
+	"espx/internal/ads/repo"
+	"espx/internal/ads/sharding"
 	"fmt"
 	"net"
 	"path/filepath"
@@ -10,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
 	ads_db "espx/internal/ads/db"
 	"espx/internal/config"
 	"espx/internal/management"
@@ -95,7 +96,7 @@ func setupPaymentChaosInfra(t *testing.T) (*paymentChaosInfra, func()) {
 		MaxRetries:              3,
 	}
 
-	sharder := ads.NewJumpHashSharder(1)
+	sharder := sharding.NewJumpHashSharder(1)
 	mgmtService := management.NewService(pool, []redis.UniversalClient{rdb}, sharder, cfg)
 	settleHandler := management.NewSettlementHandler(mgmtService, cfg)
 
@@ -198,7 +199,7 @@ func seedCustomer(t *testing.T, pool *pgxpool.Pool, customerID uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()
 	_, err := ads_db.New(pool).CreateCustomer(ctx, ads_db.CreateCustomerParams{
-		ID:       ads.ToUUID(customerID),
+		ID:       repo.ToUUID(customerID),
 		Name:     "chaos customer",
 		Balance:  0,
 		Currency: "USD",
@@ -240,7 +241,7 @@ func seedSucceededIntentWithOutbox(t *testing.T, infra *paymentChaosInfra, custo
 func customerBalance(t *testing.T, pool *pgxpool.Pool, customerID uuid.UUID) int64 {
 	t.Helper()
 	ctx := context.Background()
-	cust, err := ads_db.New(pool).GetCustomerForUpdate(ctx, ads.ToUUID(customerID))
+	cust, err := ads_db.New(pool).GetCustomerForUpdate(ctx, repo.ToUUID(customerID))
 	require.NoError(t, err)
 	return cust.Balance
 }
@@ -251,7 +252,7 @@ func ledgerCountForIntent(t *testing.T, pool *pgxpool.Pool, intentID uuid.UUID) 
 	var n int
 	err := pool.QueryRow(context.Background(), `
 		SELECT COUNT(*) FROM balance_ledger
-		WHERE payment_intent_id = $1 AND type = 'PAYMENT_TOPUP'`, ads.ToUUID(intentID)).Scan(&n)
+		WHERE payment_intent_id = $1 AND type = 'PAYMENT_TOPUP'`, repo.ToUUID(intentID)).Scan(&n)
 	require.NoError(t, err)
 	return n
 }

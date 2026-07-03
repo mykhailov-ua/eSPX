@@ -44,7 +44,22 @@ jobs:
         run: make gen
 
       - name: Run full test suite
-        run: go test ./... -count=1 -timeout 30m
+        run: go test ./... -count=1 -timeout 30m -skip Chaos
+
+  security:
+    name: Vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
 
   chaos:
     name: Container chaos tests

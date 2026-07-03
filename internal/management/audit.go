@@ -4,10 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"espx/internal/ads/db"
+	"espx/internal/ads/repo"
 	"log/slog"
 	"time"
-
-	"espx/internal/ads"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -20,7 +19,7 @@ func (s *Service) AuditLog(ctx context.Context, q db.Querier, adminID uuid.UUID,
 
 	var tid pgtype.UUID
 	if targetID != nil {
-		tid = ads.ToUUID(*targetID)
+		tid = repo.ToUUID(*targetID)
 	}
 
 	if q == nil {
@@ -28,7 +27,7 @@ func (s *Service) AuditLog(ctx context.Context, q db.Querier, adminID uuid.UUID,
 	}
 
 	_, err := q.CreateAuditLog(ctx, db.CreateAuditLogParams{
-		AdminID:    ads.ToUUID(adminID),
+		AdminID:    repo.ToUUID(adminID),
 		Action:     action,
 		TargetType: targetType,
 		TargetID:   tid,

@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"espx/internal/ads"
 	"espx/internal/ads/db"
+	"espx/internal/ads/sharding"
 	"espx/internal/config"
 	"espx/internal/management"
 
@@ -31,7 +31,7 @@ var slotMapShowCmd = &cobra.Command{
 		}
 		defer pool.Close()
 
-		repo := ads.NewSlotMapRepo(pool)
+		repo := sharding.NewSlotMapRepo(pool)
 		active, err := repo.GetActiveVersion(ctx)
 		if err != nil {
 			return err
@@ -83,7 +83,7 @@ var slotMapCreateVersionCmd = &cobra.Command{
 			return err
 		}
 
-		repo := ads.NewSlotMapRepo(pool)
+		repo := sharding.NewSlotMapRepo(pool)
 		active, err := repo.GetActiveVersion(ctx)
 		if err != nil {
 			return err
@@ -125,7 +125,7 @@ var slotMapMarkMigratingCmd = &cobra.Command{
 			return err
 		}
 
-		repo := ads.NewSlotMapRepo(pool)
+		repo := sharding.NewSlotMapRepo(pool)
 		if err := repo.MarkSlotsMigrating(ctx, version, slots, targetShard); err != nil {
 			return err
 		}
@@ -150,7 +150,7 @@ var slotMapCopyCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		sharder := ads.NewStaticSlotSharder(len(rdbs))
+		sharder := sharding.NewStaticSlotSharder(len(rdbs))
 		cfg, _ := config.Load()
 		svc := management.NewService(pool, rdbs, sharder, cfg)
 		defer svc.Close()
@@ -179,7 +179,7 @@ var slotMapMigrationsCmd = &cobra.Command{
 			return err
 		}
 		cfg, _ := config.Load()
-		svc := management.NewService(pool, rdbs, ads.NewStaticSlotSharder(len(rdbs)), cfg)
+		svc := management.NewService(pool, rdbs, sharding.NewStaticSlotSharder(len(rdbs)), cfg)
 		defer svc.Close()
 		rows, err := svc.GetSlotMigrations(ctx, version)
 		if err != nil {
@@ -214,7 +214,7 @@ var slotMapRollbackCmd = &cobra.Command{
 			return err
 		}
 		cfg, _ := config.Load()
-		svc := management.NewService(pool, rdbs, ads.NewStaticSlotSharder(len(rdbs)), cfg)
+		svc := management.NewService(pool, rdbs, sharding.NewStaticSlotSharder(len(rdbs)), cfg)
 		defer svc.Close()
 		if err := svc.RollbackSlotMapVersion(ctx, uuid.Nil, prev); err != nil {
 			return err
@@ -236,7 +236,7 @@ var slotMapActivateCmd = &cobra.Command{
 		defer pool.Close()
 
 		version, _ := cmd.Flags().GetInt32("version")
-		repo := ads.NewSlotMapRepo(pool)
+		repo := sharding.NewSlotMapRepo(pool)
 		if err := repo.ActivateVersion(ctx, version); err != nil {
 			return err
 		}
@@ -310,8 +310,8 @@ var slotMapExplainCmd = &cobra.Command{
 	},
 }
 
-func parseSlotOverrides(specs []string) ([]ads.SlotOverride, error) {
-	out := make([]ads.SlotOverride, 0, len(specs))
+func parseSlotOverrides(specs []string) ([]sharding.SlotOverride, error) {
+	out := make([]sharding.SlotOverride, 0, len(specs))
 	for _, spec := range specs {
 		parts := strings.Split(spec, ":")
 		if len(parts) != 3 {
@@ -325,7 +325,7 @@ func parseSlotOverrides(specs []string) ([]ads.SlotOverride, error) {
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, ads.SlotOverride{
+		out = append(out, sharding.SlotOverride{
 			Slot:    int16(slot),
 			ShardID: int16(shard),
 			State:   db.RedisSlotState(strings.ToUpper(parts[2])),

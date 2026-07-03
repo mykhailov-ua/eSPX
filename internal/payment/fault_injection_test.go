@@ -2,13 +2,13 @@ package payment
 
 import (
 	"context"
+	"espx/internal/ads/repo"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"espx/internal/ads"
 	"espx/internal/payment/db"
 
 	"github.com/google/uuid"
@@ -253,7 +253,7 @@ func TestChaos_PaymentMissingCustomerSettlementDead(t *testing.T) {
 	customerID := uuid.New()
 	seed := seedSucceededIntentWithOutbox(t, infra, customerID, 9_000_000, "chaos-orphan-"+uuid.New().String())
 
-	_, err := infra.Pool.Exec(ctx, `DELETE FROM customers WHERE id = $1`, ads.ToUUID(customerID))
+	_, err := infra.Pool.Exec(ctx, `DELETE FROM customers WHERE id = $1`, repo.ToUUID(customerID))
 	require.NoError(t, err)
 
 	worker := newOutboxWorkerForChaos(infra)
@@ -267,7 +267,7 @@ func TestChaos_PaymentMissingCustomerSettlementDead(t *testing.T) {
 
 	var intentStatus string
 	require.NoError(t, infra.Pool.QueryRow(ctx, `
-		SELECT status FROM payment.payment_intents WHERE id = $1`, ads.ToUUID(seed.IntentID)).Scan(&intentStatus))
+		SELECT status FROM payment.payment_intents WHERE id = $1`, repo.ToUUID(seed.IntentID)).Scan(&intentStatus))
 	require.Equal(t, "SETTLEMENT_FAILED", intentStatus)
 
 	logChaosProof(t, "settlement_customer_not_found", map[string]string{

@@ -6,9 +6,14 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
 	"espx/internal/ads/db"
+	"espx/internal/ads/filter"
+	"espx/internal/ads/ingest"
 	"espx/internal/ads/pb"
+	"espx/internal/ads/processor"
+	"espx/internal/ads/repo"
+	"espx/internal/ads/rtbbridge"
+	"espx/internal/ads/sharding"
 	"espx/internal/config"
 	"espx/internal/rtb"
 	"github.com/google/uuid"
@@ -79,22 +84,21 @@ func TestE2E_RtbLiveBudgetAuthority(t *testing.T) {
 	require.NoError(t, rdb.Set(ctx, camp.BudgetCampaignKey, redisBudgetMicro, 0).Err())
 
 	rtbStore := rtb.NewBudgetStore()
-	catalog := ads.NewRtbCatalog(rtbStore, ads.BudgetAuthorityRTB)
-	catalog.Registry().SetTargetingIndexEnabled(true)
-	sharder := ads.NewJumpHashSharder(1)
-	budgetSync := ads.RtbBudgetSync{
-		Authority: ads.BudgetAuthorityRTB,
+	catalog := rtbbridge.NewRtbCatalog(rtbStore, rtbbridge.BudgetAuthorityRTB)
+	sharder := sharding.NewStaticSlotSharder(1)
+	budgetSync := rtbbridge.RtbBudgetSync{
+		Authority: rtbbridge.BudgetAuthorityRTB,
 		Redis:     []redis.UniversalClient{rdb},
 		Sharder:   sharder,
 	}
-	ads.SyncRtbCatalog(ctx, registry, catalog, cfg, nil, budgetSync)
+	rtbbridge.SyncRtbCatalog(ctx, registry, catalog, cfg, nil, budgetSync)
 
-	rtbCampID := ads.CampaignIDFromUUID(campaignID)
+	rtbCampID := rtbbridge.CampaignIDFromUUID(campaignID)
 	rtbBudgetBefore := rtbStore.GetBudget(rtbCampID)
 	require.Equal(t, redisBudgetMicro, rtbBudgetBefore)
 
-	campaignRepo := ads.NewCampaignRepo(queries)
-	unifiedFilter := ads.NewUnifiedFilter(
+	campaignRepo := repo.NewCampaignRepo(queries)
+	unifiedFilter := filter.NewUnifiedFilter(
 		[]redis.UniversalClient{rdb},
 		sharder,
 		registry,
@@ -110,9 +114,9 @@ func TestE2E_RtbLiveBudgetAuthority(t *testing.T) {
 	)
 	require.NoError(t, unifiedFilter.PreloadScripts(ctx))
 
-	filterEngine := ads.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, unifiedFilter)
-	store := ads.NewPostgresStore(queries, 1*time.Second)
-	consumer := ads.NewStreamConsumer(
+	filterEngine := filter.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, unifiedFilter)
+	store := processor.NewPostgresStore(queries, 1*time.Second)
+	consumer := processor.NewStreamConsumer(
 		store, rdb, "rtb-e2e-stream", "rtb-e2e-group", "rtb-e2e-c1",
 		cfg.EventBatchSize, cfg.MaxWorkers,
 		100*time.Millisecond, 1*time.Second, 100*time.Millisecond,
@@ -121,7 +125,7 @@ func TestE2E_RtbLiveBudgetAuthority(t *testing.T) {
 	consumer.Start(ctx)
 	defer consumer.Close()
 
-	handler := ads.NewAdsPacketHandler(cfg, registry, filterEngine, pool, []redis.UniversalClient{rdb}, sharder, cfg.FraudStreamName, nil)
+	handler := ingest.NewAdsPacketHandler(cfg, registry, filterEngine, pool, []redis.UniversalClient{rdb}, sharder, cfg.FraudStreamName, nil)
 	handler.ConfigureIngestGeo(staticGeoCountry{country: "US"})
 	handler.ConfigureRtb(catalog, staticGeoCountry{country: "US"}, unifiedFilter)
 	defer handler.Stop(ctx)
@@ -131,16 +135,16 @@ func TestE2E_RtbLiveBudgetAuthority(t *testing.T) {
 		CampaignId: clientCampID[:],
 		EventType:  []byte("click"),
 		Metadata: &pb.EventMetadata{
-			ClickId:    []byte("rtb_e2e_click"),
+			ClickId:    []byte(uuid.NewString()),
 			UserId:     []byte("rtb_e2e_user"),
 			DeviceType: []byte("desktop"),
-			ExtraBytes: []byte(`{"bid_micro":100000}`),
+			ExtraBytes: []byte(`{"bid_micro":100000,"category_mask":1}`),
 		},
 	}
 	body, err := pbEvt.MarshalVT()
 	require.NoError(t, err)
 
-	status, _ := ads.PostTrackGnet(handler, body, "application/x-protobuf", "application/x-protobuf")
+	status, _ := ingest.PostTrackGnet(handler, body, "application/x-protobuf", "application/x-protobuf")
 	assert.Equal(t, http.StatusAccepted, status)
 
 	redisAfter, err := rdb.Get(ctx, camp.BudgetCampaignKey).Int64()

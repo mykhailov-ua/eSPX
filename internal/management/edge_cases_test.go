@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
 	"espx/internal/ads/db"
+	"espx/internal/ads/sharding"
 	"espx/internal/config"
 	"espx/internal/database"
 
@@ -28,7 +28,7 @@ func TestEdge_RoundingAndSmallAmounts(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Management.CancellationFeePercent = 10.0
 	cfg.Lifecycle.WaitTimeoutMs = 1
-	svc := NewService(pool, []redis.UniversalClient{rdb}, ads.NewJumpHashSharder(1), cfg)
+	svc := NewService(pool, []redis.UniversalClient{rdb}, sharding.NewJumpHashSharder(1), cfg)
 	defer svc.Close()
 
 	customerID := uuid.New()
@@ -65,7 +65,7 @@ func TestEdge_ResumingStuckSettlement(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Management.CancellationFeePercent = 10
 	cfg.Lifecycle.WaitTimeoutMs = 1
-	svc := NewService(pool, []redis.UniversalClient{rdb}, ads.NewJumpHashSharder(1), cfg)
+	svc := NewService(pool, []redis.UniversalClient{rdb}, sharding.NewJumpHashSharder(1), cfg)
 	defer svc.Close()
 
 	customerID := uuid.New()
@@ -142,7 +142,7 @@ func TestEdge_OutboxPartialRedisFailure(t *testing.T) {
 	cfg := &config.Config{
 		CampaignUpdateChannel: "campaigns:update-test",
 	}
-	svc := NewService(pool, []redis.UniversalClient{wrappedRDB}, ads.NewJumpHashSharder(1), cfg)
+	svc := NewService(pool, []redis.UniversalClient{wrappedRDB}, sharding.NewJumpHashSharder(1), cfg)
 	defer svc.Close()
 
 	ctx := context.Background()
@@ -199,7 +199,7 @@ func TestEdge_OutboxWorkerRecoveryOfProcessingEvents(t *testing.T) {
 	cfg := &config.Config{
 		CampaignUpdateChannel: "campaigns:update-test",
 	}
-	svc := NewService(pool, []redis.UniversalClient{rdb}, ads.NewJumpHashSharder(1), cfg)
+	svc := NewService(pool, []redis.UniversalClient{rdb}, sharding.NewJumpHashSharder(1), cfg)
 	defer svc.Close()
 
 	ctx := context.Background()
@@ -268,7 +268,7 @@ func TestEdge_OutboxSetsRemainingBudget(t *testing.T) {
 	defer cleanupRedis()
 
 	cfg := &config.Config{CampaignUpdateChannel: "campaigns:update-test"}
-	svc := NewService(pool, []redis.UniversalClient{rdb}, ads.NewJumpHashSharder(1), cfg)
+	svc := NewService(pool, []redis.UniversalClient{rdb}, sharding.NewJumpHashSharder(1), cfg)
 	defer svc.Close()
 
 	ctx := context.Background()

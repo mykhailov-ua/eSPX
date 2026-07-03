@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
+	"espx/internal/ads/catalog"
 	"espx/internal/ads/db"
+	"espx/internal/ads/sharding"
 	"espx/internal/config"
 	"espx/internal/database"
 
@@ -33,7 +34,7 @@ func TestRegistryWatch(t *testing.T) {
 	defer cancel()
 
 	queries := db.New(pool)
-	registry := ads.NewRegistry(queries)
+	registry := catalog.NewRegistry(queries)
 	registry.SetReplicaPath(filepath.Join(t.TempDir(), "campaigns_replica.json"))
 
 	channel := "test:campaign:updates"
@@ -43,7 +44,7 @@ func TestRegistryWatch(t *testing.T) {
 		CampaignUpdateChannel: channel,
 	}
 	cfg.Lifecycle.WaitTimeoutMs = 1
-	sharder := ads.NewJumpHashSharder(1)
+	sharder := sharding.NewJumpHashSharder(1)
 	svc := NewService(pool, []redis.UniversalClient{rdb}, sharder, cfg)
 	defer svc.Close()
 

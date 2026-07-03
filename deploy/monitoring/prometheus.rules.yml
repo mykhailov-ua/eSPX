@@ -266,7 +266,7 @@ groups:
           summary: "Tracker redis shard {{ $labels.shard }} unhealthy"
           description: "Health probe cannot ping redis shard {{ $labels.shard }}. Campaigns on this shard will 503 at filter stage."
 
-  - name: broker-ha-alerts
+  - name: broker-alerts
     rules:
       - alert: BrokerSplitBrain
         expr: sum by (topic) (ad_broker_active_leader) > 1

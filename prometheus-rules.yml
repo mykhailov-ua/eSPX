@@ -105,4 +105,4 @@ groups:
           severity: warning
         annotations:
           summary: "Redis shard ops skew >3x average"
-          description: "One shard is receiving more than 3x the average unified-filter Redis RPS. Check hot campaigns before resharding — see docs/redis-4-shards.md §Hot campaign."
+          description: "One shard is receiving more than 3x the average unified-filter Redis RPS. Check hot campaigns before resharding — see docs/architecture.md (Redis Sharding)."

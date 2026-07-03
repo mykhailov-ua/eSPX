@@ -11,8 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
 	"espx/internal/ads/db"
+	"espx/internal/ads/filter"
+	"espx/internal/ads/ingest"
+	"espx/internal/ads/processor"
+	"espx/internal/ads/repo"
+	"espx/internal/ads/sharding"
 	"espx/internal/config"
 	"espx/internal/database"
 
@@ -63,12 +67,12 @@ func TestGracefulShutdown_NoDataLoss(t *testing.T) {
 	registry := newTestRegistry(t, queries)
 	_, _ = registry.Sync(ctx)
 
-	store := ads.NewPostgresStore(queries, 5*time.Second)
-	unifiedFilter := ads.NewUnifiedFilter(
+	store := processor.NewPostgresStore(queries, 5*time.Second)
+	unifiedFilter := filter.NewUnifiedFilter(
 		[]redis.UniversalClient{rdb},
-		ads.NewJumpHashSharder(1),
+		sharding.NewJumpHashSharder(1),
 		registry,
-		ads.NewCampaignRepo(queries),
+		repo.NewCampaignRepo(queries),
 		1000,
 		time.Minute,
 		45*time.Second,
@@ -78,12 +82,12 @@ func TestGracefulShutdown_NoDataLoss(t *testing.T) {
 		"shutdown-stream",
 		100000,
 	)
-	filterEngine := ads.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, unifiedFilter)
-	consumer := ads.NewStreamConsumer(store, rdb, "shutdown-stream", "shutdown-group", "shutdown-c1", cfg.EventBatchSize, cfg.MaxWorkers, 100*time.Millisecond, 5*time.Second, 100*time.Millisecond, 5*time.Second, 5, 5*time.Minute, 1*time.Second)
+	filterEngine := filter.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, unifiedFilter)
+	consumer := processor.NewStreamConsumer(store, rdb, "shutdown-stream", "shutdown-group", "shutdown-c1", cfg.EventBatchSize, cfg.MaxWorkers, 100*time.Millisecond, 5*time.Second, 100*time.Millisecond, 5*time.Second, 5, 5*time.Minute, 1*time.Second)
 	consumer.Start(ctx)
 
-	sharder := ads.NewJumpHashSharder(1)
-	router := ads.NewRouter(cfg, registry, filterEngine, pool, []redis.UniversalClient{rdb}, sharder, cfg.FraudStreamName, nil)
+	sharder := sharding.NewJumpHashSharder(1)
+	router := ingest.NewRouter(cfg, registry, filterEngine, pool, []redis.UniversalClient{rdb}, sharder, cfg.FraudStreamName, nil)
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 

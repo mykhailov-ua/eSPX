@@ -4,11 +4,10 @@
 package main
 
 import (
+	"espx/internal/ads/sharding"
 	"fmt"
 	"os"
 	"strconv"
-
-	"espx/internal/ads"
 
 	"github.com/google/uuid"
 )
@@ -31,6 +30,6 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	sharder := ads.NewStaticSlotSharder(n)
+	sharder := sharding.NewStaticSlotSharder(n)
 	fmt.Println(sharder.GetShard(id))
 }

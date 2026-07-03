@@ -4,7 +4,7 @@ Real-time ad event ingestion, budget enforcement, and settlement pipeline. Go se
 
 ## System Overview
 
-Request flow: Nginx (:8180) load-balances `/track` to tracker replicas (:8181-8184). Each tracker executes one Redis round trip per accepted event on the campaign's shard (:6479-6482). Accepted events land on per-shard `ad:events:stream`. Processor (:8186) consumes streams into Postgres and ClickHouse. Management (:8188), Auth gRPC (:51051), Payment gRPC (:51052), and Settlement gRPC (:51053) handle control plane and money movement.
+Request flow: Nginx (:8180) load-balances `/track` to tracker replicas (:8181-8184). Each tracker executes one Redis round trip per accepted event on the campaign's shard (:6479-6482). Accepted events land on per-shard `ad:events:stream`. Processor (:8186) consumes streams into Postgres and ClickHouse. Management (:8188), Auth gRPC (:51051), Payment gRPC (:51052), Settlement gRPC (:51053), Billing gRPC (:51054), and Notifier gRPC (:8085) handle control plane, billing, and notifications.
 
 **Hot path:** `POST /track` on gnet trackers. One Redis round trip per accepted event via `unified-filter.lua` (budget, pacing, dedup, rate limit, fcap, stream enqueue). Go filters run before Lua for geo, schedule, fraud, and emergency breaker checks that cannot execute in Redis.
 
@@ -19,6 +19,8 @@ Request flow: Nginx (:8180) load-balances `/track` to tracker replicas (:8181-81
 | `management` | 8188, 51053 | Admin REST, outbox to Redis propagation, settlement gRPC |
 | `auth` | 51051 | gRPC: Argon2id, PASETO, sessions, API keys |
 | `payment` | 51052, 8187 | Payment intents gRPC, Stripe webhooks, settlement outbox |
+| `billing` | 51054 | Invoice generation gRPC; management HTMX proxy when configured |
+| `notifier` | 8085 | Async notifications gRPC (Telegram, Slack, SMTP, SMS) |
 | `telegram` | 8222 | Alertmanager to Telegram proxy |
 | `broker` | — | mmap log broker (not in compose; optional log evacuation) |
 | `dlq`, `admin` | — | Operator CLIs |
@@ -45,7 +47,7 @@ Six standalone Redis masters (not Redis Cluster). Campaign-scoped keys colocate 
 
 ## Unified Filter (Lua)
 
-`internal/ads/unified-filter.lua` embedded via `//go:embed`, preloaded with `SCRIPT LOAD` at tracker startup, invoked via `EVALSHA` with `EVAL` fallback on `NOSCRIPT`.
+`internal/ads/filter/unified.lua` embedded via `//go:embed`, preloaded with `SCRIPT LOAD` at tracker startup, invoked via `EVALSHA` with `EVAL` fallback on `NOSCRIPT`.
 
 Single atomic script per event: MGET budget state, TTC check, pacing, fcap, rate limit, dedup SET NX, budget decrement, sync delta, stream XADD.
 
@@ -84,6 +86,7 @@ Single atomic script per event: MGET budget state, TTC check, pacing, fcap, rate
 3. Payment outbox worker calls management settlement gRPC `ApplyPaymentCredit`.
 4. Management credits `balance_ledger` with `ON CONFLICT` guard on `payment_intent_id`.
 5. Campaign spend: tracker Lua decrements `budget:campaign:*`; processor sync worker flushes deltas to Postgres.
+6. Monthly billing: management calls billing gRPC `GenerateInvoice` to aggregate ledger spend into `billing.invoices`.
 
 Redis does not hold payment or ledger state.
 
@@ -96,13 +99,9 @@ Redis does not hold payment or ledger state.
 
 ## Tooling and CI
 
-Local workflows use `Makefile`, optional [Task](Taskfile.yml), and flat `scripts/` (codegen, compose, perf gate, Redis ops, chaos). See [Development Guide](docs/development.md) for commands and [CI_PERF.md](.github/CI_PERF.md) for GitHub Actions (lint, alloc gate, full test, perf gate, nightly regression, sentinel chaos).
+Local workflows use `Makefile`, optional [Task](Taskfile.yml), and flat `scripts/` (codegen, compose, perf gate, Redis ops, chaos). See [Development Guide](docs/development.md) for commands and CI workflow map under `.github/workflows/`.
 
 ## Documentation
 
 - [Architecture](docs/architecture.md) — subsystem workflows, Lua key layout, failover, limitations
-- [Edge hardening plan](docs/edge-hardening-plan.md) — Lua edge fixes, XDP, SLA-aligned rollout (planned)
-- [Edge hardening steps](docs/edge-hardening-steps.md) — Step-by-step implementation guide (Russian, planned)
-- [Edge XDP design](docs/edge-xdp-design.md) — L4 filter, NIC/XDP constraints (planned)
-- [Development](docs/development.md) — setup, ports, scripts, runbooks, perf gate, verification
-- [CI / Perf](.github/CI_PERF.md) — workflows, self-hosted perf runner, script map
+- [Development](docs/development.md) — setup, ports, scripts, runbooks, perf gate, CI

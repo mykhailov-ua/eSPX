@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"time"
 
-	"espx/internal/ads"
 	"espx/internal/ads/db"
+	"espx/internal/ads/repo"
 	"github.com/google/uuid"
 	redis "github.com/redis/go-redis/v9"
 )
@@ -16,7 +16,7 @@ import (
 // QuotaManager coordinates Distributed Quota refills and initial allocations (Phase 1.4).
 type QuotaManager struct {
 	svc          *Service
-	quotaRepo    *ads.QuotaRepo
+	quotaRepo    *repo.QuotaRepo
 	pollInterval time.Duration
 	chunkSize    int64
 	thresholdPct int
@@ -38,7 +38,7 @@ func NewQuotaManager(svc *Service) *QuotaManager {
 	}
 	return &QuotaManager{
 		svc:          svc,
-		quotaRepo:    ads.NewQuotaRepo(svc.GetPool()),
+		quotaRepo:    repo.NewQuotaRepo(svc.GetPool()),
 		pollInterval: 100 * time.Millisecond,
 		chunkSize:    chunkSize,
 		thresholdPct: thresholdPct,
@@ -98,7 +98,7 @@ func (qm *QuotaManager) refillCampaign(ctx context.Context, campaignID uuid.UUID
 
 	res, err := qm.quotaRepo.ReserveChunk(ctx, qm.svc.sharder, campaignID, qm.chunkSize, idempotencyKey)
 	if err != nil {
-		if errors.Is(err, ads.ErrQuotaBudgetExceeded) {
+		if errors.Is(err, repo.ErrQuotaBudgetExceeded) {
 			lockKey := fmt.Sprintf("budget:refill_lock:%s", campaignID)
 			_ = rdb.Del(ctx, lockKey).Err()
 			slog.Warn("campaign budget exceeded during refill, deleted lock", "campaign_id", campaignID)
@@ -131,7 +131,7 @@ func (qm *QuotaManager) refillCampaign(ctx context.Context, campaignID uuid.UUID
 }
 
 func (qm *QuotaManager) warmActiveCampaignQuotas(ctx context.Context) {
-	campaignRepo := ads.NewCampaignRepo(db.New(qm.svc.GetPool()))
+	campaignRepo := repo.NewCampaignRepo(db.New(qm.svc.GetPool()))
 	campaigns, err := campaignRepo.ListActive(ctx)
 	if err != nil {
 		slog.Error("failed to list active campaigns for quota warming", "error", err)
@@ -174,7 +174,7 @@ func (qm *QuotaManager) warmActiveCampaignQuotas(ctx context.Context) {
 			res, err := qm.quotaRepo.ReserveChunk(ctx, qm.svc.sharder, campaignID, qm.chunkSize, idempotencyKey)
 			if err != nil {
 				_ = rdb.Del(ctx, lockKey).Err()
-				if !errors.Is(err, ads.ErrQuotaBudgetExceeded) {
+				if !errors.Is(err, repo.ErrQuotaBudgetExceeded) {
 					slog.Error("failed to reserve initial chunk in Postgres", "campaign_id", campaignID, "error", err)
 				}
 				continue

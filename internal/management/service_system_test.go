@@ -2,10 +2,10 @@ package management
 
 import (
 	"context"
+	"espx/internal/ads/sharding"
 	"testing"
 	"time"
 
-	"espx/internal/ads"
 	"espx/internal/database"
 
 	"github.com/redis/go-redis/v9"
@@ -24,7 +24,7 @@ func TestBlockIPUsesOutbox(t *testing.T) {
 	rdb, cleanupRedis := database.SetupTestRedis(t)
 	defer cleanupRedis()
 
-	svc := NewService(pool, []redis.UniversalClient{rdb}, ads.NewJumpHashSharder(1), nil)
+	svc := NewService(pool, []redis.UniversalClient{rdb}, sharding.NewJumpHashSharder(1), nil)
 	defer svc.Close()
 
 	ctx := context.Background()

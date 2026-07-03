@@ -20,7 +20,7 @@ test-unit: gen fmt
 
 # Fast zero-alloc, fraud SLA, and RTB hot-path checks (no long benchmarks).
 test-alloc-gate: gen fmt
-	go test -short -count=1 -run 'ZeroAlloc|zeroAlloc_fraudScoring|FraudScoring_LatencySLA|ApplyRtbAuction_shadow_zeroAlloc|RecordRtbShadow' ./internal/ads/
+	go test -short -count=1 -run 'ZeroAlloc|zeroAlloc_fraudScoring|FraudScoring_LatencySLA|ApplyRtbAuction_shadow_zeroAlloc|RecordRtbShadow' ./internal/ads/...
 	go test -run='^$$' -bench='BenchmarkAuction$$' -benchmem -count=1 ./internal/rtb/
 
 test-int: gen fmt
@@ -40,9 +40,9 @@ test-sentinel-chaos:
 
 test: test-unit test-int
 
-# Full suite without -short (integration, chaos in ads, e2e protobuf). Matches ci.yml full-test job.
+# Full suite without -short; chaos tests run only in make test-chaos (CI chaos job).
 test-full: gen fmt
-	go test ./... -count=1 -timeout 30m
+	go test ./... -count=1 -timeout 30m -skip Chaos
 
 build: gen fmt
 	docker build -t ad-event-processor:latest .

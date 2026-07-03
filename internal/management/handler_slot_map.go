@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"espx/internal/ads"
 	"espx/internal/ads/db"
+	"espx/internal/ads/sharding"
 	"espx/pkg/cold"
 	"espx/pkg/httpresponse"
 
@@ -63,13 +63,13 @@ func (h *Handler) createSlotMapVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	overrides := make([]ads.SlotOverride, 0, len(req.Overrides))
+	overrides := make([]sharding.SlotOverride, 0, len(req.Overrides))
 	for _, o := range req.Overrides {
 		state := db.RedisSlotStateACTIVE
 		if o.State != "" {
 			state = db.RedisSlotState(o.State)
 		}
-		overrides = append(overrides, ads.SlotOverride{
+		overrides = append(overrides, sharding.SlotOverride{
 			Slot:    o.Slot,
 			ShardID: o.ShardID,
 			State:   state,
@@ -200,11 +200,11 @@ func (h *Handler) rollbackSlotMap(w http.ResponseWriter, r *http.Request) {
 
 func writeSlotMapError(w http.ResponseWriter, err error) {
 	switch err {
-	case ads.ErrSlotMapVersionNotFound:
+	case sharding.ErrSlotMapVersionNotFound:
 		httpresponse.Error(w, http.StatusNotFound, "NOT_FOUND", err.Error())
-	case ads.ErrSlotMapIncomplete, ads.ErrSlotMapInvalidSlot, ads.ErrSlotMapInvalidShard:
+	case sharding.ErrSlotMapIncomplete, sharding.ErrSlotMapInvalidSlot, sharding.ErrSlotMapInvalidShard:
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
-	case ErrSlotMigrationNotReady, ads.ErrSlotMapAlreadyActive:
+	case ErrSlotMigrationNotReady, sharding.ErrSlotMapAlreadyActive:
 		httpresponse.Error(w, http.StatusConflict, "CONFLICT", err.Error())
 	default:
 		httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL", err.Error())

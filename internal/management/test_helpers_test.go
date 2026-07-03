@@ -2,12 +2,12 @@ package management
 
 import (
 	"context"
+	"espx/internal/ads/sharding"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
-	"espx/internal/ads"
 	"espx/internal/auth"
 	"espx/internal/config"
 
@@ -56,7 +56,7 @@ func newBareService(t *testing.T, pool *pgxpool.Pool, rdbs []redis.UniversalClie
 	ctx, cancel := context.WithCancel(context.Background())
 	svc := &Service{
 		rdbs:    rdbs,
-		sharder: ads.NewStaticSlotSharder(shardCount),
+		sharder: sharding.NewStaticSlotSharder(shardCount),
 		cfg:     cfg,
 		ctx:     ctx,
 		cancel:  cancel,

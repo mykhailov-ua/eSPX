@@ -8,8 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
+	"espx/internal/ads/catalog"
 	"espx/internal/ads/db"
+	"espx/internal/ads/sharding"
 	"espx/internal/database"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -23,9 +24,9 @@ import (
 
 // newTestRegistry isolates registry sync from production replica paths so tests
 // never overwrite or read live campaign snapshots on disk.
-func newTestRegistry(t *testing.T, repo db.Querier) *ads.Registry {
+func newTestRegistry(t *testing.T, repo db.Querier) *catalog.Registry {
 	t.Helper()
-	r := ads.NewRegistry(repo)
+	r := catalog.NewRegistry(repo)
 	r.SetReplicaPath(filepath.Join(t.TempDir(), "campaigns_replica.json"))
 	return r
 }
@@ -157,7 +158,7 @@ func setupTestRedisShards(t *testing.T, n int) []redis.UniversalClient {
 }
 
 // campaignIDForShard returns a UUID that sharder routes to wantShard.
-func campaignIDForShard(t *testing.T, sharder ads.Sharder, wantShard int) uuid.UUID {
+func campaignIDForShard(t *testing.T, sharder sharding.Sharder, wantShard int) uuid.UUID {
 	t.Helper()
 	for range 20_000 {
 		id := uuid.New()

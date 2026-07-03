@@ -28,7 +28,7 @@ Full stack adds `tracker-1..3`, `nginx`, `prometheus`, `grafana`, `alertmanager`
 | Command | Services started |
 | :--- | :--- |
 | `bash scripts/dev-stack.sh infra` | db, redis-0…5, clickhouse |
-| `bash scripts/dev-stack.sh full` | infra + processor, tracker-0, auth, management, payment |
+| `bash scripts/dev-stack.sh full` | infra + processor, tracker-0, auth, management, payment, billing, notifier |
 | `bash scripts/dev-stack.sh sentinel` | redis-0, replica, sentinel-0…2 |
 | `bash scripts/dev-stack.sh status` | `docker compose ps` |
 | `bash scripts/dev-stack.sh down` | tear down compose stack |
@@ -79,7 +79,7 @@ Flat directory; invoke with `bash scripts/<name>.sh` (no subfolders).
 | `nightly-bench-job.sh` | Nightly: `redis` or `broker` bench + gate + baseline update |
 | `escape-nightly-job.sh` | Escape analysis; second arg enables regression gate |
 | `stabilize-cpu.sh` | CPU performance governor (perf CI) |
-| `edge-nic-tune.sh` | Ingress NIC RX ring max + IRQ/RSS spread |
+| `edge-nic-tune.sh` | Ingress NIC RX ring max + IRQ/RSS spread (`deploy/edge/`) |
 | `edge-sysctl.sh` | Ingress sysctl install/verify (`deploy/edge/99-espx-edge.conf`) |
 | `edge-baseline.sh` | Minimal Prometheus SLA snapshot for edge baseline |
 | `install-benchstat.sh` | Ensures `benchstat` on PATH |
@@ -107,7 +107,7 @@ Flat directory; invoke with `bash scripts/<name>.sh` (no subfolders).
 | :--- | :--- |
 | `log-evacuate` | S3 upload of `.log.zst.ready` segments (`Dockerfile.log-evacuator`) |
 
-Workflow wiring: [.github/CI_PERF.md](../.github/CI_PERF.md).
+Workflow wiring: `.github/workflows/` (`ci.yml`, `perf-gate.yml`, `perf-nightly.yml`, `sentinel-chaos.yml`).
 
 ---
 
@@ -125,7 +125,7 @@ Workflow wiring: [.github/CI_PERF.md](../.github/CI_PERF.md).
 | `make test-chaos` | `scripts/test-chaos.sh` (Docker, ≥24 `chaos_proof` lines) |
 | `make test-sentinel-chaos` | `scripts/test-sentinel-failover.sh` |
 | `make test` | test-unit + test-int |
-| `make test-full` | `go test ./... -count=1 -timeout 30m` (matches CI `full-test`) |
+| `make test-full` | `go test ./... -count=1 -timeout 30m -skip Chaos` (chaos: `make test-chaos`) |
 | `make build` | `docker build -t ad-event-processor:latest .` |
 
 ---
@@ -170,6 +170,8 @@ lefthook install
 | Auth metrics | 9091 | `cmd/auth` |
 | Payment gRPC | 51052 | `cmd/payment` |
 | Settlement gRPC | 51053 | `cmd/management` (sidecar) |
+| Billing gRPC | 51054 | `cmd/billing` |
+| Notifier gRPC | 8085 | `cmd/notifier` |
 | Tracker metrics | 9090 (sidecar); `/metrics` also on :8181–8184 (gnet) | `cmd/tracker` |
 | Redis shards | 6479–6482 | `redis-0` … `redis-3` |
 | Redis Sentinel | 26379–26381 | `sentinel-0` … `sentinel-2` |
@@ -191,7 +193,11 @@ Host networking (`NET_MODE=host`) is default for app services. Stateful stores p
 | `cmd/dlq` | DLQ archive / requeue / restore |
 | `cmd/admin` | Cobra dev CLI (users, seed, budget reset) |
 
-Broker HA stack: `deploy/broker-ha/docker-compose.yml` (optional). HAProxy exposes `:9092` (leader-only produce via `/leaderz`) and `:9093` (any healthy node for fetch). Produce clients should use `-redis-url` or target `:9092`. Override binary: `ESPX_BROKER_BIN=/path/to/espx-broker docker compose up`.
+`billing` and `notifier` are in the default `dev-stack.sh full` profile but optional for minimal ingest-only stacks.
+
+Broker HA lab: `deploy/broker/` (optional). `docker compose -f deploy/broker/docker-compose.yml up -d`. HAProxy exposes `:9092` (leader-only produce via `/leaderz`) and `:9093` (any healthy node for fetch). Sentinel overlay and chaos drills: see `deploy/broker/README.md` and `scripts/broker-chaos-lab.sh`. Override binary: `ESPX_BROKER_BIN=/path/to/espx-broker`.
+
+RTB live soak (optional): `docker compose -f docker-compose.yml -f deploy/rtb/docker-compose.override.yml up -d tracker-0 … tracker-3`. Default `.env` keeps `RTB_MODE=off`. See `deploy/rtb/README.md`.
 
 ---
 
@@ -223,6 +229,46 @@ STRIPE_WEBHOOK_SECRET=          # required for live webhooks
 ```
 
 Stripe checkout API is not wired (`provider_stripe.go` returns `ErrProviderNotConfigured` even with secret key). Mock provider works for local settlement flow testing.
+
+### Billing
+
+```bash
+BILLING_SERVER_PORT=51054
+BILLING_SERVER_HOST=127.0.0.1
+BILLING_INTERNAL_TOKEN=...   # management to billing gRPC (x-internal-token)
+```
+
+Apply schema: `internal/billing/migrations/00001_init_billing_schema.sql` (goose Up section).
+
+HTMX endpoints (require `BILLING_INTERNAL_TOKEN` on management):
+
+- `GET /admin/customers/{id}/billing`
+- `POST /admin/customers/{id}/billing/invoices` (`billing_month=YYYY-MM`)
+
+### Notifier
+
+```bash
+NOTIFIER_PORT=8085
+NOTIFIER_WORKER_INTERVAL_MS=1000
+NOTIFIER_WORKER_BATCH_SIZE=10
+NOTIFIER_BREAKER_FAIL_THRESHOLD=3
+NOTIFIER_BREAKER_SUCCESS_THRESHOLD=2
+NOTIFIER_BREAKER_OPEN_TIMEOUT_MS=30000
+# At least one provider credential:
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+SLACK_WEBHOOK_URL=
+SMTP_HOST=
+SMTP_PORT=
+SMTP_USERNAME=
+SMTP_PASSWORD=
+SMTP_SENDER=
+SMS_PROVIDER_URL=
+SMS_API_TOKEN=
+SMS_DEFAULT_RECIPIENT=
+```
+
+Apply schema: `internal/notifier/migrations/00001_init_notifier_schema.sql` (goose Up section).
 
 ### Lifecycle
 
@@ -290,29 +336,38 @@ go run cmd/dlq/main.go -action=requeue -stream=ad:events:dlq -dest=ad:events -ba
 - `POST /admin/customers/{id}/payment-intent` (requires `PAYMENT_INTERNAL_TOKEN`)
 - `POST /admin/customers/{id}/topup` (direct ledger credit, bypasses payment service)
 
+### Billing
+- `GET /admin/customers/{id}/billing` (requires `BILLING_INTERNAL_TOKEN`)
+- `POST /admin/customers/{id}/billing/invoices` (requires `BILLING_INTERNAL_TOKEN`)
+
 ---
 
 ## CI (GitHub Actions)
 
 | Workflow | When | What |
 | :--- | :--- | :--- |
-| `ci.yml` | push/PR `main` | lint, alloc gate, short tests, docker build |
-| `ci.yml` → `full-test` | push/PR `main` (parallel) | `go test ./... -count=1 -timeout 30m` |
-| `perf-gate.yml` | path-filtered PR/push | `perf-gate-run.sh` vs base branch |
-| `perf-nightly.yml` | Mon 03:00 UTC, manual | escape + redis/broker regression + chaos |
+| `ci.yml` | push/PR `main` | lint, alloc gate, short tests, docker build, `govulncheck` |
+| `ci.yml` → `full-test` | push/PR `main` (parallel) | `go test ./... -skip Chaos` |
+| `ci.yml` → `chaos` | push/PR `main` (parallel) | `make test-chaos` (≥28 `chaos_proof` lines) |
+| `perf-gate.yml` | path-filtered PR/push | smoke zero-alloc on github-hosted; strict benchstat when `PERF_RUNNER_LABEL` set |
+| `perf-nightly.yml` | Mon 03:00 UTC, manual | escape + redis/broker benchstat regression |
 | `sentinel-chaos.yml` | push/PR `main` | Sentinel failover script |
 
-Set repository variable `PERF_RUNNER_LABEL` (e.g. `self-hosted`) for stable benchmarks. Details: [.github/CI_PERF.md](../.github/CI_PERF.md).
+Set repository variable **`PERF_RUNNER_LABEL`** (e.g. `self-hosted`) to enable strict perf gate (benchstat vs baseline). Without it, `perf-gate.yml` runs smoke mode only (zero-alloc, no CPU regression fail).
+
+Dependabot (`.github/dependabot.yml`): weekly Go modules and GitHub Actions updates.
 
 ---
 
 ## Performance Gate
 
-CI validates hot-path benchmarks on PRs touching `internal/ads/**`, `internal/config/**`, `internal/database/redis*.go`, `deploy/nginx/lua/**`, or `api/events.proto`. Thresholds:
+CI validates hot-path benchmarks on PRs touching `internal/ads/**`, `internal/rtb/**`, `internal/config/**`, `internal/database/redis*.go`, `pkg/logger/**`, `pkg/broker/**`, `deploy/nginx/lua/**`, or `api/**`. Thresholds:
 
 - Heap allocations: 0 allocs/op on gated benchmarks (CPU-only exempt list below)
 - Memory: 0 B/op
-- Latency regression: ≤12% (p < 0.05)
+- Latency regression: ≤12% (p < 0.05) — **strict mode only** (`PERF_RUNNER_LABEL` set in CI; local default)
+
+On github-hosted runners without `PERF_RUNNER_LABEL`, CI runs **smoke mode**: zero-alloc check with 2 bench iterations, no benchstat baseline comparison (avoids flaky CPU failures).
 
 `ci.yml` also runs a fast alloc gate (`make test-alloc-gate`): `ZeroAlloc`, fraud scoring zero-alloc, and 500µs fraud SLA unit tests in `./internal/ads/`.
 
@@ -332,7 +387,7 @@ Excluded from gate: legacy `BenchmarkAdsPacketHandlerJSON`, `Proto_ExtraRepeated
 
 CPU-only exempt (alloc allowed, still benchstat CPU regression): `filterEngineCheck_withDeadline`, `AdsPacketHandlerProto_infra503`.
 
-Nightly (`perf-nightly.yml`, Monday 03:00 UTC): escape heap-line regression, Redis/broker benchstat regression (`--cpu-only`), chaos suite. Baselines in Actions cache; see [.github/CI_PERF.md](../.github/CI_PERF.md).
+Nightly (`perf-nightly.yml`, Monday 03:00 UTC): escape heap-line regression, Redis/broker benchstat regression (`--cpu-only`). Chaos runs in `ci.yml` only (not duplicated in nightly).
 
 PR also runs **`full-test`** job: `go test ./... -count=1` (no `-short`). Local: `make test-full`.
 
@@ -514,7 +569,7 @@ done
 **1. Manual SCRIPT LOAD on every shard**
 
 ```bash
-LUA_FILE=internal/ads/unified-filter.lua
+LUA_FILE=internal/ads/filter/unified.lua
 for port in 6479 6480 6481 6482; do
   sha=$(redis-cli -p "$port" -a "$REDIS_PASSWORD" --no-auth-warning SCRIPT LOAD "$(cat "$LUA_FILE")")
   redis-cli -p "$port" -a "$REDIS_PASSWORD" --no-auth-warning SCRIPT EXISTS "$sha"
@@ -634,6 +689,8 @@ Redis-related tests:
 | Outbox chaos | `go test ./internal/management/ -run Chaos` | PASS |
 | Hot path perf | `task perf-gate` or `scripts/perf-gate-run.sh` | perf_gate CI |
 | Payment | `go test ./internal/payment/...` | PASS |
+| Billing | `go test ./internal/billing/...` | PASS |
+| Notifier | `go test ./internal/notifier/...` | PASS |
 | Config replication | `go test ./internal/management/ -run 'TestSyncGlobal\|TestBlockIP_Multiple'` | PASS |
 | Settings failover | `go test ./internal/ads/ -run TestSettingsWatcher` | PASS |
 | Redis shards | `go test ./internal/database/ -run ShardUniversal` | PASS |
@@ -644,13 +701,7 @@ Full suite (slow): `make test-full` or `go test ./... -count=1`
 
 ## Edge hardening (planned)
 
-Native XDP/eBPF (optional) + OpenResty Lua fixes for `/track` ingress. Not implemented yet.
-
-| Document | Contents |
-| :--- | :--- |
-| [edge-hardening-plan.md](edge-hardening-plan.md) | **Final plan** — SLA boundaries, Lua bottlenecks, phases 0–5, verification |
-| [edge-hardening-steps.md](edge-hardening-steps.md) | **Step-by-step guide (Russian)** — exact templates, code blocks, commands |
-| [edge-xdp-design.md](edge-xdp-design.md) | XDP/NIC rings, BPF maps, Phase 4 detail |
+Native XDP/eBPF (optional) + OpenResty Lua fixes for `/track` ingress. Not fully implemented yet.
 
 **Phase 0 (ops):** `edge-nic-tune.sh`, `edge-sysctl.sh`, optional `edge-baseline.sh` (minimal snapshot; 24h soak deferred).
 
@@ -665,3 +716,4 @@ Native XDP/eBPF (optional) + OpenResty Lua fixes for `/track` ingress. Not imple
 - Stripe checkout not implemented; mock provider only for local dev.
 - Migration `00022_campaign_delivery_features.sql` may lack goose markers; verify applied manually if templates/creatives tables missing.
 - `broker`, `log-shipper`, `dlq`, `admin` are buildable but outside default compose.
+- Billing and notifier schemas are not auto-applied with ads migrations; run their goose Up SQL when enabling those services.

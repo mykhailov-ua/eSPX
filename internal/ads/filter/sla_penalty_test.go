@@ -1,0 +1,207 @@
+package filter
+
+import (
+	"context"
+	"errors"
+	"github.com/google/uuid"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"espx/internal/ads/sharding"
+	"espx/internal/domain"
+
+	adstest "espx/internal/ads/testutil"
+	redis "github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/assert"
+)
+
+// DB health stub toggling ping success for SLA penalty tests.
+type MockDBHealth struct {
+	Healthy atomic.Bool
+}
+
+func (m *MockDBHealth) Ping(ctx context.Context) error {
+	if !m.Healthy.Load() {
+		return errors.New("simulated pgx pool offline")
+	}
+	return nil
+}
+
+// Guards SLA penalty reduces bid when Redis latency exceeds threshold.
+func TestUnifiedFilter_SLAPenalty_Discount(t *testing.T) {
+	campID := uuid.New()
+	custID := uuid.New()
+	reg := &adstest.MockRegistry{}
+	adstest.CachedMockCamp.Store(&domain.Campaign{
+		ID:                  campID,
+		CustomerID:          custID,
+		IDStr:               campID.String(),
+		CustomerIDStr:       custID.String(),
+		IDStrAny:            campID.String(),
+		CustomerIDStrAny:    custID.String(),
+		DailyBudgetMicroAny: int64(10_000_000),
+		Location:            time.UTC,
+	})
+	t.Cleanup(func() { adstest.CachedMockCamp.Store(nil) })
+
+	rdb, cleanup := adstest.SetupTestRedis(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	_ = rdb.Del(ctx, "sla:penalty:active").Err()
+
+	budgetSourceKey := "budget:campaign:" + campID.String()
+	_ = rdb.Set(ctx, budgetSourceKey, int64(10_000_000), 24*time.Hour).Err()
+
+	f := NewUnifiedFilter(
+		[]redis.UniversalClient{rdb},
+		sharding.NewJumpHashSharder(1),
+		reg,
+		nil,
+		1000,
+		time.Minute,
+		time.Hour,
+		time.Hour,
+		1_000_000,
+		10_000,
+		"events-stream-sla",
+		10000,
+	)
+
+	evt := &domain.Event{
+		CampaignID: campID,
+		ClickID:    uuid.NewString(),
+		IP:         "1.1.1.1",
+		Payload:    []byte(`{"bid_micro":1000000}`),
+		Type:       "click",
+	}
+
+	beforeBudget, _ := rdb.Get(ctx, budgetSourceKey).Int64()
+	err := f.Check(ctx, evt)
+	assert.NoError(t, err)
+
+	afterBudget, _ := rdb.Get(ctx, budgetSourceKey).Int64()
+	assert.Equal(t, int64(1_000_000), beforeBudget-afterBudget)
+
+	_ = rdb.Set(ctx, "sla:penalty:active", "true", time.Minute).Err()
+
+	f.slaPenaltyActive.Store(true)
+
+	evt2 := &domain.Event{
+		CampaignID: campID,
+		ClickID:    uuid.NewString(),
+		IP:         "1.1.1.1",
+		Payload:    []byte(`{"bid_micro":1000000}`),
+		Type:       "click",
+	}
+
+	beforeBudget2, _ := rdb.Get(ctx, budgetSourceKey).Int64()
+	err = f.Check(ctx, evt2)
+	assert.NoError(t, err)
+
+	afterBudget2, _ := rdb.Get(ctx, budgetSourceKey).Int64()
+
+	assert.Equal(t, int64(500_000), beforeBudget2-afterBudget2)
+
+	_ = rdb.Del(ctx, "sla:penalty:active").Err()
+}
+
+// Guards SLA sentinel auto-detects slow Redis and applies discount.
+func TestUnifiedFilter_SLASentinel_AutoDetection(t *testing.T) {
+	rdb, cleanup := adstest.SetupTestRedis(t)
+	defer cleanup()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	_ = rdb.Del(ctx, "sla:penalty:active").Err()
+
+	f := NewUnifiedFilter(
+		[]redis.UniversalClient{rdb},
+		sharding.NewJumpHashSharder(1),
+		&adstest.MockRegistry{},
+		nil,
+		10,
+		time.Minute,
+		time.Hour,
+		time.Hour,
+		1000,
+		100,
+		"events-stream-sla",
+		100,
+	)
+
+	f.SetSLATargets(
+		200.0,
+		100.0,
+		10*time.Millisecond,
+		0.9,
+	)
+	f.ResizeTrackers(2)
+
+	mockDB := &MockDBHealth{}
+	mockDB.Healthy.Store(true)
+	f.SetDBHealthChecker(mockDB)
+
+	f.StartSLASentinel(ctx, 10*time.Millisecond)
+
+	time.Sleep(30 * time.Millisecond)
+	assert.False(t, f.slaPenaltyActive.Load())
+
+	mockDB.Healthy.Store(false)
+
+	time.Sleep(50 * time.Millisecond)
+	assert.True(t, f.slaPenaltyActive.Load())
+
+	redisVal, err := rdb.Get(ctx, "sla:penalty:active").Bool()
+	assert.NoError(t, err)
+	assert.True(t, redisVal)
+
+	mockDB.Healthy.Store(true)
+
+	time.Sleep(150 * time.Millisecond)
+	assert.False(t, f.slaPenaltyActive.Load())
+
+	_, err = rdb.Get(ctx, "sla:penalty:active").Bool()
+	assert.ErrorIs(t, err, redis.Nil)
+}
+
+// Guards SLA sentinel handles missing Redis without panicking filter path.
+func TestSLASentinel_NoRedisPanic(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	f := NewUnifiedFilter(
+		[]redis.UniversalClient{},
+		sharding.NewJumpHashSharder(1),
+		&adstest.MockRegistry{},
+		nil,
+		10,
+		time.Minute,
+		time.Hour,
+		time.Hour,
+		1000,
+		100,
+		"events-stream-sla",
+		100,
+	)
+
+	f.SetSLATargets(
+		200.0,
+		100.0,
+		10*time.Millisecond,
+		0.9,
+	)
+	f.ResizeTrackers(2)
+
+	mockDB := &MockDBHealth{}
+	mockDB.Healthy.Store(false)
+	f.SetDBHealthChecker(mockDB)
+
+	assert.NotPanics(t, func() {
+		f.StartSLASentinel(ctx, 10*time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
+	})
+
+	assert.True(t, f.slaPenaltyActive.Load(), "In-memory SLA penalty must be activated due to DB Ping-error")
+}

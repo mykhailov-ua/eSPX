@@ -5,8 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
 	"espx/internal/ads/db"
+	"espx/internal/ads/repo"
+	"espx/internal/ads/sharding"
 	"espx/internal/database"
 
 	"github.com/google/uuid"
@@ -26,7 +27,7 @@ func TestProcessScheduleTickSkipsAlreadyAligned(t *testing.T) {
 	rdb, cleanupRedis := database.SetupTestRedis(t)
 	defer cleanupRedis()
 
-	svc := NewService(pool, []redis.UniversalClient{rdb}, ads.NewJumpHashSharder(1), nil)
+	svc := NewService(pool, []redis.UniversalClient{rdb}, sharding.NewJumpHashSharder(1), nil)
 	defer svc.Close()
 
 	ctx := context.Background()
@@ -73,7 +74,7 @@ func TestCreateCampaignRejectsIncompleteIdempotencyLedger(t *testing.T) {
 	_, err := pool.Exec(ctx, `
 		INSERT INTO balance_ledger (customer_id, amount, type, idempotency_hash)
 		VALUES ($1, $2, 'FREEZE', $3)`,
-		ads.ToUUID(custID), int64(10_000_000), key)
+		repo.ToUUID(custID), int64(10_000_000), key)
 	require.NoError(t, err)
 
 	_, err = svc.CreateCampaign(ctx, testCampaignSpec(custID, "Broken", 20_000_000, key))

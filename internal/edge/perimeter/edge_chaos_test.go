@@ -192,9 +192,9 @@ func TestChaos_FraudTierBlock(t *testing.T) {
 	assert.Equal(t, 85, score)
 
 	logChaosProof(t, "edge_fraud_tier_block", map[string]string{
-		"fraud_score":    "85",
-		"tier":           string(tier),
+		"fraud_score":     "85",
+		"tier":            string(tier),
 		"retry_after_sec": "120",
-		"harness":        "go_perimeter_mirror",
+		"harness":         "go_perimeter_mirror",
 	})
 }

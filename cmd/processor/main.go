@@ -10,8 +10,11 @@ import (
 	"syscall"
 	"time"
 
-	"espx/internal/ads"
+	"espx/internal/ads/broker"
 	"espx/internal/ads/db"
+	"espx/internal/ads/processor"
+	"espx/internal/ads/repo"
+	adssync "espx/internal/ads/sync"
 	"espx/internal/config"
 	"espx/internal/database"
 	"espx/pkg/logger"
@@ -90,26 +93,26 @@ func main() {
 		os.Exit(1)
 	}
 
-	pgStore := ads.NewPostgresStore(queries, time.Duration(cfg.WriteTimeoutMs)*time.Millisecond)
-	chStore := ads.NewClickHouseStore(chConn, time.Duration(cfg.WriteTimeoutMs)*time.Millisecond)
+	pgStore := processor.NewPostgresStore(queries, time.Duration(cfg.WriteTimeoutMs)*time.Millisecond)
+	chStore := processor.NewClickHouseStore(chConn, time.Duration(cfg.WriteTimeoutMs)*time.Millisecond)
 
-	campaignRepo := ads.NewCampaignRepo(queries)
-	customerRepo := ads.NewCustomerRepo(queries)
+	campaignRepo := repo.NewCampaignRepoFromPool(pool)
+	customerRepo := repo.NewCustomerRepoFromPool(pool)
 
-	var pgConsumers []*ads.StreamConsumer
-	var chConsumers []*ads.StreamConsumer
-	var brokerConsumers []*ads.BrokerStreamConsumer
-	var brokerReconcile *ads.BrokerReconcileWorker
-	var syncWorkers []*ads.SyncWorker
+	var pgConsumers []*processor.StreamConsumer
+	var chConsumers []*processor.StreamConsumer
+	var brokerConsumers []*broker.BrokerStreamConsumer
+	var brokerReconcile *broker.BrokerReconcileWorker
+	var syncWorkers []*adssync.SyncWorker
 
 	for i, rdb := range rdbs {
 		shardID := fmt.Sprintf("shard_%d", i)
 
-		sw := ads.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond)
+		sw := adssync.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond)
 		syncWorkers = append(syncWorkers, sw)
 		sw.Start(syncCtx)
 
-		pc := ads.NewStreamConsumer(
+		pc := processor.NewStreamConsumer(
 			pgStore,
 			rdb,
 			cfg.RedisStreamName,
@@ -130,7 +133,7 @@ func main() {
 		pgConsumers = append(pgConsumers, pc)
 		pc.Start(consumerCtx)
 
-		cc := ads.NewStreamConsumer(
+		cc := processor.NewStreamConsumer(
 			chStore,
 			rdb,
 			cfg.RedisStreamName,
@@ -151,7 +154,7 @@ func main() {
 		chConsumers = append(chConsumers, cc)
 		cc.Start(consumerCtx)
 
-		fc := ads.NewStreamConsumer(
+		fc := processor.NewStreamConsumer(
 			chStore,
 			rdb,
 			cfg.FraudStreamName,
@@ -178,7 +181,7 @@ func main() {
 		if brokerRedisURL == "" && len(cfg.RedisAddrs) > 0 {
 			brokerRedisURL = "redis://" + cfg.RedisAddrs[0] + "/0"
 		}
-		brokerBase := ads.BrokerConsumerConfig{
+		brokerBase := broker.BrokerConsumerConfig{
 			BrokerAddr: cfg.Broker.URL,
 			RedisURL:   brokerRedisURL,
 			Topic:      cfg.Broker.Topic,
@@ -200,7 +203,7 @@ func main() {
 			pgBrokerCfg := brokerBase
 			pgBrokerCfg.Partition = uint16(p)
 			pgBrokerCfg.Group = cfg.RedisGroupName + "_pg_broker"
-			pgBroker := ads.NewBrokerStreamConsumer(pgStore, pgBrokerCfg, writeTimeout, retryInit, retryMax, cfg.MaxRetries)
+			pgBroker := broker.NewBrokerStreamConsumer(pgStore, pgBrokerCfg, writeTimeout, retryInit, retryMax, cfg.MaxRetries)
 			pgBroker.SetLogger(appLogger)
 			brokerConsumers = append(brokerConsumers, pgBroker)
 			pgBroker.Start(consumerCtx)
@@ -210,14 +213,14 @@ func main() {
 			chBrokerCfg.Group = cfg.RedisGroupName + "_ch_broker"
 			chBrokerCfg.BatchSize = cfg.CHBatchSize
 			chBrokerCfg.FlushInt = time.Duration(cfg.CHFlushIntervalMs) * time.Millisecond
-			chBroker := ads.NewBrokerStreamConsumer(chStore, chBrokerCfg, writeTimeout, retryInit, retryMax, cfg.MaxRetries)
+			chBroker := broker.NewBrokerStreamConsumer(chStore, chBrokerCfg, writeTimeout, retryInit, retryMax, cfg.MaxRetries)
 			chBroker.SetLogger(appLogger)
 			brokerConsumers = append(brokerConsumers, chBroker)
 			chBroker.Start(consumerCtx)
 		}
 
 		if len(rdbs) > 0 {
-			brokerReconcile = ads.NewBrokerReconcileWorker(ads.BrokerReconcileConfig{
+			brokerReconcile = broker.NewBrokerReconcileWorker(broker.BrokerReconcileConfig{
 				BrokerAddr:          cfg.Broker.URL,
 				BrokerRedis:         brokerRedisURL,
 				Topic:               cfg.Broker.Topic,

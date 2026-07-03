@@ -4,17 +4,19 @@
 
 Five layers. All application services use host networking in compose; stateful stores publish ports on a bridge network.
 
-1. **Ingress** (Nginx :8180): `/admin/*` to management, `/track/*` to tracker upstream. OpenResty Lua: per-campaign rate limit, edge blacklist, shard pick (CRC32). Edge hardening + optional XDP: [edge-hardening-plan.md](edge-hardening-plan.md); XDP detail: [edge-xdp-design.md](edge-xdp-design.md).
+1. **Ingress** (Nginx :8180): `/admin/*` to management, `/track/*` to tracker upstream. OpenResty Lua: per-campaign rate limit, edge blacklist, shard pick (CRC32). Optional XDP/eBPF L4 filter on the public NIC (see Ingress section below).
 2. **Ingestion** (tracker x4, :8181-8184): gnet, PinnedWorkerPool, `processTrack()` shared core.
 3. **Edge state** (Redis x4, :6479-6482, plus replicas and Sentinel x3): client-sharded; Lua atomicity per shard.
-4. **Application**: Processor (:8186); Management (:8188, :51053); Auth and Payment gRPC (:51051, :51052).
-5. **Persistence**: Postgres 16 and ClickHouse 24 for ads and auth; isolated `payment` schema.
+4. **Application**: Processor (:8186); Management (:8188, :51053); Auth (:51051), Payment (:51052, :8187), Billing (:51054), Notifier (:8085) gRPC.
+5. **Persistence**: Postgres 16 and ClickHouse 24 for ads, auth, payment, billing, and notifier schemas.
 
 ### Control plane
 
 - **Management** (`cmd/management`): REST admin API, HTMX cookie auth gateway, background workers (outbox, drain, schedule, pacing, recon, credit scoring). Settlement gRPC on `SETTLEMENT_SERVER_PORT` (default 51053).
 - **Auth** (`cmd/auth`): gRPC for registration, login, PASETO tokens, API keys, email verification. Redis on shard 0 only (lockout, revocation).
 - **Payment** (`cmd/payment`): gRPC intents, Stripe webhook HTTP, settlement outbox worker. Separate `payment` schema in Postgres.
+- **Billing** (`cmd/billing`): gRPC invoice generation from `balance_ledger` aggregates; `billing` schema (invoices, tax profiles). Management proxies HTMX billing UI when `BILLING_INTERNAL_TOKEN` is set.
+- **Notifier** (`cmd/notifier`): gRPC notification enqueue + background worker (Telegram, Slack, SMTP, SMS). `notifier` schema; optional — no management coupling yet.
 
 ### Ingestion plane
 
@@ -165,13 +167,13 @@ Auth lockout previously considered pipelined INCR; kept as Lua for atomic condit
 
 ### Nginx edge Lua
 
-`deploy/nginx/lua/access-check.lua`: **Phase IP** — circuit breaker, local `blacklist_cache` lookup (`b:<ip>` version stamp, synced by `edge-blacklist-sync.lua` every 5s from Redis shard 0). **Phase Body** — Content-Length, `read_body`, JSON/protobuf scan for `campaign_id`, `edge_rl.allow`. No per-request Redis on the hot path. Per-IP `limit_req` (100 r/s) in `nginx.conf`.
+`deploy/nginx/lua/access-check.lua` on `:8180`: **Phase 1** — `limit_req` (100 r/s), circuit breaker, local `blacklist_cache` (`edge-blacklist-sync.lua` every 5s from Redis shard 0). **Phase 2** — `read_body`, byte DFA, `edge_rl` (`edge-phase2.lua`). Also: `GET /metrics/edge` (Prometheus), `GET /admin/*` → management :8188. Worker 0 runs `init-worker.lua` (config, blacklist, slot-map sync, upstream health checks).
 
 `edge-config.lua` (worker 0, 5s poll) mirrors `config:values` fields `rate_limit_per_min` and `rate_limit_window_ms` from Redis shard 0 into `lua_shared_dict edge_config`. `edge-rl.lua` applies a fixed-window counter per `campaign_id` before proxying; returns 429 when exceeded. Conn limits (`limit_conn` 200/IP, 8192 global) remain the OOM backstop.
 
 **Why edge blacklist:** Reject abusive IPs before they reach tracker TCP stack. Trade-off: stale cache up to TTL; emergency block propagation depends on outbox replication latency. Blacklist sets must be replicated to every shard before edge Lua is authoritative; run `scripts/redis-reconcile-post-deploy.sh` after deploy.
 
-**Planned edge hardening:** Lua pipeline fix (IP before body, no per-request Redis blacklist), optional XDP on public NIC. Tracker SLA (p95 < 50 ms, p99 < 80 ms, 100 ms ceiling) is measured on gnet; edge work protects it under abuse. Full plan: [edge-hardening-plan.md](edge-hardening-plan.md).
+**Planned edge hardening:** Lua pipeline fix (IP before body, no per-request Redis blacklist), optional XDP on public NIC (`deploy/edge/xdp/`). Tracker SLA (p95 < 50 ms, p99 < 80 ms, 100 ms ceiling) is measured on gnet; edge work protects it under abuse. Ops: `deploy/edge/` (sysctl, NIC tuning, XDP) and `scripts/edge-*.sh` (see [development.md](development.md)).
 
 ---
 
@@ -311,9 +313,47 @@ Management initiates intents via `PaymentClient` when `PAYMENT_INTERNAL_TOKEN` i
 
 ---
 
+## Billing
+
+Monthly invoice generation from Postgres ledger truth, not Redis.
+
+### Billing service
+
+- Schema: `billing.invoices`, `billing.invoice_lines`, `billing.customer_tax_profiles`
+- `GenerateInvoice`: aggregates `balance_ledger` by type for one customer and calendar month; one invoice per `(customer_id, billing_month)` via unique index
+- Tax: `customer_tax_profiles` + `TaxCalculator` (scheme/rate in basis points)
+- gRPC on `BILLING_SERVER_PORT` (default 51054); `x-internal-token` metadata required
+
+### Management integration
+
+When `BILLING_INTERNAL_TOKEN` and `BILLING_SERVER_HOST` are set:
+
+- `GET /admin/customers/{id}/billing` — HTMX invoice list
+- `POST /admin/customers/{id}/billing/invoices` — generate invoice for `YYYY-MM`
+
+Returns `503 BILLING_UNAVAILABLE` when the billing client is not configured.
+
+---
+
+## Notifier
+
+Async outbound messaging decoupled from alert routing.
+
+### Notifier service
+
+- Schema: `notifier.notifications` (status `PENDING` → `SENT` | `FAILED`)
+- `SendNotification`: inserts row, returns id; worker delivers asynchronously
+- Providers: Telegram, Slack webhook, SMTP, SMS (configured via env; `NotifierConfigured()` gates startup paths)
+- gRPC on `NOTIFIER_PORT` (default 8085); background worker polls pending rows (`NOTIFIER_WORKER_INTERVAL_MS`, default 1000ms)
+- Per-provider circuit breaker (`NOTIFIER_BREAKER_*`)
+
+**Why separate service:** Channel credentials and retry/backoff isolated from management HTTP pool. Trade-off: callers must dial gRPC (no admin UI proxy yet); `cmd/telegram` remains the Alertmanager webhook shortcut.
+
+---
+
 ## Log Broker (optional)
 
-`cmd/broker` + `pkg/broker/`: mmap append-only segments, sparse index, CRC32-framed wire protocol, configurable durability (`async`|`group`|`sync`), Redis coordinator for leader election with fencing epochs. Ingest path stores **raw** segment bytes (no compression on the broker hot path). Not in default compose; used with `log-shipper` and optional `deploy/broker-ha/` for HA produce/fetch.
+`cmd/broker` + `pkg/broker/`: mmap append-only segments, sparse index, CRC32-framed wire protocol, configurable durability (`async`|`group`|`sync`), Redis coordinator for leader election with fencing epochs. Ingest path stores **raw** segment bytes (no compression on the broker hot path). Not in default compose; used with `log-shipper` and optional `deploy/broker/` for HA produce/fetch and coordination chaos drills.
 
 **Why mmap without sync fsync on append:** Keeps produce latency low; durability is explicit via `-durability` flag (default async 100ms flush). Trade-off: `status=0` in async mode is not a durable-until-crash ACK.
 
@@ -327,10 +367,12 @@ Protobuf definitions in `api/` (buf generate to vtproto):
 
 | Proto | Package | Consumers |
 | :--- | :--- | :--- |
-| `events.proto` | `ads.v1` | Tracker, processor (AdEvent, AdStreamEvent, TrackResponse) |
-| `auth.proto` | `auth` | Auth gRPC |
-| `payment.proto` | `payment` | Payment gRPC |
-| `settlement.proto` | `settlement` | Management settlement gRPC |
+| `events.proto` | `ads.v1` | Tracker, processor, DLQ (`AdEvent`, `AdStreamEvent`, `TrackResponse`, `AdDLQEvent`) |
+| `auth.proto` | `auth` | `cmd/auth` gRPC; management auth gateway client |
+| `payment.proto` | `payment` | `cmd/payment` gRPC; management `PaymentClient` |
+| `settlement.proto` | `settlement` | Management settlement gRPC server; payment outbox client |
+| `billing.proto` | `billing` | `cmd/billing` gRPC; management `BillingClient` |
+| `notifier.proto` | `notifier` | `cmd/notifier` gRPC |
 
 ---
 
@@ -343,10 +385,12 @@ Single Postgres database `ad_event_processor`:
 | `internal/ads/migrations/` (26 files) | Campaigns, events (partitioned), ledger, outbox, templates, creatives, recon, fraud config |
 | `internal/auth/migrations/` (8 files) | Users, sessions, API keys |
 | `internal/payment/migrations/` (2 files) | Payment intents, webhooks, outbox |
+| `internal/billing/migrations/` (1 file) | Invoices, invoice lines, customer tax profiles |
+| `internal/notifier/migrations/` (1 file) | Notification queue and delivery status |
 
 Money columns: BIGINT micro-units (migration 00020). Ledger type `PAYMENT_TOPUP` + `payment_intent_id` unique index (00024, 00025).
 
-ClickHouse (`deploy/clickhouse/init.sql`): `impressions`, `clicks`, `conversions`, `fraud_events` with `ReplacingMergeTree`, monthly partitions, TTL 90-180d. Recon MVs (`recon_materialized_views.sql`): `mv_campaign_hourly_impressions` and `mv_campaign_hourly_clicks` for hourly volume checks without full scans.
+ClickHouse (`deploy/clickhouse/init.sql` + `recon_materialized_views.sql` on compose bring-up): `impressions`, `clicks`, `conversions`, `fraud_events` with `ReplacingMergeTree`, monthly partitions, TTL 90-180d. Recon MVs: `mv_campaign_hourly_impressions` and `mv_campaign_hourly_clicks` for hourly volume checks without full scans.
 
 ---
 
@@ -361,6 +405,8 @@ Prometheus (`deploy/monitoring/prometheus.yml`) scrapes:
 | `management` | :8188 | `/metrics` |
 | `auth` | :9091 (`AUTH_METRICS_PORT`) | `/metrics` |
 | `payment` | :8187 (`PAYMENT_WEBHOOK_PORT`) | `/metrics` on webhook mux |
+| `billing` | :51054 (`BILLING_SERVER_PORT`) | gRPC only (no HTTP metrics yet) |
+| `notifier` | :8085 (`NOTIFIER_PORT`) | gRPC only (no HTTP metrics yet) |
 
 Rule file: `deploy/monitoring/prometheus.rules.yml`. Grafana provisioning under `deploy/monitoring/grafana/`.
 

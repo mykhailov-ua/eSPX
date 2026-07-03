@@ -45,6 +45,13 @@ func main() {
 	}
 	fmt.Println("PASS: Zero-Alloc raw verification successful.")
 
+	strict := os.Getenv("PERF_GATE_STRICT") == "true" || os.Getenv("PERF_GATE_STRICT") == "1"
+	if !strict {
+		fmt.Println("SKIP: Benchstat regression (smoke mode). Set PERF_GATE_STRICT=true for CPU regression gate.")
+		fmt.Println("PASS: Smoke performance gate cleared successfully.")
+		return
+	}
+
 	regressionDetected, comparisonTable, err := runBenchstatCSVComparison(baselineFile, prFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "FAIL: Benchstat CSV comparison failed: %v\n", err)

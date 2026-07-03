@@ -20,6 +20,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -tags timetzdata -ldflags="-s -w" -o /bin/
 # Separate binary: payment owns webhooks and settlement outbox outside management HTTP lifecycle.
 RUN CGO_ENABLED=0 GOOS=linux go build -tags timetzdata -ldflags="-s -w" -o /bin/payment ./cmd/payment
 RUN CGO_ENABLED=0 GOOS=linux go build -tags timetzdata -ldflags="-s -w" -o /bin/billing ./cmd/billing
+RUN CGO_ENABLED=0 GOOS=linux go build -tags timetzdata -ldflags="-s -w" -o /bin/notifier ./cmd/notifier
 RUN CGO_ENABLED=0 GOOS=linux go build -tags timetzdata -ldflags="-s -w" -o /bin/broker ./cmd/broker
 RUN CGO_ENABLED=0 GOOS=linux go build -tags timetzdata -ldflags="-s -w" -o /bin/log-shipper ./cmd/log-shipper
 RUN CGO_ENABLED=0 GOOS=linux go build -tags timetzdata -ldflags="-s -w" -o /bin/ivt-detector ./cmd/ivt-detector
@@ -36,6 +37,7 @@ COPY --from=builder /bin/management /management
 # Payment entrypoint when compose sets entrypoint: ["/payment"].
 COPY --from=builder /bin/payment /payment
 COPY --from=builder /bin/billing /billing
+COPY --from=builder /bin/notifier /notifier
 COPY --from=builder /bin/ivt-detector /ivt-detector
 COPY --from=builder /bin/broker /broker
 COPY --from=builder /bin/log-shipper /log-shipper

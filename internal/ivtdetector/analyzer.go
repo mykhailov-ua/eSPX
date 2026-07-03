@@ -17,12 +17,12 @@ type SuspiciousIP struct {
 
 // AnalyzerConfig tunes ClickHouse window and detection thresholds.
 type AnalyzerConfig struct {
-	Window           time.Duration
-	MinClicks        uint64
-	MinImpressions   uint64
-	ClickToImpRatio  float64
-	MinIPsPerUA      uint64
-	MinEventsPerIP   uint64
+	Window          time.Duration
+	MinClicks       uint64
+	MinImpressions  uint64
+	ClickToImpRatio float64
+	MinIPsPerUA     uint64
+	MinEventsPerIP  uint64
 }
 
 // DefaultAnalyzerConfig returns production-oriented thresholds for IVT clustering.

@@ -7,20 +7,20 @@ import (
 
 // IVTDetector holds environment-backed settings for the IVT anomaly detector binary.
 type IVTDetector struct {
-	ScanIntervalMs       int
-	OutboxPendingLimit   int64
-	ManagementURL        string
-	ManagementTimeoutMs  int
-	WindowSec            int
-	MinClicks            uint64
-	MinImpressions       uint64
-	ClickToImpRatio      float64
-	MinIPsPerUA          uint64
-	AdminAPIKey          Secret
-	DBDSN                Secret
-	DBMaxConns           int
-	DBMinConns           int
-	CHDSN                Secret
+	ScanIntervalMs      int
+	OutboxPendingLimit  int64
+	ManagementURL       string
+	ManagementTimeoutMs int
+	WindowSec           int
+	MinClicks           uint64
+	MinImpressions      uint64
+	ClickToImpRatio     float64
+	MinIPsPerUA         uint64
+	AdminAPIKey         Secret
+	DBDSN               Secret
+	DBMaxConns          int
+	DBMinConns          int
+	CHDSN               Secret
 }
 
 // LoadIVTDetector reads ivt-detector-specific environment variables.

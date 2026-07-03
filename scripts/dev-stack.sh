@@ -9,7 +9,7 @@ cd "$ROOT"
 CMD="${1:-status}"
 
 INFRA=(db redis-0 redis-1 redis-2 redis-3 clickhouse)
-FULL=(db redis-0 redis-1 redis-2 redis-3 clickhouse processor tracker-0 auth management payment)
+FULL=(db redis-0 redis-1 redis-2 redis-3 clickhouse processor tracker-0 auth management payment billing notifier)
 SENTINEL=(redis-0 redis-0-replica sentinel-0 sentinel-1 sentinel-2)
 
 case "$CMD" in

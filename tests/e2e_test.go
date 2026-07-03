@@ -7,9 +7,13 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
 	"espx/internal/ads/db"
+	"espx/internal/ads/filter"
+	"espx/internal/ads/ingest"
 	"espx/internal/ads/pb"
+	"espx/internal/ads/processor"
+	"espx/internal/ads/repo"
+	"espx/internal/ads/sharding"
 	"espx/internal/config"
 	"espx/internal/database"
 	"github.com/google/uuid"
@@ -62,11 +66,11 @@ func TestE2EFlow(t *testing.T) {
 	registry := newTestRegistry(t, queries)
 	_, _ = registry.Sync(ctx)
 
-	store := ads.NewPostgresStore(queries, 1*time.Second)
-	campaignRepo := ads.NewCampaignRepo(queries)
-	unifiedFilter := ads.NewUnifiedFilter(
+	store := processor.NewPostgresStore(queries, 1*time.Second)
+	campaignRepo := repo.NewCampaignRepo(queries)
+	unifiedFilter := filter.NewUnifiedFilter(
 		[]redis.UniversalClient{rdb},
-		ads.NewJumpHashSharder(1),
+		sharding.NewJumpHashSharder(1),
 		registry,
 		campaignRepo,
 		1000,
@@ -78,13 +82,13 @@ func TestE2EFlow(t *testing.T) {
 		"test-stream",
 		100000,
 	)
-	filterEngine := ads.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, unifiedFilter)
-	consumer := ads.NewStreamConsumer(store, rdb, "test-stream", "test-group", "test-c1", cfg.EventBatchSize, cfg.MaxWorkers, 100*time.Millisecond, 1*time.Second, 100*time.Millisecond, 5*time.Second, 5, 5*time.Minute, 1*time.Second)
+	filterEngine := filter.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, unifiedFilter)
+	consumer := processor.NewStreamConsumer(store, rdb, "test-stream", "test-group", "test-c1", cfg.EventBatchSize, cfg.MaxWorkers, 100*time.Millisecond, 1*time.Second, 100*time.Millisecond, 5*time.Second, 5, 5*time.Minute, 1*time.Second)
 	consumer.Start(ctx)
 	defer consumer.Close()
 
-	sharder := ads.NewJumpHashSharder(1)
-	handler := ads.NewAdsPacketHandler(cfg, registry, filterEngine, pool, []redis.UniversalClient{rdb}, sharder, cfg.FraudStreamName, nil)
+	sharder := sharding.NewJumpHashSharder(1)
+	handler := ingest.NewAdsPacketHandler(cfg, registry, filterEngine, pool, []redis.UniversalClient{rdb}, sharder, cfg.FraudStreamName, nil)
 	defer handler.Stop(ctx)
 
 	payload := map[string]any{
@@ -94,7 +98,7 @@ func TestE2EFlow(t *testing.T) {
 	}
 	body, _ := json.Marshal(payload)
 
-	status, _ := ads.PostTrackGnetJSON(handler, body)
+	status, _ := ingest.PostTrackGnetJSON(handler, body)
 	assert.Equal(t, http.StatusAccepted, status)
 
 	time.Sleep(1 * time.Second)
@@ -149,11 +153,11 @@ func TestE2EFlow_Protobuf(t *testing.T) {
 	registry := newTestRegistry(t, queries)
 	_, _ = registry.Sync(ctx)
 
-	store := ads.NewPostgresStore(queries, 1*time.Second)
-	campaignRepo := ads.NewCampaignRepo(queries)
-	unifiedFilter := ads.NewUnifiedFilter(
+	store := processor.NewPostgresStore(queries, 1*time.Second)
+	campaignRepo := repo.NewCampaignRepo(queries)
+	unifiedFilter := filter.NewUnifiedFilter(
 		[]redis.UniversalClient{rdb},
-		ads.NewJumpHashSharder(1),
+		sharding.NewJumpHashSharder(1),
 		registry,
 		campaignRepo,
 		1000,
@@ -165,13 +169,13 @@ func TestE2EFlow_Protobuf(t *testing.T) {
 		"test-proto-stream",
 		100000,
 	)
-	filterEngine := ads.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, unifiedFilter)
-	consumer := ads.NewStreamConsumer(store, rdb, "test-proto-stream", "test-proto-group", "test-c2", cfg.EventBatchSize, cfg.MaxWorkers, 100*time.Millisecond, 1*time.Second, 100*time.Millisecond, 5*time.Second, 5, 5*time.Minute, 1*time.Second)
+	filterEngine := filter.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, unifiedFilter)
+	consumer := processor.NewStreamConsumer(store, rdb, "test-proto-stream", "test-proto-group", "test-c2", cfg.EventBatchSize, cfg.MaxWorkers, 100*time.Millisecond, 1*time.Second, 100*time.Millisecond, 5*time.Second, 5, 5*time.Minute, 1*time.Second)
 	consumer.Start(ctx)
 	defer consumer.Close()
 
-	sharder := ads.NewJumpHashSharder(1)
-	handler := ads.NewAdsPacketHandler(cfg, registry, filterEngine, pool, []redis.UniversalClient{rdb}, sharder, cfg.FraudStreamName, nil)
+	sharder := sharding.NewJumpHashSharder(1)
+	handler := ingest.NewAdsPacketHandler(cfg, registry, filterEngine, pool, []redis.UniversalClient{rdb}, sharder, cfg.FraudStreamName, nil)
 	defer handler.Stop(ctx)
 
 	pbEvt := &pb.AdEvent{
@@ -187,7 +191,7 @@ func TestE2EFlow_Protobuf(t *testing.T) {
 	body, err := pbEvt.MarshalVT()
 	require.NoError(t, err)
 
-	status, _ := ads.PostTrackGnet(handler, body, "application/x-protobuf", "application/x-protobuf")
+	status, _ := ingest.PostTrackGnet(handler, body, "application/x-protobuf", "application/x-protobuf")
 	assert.Equal(t, http.StatusAccepted, status)
 
 	assert.Eventually(t, func() bool {

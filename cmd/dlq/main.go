@@ -16,8 +16,8 @@ import (
 	"syscall"
 	"time"
 
-	"espx/internal/ads"
 	"espx/internal/ads/pb"
+	"espx/internal/ads/repo"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -122,47 +122,47 @@ func archiveDLQ(ctx context.Context, rdb *redis.Client, stream, destFile string,
 			pbDLQ.Reset()
 
 			if rawBytesStr, ok := msg.Values["d"].(string); ok {
-				if err := proto.Unmarshal(ads.UnsafeBytes(rawBytesStr), pbDLQ); err != nil {
+				if err := proto.Unmarshal(repo.UnsafeBytes(rawBytesStr), pbDLQ); err != nil {
 					pbStream.Reset()
-					if err := proto.Unmarshal(ads.UnsafeBytes(rawBytesStr), pbStream); err == nil {
+					if err := proto.Unmarshal(repo.UnsafeBytes(rawBytesStr), pbStream); err == nil {
 						pbDLQ.OriginalEvent = pbStream
-						pbDLQ.Error = ads.UnsafeBytes("recovered stream event")
-						pbDLQ.OriginalId = ads.UnsafeBytes(msg.ID)
+						pbDLQ.Error = repo.UnsafeBytes("recovered stream event")
+						pbDLQ.OriginalId = repo.UnsafeBytes(msg.ID)
 						pbDLQ.FailedAtUnix = time.Now().Unix()
 					} else {
 						pbStream.Reset()
-						pbStream.Payload = ads.UnsafeBytes(rawBytesStr)
+						pbStream.Payload = repo.UnsafeBytes(rawBytesStr)
 						pbDLQ.OriginalEvent = pbStream
-						pbDLQ.Error = ads.UnsafeBytes("unknown binary")
-						pbDLQ.OriginalId = ads.UnsafeBytes(msg.ID)
+						pbDLQ.Error = repo.UnsafeBytes("unknown binary")
+						pbDLQ.OriginalId = repo.UnsafeBytes(msg.ID)
 						pbDLQ.FailedAtUnix = time.Now().Unix()
 					}
 				}
 			} else {
 				pbStream.Reset()
 				if v, ok := msg.Values["click_id"].(string); ok {
-					pbStream.ClickId = ads.UnsafeBytes(v)
+					pbStream.ClickId = repo.UnsafeBytes(v)
 				}
 				if v, ok := msg.Values["campaign_id"].(string); ok {
 					if u, err := uuid.Parse(v); err == nil {
 						pbStream.CampaignId = u[:]
 					} else {
-						pbStream.CampaignId = ads.UnsafeBytes(v)
+						pbStream.CampaignId = repo.UnsafeBytes(v)
 					}
 				}
 				if v, ok := msg.Values["type"].(string); ok {
-					pbStream.EventType = ads.UnsafeBytes(v)
+					pbStream.EventType = repo.UnsafeBytes(v)
 				}
 				if v, ok := msg.Values["payload"].(string); ok {
-					pbStream.Payload = ads.UnsafeBytes(v)
+					pbStream.Payload = repo.UnsafeBytes(v)
 				} else if v, ok := msg.Values["payload"].([]byte); ok {
 					pbStream.Payload = v
 				}
 				if v, ok := msg.Values["ip"].(string); ok {
-					pbStream.Ip = ads.UnsafeBytes(v)
+					pbStream.Ip = repo.UnsafeBytes(v)
 				}
 				if v, ok := msg.Values["ua"].(string); ok {
-					pbStream.Ua = ads.UnsafeBytes(v)
+					pbStream.Ua = repo.UnsafeBytes(v)
 				}
 				if v, ok := msg.Values["created_at_unix"].(int64); ok {
 					pbStream.CreatedAtUnix = v
@@ -170,12 +170,12 @@ func archiveDLQ(ctx context.Context, rdb *redis.Client, stream, destFile string,
 
 				pbDLQ.OriginalEvent = pbStream
 				if v, ok := msg.Values["error"].(string); ok {
-					pbDLQ.Error = ads.UnsafeBytes(v)
+					pbDLQ.Error = repo.UnsafeBytes(v)
 				}
 				if v, ok := msg.Values["original_id"].(string); ok {
-					pbDLQ.OriginalId = ads.UnsafeBytes(v)
+					pbDLQ.OriginalId = repo.UnsafeBytes(v)
 				} else {
-					pbDLQ.OriginalId = ads.UnsafeBytes(msg.ID)
+					pbDLQ.OriginalId = repo.UnsafeBytes(msg.ID)
 				}
 				if v, ok := msg.Values["failed_at_unix"].(int64); ok {
 					pbDLQ.FailedAtUnix = v
@@ -183,7 +183,7 @@ func archiveDLQ(ctx context.Context, rdb *redis.Client, stream, destFile string,
 					pbDLQ.FailedAtUnix = time.Now().Unix()
 				}
 				if v, ok := msg.Values["worker_id"].(string); ok {
-					pbDLQ.WorkerId = ads.UnsafeBytes(v)
+					pbDLQ.WorkerId = repo.UnsafeBytes(v)
 				}
 				if v, ok := msg.Values["retry_count"].(int64); ok {
 					pbDLQ.RetryCount = int32(v)
@@ -263,10 +263,10 @@ func requeueDLQ(ctx context.Context, rdb *redis.Client, dlqStream, targetStream 
 			values := make(map[string]interface{})
 			if rawBytesStr, ok := msg.Values["d"].(string); ok {
 				pbDLQ.Reset()
-				if err := proto.Unmarshal(ads.UnsafeBytes(rawBytesStr), pbDLQ); err == nil && pbDLQ.OriginalEvent != nil {
+				if err := proto.Unmarshal(repo.UnsafeBytes(rawBytesStr), pbDLQ); err == nil && pbDLQ.OriginalEvent != nil {
 					data, err := proto.Marshal(pbDLQ.OriginalEvent)
 					if err == nil {
-						values["d"] = ads.UnsafeString(data)
+						values["d"] = repo.UnsafeString(data)
 					} else {
 						log.Printf("Failed to re-marshal original event from DLQ message %s: %v", msg.ID, err)
 					}
@@ -370,7 +370,7 @@ func restoreDLQ(ctx context.Context, rdb *redis.Client, srcFile, targetStream st
 		pipe.XAdd(ctx, &redis.XAddArgs{
 			Stream: targetStream,
 			Values: map[string]interface{}{
-				"d": ads.UnsafeString(streamData),
+				"d": repo.UnsafeString(streamData),
 			},
 		})
 		batchCount++
@@ -427,7 +427,7 @@ func inspectStream(ctx context.Context, rdb *redis.Client, stream string, batchS
 
 			if rawBytesStr, ok := msg.Values["d"].(string); ok {
 				pbDLQ.Reset()
-				if err := proto.Unmarshal(ads.UnsafeBytes(rawBytesStr), pbDLQ); err == nil && pbDLQ.OriginalEvent != nil {
+				if err := proto.Unmarshal(repo.UnsafeBytes(rawBytesStr), pbDLQ); err == nil && pbDLQ.OriginalEvent != nil {
 					fmt.Println("Format: Protobuf (AdDLQEvent)")
 					orig := pbDLQ.OriginalEvent
 					var campUUIDStr string
@@ -437,23 +437,23 @@ func inspectStream(ctx context.Context, rdb *redis.Client, stream string, batchS
 						}
 					}
 					if campUUIDStr == "" {
-						campUUIDStr = ads.UnsafeString(orig.CampaignId)
+						campUUIDStr = repo.UnsafeString(orig.CampaignId)
 					}
 
 					m := map[string]interface{}{
-						"error":          ads.UnsafeString(pbDLQ.Error),
-						"original_id":    ads.UnsafeString(pbDLQ.OriginalId),
+						"error":          repo.UnsafeString(pbDLQ.Error),
+						"original_id":    repo.UnsafeString(pbDLQ.OriginalId),
 						"failed_at_unix": pbDLQ.FailedAtUnix,
 						"failed_at":      time.Unix(pbDLQ.FailedAtUnix, 0).Format(time.RFC3339),
-						"worker_id":      ads.UnsafeString(pbDLQ.WorkerId),
+						"worker_id":      repo.UnsafeString(pbDLQ.WorkerId),
 						"retry_count":    pbDLQ.RetryCount,
 						"original_event": map[string]interface{}{
-							"click_id":        ads.UnsafeString(orig.ClickId),
+							"click_id":        repo.UnsafeString(orig.ClickId),
 							"campaign_id":     campUUIDStr,
-							"event_type":      ads.UnsafeString(orig.EventType),
-							"payload":         ads.UnsafeString(orig.Payload),
-							"ip":              ads.UnsafeString(orig.Ip),
-							"ua":              ads.UnsafeString(orig.Ua),
+							"event_type":      repo.UnsafeString(orig.EventType),
+							"payload":         repo.UnsafeString(orig.Payload),
+							"ip":              repo.UnsafeString(orig.Ip),
+							"ua":              repo.UnsafeString(orig.Ua),
 							"created_at_unix": orig.CreatedAtUnix,
 							"created_at":      time.Unix(orig.CreatedAtUnix, 0).Format(time.RFC3339),
 						},
@@ -462,7 +462,7 @@ func inspectStream(ctx context.Context, rdb *redis.Client, stream string, batchS
 					fmt.Println(string(prettyJSON))
 				} else {
 					pbStream.Reset()
-					if err := proto.Unmarshal(ads.UnsafeBytes(rawBytesStr), pbStream); err == nil {
+					if err := proto.Unmarshal(repo.UnsafeBytes(rawBytesStr), pbStream); err == nil {
 						fmt.Println("Format: Protobuf (AdStreamEvent)")
 						var campUUIDStr string
 						if len(pbStream.CampaignId) == 16 {
@@ -471,16 +471,16 @@ func inspectStream(ctx context.Context, rdb *redis.Client, stream string, batchS
 							}
 						}
 						if campUUIDStr == "" {
-							campUUIDStr = ads.UnsafeString(pbStream.CampaignId)
+							campUUIDStr = repo.UnsafeString(pbStream.CampaignId)
 						}
 
 						m := map[string]interface{}{
-							"click_id":        ads.UnsafeString(pbStream.ClickId),
+							"click_id":        repo.UnsafeString(pbStream.ClickId),
 							"campaign_id":     campUUIDStr,
-							"event_type":      ads.UnsafeString(pbStream.EventType),
-							"payload":         ads.UnsafeString(pbStream.Payload),
-							"ip":              ads.UnsafeString(pbStream.Ip),
-							"ua":              ads.UnsafeString(pbStream.Ua),
+							"event_type":      repo.UnsafeString(pbStream.EventType),
+							"payload":         repo.UnsafeString(pbStream.Payload),
+							"ip":              repo.UnsafeString(pbStream.Ip),
+							"ua":              repo.UnsafeString(pbStream.Ua),
 							"created_at_unix": pbStream.CreatedAtUnix,
 							"created_at":      time.Unix(pbStream.CreatedAtUnix, 0).Format(time.RFC3339),
 						}
@@ -537,25 +537,25 @@ func toEditable(id string, pbDLQ *pb.AdDLQEvent) EditableDLQEvent {
 			}
 		}
 		if campUUIDStr == "" {
-			campUUIDStr = ads.UnsafeString(pbDLQ.OriginalEvent.CampaignId)
+			campUUIDStr = repo.UnsafeString(pbDLQ.OriginalEvent.CampaignId)
 		}
 
 		orig = EditableStreamEvent{
-			ClickId:       ads.UnsafeString(pbDLQ.OriginalEvent.ClickId),
+			ClickId:       repo.UnsafeString(pbDLQ.OriginalEvent.ClickId),
 			CampaignId:    campUUIDStr,
-			EventType:     ads.UnsafeString(pbDLQ.OriginalEvent.EventType),
-			Payload:       ads.UnsafeString(pbDLQ.OriginalEvent.Payload),
-			Ip:            ads.UnsafeString(pbDLQ.OriginalEvent.Ip),
-			Ua:            ads.UnsafeString(pbDLQ.OriginalEvent.Ua),
+			EventType:     repo.UnsafeString(pbDLQ.OriginalEvent.EventType),
+			Payload:       repo.UnsafeString(pbDLQ.OriginalEvent.Payload),
+			Ip:            repo.UnsafeString(pbDLQ.OriginalEvent.Ip),
+			Ua:            repo.UnsafeString(pbDLQ.OriginalEvent.Ua),
 			CreatedAtUnix: pbDLQ.OriginalEvent.CreatedAtUnix,
 		}
 	}
 	return EditableDLQEvent{
 		ID:            id,
-		Error:         ads.UnsafeString(pbDLQ.Error),
-		OriginalId:    ads.UnsafeString(pbDLQ.OriginalId),
+		Error:         repo.UnsafeString(pbDLQ.Error),
+		OriginalId:    repo.UnsafeString(pbDLQ.OriginalId),
 		FailedAtUnix:  pbDLQ.FailedAtUnix,
-		WorkerId:      ads.UnsafeString(pbDLQ.WorkerId),
+		WorkerId:      repo.UnsafeString(pbDLQ.WorkerId),
 		RetryCount:    pbDLQ.RetryCount,
 		OriginalEvent: orig,
 	}
@@ -567,22 +567,22 @@ func fromEditable(edit EditableDLQEvent) *pb.AdDLQEvent {
 	if u, err := uuid.Parse(edit.OriginalEvent.CampaignId); err == nil {
 		campID = u[:]
 	} else {
-		campID = ads.UnsafeBytes(edit.OriginalEvent.CampaignId)
+		campID = repo.UnsafeBytes(edit.OriginalEvent.CampaignId)
 	}
 
 	return &pb.AdDLQEvent{
-		Error:        ads.UnsafeBytes(edit.Error),
-		OriginalId:   ads.UnsafeBytes(edit.OriginalId),
+		Error:        repo.UnsafeBytes(edit.Error),
+		OriginalId:   repo.UnsafeBytes(edit.OriginalId),
 		FailedAtUnix: edit.FailedAtUnix,
-		WorkerId:     ads.UnsafeBytes(edit.WorkerId),
+		WorkerId:     repo.UnsafeBytes(edit.WorkerId),
 		RetryCount:   edit.RetryCount,
 		OriginalEvent: &pb.AdStreamEvent{
-			ClickId:       ads.UnsafeBytes(edit.OriginalEvent.ClickId),
+			ClickId:       repo.UnsafeBytes(edit.OriginalEvent.ClickId),
 			CampaignId:    campID,
-			EventType:     ads.UnsafeBytes(edit.OriginalEvent.EventType),
-			Payload:       ads.UnsafeBytes(edit.OriginalEvent.Payload),
-			Ip:            ads.UnsafeBytes(edit.OriginalEvent.Ip),
-			Ua:            ads.UnsafeBytes(edit.OriginalEvent.Ua),
+			EventType:     repo.UnsafeBytes(edit.OriginalEvent.EventType),
+			Payload:       repo.UnsafeBytes(edit.OriginalEvent.Payload),
+			Ip:            repo.UnsafeBytes(edit.OriginalEvent.Ip),
+			Ua:            repo.UnsafeBytes(edit.OriginalEvent.Ua),
 			CreatedAtUnix: edit.OriginalEvent.CreatedAtUnix,
 		},
 	}
@@ -630,7 +630,7 @@ func editDLQMessage(ctx context.Context, rdb *redis.Client, stream, id string) e
 	}
 
 	pbDLQ := &pb.AdDLQEvent{}
-	if err := proto.Unmarshal(ads.UnsafeBytes(rawBytesStr), pbDLQ); err != nil {
+	if err := proto.Unmarshal(repo.UnsafeBytes(rawBytesStr), pbDLQ); err != nil {
 		return fmt.Errorf("failed to unmarshal AdDLQEvent: %w", err)
 	}
 
@@ -679,7 +679,7 @@ func editDLQMessage(ctx context.Context, rdb *redis.Client, stream, id string) e
 	pipe.XAdd(ctx, &redis.XAddArgs{
 		Stream: stream,
 		Values: map[string]interface{}{
-			"d": ads.UnsafeString(newRawBytes),
+			"d": repo.UnsafeString(newRawBytes),
 		},
 	})
 	cmds, err := pipe.Exec(ctx)

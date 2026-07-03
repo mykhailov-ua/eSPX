@@ -123,16 +123,3 @@ jobs:
           path: .ci-baselines/broker
           key: nightly-broker-${{ github.sha }}
 
-  chaos-weekly:
-    name: Container chaos tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
-          cache: true
-
-      - name: Run chaos suite
-        run: bash scripts/test-chaos.sh

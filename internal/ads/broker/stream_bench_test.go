@@ -1,0 +1,375 @@
+package broker
+
+import (
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+	"unsafe"
+
+	"espx/internal/ads/pb"
+	"espx/internal/ads/repo"
+	"espx/internal/domain"
+
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/require"
+)
+
+// Tracks flat stream write cost as legacy serialization baseline.
+func BenchmarkStreamWriteFlat(b *testing.B) {
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		valuesPtr := producerValuesPool.Get().(*[]any)
+		values := *valuesPtr
+		values[1] = "dummy-payload"
+		producerValuesPool.Put(valuesPtr)
+	}
+}
+
+// Tracks protobuf stream write cost for hot-path migration gates.
+func BenchmarkStreamWriteProto(b *testing.B) {
+	evt := &domain.Event{
+		ClickID:    "c_12345_67890_abcdef",
+		CampaignID: uuid.New(),
+		UserID:     "u_12345",
+		Type:       "impression",
+		Payload:    []byte(`{"geo":"US","device":"mobile"}`),
+		IP:         "192.168.1.1",
+		UA:         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+		CreatedAt:  time.Now(),
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		pbEvt := repo.StreamEventPool.Get().(*pb.AdStreamEvent)
+		pbEvt.ClickId = append(pbEvt.ClickId[:0], evt.ClickID...)
+		pbEvt.CampaignId = append(pbEvt.CampaignId[:0], evt.CampaignID[:]...)
+		pbEvt.EventType = append(pbEvt.EventType[:0], evt.Type...)
+		pbEvt.Payload = append(pbEvt.Payload[:0], evt.Payload...)
+		pbEvt.Ip = append(pbEvt.Ip[:0], evt.IP...)
+		pbEvt.Ua = append(pbEvt.Ua[:0], evt.UA...)
+		pbEvt.CreatedAtUnix = evt.CreatedAt.Unix()
+
+		size := pbEvt.SizeVT()
+		bufPtr := repo.ByteBufPool.Get().(*[]byte)
+		buf := *bufPtr
+		if cap(buf) < size {
+			buf = make([]byte, size)
+		} else {
+			buf = buf[:size]
+		}
+
+		n, err := pbEvt.MarshalToSizedBufferVT(buf)
+		if err != nil {
+			b.Fatalf("failed to marshal: %v", err)
+		}
+		data := buf[:n]
+
+		valuesPtr := producerValuesPool.Get().(*[]any)
+		values := *valuesPtr
+		wrap := repo.ByteSliceValuePool.Get().(*repo.ByteSliceValue)
+		wrap.SetBytes(data)
+		values[1] = wrap
+
+		repo.DeepResetAdStreamEvent(pbEvt)
+		repo.StreamEventPool.Put(pbEvt)
+		*bufPtr = buf
+		repo.ByteBufPool.Put(bufPtr)
+		repo.ByteSliceValuePool.Put(wrap)
+		producerValuesPool.Put(valuesPtr)
+	}
+}
+
+// Tracks flat stream read and decode cost as legacy baseline.
+func BenchmarkStreamReadFlat(b *testing.B) {
+	cid := uuid.New()
+	values := map[string]interface{}{
+		"click_id":    "c_12345_67890_abcdef",
+		"campaign_id": cid.String(),
+		"type":        "impression",
+		"payload":     `{"geo":"US","device":"mobile"}`,
+		"ip":          "192.168.1.1",
+		"ua":          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		evt := domain.EventPool.Get().(*domain.Event)
+		evt.Reset()
+
+		if v, ok := values["click_id"].(string); ok {
+			evt.ClickID = v
+		}
+		if v, ok := values["campaign_id"].(string); ok {
+			evt.CampaignID, _ = uuid.Parse(v)
+		}
+		if v, ok := values["user_id"].(string); ok {
+			evt.UserID = v
+		}
+		if v, ok := values["type"].(string); ok {
+			evt.Type = v
+		}
+		if v, ok := values["payload"].(string); ok {
+			evt.Payload = append(evt.Payload[:0], v...)
+		}
+		if v, ok := values["ip"].(string); ok {
+			evt.IP = v
+		}
+		if v, ok := values["ua"].(string); ok {
+			evt.UA = v
+		}
+
+		if evt.CreatedAt.IsZero() {
+			id := "1716186000000-0"
+			if idx := strings.IndexByte(id, '-'); idx > 0 {
+				ms, err := strconv.ParseInt(id[:idx], 10, 64)
+				if err == nil {
+					evt.CreatedAt = time.Unix(0, ms*int64(time.Millisecond))
+				}
+			}
+		}
+
+		domain.EventPool.Put(evt)
+	}
+}
+
+// Tracks protobuf stream read cost for consumer hot path.
+func BenchmarkStreamReadProto(b *testing.B) {
+	evtSetup := &domain.Event{
+		ClickID:    "c_12345_67890_abcdef",
+		CampaignID: uuid.New(),
+		UserID:     "u_12345",
+		Type:       "impression",
+		Payload:    []byte(`{"geo":"US","device":"mobile"}`),
+		IP:         "192.168.1.1",
+		UA:         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+		CreatedAt:  time.Now(),
+	}
+
+	pbEvtSetup := &pb.AdStreamEvent{
+		ClickId:       []byte(evtSetup.ClickID),
+		CampaignId:    evtSetup.CampaignID[:],
+		EventType:     []byte(evtSetup.Type),
+		Payload:       evtSetup.Payload,
+		Ip:            []byte(evtSetup.IP),
+		Ua:            []byte(evtSetup.UA),
+		CreatedAtUnix: evtSetup.CreatedAt.Unix(),
+	}
+	data, _ := pbEvtSetup.MarshalVT()
+	rawBytesStr := string(data)
+
+	values := map[string]interface{}{
+		"d": rawBytesStr,
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		evt := domain.EventPool.Get().(*domain.Event)
+		evt.Reset()
+
+		if rawBytesStr, ok := values["d"].(string); ok {
+			pbEvt := repo.StreamEventPool.Get().(*pb.AdStreamEvent)
+			repo.DeepResetAdStreamEvent(pbEvt)
+
+			buf := unsafe.Slice(unsafe.StringData(rawBytesStr), len(rawBytesStr))
+			if err := pbEvt.UnmarshalVT(buf); err == nil {
+				evt.ClickID = repo.UnsafeString(pbEvt.ClickId)
+				_ = repo.ParseUUID(pbEvt.CampaignId, &evt.CampaignID)
+				evt.Type = repo.UnsafeString(pbEvt.EventType)
+				evt.Payload = append(evt.Payload[:0], pbEvt.Payload...)
+				evt.IP = repo.UnsafeString(pbEvt.Ip)
+				evt.UA = repo.UnsafeString(pbEvt.Ua)
+				if pbEvt.CreatedAtUnix > 0 {
+					evt.CreatedAt = time.Unix(pbEvt.CreatedAtUnix, 0)
+				}
+			}
+			repo.DeepResetAdStreamEvent(pbEvt)
+			repo.StreamEventPool.Put(pbEvt)
+		}
+
+		domain.EventPool.Put(evt)
+	}
+}
+
+// Guards protobuf stream payloads stay smaller than flat encoding for capacity planning.
+func TestStreamPayloadSizeComparison(t *testing.T) {
+	evt := &domain.Event{
+		ClickID:    "c_12345_67890_abcdef",
+		CampaignID: uuid.New(),
+		UserID:     "u_12345",
+		Type:       "impression",
+		Payload:    []byte(`{"geo":"US","device":"mobile"}`),
+		IP:         "192.168.1.1",
+		UA:         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+		CreatedAt:  time.Now(),
+	}
+
+	flatSize := len("click_id") + len(evt.ClickID) +
+		len("campaign_id") + len(evt.CampaignID.String()) +
+		len("type") + len(evt.Type) +
+		len("payload") + len(evt.Payload) +
+		len("ip") + len(evt.IP) +
+		len("ua") + len(evt.UA)
+
+	pbEvt := &pb.AdStreamEvent{
+		ClickId:       []byte(evt.ClickID),
+		CampaignId:    evt.CampaignID[:],
+		EventType:     []byte(evt.Type),
+		Payload:       evt.Payload,
+		Ip:            []byte(evt.IP),
+		Ua:            []byte(evt.UA),
+		CreatedAtUnix: evt.CreatedAt.Unix(),
+	}
+	protoBytes, err := pbEvt.MarshalVT()
+	require.NoError(t, err)
+	protoSize := len(protoBytes)
+
+	require.Greater(t, flatSize, 0)
+	require.Less(t, protoSize, flatSize, "protobuf stream payload should be smaller than flat encoding")
+	t.Logf("flat=%d proto=%d reduction=%.1f%%", flatSize, protoSize, float64(flatSize-protoSize)/float64(flatSize)*100.0)
+}
+
+// Tracks flat DLQ write cost as legacy failure-path baseline.
+func BenchmarkDLQWriteFlat(b *testing.B) {
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		valuesPtr := producerValuesPool.Get().(*[]any)
+		values := *valuesPtr
+		values[1] = "dummy-payload"
+		producerValuesPool.Put(valuesPtr)
+	}
+}
+
+// Tracks protobuf DLQ write cost for failure-path migration.
+func BenchmarkDLQWriteProto(b *testing.B) {
+	evt := &domain.Event{
+		ClickID:    "c_12345_67890_abcdef",
+		CampaignID: uuid.New(),
+		UserID:     "u_12345",
+		Type:       "impression",
+		Payload:    []byte(`{"geo":"US","device":"mobile"}`),
+		IP:         "192.168.1.1",
+		UA:         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+		CreatedAt:  time.Now(),
+	}
+	errVal := "simulated poison pill error message"
+	msgID := "1716186000000-0"
+	workerID := "worker-asus-tuf-8f5b27"
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		pbDLQ := repo.DLQEventPool.Get().(*pb.AdDLQEvent)
+		if pbDLQ.OriginalEvent == nil {
+			pbDLQ.OriginalEvent = new(pb.AdStreamEvent)
+		} else {
+			repo.DeepResetAdStreamEvent(pbDLQ.OriginalEvent)
+		}
+		pbDLQ.Error = append(pbDLQ.Error[:0], errVal...)
+		pbDLQ.OriginalId = append(pbDLQ.OriginalId[:0], msgID...)
+		pbDLQ.FailedAtUnix = time.Now().Unix()
+		pbDLQ.WorkerId = append(pbDLQ.WorkerId[:0], workerID...)
+		pbDLQ.RetryCount = 3
+
+		pbDLQ.OriginalEvent.ClickId = append(pbDLQ.OriginalEvent.ClickId[:0], evt.ClickID...)
+		pbDLQ.OriginalEvent.CampaignId = append(pbDLQ.OriginalEvent.CampaignId[:0], evt.CampaignID[:]...)
+		pbDLQ.OriginalEvent.EventType = append(pbDLQ.OriginalEvent.EventType[:0], evt.Type...)
+		pbDLQ.OriginalEvent.Payload = append(pbDLQ.OriginalEvent.Payload[:0], evt.Payload...)
+		pbDLQ.OriginalEvent.Ip = append(pbDLQ.OriginalEvent.Ip[:0], evt.IP...)
+		pbDLQ.OriginalEvent.Ua = append(pbDLQ.OriginalEvent.Ua[:0], evt.UA...)
+		pbDLQ.OriginalEvent.CreatedAtUnix = evt.CreatedAt.Unix()
+
+		size := pbDLQ.SizeVT()
+		bufPtr := repo.ByteBufPool.Get().(*[]byte)
+		buf := *bufPtr
+		if cap(buf) < size {
+			buf = make([]byte, size)
+		} else {
+			buf = buf[:size]
+		}
+
+		n, err := pbDLQ.MarshalToSizedBufferVT(buf)
+		if err != nil {
+			b.Fatalf("failed to marshal: %v", err)
+		}
+		data := buf[:n]
+
+		valuesPtr := producerValuesPool.Get().(*[]any)
+		values := *valuesPtr
+		wrap := repo.ByteSliceValuePool.Get().(*repo.ByteSliceValue)
+		wrap.SetBytes(data)
+		values[1] = wrap
+
+		repo.DeepResetAdDLQEvent(pbDLQ)
+		repo.DLQEventPool.Put(pbDLQ)
+		*bufPtr = buf
+		repo.ByteBufPool.Put(bufPtr)
+		repo.ByteSliceValuePool.Put(wrap)
+		producerValuesPool.Put(valuesPtr)
+	}
+}
+
+// Guards DLQ protobuf payloads stay smaller than flat encoding for retention cost.
+func TestDLQPayloadSizeComparison(t *testing.T) {
+	evt := &domain.Event{
+		ClickID:    "c_12345_67890_abcdef",
+		CampaignID: uuid.New(),
+		UserID:     "u_12345",
+		Type:       "impression",
+		Payload:    []byte(`{"geo":"US","device":"mobile"}`),
+		IP:         "192.168.1.1",
+		UA:         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+		CreatedAt:  time.Now(),
+	}
+	errVal := "simulated poison pill error message"
+	msgID := "1716186000000-0"
+	workerID := "worker-asus-tuf-8f5b27"
+
+	flatSize := len("click_id") + len(evt.ClickID) +
+		len("campaign_id") + len(evt.CampaignID.String()) +
+		len("type") + len(evt.Type) +
+		len("payload") + len(evt.Payload) +
+		len("ip") + len(evt.IP) +
+		len("ua") + len(evt.UA) +
+		len("error") + len(errVal) +
+		len("original_id") + len(msgID) +
+		len("failed_at") + len(time.RFC3339) +
+		len("service") + len("ad-event-processor") +
+		len("worker_id") + len(workerID) +
+		len("retry_count") + 1
+
+	pbDLQ := &pb.AdDLQEvent{
+		OriginalEvent: &pb.AdStreamEvent{
+			ClickId:       []byte(evt.ClickID),
+			CampaignId:    evt.CampaignID[:],
+			EventType:     []byte(evt.Type),
+			Payload:       evt.Payload,
+			Ip:            []byte(evt.IP),
+			Ua:            []byte(evt.UA),
+			CreatedAtUnix: evt.CreatedAt.Unix(),
+		},
+		Error:        []byte(errVal),
+		OriginalId:   []byte(msgID),
+		FailedAtUnix: evt.CreatedAt.Unix(),
+		WorkerId:     []byte(workerID),
+		RetryCount:   3,
+	}
+	protoBytes, err := pbDLQ.MarshalVT()
+	require.NoError(t, err)
+	protoSize := len(protoBytes)
+
+	require.Greater(t, flatSize, 0)
+	require.Less(t, protoSize, flatSize, "protobuf DLQ payload should be smaller than flat encoding")
+	t.Logf("flat=%d proto=%d reduction=%.1f%%", flatSize, protoSize, float64(flatSize-protoSize)/float64(flatSize)*100.0)
+}

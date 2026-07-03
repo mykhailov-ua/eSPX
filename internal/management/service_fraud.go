@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"espx/internal/ads"
 	"espx/internal/ads/db"
+	"espx/internal/ads/repo"
 	"espx/internal/domain"
 
 	"github.com/google/uuid"
@@ -58,7 +58,7 @@ func validateFraudThresholds(pass, suspect, ivt, block uint8) error {
 
 // GetCampaignFraudConfig returns the current fraud configuration for a campaign.
 func (s *Service) GetCampaignFraudConfig(ctx context.Context, campaignID uuid.UUID) (CampaignFraudConfigDTO, error) {
-	row, err := db.New(s.GetPool()).GetCampaignFull(ctx, ads.ToUUID(campaignID))
+	row, err := db.New(s.GetPool()).GetCampaignFull(ctx, repo.ToUUID(campaignID))
 	if err != nil {
 		return CampaignFraudConfigDTO{}, err
 	}
@@ -71,7 +71,7 @@ func (s *Service) UpdateCampaignFraudConfig(ctx context.Context, campaignID uuid
 
 	err := pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
-		locked, err := q.GetCampaignForUpdate(ctx, ads.ToUUID(campaignID))
+		locked, err := q.GetCampaignForUpdate(ctx, repo.ToUUID(campaignID))
 		if err != nil {
 			return err
 		}
@@ -107,7 +107,7 @@ func (s *Service) UpdateCampaignFraudConfig(ctx context.Context, campaignID uuid
 		}
 
 		updated, err := q.UpdateCampaignFraudConfig(ctx, db.UpdateCampaignFraudConfigParams{
-			ID:                    ads.ToUUID(campaignID),
+			ID:                    repo.ToUUID(campaignID),
 			FraudThresholdPass:    int16(pass),
 			FraudThresholdSuspect: int16(suspect),
 			FraudThresholdIvt:     int16(ivt),
