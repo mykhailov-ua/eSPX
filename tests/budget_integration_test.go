@@ -5,17 +5,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"espx/internal/ads"
 	"espx/internal/ads/db"
 	"espx/internal/domain"
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// TestBudgetFlow_Integration guards the revenue path: Redis hot decrements,
-// click deduplication, and SyncWorker reconciliation must keep campaign spend
-// and customer balance consistent with Postgres.
 func TestBudgetFlow_Integration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")
@@ -32,7 +29,7 @@ func TestBudgetFlow_Integration(t *testing.T) {
 	queries := db.New(dbPool)
 	campaignRepo := ads.NewCampaignRepo(queries)
 	customerRepo := ads.NewCustomerRepo(queries)
-	registry := newTestRegistry(t, queries)
+	registry := ads.NewRegistry(queries)
 
 	budgetManager := ads.NewRedisBudgetManager(rdb, campaignRepo, 10*time.Second)
 	syncWorker := ads.NewSyncWorker(rdb, campaignRepo, customerRepo, 100*time.Millisecond)

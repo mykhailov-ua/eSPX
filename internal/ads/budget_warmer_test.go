@@ -18,7 +18,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Redis mock that returns budget miss once then success for registry recovery tests.
 type budgetMissOnceRedis struct {
 	mockRedisClient
 	calls atomic.Int32
@@ -34,20 +33,10 @@ func (m *budgetMissOnceRedis) EvalSha(ctx context.Context, sha1 string, keys []s
 	return cmd
 }
 
-func (m *budgetMissOnceRedis) Process(ctx context.Context, cmd redis.Cmder) error {
-	if m.calls.Add(1) == 1 {
-		setProcessLuaInt64(cmd, -1)
-		return nil
-	}
-	setProcessLuaInt64(cmd, 0)
-	return nil
-}
-
 func (m *budgetMissOnceRedis) Eval(ctx context.Context, script string, keys []string, args ...any) *redis.Cmd {
 	return m.EvalSha(ctx, "", keys, args...)
 }
 
-// Campaign repo that panics if PostgreSQL is touched during registry recovery.
 type panicCampaignRepo struct{}
 
 func (panicCampaignRepo) GetByID(context.Context, uuid.UUID) (*domain.Campaign, error) {
@@ -66,14 +55,12 @@ func (panicCampaignRepo) ListActive(context.Context) ([]*domain.Campaign, error)
 	return nil, nil
 }
 
-// Guards remaining budget micros never go negative and nil campaigns spend zero.
 func TestRemainingBudgetMicro(t *testing.T) {
 	assert.Equal(t, int64(0), RemainingBudgetMicro(nil))
 	assert.Equal(t, int64(700), RemainingBudgetMicro(&domain.Campaign{BudgetLimit: 1000, CurrentSpend: 300}))
 	assert.Equal(t, int64(0), RemainingBudgetMicro(&domain.Campaign{BudgetLimit: 100, CurrentSpend: 500}))
 }
 
-// Guards warm path never clobber existing Redis budget keys on cache hit.
 func TestBudgetCacheWarmer_SetNXDoesNotOverwrite(t *testing.T) {
 	if testing.Short() {
 		t.Skip()
@@ -102,7 +89,6 @@ func TestBudgetCacheWarmer_SetNXDoesNotOverwrite(t *testing.T) {
 	assert.Equal(t, int64(42), val)
 }
 
-// Guards cold Redis shards receive remaining budget on first warm.
 func TestBudgetCacheWarmer_insertsMissingKeys(t *testing.T) {
 	if testing.Short() {
 		t.Skip()
@@ -129,7 +115,6 @@ func TestBudgetCacheWarmer_insertsMissingKeys(t *testing.T) {
 	assert.Equal(t, int64(4_000_000), val)
 }
 
-// Guards budget miss recovery uses in-memory registry before PostgreSQL.
 func TestUnifiedFilter_budgetMiss_recoversFromRegistryWithoutPG(t *testing.T) {
 	campID := uuid.New()
 	custID := uuid.New()
@@ -171,7 +156,12 @@ func TestUnifiedFilter_budgetMiss_recoversFromRegistryWithoutPG(t *testing.T) {
 	assert.Equal(t, beforeRecover+1, testutil.ToFloat64(metrics.BudgetCacheRegistryRecoverTotal))
 }
 
-// Guards incremental warm uses SET NX so existing keys are not overwritten.
+// TestVerify_budgetMissRegistryBeforePG documents hot path invariant:
+// Lua -1 -> registry SET NX -> retry Lua; PostgreSQL only when registry lacks campaign budget snapshot.
+func TestVerify_budgetMissRegistryBeforePG(t *testing.T) {
+	TestUnifiedFilter_budgetMiss_recoversFromRegistryWithoutPG(t)
+}
+
 func TestBudgetCacheWarmer_WarmOne_Incremental(t *testing.T) {
 	if testing.Short() {
 		t.Skip()
@@ -190,6 +180,7 @@ func TestBudgetCacheWarmer_WarmOne_Incremental(t *testing.T) {
 
 	w := NewBudgetCacheWarmer([]redis.UniversalClient{rdb}, NewJumpHashSharder(1))
 
+	// First warm should succeed (SET NX)
 	warmed, err := w.WarmOne(ctx, camp)
 	require.NoError(t, err)
 	assert.True(t, warmed)
@@ -198,12 +189,12 @@ func TestBudgetCacheWarmer_WarmOne_Incremental(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(1_500_000), val)
 
+	// Second warm should return false since key already exists
 	warmed2, err := w.WarmOne(ctx, camp)
 	require.NoError(t, err)
 	assert.False(t, warmed2)
 }
 
-// Guards single-campaign refresh updates registry and Redis without full sync.
 func TestCampaignRegistry_UpdateAndWarmCampaign_Incremental(t *testing.T) {
 	if testing.Short() {
 		t.Skip()
@@ -215,6 +206,7 @@ func TestCampaignRegistry_UpdateAndWarmCampaign_Incremental(t *testing.T) {
 	campID := uuid.New()
 	custID := uuid.New()
 
+	// Настраиваем MockRepo
 	mock := &MockRepo{
 		budgets: map[uuid.UUID]db.GetCampaignBudgetRow{
 			campID: {
@@ -231,26 +223,30 @@ func TestCampaignRegistry_UpdateAndWarmCampaign_Incremental(t *testing.T) {
 	w := NewBudgetCacheWarmer([]redis.UniversalClient{rdb}, NewJumpHashSharder(1))
 	r.SetBudgetWarmer(w)
 
+	// Добавляем кампанию в реестр с изначальными значениями
 	r.Add(campID, custID, nil, "", domain.PacingModeAsap, 1000, "UTC", 0, 0, nil)
 
+	// Проверяем, что изначальные значения в реестре верны
 	campBefore, ok := r.GetCampaign(campID)
 	require.True(t, ok)
 	assert.Equal(t, int64(1000), campBefore.DailyBudget)
 
+	// Вызываем инкрементальный прогрев/обновление
 	err := r.UpdateAndWarmCampaign(ctx, campID)
 	require.NoError(t, err)
 
+	// Проверяем, что в реестре обновились значения бюджета
 	campAfter, ok := r.GetCampaign(campID)
 	require.True(t, ok)
 	assert.Equal(t, int64(3_000_000), campAfter.BudgetLimit)
 	assert.Equal(t, int64(1_000_000), campAfter.CurrentSpend)
 
+	// Проверяем, что в Redis записался правильный оставшийся бюджет
 	val, err := rdb.Get(ctx, campAfter.BudgetCampaignKey).Int64()
 	require.NoError(t, err)
 	assert.Equal(t, int64(2_000_000), val)
 }
 
-// Guards pubsub campaign updates trigger incremental registry and Redis warm.
 func TestCampaignRegistry_StartWatch_IncrementalWarm(t *testing.T) {
 	if testing.Short() {
 		t.Skip()
@@ -280,32 +276,35 @@ func TestCampaignRegistry_StartWatch_IncrementalWarm(t *testing.T) {
 	w := NewBudgetCacheWarmer([]redis.UniversalClient{rdb}, NewJumpHashSharder(1))
 	r.SetBudgetWarmer(w)
 
+	// Добавляем кампанию в реестр с изначальными значениями
 	r.Add(campID, custID, nil, "", domain.PacingModeAsap, 1000, "UTC", 0, 0, nil)
 
 	channel := "test:campaign:updates:incremental"
 	r.StartWatch(ctx, rdb, channel)
 
+	// Даем время подписке установиться
 	time.Sleep(200 * time.Millisecond)
 
+	// Публикуем сообщение в pubsub с ID кампании
 	err := rdb.Publish(ctx, channel, campID.String()).Err()
 	require.NoError(t, err)
 
+	// Проверяем, что в реестре обновились значения бюджета
 	assert.Eventually(t, func() bool {
 		camp, ok := r.GetCampaign(campID)
 		return ok && camp.BudgetLimit == 5_000_000 && camp.CurrentSpend == 1_000_000
 	}, 2*time.Second, 50*time.Millisecond)
 
+	// Проверяем, что в Redis записался правильный оставшийся бюджет
 	val, err := rdb.Get(ctx, "budget:campaign:"+campID.String()).Int64()
 	require.NoError(t, err)
 	assert.Equal(t, int64(4_000_000), val)
 }
 
-// No-op Redis client for budget warmer benchmark isolation.
 type benchmarkRedisClient struct {
 	redis.UniversalClient
 }
 
-// Pipeline stub that always succeeds SET NX for warmer benchmarks.
 type benchmarkPipeliner struct {
 	redis.Pipeliner
 }
@@ -330,7 +329,6 @@ func (r *benchmarkRedisClient) SetNX(ctx context.Context, key string, value any,
 	return cmd
 }
 
-// Tracks WarmOne allocation and syscall cost for perf regression gates.
 func BenchmarkBudgetCacheWarmer_WarmOne(b *testing.B) {
 	ctx := context.Background()
 	rdb := &benchmarkRedisClient{}
@@ -349,7 +347,6 @@ func BenchmarkBudgetCacheWarmer_WarmOne(b *testing.B) {
 	}
 }
 
-// Tracks batch warm cost when many campaigns refresh together.
 func BenchmarkBudgetCacheWarmer_Warm(b *testing.B) {
 	ctx := context.Background()
 	rdb := &benchmarkRedisClient{}

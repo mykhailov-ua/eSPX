@@ -1,67 +1,102 @@
 package rtb
 
-// RunAuction selects a campaign and debits the winner budget on the hot bid path.
-func (registry *Registry) RunAuction(req *BidRequest) (AuctionResult, NoBidReason) {
-	return registry.runAuction(req, true)
+// BidRequest carries targeting fields for a single bid in cache-friendly field order.
+type BidRequest struct {
+	CategoryMask uint64
+	MinBid       int64
+	GeoHash      uint32
+	DeviceType   uint8
 }
 
-// RunAuctionEval runs the auction without debiting budget for shadow validation.
-func (registry *Registry) RunAuctionEval(req *BidRequest) (AuctionResult, NoBidReason) {
-	return registry.runAuction(req, false)
+// AuctionResult carries the clearing outcome without heap allocation on the hot path.
+type AuctionResult struct {
+	CampaignID CampaignID
+	Price      int64
 }
 
-func (registry *Registry) runAuction(req *BidRequest, spend bool) (AuctionResult, NoBidReason) {
-	start := auctionStartMono()
-
+// RunAuction selects a campaign on the hot bid path without locks, using second-price clearing
+// so winners pay above the floor only when competition requires it.
+//
+// The shard pointer is pinned for the whole call (RCU). If UpdateCampaigns removes a campaign
+// while an auction is in flight, the request may still clear spend for that campaign ID.
+// This is intentional eventual consistency: catalog visibility lags one auction latency.
+func (registry *Registry) RunAuction(req *BidRequest) (AuctionResult, bool) {
 	if req == nil || req.MinBid < 0 {
-		recordAuctionOutcome(start, NoBidInvalidRequest, 0)
-		return AuctionResult{}, NoBidInvalidRequest
+		return AuctionResult{}, false
 	}
 	reg := registry.LoadShard(req.GeoHash)
 	if reg == nil || reg.Count == 0 {
-		recordAuctionOutcome(start, NoBidEmptyShard, 0)
-		return AuctionResult{}, NoBidEmptyShard
+		return AuctionResult{}, false
 	}
 
-	if !registry.catalogSlicesValid(reg) {
-		recordAuctionOutcome(start, NoBidCorruptCatalog, reg.Count)
-		return AuctionResult{}, NoBidCorruptCatalog
+	count := reg.Count
+	campaignIDs := reg.CampaignIDs
+	bidFloors := reg.BidFloors
+	deviceMasks := reg.DeviceMasks
+	categoryMasks := reg.CategoryMasks
+	geoHashes := reg.GeoHashes
+	budgetIndices := reg.BudgetIndices
+
+	if count > len(campaignIDs) || count > len(bidFloors) || count > len(deviceMasks) ||
+		count > len(categoryMasks) || count > len(geoHashes) || count > len(budgetIndices) {
+		return AuctionResult{}, false
 	}
 
-	bucket, bucketStart, bucketEnd, ok := registry.candidateRange(reg, req)
-	if !ok {
-		recordAuctionOutcome(start, NoBidNoCandidates, 0)
-		return AuctionResult{}, NoBidNoCandidates
-	}
+	var winnerIdx int = -1
+	var maxBid int64 = -1
+	var secondBid int64 = -1
 
-	clearing := registry.ClearingMode()
-	winnerIdx, secondBid, scanned, noBid := registry.rankCandidates(reg, req, bucket, bucketStart, bucketEnd)
-	if noBid != NoBidNone {
-		recordAuctionOutcome(start, noBid, scanned)
-		return AuctionResult{}, noBid
-	}
+	for i := 0; i < count; i++ {
+		if geoHashes[i] != req.GeoHash {
+			continue
+		}
+		if (deviceMasks[i] & req.DeviceType) == 0 {
+			continue
+		}
+		if (categoryMasks[i] & req.CategoryMask) == 0 {
+			continue
+		}
+		bid := bidFloors[i]
+		if bid < req.MinBid {
+			continue
+		}
+		budgetIdx := budgetIndices[i]
+		if registry.store.LoadBudget(budgetIdx) < bid {
+			continue
+		}
 
-	price := registry.clearingPrice(clearing, req.MinBid, bidsAt(reg, winnerIdx), secondBid)
-	price = applyReserve(price, reg.Reserves[winnerIdx], bidsAt(reg, winnerIdx))
-
-	if winnerIdx >= len(reg.BudgetIndices) || winnerIdx >= len(reg.CampaignIDs) {
-		recordAuctionOutcome(start, NoBidCorruptCatalog, scanned)
-		return AuctionResult{}, NoBidCorruptCatalog
-	}
-
-	if spend {
-		winnerBudgetIdx := reg.BudgetIndices[winnerIdx]
-		customerIdx := reg.CustomerBudgetIndices[winnerIdx]
-		dailyLimit := reg.DailyBudgets[winnerIdx]
-		if !registry.store.CheckAndSpendAll(winnerBudgetIdx, customerIdx, price, dailyLimit) {
-			recordAuctionOutcome(start, NoBidSpendFailed, scanned)
-			return AuctionResult{}, NoBidSpendFailed
+		if bid > maxBid {
+			secondBid = maxBid
+			maxBid = bid
+			winnerIdx = i
+		} else if bid > secondBid {
+			secondBid = bid
 		}
 	}
 
-	recordAuctionOutcome(start, NoBidNone, scanned)
+	if winnerIdx == -1 {
+		return AuctionResult{}, false
+	}
+
+	price := req.MinBid
+	if secondBid != -1 && secondBid > price {
+		price = secondBid
+	}
+
+	if winnerIdx >= len(budgetIndices) || winnerIdx >= len(campaignIDs) {
+		return AuctionResult{}, false
+	}
+
+	winnerBudgetIdx := budgetIndices[winnerIdx]
+	if registry.store.LoadBudget(winnerBudgetIdx) < price {
+		return AuctionResult{}, false
+	}
+	if !registry.store.CheckAndSpend(winnerBudgetIdx, price) {
+		return AuctionResult{}, false
+	}
+
 	return AuctionResult{
-		CampaignID: reg.CampaignIDs[winnerIdx],
+		CampaignID: campaignIDs[winnerIdx],
 		Price:      price,
-	}, NoBidNone
+	}, true
 }

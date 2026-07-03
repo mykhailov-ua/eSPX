@@ -1,3 +1,15 @@
+// Package database provides a lock-free Redis circuit breaker implemented with
+// sync/atomic operations. Unlike the mutex-based ads.CircuitBreaker, this breaker
+// uses CAS (CompareAndSwap) for state transitions to avoid lock contention on the
+// critical Redis command path.
+//
+// The breaker is installed as a redis.UniversalClient hook via RedisCircuitBreakerHook.
+// The hook intercepts ProcessHook and ProcessPipelineHook; transport errors
+// (network, EOF, connection refused) increment the failure counter while
+// redis.Nil and business-logic errors are treated as successes.
+//
+// IsNetworkOrSystemError classifies errors by type (net.Error, context.Canceled)
+// and by string-pattern matching for error types not wrapped in a net.Error.
 package database
 
 import (
@@ -8,15 +20,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"espx/internal/metrics"
-
 	redis "github.com/redis/go-redis/v9"
 )
 
-// ErrRedisCircuitOpen signals the breaker rejected a command before it reached a failing shard.
 var ErrRedisCircuitOpen = errors.New("redis circuit breaker is open")
 
-// CircuitState is the observable breaker phase exported to metrics and logs.
 type CircuitState int32
 
 const (
@@ -25,7 +33,6 @@ const (
 	CircuitHalfOpen CircuitState = 2
 )
 
-// String maps breaker state to stable log and dashboard labels.
 func (s CircuitState) String() string {
 	switch s {
 	case CircuitClosed:
@@ -39,7 +46,10 @@ func (s CircuitState) String() string {
 	}
 }
 
-// RedisBreaker sheds Redis load when a shard is unhealthy so callers fail fast instead of piling up timeouts.
+// RedisBreaker is a lock-free circuit breaker for Redis clients. All fields are
+// accessed exclusively via sync/atomic; no mutex is held during Allow, RecordSuccess,
+// or RecordFailure. State transitions from Open -> HalfOpen use CompareAndSwap to
+// prevent multiple goroutines from entering HalfOpen simultaneously.
 type RedisBreaker struct {
 	state            int32
 	failures         int64
@@ -50,7 +60,6 @@ type RedisBreaker struct {
 	openTimeout      time.Duration
 }
 
-// NewRedisBreaker configures failure and recovery thresholds for a single Redis shard.
 func NewRedisBreaker(failThreshold, successThreshold int64, openTimeout time.Duration) *RedisBreaker {
 	return &RedisBreaker{
 		state:            int32(CircuitClosed),
@@ -60,14 +69,15 @@ func NewRedisBreaker(failThreshold, successThreshold int64, openTimeout time.Dur
 	}
 }
 
-// State returns the current breaker phase for hooks, metrics, and tests.
 func (b *RedisBreaker) State() CircuitState {
 	return CircuitState(atomic.LoadInt32(&b.state))
 }
 
-// Allow reports whether a Redis command may proceed or should fast-fail while the shard recovers.
-func (breaker *RedisBreaker) Allow() bool {
-	state := atomic.LoadInt32(&breaker.state)
+// Allow returns true if the breaker permits a Redis operation. In the Open state,
+// it tests whether openTimeout has elapsed and if so performs a CAS to transition
+// to HalfOpen, returning true only for the single goroutine that wins the CAS.
+func (b *RedisBreaker) Allow() bool {
+	state := atomic.LoadInt32(&b.state)
 	if state == int32(CircuitClosed) {
 		return true
 	}
@@ -77,12 +87,12 @@ func (breaker *RedisBreaker) Allow() bool {
 	}
 
 	if state == int32(CircuitOpen) {
-		lastOpened := atomic.LoadInt64(&breaker.lastOpenedUnix)
-		if time.Since(time.Unix(0, lastOpened)) >= breaker.openTimeout {
+		lastOpened := atomic.LoadInt64(&b.lastOpenedUnix)
+		if time.Since(time.Unix(0, lastOpened)) >= b.openTimeout {
 
-			if atomic.CompareAndSwapInt32(&breaker.state, int32(CircuitOpen), int32(CircuitHalfOpen)) {
-				atomic.StoreInt64(&breaker.successes, 0)
-				atomic.StoreInt64(&breaker.failures, 0)
+			if atomic.CompareAndSwapInt32(&b.state, int32(CircuitOpen), int32(CircuitHalfOpen)) {
+				atomic.StoreInt64(&b.successes, 0)
+				atomic.StoreInt64(&b.failures, 0)
 				return true
 			}
 		}
@@ -92,7 +102,6 @@ func (breaker *RedisBreaker) Allow() bool {
 	return false
 }
 
-// RecordSuccess counts probe successes so the breaker can close after a shard proves healthy again.
 func (b *RedisBreaker) RecordSuccess() {
 	state := atomic.LoadInt32(&b.state)
 	if state == int32(CircuitHalfOpen) {
@@ -108,7 +117,6 @@ func (b *RedisBreaker) RecordSuccess() {
 	}
 }
 
-// RecordFailure counts transport errors so the breaker opens before callers exhaust connection pools.
 func (b *RedisBreaker) RecordFailure() {
 	state := atomic.LoadInt32(&b.state)
 	if state == int32(CircuitHalfOpen) {
@@ -122,7 +130,6 @@ func (b *RedisBreaker) RecordFailure() {
 	}
 }
 
-// trip opens the breaker after repeated infrastructure failures.
 func (b *RedisBreaker) trip() {
 	for {
 		state := atomic.LoadInt32(&b.state)
@@ -136,7 +143,6 @@ func (b *RedisBreaker) trip() {
 	}
 }
 
-// IsNetworkOrSystemError separates infra outages from Redis business errors so the breaker only trips on real shard failures.
 func IsNetworkOrSystemError(err error) bool {
 	if err == nil {
 		return false
@@ -162,73 +168,61 @@ func IsNetworkOrSystemError(err error) bool {
 	return false
 }
 
-// RedisCircuitBreakerHook wraps go-redis commands with breaker gating and Prometheus state reporting.
+// RedisCircuitBreakerHook implements redis.Hook and injects breaker logic into
+// every command dispatched through the client. It must be added via client.AddHook
+// before any commands are issued.
 type RedisCircuitBreakerHook struct {
 	breaker *RedisBreaker
-	shard   string
 }
 
-// NewRedisCircuitBreakerHook attaches shard-scoped breaker logic to a Redis client.
-func NewRedisCircuitBreakerHook(breaker *RedisBreaker, shard string) *RedisCircuitBreakerHook {
-	return &RedisCircuitBreakerHook{breaker: breaker, shard: shard}
+func NewRedisCircuitBreakerHook(breaker *RedisBreaker) *RedisCircuitBreakerHook {
+	return &RedisCircuitBreakerHook{breaker: breaker}
 }
 
-// reportState publishes breaker phase to Prometheus for shard health dashboards.
-func (h *RedisCircuitBreakerHook) reportState() {
-	metrics.RedisBreakerState.WithLabelValues(h.shard).Set(float64(h.breaker.State()))
-}
-
-// DialHook passes through dial hooks because breaker decisions happen at command time.
 func (h *RedisCircuitBreakerHook) DialHook(next redis.DialHook) redis.DialHook {
 	return next
 }
 
-// ProcessHook enforces breaker gating and outcome recording on single Redis commands.
-func (hook *RedisCircuitBreakerHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+func (h *RedisCircuitBreakerHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
-		if !hook.breaker.Allow() {
+		if !h.breaker.Allow() {
 			cmd.SetErr(ErrRedisCircuitOpen)
-			hook.reportState()
 			return ErrRedisCircuitOpen
 		}
 
 		err := next(ctx, cmd)
 		if err != nil {
 			if IsNetworkOrSystemError(err) {
-				hook.breaker.RecordFailure()
+				h.breaker.RecordFailure()
 			} else {
-				hook.breaker.RecordSuccess()
+				h.breaker.RecordSuccess()
 			}
 		} else {
-			hook.breaker.RecordSuccess()
+			h.breaker.RecordSuccess()
 		}
-		hook.reportState()
 		return err
 	}
 }
 
-// ProcessPipelineHook enforces breaker gating and outcome recording on pipelined Redis commands.
-func (hook *RedisCircuitBreakerHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+func (h *RedisCircuitBreakerHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
-		if !hook.breaker.Allow() {
+		if !h.breaker.Allow() {
 			for _, cmd := range cmds {
 				cmd.SetErr(ErrRedisCircuitOpen)
 			}
-			hook.reportState()
 			return ErrRedisCircuitOpen
 		}
 
 		err := next(ctx, cmds)
 		if err != nil {
 			if IsNetworkOrSystemError(err) {
-				hook.breaker.RecordFailure()
+				h.breaker.RecordFailure()
 			} else {
-				hook.breaker.RecordSuccess()
+				h.breaker.RecordSuccess()
 			}
 		} else {
-			hook.breaker.RecordSuccess()
+			h.breaker.RecordSuccess()
 		}
-		hook.reportState()
 		return err
 	}
 }

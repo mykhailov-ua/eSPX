@@ -1,5 +1,3 @@
-//go:build ignore
-
 // perf_gate compares baseline and PR benchmark output for CI.
 // Enforces zero-alloc hot-path policy and flags statistically significant CPU regression.
 package main
@@ -17,28 +15,6 @@ import (
 	"text/tabwriter"
 )
 
-// zeroAllocExempt benches are CPU-regression gated only; they may allocate by design on deadline or infra paths.
-var zeroAllocExempt = map[string]bool{
-	"HotPath_filterEngineCheck_withDeadline": true,
-	"HotPath_AdsPacketHandlerProto_infra503": true,
-}
-
-// benchBaseName strips the -cpu suffix from a benchmark result line name.
-func benchBaseName(raw string) string {
-	if i := strings.LastIndex(raw, "-"); i > len("Benchmark") {
-		if _, err := strconv.Atoi(raw[i+1:]); err == nil {
-			return raw[:i]
-		}
-	}
-	return raw
-}
-
-func isZeroAllocExempt(name string) bool {
-	base := strings.TrimPrefix(benchBaseName(name), "Benchmark")
-	return zeroAllocExempt[base]
-}
-
-// CompareRow is one benchstat delta line for the CI perf gate report table.
 type CompareRow struct {
 	Benchmark string
 	Metric    string
@@ -49,38 +25,25 @@ type CompareRow struct {
 	Status    string
 }
 
-// main runs zero-alloc verification and benchstat comparison for CI perf gate.
 func main() {
-	args := os.Args[1:]
-	cpuOnly := false
-	if len(args) > 0 && args[0] == "--cpu-only" {
-		cpuOnly = true
-		args = args[1:]
-	}
-
-	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "Usage: go run scripts/perf_gate.go [--cpu-only] <baseline.txt> <current.txt>")
+	if len(os.Args) < 3 {
+		fmt.Fprintln(os.Stderr, "Usage: go run scripts/perf_gate.go <baseline.txt> <pr.txt>")
 		os.Exit(1)
 	}
 
-	baselineFile := args[0]
-	prFile := args[1]
+	baselineFile := os.Args[1]
+	prFile := os.Args[2]
 
 	fmt.Printf("PERFORMANCE GATE ANALYSIS\n")
-	if cpuOnly {
-		fmt.Println("Mode:          CPU-only (skip zero-alloc check)")
-	}
 	fmt.Printf("Baseline File: %s\n", baselineFile)
-	fmt.Printf("Current File:  %s\n\n", prFile)
+	fmt.Printf("PR File:       %s\n\n", prFile)
 
-	if !cpuOnly {
-		err := verifyRawZeroAlloc(prFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Println("PASS: Zero-Alloc raw verification successful.")
+	err := verifyRawZeroAlloc(prFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
+		os.Exit(1)
 	}
+	fmt.Println("PASS: Zero-Alloc raw verification successful.")
 
 	regressionDetected, comparisonTable, err := runBenchstatCSVComparison(baselineFile, prFile)
 	if err != nil {
@@ -99,7 +62,6 @@ func main() {
 	fmt.Println("PASS: Performance gate cleared successfully.")
 }
 
-// verifyRawZeroAlloc fails the gate when hot-path benchmarks allocate because the project enforces zero-alloc ingest.
 func verifyRawZeroAlloc(filename string) error {
 	file, err := os.Open(filename)
 	if err != nil {
@@ -135,9 +97,6 @@ func verifyRawZeroAlloc(filename string) error {
 			}
 		}
 
-		if isZeroAllocExempt(fields[0]) {
-			continue
-		}
 		if hasBytes && bytesVal > 0 {
 			return fmt.Errorf("Memory Bloat: %s allocated %d B/op (Zero-Alloc violated)", fields[0], bytesVal)
 		}
@@ -149,7 +108,6 @@ func verifyRawZeroAlloc(filename string) error {
 	return scanner.Err()
 }
 
-// runBenchstatCSVComparison pairs baseline and PR runs because manual diff of bench output does not scale in CI.
 func runBenchstatCSVComparison(baseline, pr string) (bool, string, error) {
 	_, err := exec.LookPath("benchstat")
 	if err != nil {
@@ -170,7 +128,6 @@ func runBenchstatCSVComparison(baseline, pr string) (bool, string, error) {
 	return regressionDetected, table, nil
 }
 
-// parseCSVOutput flags statistically significant CPU and allocation regressions for the gate exit code.
 func parseCSVOutput(csvContent string) (bool, string) {
 	var rows []CompareRow
 	var regression bool
@@ -194,17 +151,8 @@ func parseCSVOutput(csvContent string) (bool, string) {
 			continue
 		}
 
-		if len(record) >= 2 && record[0] == "" {
-			switch record[1] {
-			case "sec/op", "B/op", "allocs/op":
-				currentMetric = record[1]
-			default:
-				currentMetric = ""
-			}
-			continue
-		}
-
-		if currentMetric == "" {
+		if len(record) >= 2 && record[0] == "" && (record[1] == "sec/op" || record[1] == "B/op" || record[1] == "allocs/op") {
+			currentMetric = record[1]
 			continue
 		}
 
@@ -227,9 +175,7 @@ func parseCSVOutput(csvContent string) (bool, string) {
 
 			status := "OK"
 
-			if isZeroAllocExempt(benchName) && (currentMetric == "B/op" || currentMetric == "allocs/op") {
-				status = "OK (CPU-only)"
-			} else if currentMetric == "B/op" {
+			if currentMetric == "B/op" {
 				val, parseErr := strconv.ParseFloat(record[3], 64)
 				if parseErr == nil && val > 0.0 {
 					status = "FAIL (Memory Bloat)"
@@ -282,7 +228,6 @@ func parseCSVOutput(csvContent string) (bool, string) {
 	return regression, tableBuilder.String()
 }
 
-// formatValue normalizes benchstat units for human-readable CI log output.
 func formatValue(valStr string, unit string) string {
 	if valStr == "" {
 		return "-"

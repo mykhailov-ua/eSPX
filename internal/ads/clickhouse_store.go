@@ -13,12 +13,21 @@ import (
 
 	"espx/internal/domain"
 	"espx/internal/metrics"
+
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
-// isFraudTelemetry routes events with fraud signals to the fraud_events table.
+// isGhostTelemetry routes IVT ghost events separately from billable fraud telemetry.
+func isGhostTelemetry(e *domain.Event) bool {
+	return e != nil && e.GhostEvent
+}
+
+// isFraudTelemetry routes non-ghost fraud signals to the fraud_events table.
 func isFraudTelemetry(e *domain.Event) bool {
-	return e.FraudReason != "" || e.FraudScore > 0 || e.GhostEvent
+	if e == nil || e.GhostEvent {
+		return false
+	}
+	return e.FraudReason != "" || e.FraudScore > 0
 }
 
 // fraudGhostFlag maps ghost_event to ClickHouse UInt8 without per-row heap allocation.
@@ -52,51 +61,51 @@ type ClickHouseStore struct {
 // NewClickHouseStore starts the async flusher with default batch size and interval.
 func NewClickHouseStore(conn driver.Conn, writeTimeout time.Duration) *ClickHouseStore {
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &ClickHouseStore{
+	chStore := &ClickHouseStore{
 		conn:         conn,
 		writeTimeout: writeTimeout,
 		eventChan:    make(chan *domain.Event, 1000000),
 		ctx:          ctx,
 		cancel:       cancel,
 	}
-	s.batchSize.Store(20000)
-	s.flushInterval.Store(int64(5 * time.Second))
+	chStore.batchSize.Store(20000)
+	chStore.flushInterval.Store(int64(5 * time.Second))
 
-	s.wg.Add(1)
-	go s.backgroundFlusher()
+	chStore.wg.Add(1)
+	go chStore.backgroundFlusher()
 
-	return s
+	return chStore
 }
 
 // getBatchSize reads the runtime batch threshold without blocking the async flusher.
-func (s *ClickHouseStore) getBatchSize() int {
-	return int(s.batchSize.Load())
+func (chStore *ClickHouseStore) getBatchSize() int {
+	return int(chStore.batchSize.Load())
 }
 
 // getFlushInterval reads the time-based flush cadence without blocking the async flusher.
-func (s *ClickHouseStore) getFlushInterval() time.Duration {
-	return time.Duration(s.flushInterval.Load())
+func (chStore *ClickHouseStore) getFlushInterval() time.Duration {
+	return time.Duration(chStore.flushInterval.Load())
 }
 
 // SetBatching tunes batch size and flush interval at runtime.
-func (s *ClickHouseStore) SetBatching(size int, interval time.Duration) {
-	s.batchSize.Store(int64(size))
-	s.flushInterval.Store(int64(interval))
+func (chStore *ClickHouseStore) SetBatching(size int, interval time.Duration) {
+	chStore.batchSize.Store(int64(size))
+	chStore.flushInterval.Store(int64(interval))
 }
 
 // StoreBatch enqueues events for async flush or writes synchronously when batching is disabled.
-func (s *ClickHouseStore) StoreBatch(ctx context.Context, events []*domain.Event) error {
+func (chStore *ClickHouseStore) StoreBatch(ctx context.Context, events []*domain.Event) error {
 	if len(events) == 0 {
 		return nil
 	}
 
-	if s.getBatchSize() <= 1 {
+	if chStore.getBatchSize() <= 1 {
 		var err error
 		waitTime := InitialWait
 
 		for i := 0; i <= MaxRetries; i++ {
-			dbCtx, cancel := context.WithTimeout(ctx, s.writeTimeout)
-			err = s.insertToClickHouse(dbCtx, events)
+			dbCtx, cancel := context.WithTimeout(ctx, chStore.writeTimeout)
+			err = chStore.insertToClickHouse(dbCtx, events)
 			cancel()
 
 			if err == nil {
@@ -124,7 +133,7 @@ func (s *ClickHouseStore) StoreBatch(ctx context.Context, events []*domain.Event
 
 	for _, e := range events {
 		select {
-		case s.eventChan <- e:
+		case chStore.eventChan <- e:
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -133,10 +142,10 @@ func (s *ClickHouseStore) StoreBatch(ctx context.Context, events []*domain.Event
 }
 
 // backgroundFlusher drains the event channel into table-specific batches with retry.
-func (s *ClickHouseStore) backgroundFlusher() {
-	defer s.wg.Done()
+func (chStore *ClickHouseStore) backgroundFlusher() {
+	defer chStore.wg.Done()
 
-	interval := s.getFlushInterval()
+	interval := chStore.getFlushInterval()
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
@@ -185,29 +194,29 @@ func (s *ClickHouseStore) backgroundFlusher() {
 
 	flushAll := func() {
 		if len(*pImps) > 0 {
-			s.flushTableWithRetry("impressions", *pImps, false)
+			chStore.flushTableWithRetry("impressions", *pImps, false)
 			*pImps = (*pImps)[:0]
 		}
 		if len(*pClicks) > 0 {
-			s.flushTableWithRetry("clicks", *pClicks, false)
+			chStore.flushTableWithRetry("clicks", *pClicks, false)
 			*pClicks = (*pClicks)[:0]
 		}
 		if len(*pConvs) > 0 {
-			s.flushTableWithRetry("conversions", *pConvs, false)
+			chStore.flushTableWithRetry("conversions", *pConvs, false)
 			*pConvs = (*pConvs)[:0]
 		}
 		if len(*pFraud) > 0 {
-			s.flushTableWithRetry("fraud_events", *pFraud, true)
+			chStore.flushTableWithRetry("fraud_events", *pFraud, true)
 			*pFraud = (*pFraud)[:0]
 		}
 	}
 
 	for {
 		select {
-		case <-s.ctx.Done():
+		case <-chStore.ctx.Done():
 			for {
 				select {
-				case e := <-s.eventChan:
+				case e := <-chStore.eventChan:
 					if isFraudTelemetry(e) {
 						*pFraud = append(*pFraud, e)
 					} else {
@@ -228,31 +237,31 @@ func (s *ClickHouseStore) backgroundFlusher() {
 			flushAll()
 			return
 
-		case e := <-s.eventChan:
+		case e := <-chStore.eventChan:
 			if isFraudTelemetry(e) {
 				*pFraud = append(*pFraud, e)
-				if len(*pFraud) >= s.getBatchSize() {
-					s.flushTableWithRetry("fraud_events", *pFraud, true)
+				if len(*pFraud) >= chStore.getBatchSize() {
+					chStore.flushTableWithRetry("fraud_events", *pFraud, true)
 					*pFraud = (*pFraud)[:0]
 				}
 			} else {
 				switch e.Type {
 				case "impression":
 					*pImps = append(*pImps, e)
-					if len(*pImps) >= s.getBatchSize() {
-						s.flushTableWithRetry("impressions", *pImps, false)
+					if len(*pImps) >= chStore.getBatchSize() {
+						chStore.flushTableWithRetry("impressions", *pImps, false)
 						*pImps = (*pImps)[:0]
 					}
 				case "click":
 					*pClicks = append(*pClicks, e)
-					if len(*pClicks) >= s.getBatchSize() {
-						s.flushTableWithRetry("clicks", *pClicks, false)
+					if len(*pClicks) >= chStore.getBatchSize() {
+						chStore.flushTableWithRetry("clicks", *pClicks, false)
 						*pClicks = (*pClicks)[:0]
 					}
 				case "conversion":
 					*pConvs = append(*pConvs, e)
-					if len(*pConvs) >= s.getBatchSize() {
-						s.flushTableWithRetry("conversions", *pConvs, false)
+					if len(*pConvs) >= chStore.getBatchSize() {
+						chStore.flushTableWithRetry("conversions", *pConvs, false)
 						*pConvs = (*pConvs)[:0]
 					}
 				}
@@ -265,7 +274,7 @@ func (s *ClickHouseStore) backgroundFlusher() {
 }
 
 // flushTableWithRetry inserts one table batch with exponential backoff on failure.
-func (s *ClickHouseStore) flushTableWithRetry(table string, evts []*domain.Event, isFraud bool) {
+func (chStore *ClickHouseStore) flushTableWithRetry(table string, evts []*domain.Event, isFraud bool) {
 	if len(evts) == 0 {
 		return
 	}
@@ -274,8 +283,8 @@ func (s *ClickHouseStore) flushTableWithRetry(table string, evts []*domain.Event
 	var err error
 
 	for i := 0; i <= MaxRetries; i++ {
-		ctx, cancel := context.WithTimeout(s.ctx, s.writeTimeout)
-		err = s.insertTable(ctx, table, evts, isFraud)
+		ctx, cancel := context.WithTimeout(chStore.ctx, chStore.writeTimeout)
+		err = chStore.insertTable(ctx, table, evts, isFraud)
 		cancel()
 
 		if err == nil {
@@ -287,7 +296,7 @@ func (s *ClickHouseStore) flushTableWithRetry(table string, evts []*domain.Event
 		if i < MaxRetries {
 			timer := time.NewTimer(waitTime)
 			select {
-			case <-s.ctx.Done():
+			case <-chStore.ctx.Done():
 				timer.Stop()
 				return
 			case <-timer.C:
@@ -304,7 +313,7 @@ func (s *ClickHouseStore) flushTableWithRetry(table string, evts []*domain.Event
 }
 
 // getDeduplicationToken supplies ClickHouse insert deduplication for at-least-once retries.
-func (s *ClickHouseStore) getDeduplicationToken(ctx context.Context, events []*domain.Event) string {
+func (chStore *ClickHouseStore) getDeduplicationToken(ctx context.Context, events []*domain.Event) string {
 	if token, ok := ctx.Value(domain.DeduplicationTokenKey).(string); ok && token != "" {
 		return token
 	}
@@ -322,16 +331,16 @@ func (s *ClickHouseStore) getDeduplicationToken(ctx context.Context, events []*d
 }
 
 // insertTable sends one prepared batch to a single ClickHouse table.
-func (s *ClickHouseStore) insertTable(ctx context.Context, table string, evts []*domain.Event, isFraud bool) error {
+func (chStore *ClickHouseStore) insertTable(ctx context.Context, table string, evts []*domain.Event, isFraud bool) error {
 	start := time.Now()
 
-	token := s.getDeduplicationToken(ctx, evts)
+	token := chStore.getDeduplicationToken(ctx, evts)
 	query := fmt.Sprintf("INSERT INTO %s", table)
 	if token != "" {
 		query = fmt.Sprintf("INSERT INTO %s SETTINGS insert_deduplicate=1, insert_deduplication_token='%s'", table, token)
 	}
 
-	batch, err := s.conn.PrepareBatch(ctx, query)
+	batch, err := chStore.conn.PrepareBatch(ctx, query)
 	if err != nil {
 		return fmt.Errorf("prepare batch %s: %w", table, err)
 	}
@@ -377,7 +386,7 @@ func (s *ClickHouseStore) insertTable(ctx context.Context, table string, evts []
 }
 
 // insertToClickHouse writes a multi-table batch synchronously for low-latency mode.
-func (s *ClickHouseStore) insertToClickHouse(ctx context.Context, events []*domain.Event) error {
+func (chStore *ClickHouseStore) insertToClickHouse(ctx context.Context, events []*domain.Event) error {
 	start := time.Now()
 
 	pImps := slicePool.Get().(*[]*domain.Event)
@@ -449,13 +458,13 @@ func (s *ClickHouseStore) insertToClickHouse(ctx context.Context, events []*doma
 			return nil
 		}
 
-		token := s.getDeduplicationToken(ctx, evts)
+		token := chStore.getDeduplicationToken(ctx, evts)
 		query := fmt.Sprintf("INSERT INTO %s", table)
 		if token != "" {
 			query = fmt.Sprintf("INSERT INTO %s SETTINGS insert_deduplicate=1, insert_deduplication_token='%s'", table, token)
 		}
 
-		batch, err := s.conn.PrepareBatch(ctx, query)
+		batch, err := chStore.conn.PrepareBatch(ctx, query)
 		if err != nil {
 			return fmt.Errorf("prepare batch %s: %w", table, err)
 		}
@@ -516,8 +525,8 @@ func (s *ClickHouseStore) insertToClickHouse(ctx context.Context, events []*doma
 }
 
 // Close stops the flusher and closes the ClickHouse connection.
-func (s *ClickHouseStore) Close() error {
-	s.cancel()
-	s.wg.Wait()
-	return s.conn.Close()
+func (chStore *ClickHouseStore) Close() error {
+	chStore.cancel()
+	chStore.wg.Wait()
+	return chStore.conn.Close()
 }

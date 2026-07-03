@@ -15,7 +15,6 @@ import (
 	"espx/internal/ads/db"
 	"espx/internal/config"
 	"espx/internal/metrics"
-	"espx/pkg/cold"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -24,9 +23,9 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// Service coordinates management business logic, background workers, and hot-path propagation via cold.
+// Service coordinates management business logic, background workers, and hot-path propagation via outbox.
 type Service struct {
-	pool     atomic.Pointer[pgxpool.Pool]
+	pool     *pgxpool.Pool
 	rdbs     []redis.UniversalClient
 	sharder  ads.Sharder
 	cfg      *config.Config
@@ -62,22 +61,16 @@ func (s *Service) startWorker(fn func()) {
 // NewService constructs the management service and starts core background workers.
 func NewService(pool *pgxpool.Pool, rdbs []redis.UniversalClient, sharder ads.Sharder, cfg *config.Config) *Service {
 	ctx, cancel := context.WithCancel(context.Background())
-	if sharder == nil && len(rdbs) > 0 {
-		sharder = ads.NewStaticSlotSharder(len(rdbs))
-	}
 	s := &Service{
+		pool:    pool,
 		rdbs:    rdbs,
 		sharder: sharder,
 		cfg:     cfg,
 		ctx:     ctx,
 		cancel:  cancel,
 	}
-	s.pool.Store(pool)
 	s.startWorker(func() {
 		NewOutboxWorker(s).Start(ctx, 20*time.Millisecond)
-	})
-	s.startWorker(func() {
-		NewQuotaManager(s).Start(ctx)
 	})
 	s.startWorker(func() {
 		NewCampaignDrainWorker(s).Start(ctx, 20*time.Millisecond)
@@ -91,12 +84,6 @@ func NewService(pool *pgxpool.Pool, rdbs []redis.UniversalClient, sharder ads.Sh
 	s.startWorker(func() {
 		s.RunSystemStateSyncer(ctx)
 	})
-	if cfg != nil && cfg.SlotMigrationEnabled {
-		interval := time.Duration(cfg.SlotMigrationIntervalMs) * time.Millisecond
-		s.startWorker(func() {
-			NewSlotMigrationOrchestrator(s, interval).Start(ctx)
-		})
-	}
 	return s
 }
 
@@ -116,12 +103,12 @@ func (s *Service) StartAuditCleaner(retention Days) {
 
 // GetPool exposes the Postgres pool for tests and auxiliary workers.
 func (s *Service) GetPool() *pgxpool.Pool {
-	return s.pool.Load()
+	return s.pool
 }
 
-// SetPool replaces the Postgres pool after reconnect or DB failover.
+// SetPool replaces the Postgres pool after reconnect (e.g. DB failover).
 func (s *Service) SetPool(pool *pgxpool.Pool) {
-	s.pool.Store(pool)
+	s.pool = pool
 }
 
 // Close cancels background workers and waits for them to exit.
@@ -142,12 +129,12 @@ func (s *Service) StartPacingController(syncWorkers []*ads.SyncWorker, interval 
 
 // GetCampaign loads the full campaign row for internal authorization and lifecycle checks.
 func (s *Service) GetCampaign(ctx context.Context, id uuid.UUID) (db.Campaign, error) {
-	return db.New(s.GetPool()).GetCampaignFull(ctx, ads.ToUUID(id))
+	return db.New(s.pool).GetCampaignFull(ctx, ads.ToUUID(id))
 }
 
 // CreateCustomer registers a new billing account with an optional opening balance.
 func (s *Service) CreateCustomer(ctx context.Context, id uuid.UUID, name string, balance int64, currency string) error {
-	_, err := db.New(s.GetPool()).CreateCustomer(ctx, db.CreateCustomerParams{
+	_, err := db.New(s.pool).CreateCustomer(ctx, db.CreateCustomerParams{
 		ID:       ads.ToUUID(id),
 		Name:     name,
 		Balance:  balance,
@@ -170,7 +157,7 @@ func (s *Service) GenerateIdempotencyHash(customerID uuid.UUID, params any) stri
 
 // TopUpBalance credits a customer account idempotently and records the ledger entry.
 func (s *Service) TopUpBalance(ctx context.Context, customerID uuid.UUID, amount int64, idempotencyKey string) error {
-	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		_, err := q.GetLedgerByHashForUpdate(ctx, pgtype.Text{String: idempotencyKey, Valid: true})
 		if err == nil {
@@ -198,12 +185,12 @@ func (s *Service) TopUpBalance(ctx context.Context, customerID uuid.UUID, amount
 	})
 }
 
-// ApplyPaymentCredit credits a customer ledger row once per payment intent because outbox retries must not double top-up.
+// ApplyPaymentCredit credits a customer account idempotently and records the PAYMENT_TOPUP ledger entry.
 func (s *Service) ApplyPaymentCredit(ctx context.Context, customerID uuid.UUID, amount int64, ledgerIdempotencyKey string, paymentIntentID uuid.UUID, provider string, providerRef string) (bool, int64, error) {
 	var ledgerEntryID int64
 	var applied bool
 
-	err := pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
 
 		existingPI, err := q.GetLedgerByPaymentIntentForUpdate(ctx, ads.ToUUID(paymentIntentID))
@@ -245,7 +232,7 @@ func (s *Service) ApplyPaymentCredit(ctx context.Context, customerID uuid.UUID, 
 			PaymentIntentID: ads.ToUUID(paymentIntentID),
 		})
 		if err != nil {
-			if cold.IsUniqueViolation(err) {
+			if isPgUniqueViolation(err) {
 				if existingPI, lookupErr := q.GetLedgerByPaymentIntentForUpdate(ctx, ads.ToUUID(paymentIntentID)); lookupErr == nil {
 					ledgerEntryID = existingPI.ID
 					applied = false
@@ -273,7 +260,7 @@ func (s *Service) ApplyPaymentCredit(ctx context.Context, customerID uuid.UUID, 
 
 // CancelCampaign marks a campaign draining so the hot path can finish in-flight bids before refund.
 func (s *Service) CancelCampaign(ctx context.Context, campaignID uuid.UUID, reason string) error {
-	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		camp, err := q.GetCampaignForUpdate(ctx, ads.ToUUID(campaignID))
 		if err != nil {
@@ -305,7 +292,7 @@ func (s *Service) CancelCampaign(ctx context.Context, campaignID uuid.UUID, reas
 
 // FinalizeCancelledCampaign completes refund and deletion for one draining campaign under row lock.
 func (s *Service) FinalizeCancelledCampaign(ctx context.Context, campaignID uuid.UUID, reason string) error {
-	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		var camp db.Campaign
 		err := tx.QueryRow(ctx, `
@@ -392,23 +379,6 @@ func (s *Service) campaignUpdateChannel() string {
 	return "campaigns:update"
 }
 
-// getPubSubRDB returns shard 0, the sole Redis instance trackers subscribe on for campaigns:update.
-func (s *Service) getPubSubRDB() redis.UniversalClient {
-	if len(s.rdbs) == 0 {
-		return nil
-	}
-	return s.rdbs[0]
-}
-
-// publishCampaignUpdate notifies trackers via pub/sub on shard 0 regardless of campaign key placement.
-func (s *Service) publishCampaignUpdate(ctx context.Context, campaignID string) error {
-	rdb := s.getPubSubRDB()
-	if rdb == nil {
-		return fmt.Errorf("no redis pubsub client available")
-	}
-	return rdb.Publish(ctx, s.campaignUpdateChannel(), campaignID).Err()
-}
-
 // getRDB selects the Redis shard that owns a campaign's budget and settings keys.
 func (s *Service) getRDB(campaignID uuid.UUID) redis.UniversalClient {
 	if len(s.rdbs) == 0 {
@@ -423,7 +393,7 @@ func (s *Service) getRDB(campaignID uuid.UUID) redis.UniversalClient {
 
 // ListAuditLogs returns paginated admin audit entries for compliance review.
 func (s *Service) ListAuditLogs(ctx context.Context, limit, offset int32) ([]db.AdminAuditLog, error) {
-	return db.New(s.GetPool()).ListAuditLogs(ctx, db.ListAuditLogsParams{
+	return db.New(s.pool).ListAuditLogs(ctx, db.ListAuditLogsParams{
 		Limit:  limit,
 		Offset: offset,
 	})
@@ -431,7 +401,7 @@ func (s *Service) ListAuditLogs(ctx context.Context, limit, offset int32) ([]db.
 
 // UpdateOverdraft adjusts credit limits and suspends campaigns when reduced overdraft would overcommit balance.
 func (s *Service) UpdateOverdraft(ctx context.Context, id uuid.UUID, newOverdraft int64) error {
-	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		cust, err := q.GetCustomerForUpdate(ctx, ads.ToUUID(id))
 		if err != nil {

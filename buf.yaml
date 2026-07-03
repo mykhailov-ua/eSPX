@@ -1,5 +1,5 @@
 version: v1
-name: buf.build/mykhailov-ua/ad-event-processor
+name: buf.build/mykhailov-ua/espx-api
 deps:
   - buf.build/googleapis/googleapis
 breaking:

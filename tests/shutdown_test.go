@@ -1,10 +1,12 @@
 package tests
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -21,7 +23,7 @@ import (
 )
 
 // TestGracefulShutdown_NoDataLoss proves that events already accepted (202)
-// are persisted after consumer drain; rolling deploys must not drop in-flight work.
+// are persisted after consumer drain-rolling deploys must not drop in-flight work.
 func TestGracefulShutdown_NoDataLoss(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")
@@ -81,8 +83,9 @@ func TestGracefulShutdown_NoDataLoss(t *testing.T) {
 	consumer.Start(ctx)
 
 	sharder := ads.NewJumpHashSharder(1)
-	handler := ads.NewAdsPacketHandler(cfg, registry, filterEngine, pool, []redis.UniversalClient{rdb}, sharder, cfg.FraudStreamName, nil)
-	defer handler.Stop(ctx)
+	router := ads.NewRouter(cfg, registry, filterEngine, pool, []redis.UniversalClient{rdb}, sharder, cfg.FraudStreamName, nil)
+	srv := httptest.NewServer(router)
+	defer srv.Close()
 
 	const eventCount = 50
 	var wg sync.WaitGroup
@@ -99,11 +102,14 @@ func TestGracefulShutdown_NoDataLoss(t *testing.T) {
 				"payload":     map[string]string{"idx": fmt.Sprintf("%d", idx)},
 			}
 			body, _ := json.Marshal(payload)
-			status, _ := ads.PostTrackGnetJSON(handler, body)
-			if status == http.StatusAccepted {
+			resp, err := http.Post(srv.URL+"/track", "application/json", bytes.NewBuffer(body))
+			if err == nil && resp.StatusCode == http.StatusAccepted {
 				mu.Lock()
 				acceptedCount++
 				mu.Unlock()
+			}
+			if resp != nil {
+				resp.Body.Close()
 			}
 		}(i)
 	}

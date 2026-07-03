@@ -15,18 +15,15 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// MessageIterator walks fetch response bytes without copying individual payloads.
 type MessageIterator struct {
-	data          []byte
-	idx           int
-	count         uint32
-	curr          uint32
-	Offset        uint64
-	Payload       []byte
-	HighWatermark uint64
+	data    []byte
+	idx     int
+	count   uint32
+	curr    uint32
+	Offset  uint64
+	Payload []byte
 }
 
-// Next advances the iterator across one fetched log record.
 func (it *MessageIterator) Next() bool {
 	if it.curr >= it.count || it.idx+12 > len(it.data) {
 		return false
@@ -43,22 +40,19 @@ func (it *MessageIterator) Next() bool {
 	return true
 }
 
-// Client is a framed TCP broker client with optional Redis-backed leader discovery.
 type Client struct {
-	addr      string
-	conn      *net.TCPConn
-	mu        sync.Mutex
-	nextSeq   uint64
-	readBuf   []byte
-	writeBuf  []byte
-	lenBuf    []byte
-	timeout   time.Duration
-	redisURL  string
-	rdb       *redis.Client
-	fetchIter MessageIterator
+	addr     string
+	conn     net.Conn
+	mu       sync.Mutex
+	nextSeq  uint64
+	readBuf  []byte
+	writeBuf []byte
+	lenBuf   []byte
+	timeout  time.Duration
+	redisURL string
+	rdb      *redis.Client
 }
 
-// NewClient allocates reusable read and write buffers for the broker wire protocol.
 func NewClient(addr string, timeout time.Duration) *Client {
 	return &Client{
 		addr:     addr,
@@ -69,19 +63,16 @@ func NewClient(addr string, timeout time.Duration) *Client {
 	}
 }
 
-// SetRedisURL enables leader lookup so Produce and Fetch survive broker failover.
 func (c *Client) SetRedisURL(url string) {
 	c.redisURL = url
 }
 
-// Connect dials the broker if the client is not already connected.
 func (c *Client) Connect() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.connectLocked()
 }
 
-// connectLocked opens the TCP session while the caller already holds the client mutex.
 func (c *Client) connectLocked() error {
 	if c.conn != nil {
 		return nil
@@ -91,16 +82,10 @@ func (c *Client) connectLocked() error {
 	if err != nil {
 		return err
 	}
-	tc, ok := conn.(*net.TCPConn)
-	if !ok {
-		_ = conn.Close()
-		return errors.New("broker client requires tcp")
-	}
-	c.conn = tc
+	c.conn = conn
 	return nil
 }
 
-// Close tears down the TCP and Redis handles held by the client.
 func (c *Client) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -117,8 +102,7 @@ func (c *Client) Close() error {
 	return err
 }
 
-// getConn returns a live connection, dialing lazily when needed.
-func (c *Client) getConn() (*net.TCPConn, error) {
+func (c *Client) getConn() (net.Conn, error) {
 	if c.conn == nil {
 		if err := c.connectLocked(); err != nil {
 			return nil, err
@@ -128,7 +112,7 @@ func (c *Client) getConn() (*net.TCPConn, error) {
 }
 
 // Produce retries across leader failover; callers must not pin to a stale broker address.
-func (c *Client) Produce(topic string, partition uint16, payload []byte) (uint64, error) {
+func (c *Client) Produce(topic string, payload []byte) (uint64, error) {
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
 		if attempt > 0 {
@@ -142,7 +126,7 @@ func (c *Client) Produce(topic string, partition uint16, payload []byte) (uint64
 			lastErr = err
 
 			if c.redisURL != "" {
-				if newAddr, rErr := c.resolveLeaderAddr(topic, partition); rErr == nil && newAddr != c.addr {
+				if newAddr, rErr := c.resolveLeaderAddr(topic); rErr == nil && newAddr != c.addr {
 					c.addr = newAddr
 				}
 			}
@@ -150,7 +134,7 @@ func (c *Client) Produce(topic string, partition uint16, payload []byte) (uint64
 		}
 
 		seq := atomic.AddUint64(&c.nextSeq, 1)
-		req := protocol.EncodeProduceRequest(c.writeBuf, seq, topic, partition, payload)
+		req := protocol.EncodeProduceRequest(c.writeBuf, seq, topic, payload)
 
 		if c.timeout > 0 {
 			_ = conn.SetDeadline(time.Now().Add(c.timeout))
@@ -161,20 +145,20 @@ func (c *Client) Produce(topic string, partition uint16, payload []byte) (uint64
 			c.mu.Unlock()
 			lastErr = err
 			if c.redisURL != "" {
-				if newAddr, rErr := c.resolveLeaderAddr(topic, partition); rErr == nil && newAddr != c.addr {
+				if newAddr, rErr := c.resolveLeaderAddr(topic); rErr == nil && newAddr != c.addr {
 					c.addr = newAddr
 				}
 			}
 			continue
 		}
 
-		cmd, respSeq, respPayload, err := protocol.ReadFrameTCP(conn, c.readBuf, c.lenBuf)
+		cmd, respSeq, respPayload, err := protocol.ReadFrame(conn, c.readBuf, c.lenBuf)
 		if err != nil {
 			_ = c.closeRawConn()
 			c.mu.Unlock()
 			lastErr = err
 			if c.redisURL != "" {
-				if newAddr, rErr := c.resolveLeaderAddr(topic, partition); rErr == nil && newAddr != c.addr {
+				if newAddr, rErr := c.resolveLeaderAddr(topic); rErr == nil && newAddr != c.addr {
 					c.addr = newAddr
 				}
 			}
@@ -197,21 +181,12 @@ func (c *Client) Produce(topic string, partition uint16, payload []byte) (uint64
 		}
 
 		status := respPayload[0]
-		if status == 4 || status == 5 || status == 6 || status == 7 {
+		if status == 4 {
 			_ = c.closeRawConn()
 			c.mu.Unlock()
-			switch status {
-			case 5:
-				lastErr = errors.New("stale fencing epoch")
-			case 6:
-				lastErr = errors.New("leader catching up")
-			case 7:
-				lastErr = errors.New("broker overloaded")
-			default:
-				lastErr = errors.New("not leader")
-			}
+			lastErr = errors.New("not leader")
 			if c.redisURL != "" {
-				if newAddr, rErr := c.resolveLeaderAddr(topic, partition); rErr == nil && newAddr != c.addr {
+				if newAddr, rErr := c.resolveLeaderAddr(topic); rErr == nil && newAddr != c.addr {
 					c.addr = newAddr
 				}
 			}
@@ -232,8 +207,7 @@ func (c *Client) Produce(topic string, partition uint16, payload []byte) (uint64
 }
 
 // Fetch follows the same redirect policy as Produce for HA follower reads.
-// The returned iterator aliases client-owned buffers and is valid until the next Fetch.
-func (c *Client) Fetch(topic string, partition uint16, startOffset uint64, maxBytes uint32) (*MessageIterator, error) {
+func (c *Client) Fetch(topic string, startOffset uint64, maxBytes uint32) (MessageIterator, error) {
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
 		if attempt > 0 {
@@ -246,7 +220,7 @@ func (c *Client) Fetch(topic string, partition uint16, startOffset uint64, maxBy
 			c.mu.Unlock()
 			lastErr = err
 			if c.redisURL != "" {
-				if newAddr, rErr := c.resolveLeaderAddr(topic, partition); rErr == nil && newAddr != c.addr {
+				if newAddr, rErr := c.resolveLeaderAddr(topic); rErr == nil && newAddr != c.addr {
 					c.addr = newAddr
 				}
 			}
@@ -254,7 +228,7 @@ func (c *Client) Fetch(topic string, partition uint16, startOffset uint64, maxBy
 		}
 
 		seq := atomic.AddUint64(&c.nextSeq, 1)
-		req := protocol.EncodeFetchRequest(c.writeBuf, seq, topic, partition, startOffset, maxBytes)
+		req := protocol.EncodeFetchRequest(c.writeBuf, seq, topic, startOffset, maxBytes)
 
 		if c.timeout > 0 {
 			_ = conn.SetDeadline(time.Now().Add(c.timeout))
@@ -265,20 +239,20 @@ func (c *Client) Fetch(topic string, partition uint16, startOffset uint64, maxBy
 			c.mu.Unlock()
 			lastErr = err
 			if c.redisURL != "" {
-				if newAddr, rErr := c.resolveLeaderAddr(topic, partition); rErr == nil && newAddr != c.addr {
+				if newAddr, rErr := c.resolveLeaderAddr(topic); rErr == nil && newAddr != c.addr {
 					c.addr = newAddr
 				}
 			}
 			continue
 		}
 
-		cmd, respSeq, respPayload, err := protocol.ReadFrameTCP(conn, c.readBuf, c.lenBuf)
+		cmd, respSeq, respPayload, err := protocol.ReadFrame(conn, c.readBuf, c.lenBuf)
 		if err != nil {
 			_ = c.closeRawConn()
 			c.mu.Unlock()
 			lastErr = err
 			if c.redisURL != "" {
-				if newAddr, rErr := c.resolveLeaderAddr(topic, partition); rErr == nil && newAddr != c.addr {
+				if newAddr, rErr := c.resolveLeaderAddr(topic); rErr == nil && newAddr != c.addr {
 					c.addr = newAddr
 				}
 			}
@@ -287,35 +261,26 @@ func (c *Client) Fetch(topic string, partition uint16, startOffset uint64, maxBy
 
 		if cmd != protocol.CmdFetchResp {
 			c.mu.Unlock()
-			return nil, fmt.Errorf("unexpected command response: %d", cmd)
+			return MessageIterator{}, fmt.Errorf("unexpected command response: %d", cmd)
 		}
 
 		if respSeq != seq {
 			c.mu.Unlock()
-			return nil, fmt.Errorf("sequence mismatch: expected %d, got %d", seq, respSeq)
+			return MessageIterator{}, fmt.Errorf("sequence mismatch: expected %d, got %d", seq, respSeq)
 		}
 
-		if len(respPayload) < protocol.FetchRespMetaLen {
+		if len(respPayload) < 5 {
 			c.mu.Unlock()
-			return nil, errors.New("malformed fetch response payload")
+			return MessageIterator{}, errors.New("malformed fetch response payload")
 		}
 
 		status := respPayload[0]
-		if status == 4 || status == 5 || status == 6 || status == 7 {
+		if status == 4 {
 			_ = c.closeRawConn()
 			c.mu.Unlock()
-			switch status {
-			case 5:
-				lastErr = errors.New("stale fencing epoch")
-			case 6:
-				lastErr = errors.New("leader catching up")
-			case 7:
-				lastErr = errors.New("broker overloaded")
-			default:
-				lastErr = errors.New("not leader")
-			}
+			lastErr = errors.New("not leader")
 			if c.redisURL != "" {
-				if newAddr, rErr := c.resolveLeaderAddr(topic, partition); rErr == nil && newAddr != c.addr {
+				if newAddr, rErr := c.resolveLeaderAddr(topic); rErr == nil && newAddr != c.addr {
 					c.addr = newAddr
 				}
 			}
@@ -324,115 +289,22 @@ func (c *Client) Fetch(topic string, partition uint16, startOffset uint64, maxBy
 
 		if status != 0 {
 			c.mu.Unlock()
-			return nil, fmt.Errorf("broker error status: %d", status)
+			return MessageIterator{}, fmt.Errorf("broker error status: %d", status)
 		}
 
 		msgCount := binary.BigEndian.Uint32(respPayload[1:5])
-		highWatermark := binary.BigEndian.Uint64(respPayload[5:13])
-		messagesData := respPayload[protocol.FetchRespMetaLen:]
-
-		c.fetchIter.data = messagesData
-		c.fetchIter.idx = 0
-		c.fetchIter.count = msgCount
-		c.fetchIter.curr = 0
-		c.fetchIter.Offset = 0
-		c.fetchIter.Payload = nil
-		c.fetchIter.HighWatermark = highWatermark
+		messagesData := respPayload[5:]
 
 		c.mu.Unlock()
-		return &c.fetchIter, nil
+		return MessageIterator{
+			data:  messagesData,
+			count: msgCount,
+		}, nil
 	}
 
-	return nil, fmt.Errorf("failed after 5 attempts, last error: %w", lastErr)
+	return MessageIterator{}, fmt.Errorf("failed after 5 attempts, last error: %w", lastErr)
 }
 
-// CommitOffset persists the next fetch offset for a consumer group partition.
-func (c *Client) CommitOffset(topic string, partition uint16, group string, offset uint64) (uint64, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	conn, err := c.getConn()
-	if err != nil {
-		return 0, err
-	}
-
-	seq := atomic.AddUint64(&c.nextSeq, 1)
-	req := protocol.EncodeCommitOffsetRequest(c.writeBuf, seq, topic, partition, group, offset)
-
-	if c.timeout > 0 {
-		_ = conn.SetDeadline(time.Now().Add(c.timeout))
-	}
-	if _, err := conn.Write(req); err != nil {
-		_ = c.closeRawConn()
-		return 0, err
-	}
-
-	cmd, respSeq, respPayload, err := protocol.ReadFrameTCP(conn, c.readBuf, c.lenBuf)
-	if err != nil {
-		_ = c.closeRawConn()
-		return 0, err
-	}
-	if cmd != protocol.CmdCommitOffsetResp {
-		return 0, fmt.Errorf("unexpected command response: %d", cmd)
-	}
-	if respSeq != seq {
-		return 0, fmt.Errorf("sequence mismatch: expected %d, got %d", seq, respSeq)
-	}
-
-	status, stored, err := protocol.DecodeCommitOffsetResponse(respPayload)
-	if err != nil {
-		return 0, err
-	}
-	if status != 0 {
-		return 0, fmt.Errorf("broker commit offset status: %d", status)
-	}
-	return stored, nil
-}
-
-// CommittedOffset returns the stored next-fetch offset for a consumer group partition.
-func (c *Client) CommittedOffset(topic string, partition uint16, group string) (uint64, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	conn, err := c.getConn()
-	if err != nil {
-		return 0, err
-	}
-
-	seq := atomic.AddUint64(&c.nextSeq, 1)
-	req := protocol.EncodeCommittedOffsetRequest(c.writeBuf, seq, topic, partition, group)
-
-	if c.timeout > 0 {
-		_ = conn.SetDeadline(time.Now().Add(c.timeout))
-	}
-	if _, err := conn.Write(req); err != nil {
-		_ = c.closeRawConn()
-		return 0, err
-	}
-
-	cmd, respSeq, respPayload, err := protocol.ReadFrameTCP(conn, c.readBuf, c.lenBuf)
-	if err != nil {
-		_ = c.closeRawConn()
-		return 0, err
-	}
-	if cmd != protocol.CmdCommittedOffsetResp {
-		return 0, fmt.Errorf("unexpected command response: %d", cmd)
-	}
-	if respSeq != seq {
-		return 0, fmt.Errorf("sequence mismatch: expected %d, got %d", seq, respSeq)
-	}
-
-	status, offset, err := protocol.DecodeCommittedOffsetResponse(respPayload)
-	if err != nil {
-		return 0, err
-	}
-	if status != 0 {
-		return 0, fmt.Errorf("broker committed offset status: %d", status)
-	}
-	return offset, nil
-}
-
-// closeRawConn drops a broken socket so the next RPC establishes a fresh session.
 func (c *Client) closeRawConn() error {
 	if c.conn != nil {
 		err := c.conn.Close()
@@ -442,8 +314,7 @@ func (c *Client) closeRawConn() error {
 	return nil
 }
 
-// resolveLeaderAddr maps a topic partition to the current leader broker address via Redis coordination keys.
-func (c *Client) resolveLeaderAddr(topic string, partition uint16) (string, error) {
+func (c *Client) resolveLeaderAddr(topic string) (string, error) {
 	if c.redisURL == "" {
 		return "", errors.New("redis URL not set")
 	}
@@ -454,10 +325,9 @@ func (c *Client) resolveLeaderAddr(topic string, partition uint16) (string, erro
 		}
 		c.rdb = redis.NewClient(opts)
 	}
-	tpKey := protocol.TopicPartitionID(topic, partition)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	leaderID, err := c.rdb.Get(ctx, "espx:topics:"+tpKey+":leader").Result()
+	leaderID, err := c.rdb.Get(ctx, "espx:topics:"+topic+":leader").Result()
 	if err != nil {
 		return "", err
 	}

@@ -12,7 +12,6 @@ import (
 	rediscontainer "github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
-// TestHAClusterFailoverAndReplication validates leader election, replication, and failover produce.
 func TestHAClusterFailoverAndReplication(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -52,14 +51,7 @@ func TestHAClusterFailoverAndReplication(t *testing.T) {
 	}
 	defer s1.Stop()
 
-	cfg := CoordConfig{
-		LeaseTTL:           2 * time.Second,
-		Interval:           500 * time.Millisecond,
-		RenewFailThreshold: 3,
-		DebounceWindow:     1 * time.Second,
-	}
-
-	coord1, err := NewCoordinatorWithConfig("broker-1", s1.Addr(), redisURL, s1, cfg)
+	coord1, err := NewCoordinator("broker-1", s1.Addr(), redisURL, s1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +65,7 @@ func TestHAClusterFailoverAndReplication(t *testing.T) {
 	}
 	defer s2.Stop()
 
-	coord2, err := NewCoordinatorWithConfig("broker-2", s2.Addr(), redisURL, s2, cfg)
+	coord2, err := NewCoordinator("broker-2", s2.Addr(), redisURL, s2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,26 +73,25 @@ func TestHAClusterFailoverAndReplication(t *testing.T) {
 	coord2.Start()
 	defer coord2.Stop()
 
-	topic := "ha-events"
-	pk := topicPartitionKey(topic)
+	time.Sleep(3 * time.Second)
 
-	p1, err := s1.getOrCreatePartition(pk)
+	topic := "ha-events"
+
+	p1, err := s1.getOrCreatePartition(topic)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = p1
-	p2, err := s2.getOrCreatePartition(pk)
+	p2, err := s2.getOrCreatePartition(topic)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = p2
 
-	requireEventually(t, func() bool {
-		return coord1.IsLeader(pk) || coord2.IsLeader(pk)
-	}, 10*time.Second, 100*time.Millisecond, "expected one broker to be elected as leader")
+	time.Sleep(2 * time.Second)
 
-	l1 := coord1.IsLeader(pk)
-	l2 := coord2.IsLeader(pk)
+	l1 := coord1.IsLeader(topic)
+	l2 := coord2.IsLeader(topic)
 
 	if !l1 && !l2 {
 		t.Fatal("expected one broker to be elected as leader")
@@ -130,7 +121,7 @@ func TestHAClusterFailoverAndReplication(t *testing.T) {
 	msgCount := 20
 	for i := 0; i < msgCount; i++ {
 		payload := []byte(fmt.Sprintf("ha-msg-payload-%d", i))
-		offset, err := cli.Produce(topic, 0, payload)
+		offset, err := cli.Produce(topic, payload)
 		if err != nil {
 			t.Fatalf("produce failed on message %d: %v", i, err)
 		}
@@ -141,7 +132,7 @@ func TestHAClusterFailoverAndReplication(t *testing.T) {
 
 	time.Sleep(1 * time.Second)
 
-	fPartition, err := followerServer.getOrCreatePartition(pk)
+	fPartition, err := followerServer.getOrCreatePartition(topic)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +146,7 @@ func TestHAClusterFailoverAndReplication(t *testing.T) {
 	time.Sleep(6 * time.Second)
 
 	payload := []byte("msg-after-failover")
-	offset, err := cli.Produce(topic, 0, payload)
+	offset, err := cli.Produce(topic, payload)
 	if err != nil {
 		t.Fatalf("failover produce failed: %v", err)
 	}
@@ -164,7 +155,7 @@ func TestHAClusterFailoverAndReplication(t *testing.T) {
 		t.Errorf("unexpected offset after failover: got %d, expected %d", offset, expectedOffset)
 	}
 
-	newLeaderPartition, err := followerServer.getOrCreatePartition(pk)
+	newLeaderPartition, err := followerServer.getOrCreatePartition(topic)
 	if err != nil {
 		t.Fatal(err)
 	}

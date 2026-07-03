@@ -2,6 +2,7 @@ package payment
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -11,7 +12,6 @@ import (
 	"espx/internal/config"
 	"espx/internal/management/pb"
 	"espx/internal/payment/db"
-	"espx/pkg/cold"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -26,9 +26,9 @@ import (
 
 // PostSettlementMarkHook runs after a successful settlement gRPC call and before the outbox row
 // is marked PROCESSED. Used by chaos tests to simulate the credit/mark-processed gap.
-var PostSettlementMarkHook func(ctx context.Context, ev db.PaymentPaymentOutbox) error
+var PostSettlementMarkHook func(ctx context.Context, outboxEvent db.PaymentPaymentOutbox) error
 
-// OutboxWorker delivers SETTLE_BALANCE events to management without blocking webhook HTTP responses.
+// OutboxWorker delivers SETTLE_BALANCE outboxEventents to management without blocking webhook HTTP responses.
 type OutboxWorker struct {
 	pool *pgxpool.Pool
 	cfg  *config.Config
@@ -59,11 +59,11 @@ type SettleBalancePayload struct {
 }
 
 // Start polls the outbox until shutdown because settlement gRPC may be temporarily unreachable at boot.
-func (worker *OutboxWorker) Start(ctx context.Context, interval time.Duration) {
-	worker.wg.Add(1)
-	defer worker.wg.Done()
+func (outboxWorker *OutboxWorker) Start(ctx context.Context, interval time.Duration) {
+	outboxWorker.wg.Add(1)
+	defer outboxWorker.wg.Done()
 
-	if err := worker.ensureSettlementClient(); err != nil {
+	if err := outboxWorker.ensureSettlementClient(); err != nil {
 		slog.Error("outbox worker failed to connect to management settlement server", "error", err)
 	}
 
@@ -78,13 +78,13 @@ func (worker *OutboxWorker) Start(ctx context.Context, interval time.Duration) {
 	for {
 		select {
 		case <-ctx.Done():
-			worker.resetSettlementClient()
+			outboxWorker.resetSettlementClient()
 			return
 		case <-recoveryTicker.C:
-			worker.reclaimStaleProcessing(ctx)
+			outboxWorker.reclaimStaleProcessing(ctx)
 		case <-pollTimer.C:
-			worker.refreshOutboxPendingGauge(ctx)
-			processed, err := worker.ProcessOutbox(ctx, 100)
+			outboxWorker.refreshOutboxPendingGauge(ctx)
+			processed, err := outboxWorker.ProcessOutbox(ctx, 100)
 			if err != nil {
 				if ctx.Err() != nil {
 					return
@@ -105,25 +105,14 @@ func (worker *OutboxWorker) Start(ctx context.Context, interval time.Duration) {
 }
 
 // Wait blocks shutdown until the poll loop exits so in-flight settlements are not cut off mid-batch.
-func (w *OutboxWorker) Wait(ctx context.Context) error {
-	done := make(chan struct{})
-	go func() {
-		w.wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+func (outboxWorker *OutboxWorker) Wait() {
+	outboxWorker.wg.Wait()
 }
 
 // refreshOutboxPendingGauge exposes backlog depth for alerting when settlement falls behind webhooks.
-func (w *OutboxWorker) refreshOutboxPendingGauge(ctx context.Context) {
+func (outboxWorker *OutboxWorker) refreshOutboxPendingGauge(ctx context.Context) {
 	var pending int64
-	err := w.pool.QueryRow(ctx, `
+	err := outboxWorker.pool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM payment.payment_outbox
 		WHERE status IN ('PENDING', 'PROCESSING')`).Scan(&pending)
 	if err == nil {
@@ -132,39 +121,39 @@ func (w *OutboxWorker) refreshOutboxPendingGauge(ctx context.Context) {
 }
 
 // reclaimStaleProcessing recovers rows leased by crashed workers so settlement does not stall indefinitely.
-func (w *OutboxWorker) reclaimStaleProcessing(ctx context.Context) {
-	_, err := w.pool.Exec(ctx, `
+func (outboxWorker *OutboxWorker) reclaimStaleProcessing(ctx context.Context) {
+	_, err := outboxWorker.pool.Exec(ctx, `
 		UPDATE payment.payment_outbox
 		SET status = 'PENDING', lease_until = NULL
 		WHERE status = 'PROCESSING'
 		  AND lease_until IS NOT NULL
 		  AND lease_until < now()`)
 	if err != nil && ctx.Err() == nil && !strings.Contains(err.Error(), "closed pool") {
-		slog.Error("failed to reclaim stale payment outbox events", "error", err)
+		slog.Error("failed to reclaim stale payment outbox outboxEventents", "error", err)
 	}
 }
 
-// ProcessOutbox leases a batch before gRPC calls so duplicate workers cannot credit the same event twice.
-func (worker *OutboxWorker) ProcessOutbox(ctx context.Context, limit int32) (int, error) {
-	if err := worker.ensureSettlementClient(); err != nil {
+// ProcessOutbox leases a batch before gRPC calls so duplicate workers cannot credit the same outboxEventent twice.
+func (outboxWorker *OutboxWorker) ProcessOutbox(ctx context.Context, limit int32) (int, error) {
+	if err := outboxWorker.ensureSettlementClient(); err != nil {
 		return 0, err
 	}
 
-	var events []db.PaymentPaymentOutbox
+	var outboxEventents []db.PaymentPaymentOutbox
 	leaseDuration := 30 * time.Second
 	leaseUntil := time.Now().Add(leaseDuration)
 
-	err := pgx.BeginFunc(ctx, worker.pool, func(tx pgx.Tx) error {
+	err := pgx.BeginFunc(ctx, outboxWorker.pool, func(tx pgx.Tx) error {
 		txQueries := db.New(tx)
 		var err error
-		events, err = txQueries.GetPendingOutboxEventsForUpdate(ctx, limit)
-		if err != nil || len(events) == 0 {
+		outboxEventents, err = txQueries.GetPendingOutboxEventsForUpdate(ctx, limit)
+		if err != nil || len(outboxEventents) == 0 {
 			return err
 		}
 
-		ids := make([]int64, len(events))
-		for i, ev := range events {
-			ids[i] = ev.ID
+		ids := make([]int64, len(outboxEventents))
+		for i, outboxEvent := range outboxEventents {
+			ids[i] = outboxEvent.ID
 		}
 
 		err = txQueries.LeaseOutboxEvents(ctx, db.LeaseOutboxEventsParams{
@@ -174,75 +163,75 @@ func (worker *OutboxWorker) ProcessOutbox(ctx context.Context, limit int32) (int
 		return err
 	})
 
-	if err != nil || len(events) == 0 {
+	if err != nil || len(outboxEventents) == 0 {
 		return 0, err
 	}
 
 	successCount := 0
-	for _, ev := range events {
-		if err := worker.handleOutboxEvent(ctx, ev); err != nil {
-			slog.Error("failed to handle outbox event", "id", ev.ID, "error", err)
+	for _, outboxEvent := range outboxEventents {
+		if err := outboxWorker.handleOutboxEvent(ctx, outboxEvent); err != nil {
+			slog.Error("failed to handle outbox outboxEventent", "id", outboxEvent.ID, "error", err)
 			SettlementErrorsTotal.Inc()
 			if isSettlementTransientGRPC(err) {
-				worker.resetSettlementClient()
+				outboxWorker.resetSettlementClient()
 			}
-			worker.markOutboxEventRetryable(ctx, ev, err)
+			outboxWorker.markOutboxEventRetryable(ctx, outboxEvent, err)
 			continue
 		}
 		if PostSettlementMarkHook != nil {
-			if hookErr := PostSettlementMarkHook(ctx, ev); hookErr != nil {
-				slog.Error("post-settlement hook failed", "id", ev.ID, "error", hookErr)
+			if hookErr := PostSettlementMarkHook(ctx, outboxEvent); hookErr != nil {
+				slog.Error("post-settlement hook failed", "id", outboxEvent.ID, "error", hookErr)
 				SettlementErrorsTotal.Inc()
-				worker.markOutboxEventRetryable(ctx, ev, hookErr)
+				outboxWorker.markOutboxEventRetryable(ctx, outboxEvent, hookErr)
 				continue
 			}
 		}
-		if err := worker.markOutboxProcessedWithRetry(ctx, ev.ID); err != nil {
-			slog.Error("failed to mark outbox event processed", "id", ev.ID, "error", err)
+		if err := outboxWorker.markOutboxProcessedWithRetry(ctx, outboxEvent.ID); err != nil {
+			slog.Error("failed to mark outbox outboxEventent processed", "id", outboxEvent.ID, "error", err)
 			continue
 		}
 		successCount++
 	}
 
-	worker.refreshOutboxPendingGauge(ctx)
+	outboxWorker.refreshOutboxPendingGauge(ctx)
 	return successCount, nil
 }
 
 // ensureSettlementClient dials management lazily because payment may start before settlement gRPC is listening.
-func (w *OutboxWorker) ensureSettlementClient() error {
-	w.clientMu.Lock()
-	defer w.clientMu.Unlock()
+func (outboxWorker *OutboxWorker) ensureSettlementClient() error {
+	outboxWorker.clientMu.Lock()
+	defer outboxWorker.clientMu.Unlock()
 
-	if w.client != nil {
+	if outboxWorker.client != nil {
 		return nil
 	}
-	target := "127.0.0.1:" + w.cfg.SettlementServerPort
+	target := "127.0.0.1:" + outboxWorker.cfg.SettlementServerPort
 	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return fmt.Errorf("gRPC client not connected to %s: %w", target, err)
 	}
-	w.conn = conn
-	w.client = pb.NewSettlementServiceClient(conn)
+	outboxWorker.conn = conn
+	outboxWorker.client = pb.NewSettlementServiceClient(conn)
 	return nil
 }
 
 // resetSettlementClient drops a dead connection so the next batch opens a fresh settlement channel.
-func (w *OutboxWorker) resetSettlementClient() {
-	w.clientMu.Lock()
-	defer w.clientMu.Unlock()
+func (outboxWorker *OutboxWorker) resetSettlementClient() {
+	outboxWorker.clientMu.Lock()
+	defer outboxWorker.clientMu.Unlock()
 
-	if w.conn != nil {
-		_ = w.conn.Close()
+	if outboxWorker.conn != nil {
+		_ = outboxWorker.conn.Close()
 	}
-	w.conn = nil
-	w.client = nil
+	outboxWorker.conn = nil
+	outboxWorker.client = nil
 }
 
 // getSettlementClient returns the cached client under lock because gRPC conn is shared across poll iterations.
-func (w *OutboxWorker) getSettlementClient() pb.SettlementServiceClient {
-	w.clientMu.Lock()
-	defer w.clientMu.Unlock()
-	return w.client
+func (outboxWorker *OutboxWorker) getSettlementClient() pb.SettlementServiceClient {
+	outboxWorker.clientMu.Lock()
+	defer outboxWorker.clientMu.Unlock()
+	return outboxWorker.client
 }
 
 // isSettlementTransientGRPC distinguishes retryable transport errors from permanent settlement rejection.
@@ -263,10 +252,10 @@ func isSettlementTransientGRPC(err error) bool {
 }
 
 // markOutboxProcessedWithRetry tolerates brief DB blips after ledger credit already succeeded.
-func (w *OutboxWorker) markOutboxProcessedWithRetry(ctx context.Context, outboxID int64) error {
+func (outboxWorker *OutboxWorker) markOutboxProcessedWithRetry(ctx context.Context, outboxID int64) error {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		lastErr = db.New(w.pool).MarkOutboxEventProcessed(ctx, outboxID)
+		lastErr = db.New(outboxWorker.pool).MarkOutboxEventProcessed(ctx, outboxID)
 		if lastErr == nil {
 			return nil
 		}
@@ -280,7 +269,7 @@ func (w *OutboxWorker) markOutboxProcessedWithRetry(ctx context.Context, outboxI
 
 // markOutboxEventRetryable records retry or terminal failure; NotFound also marks the intent SETTLEMENT_FAILED
 // so ops can see money collected but ledger credit rejected.
-func (worker *OutboxWorker) markOutboxEventRetryable(ctx context.Context, ev db.PaymentPaymentOutbox, cause error) {
+func (outboxWorker *OutboxWorker) markOutboxEventRetryable(ctx context.Context, outboxEvent db.PaymentPaymentOutbox, cause error) {
 	var lastErrText pgtype.Text
 	lastErrText.String = cause.Error()
 	lastErrText.Valid = true
@@ -291,19 +280,19 @@ func (worker *OutboxWorker) markOutboxEventRetryable(ctx context.Context, ev db.
 		isFatal = true
 	}
 
-	innerErr := pgx.BeginFunc(ctx, worker.pool, func(tx pgx.Tx) error {
+	innerErr := pgx.BeginFunc(ctx, outboxWorker.pool, func(tx pgx.Tx) error {
 		txQueries := db.New(tx)
 		if isFatal {
 			if err := txQueries.MarkOutboxEventFailed(ctx, db.MarkOutboxEventFailedParams{
-				ID:        ev.ID,
+				ID:        outboxEvent.ID,
 				Attempts:  0,
 				LastError: lastErrText,
 			}); err != nil {
 				return err
 			}
 
-			payload := cold.UnmarshalLenient[SettleBalancePayload](ev.Payload)
-			if payload.PaymentIntentID != "" {
+			var payload SettleBalancePayload
+			if err := json.Unmarshal(outboxEvent.Payload, &payload); err == nil {
 				intentUUID, _ := uuid.Parse(payload.PaymentIntentID)
 				_, _ = txQueries.UpdatePaymentIntentStatus(ctx, db.UpdatePaymentIntentStatusParams{
 					ID:          pgtype.UUID{Bytes: intentUUID, Valid: true},
@@ -312,12 +301,12 @@ func (worker *OutboxWorker) markOutboxEventRetryable(ctx context.Context, ev db.
 				})
 			}
 		} else {
-			maxAttempts := int32(worker.cfg.MaxRetries)
+			maxAttempts := int32(outboxWorker.cfg.MaxRetries)
 			if maxAttempts <= 0 {
 				maxAttempts = 5
 			}
 			if err := txQueries.MarkOutboxEventFailed(ctx, db.MarkOutboxEventFailedParams{
-				ID:        ev.ID,
+				ID:        outboxEvent.ID,
 				Attempts:  maxAttempts,
 				LastError: lastErrText,
 			}); err != nil {
@@ -327,30 +316,30 @@ func (worker *OutboxWorker) markOutboxEventRetryable(ctx context.Context, ev db.
 		return nil
 	})
 	if innerErr != nil {
-		slog.Error("failed to update outbox event failure status", "id", ev.ID, "error", innerErr)
+		slog.Error("failed to update outbox outboxEventent failure status", "id", outboxEvent.ID, "error", innerErr)
 	}
 }
 
-// handleOutboxEvent forwards one row to management; ledger idempotency key prevents double credit on retry.
-func (worker *OutboxWorker) handleOutboxEvent(ctx context.Context, ev db.PaymentPaymentOutbox) error {
-	if ev.EventType != "SETTLE_BALANCE" {
-		slog.Warn("skipping unrecognized payment outbox event type", "type", ev.EventType)
+// handleOutboxEvent forwards one row to management; ledger idempotency key proutboxEventents double credit on retry.
+func (outboxWorker *OutboxWorker) handleOutboxEvent(ctx context.Context, outboxEvent db.PaymentPaymentOutbox) error {
+	if outboxEvent.EventType != "SETTLE_BALANCE" {
+		slog.Warn("skipping unrecognized payment outbox outboxEventent type", "type", outboxEvent.EventType)
 		return nil
 	}
 
-	payload, err := cold.UnmarshalStrict[SettleBalancePayload](ev.Payload)
-	if err != nil {
-		return err
+	var payload SettleBalancePayload
+	if err := json.Unmarshal(outboxEvent.Payload, &payload); err != nil {
+		return fmt.Errorf("failed to unmarshal outbox payload: %w", err)
 	}
 
-	client := worker.getSettlementClient()
+	client := outboxWorker.getSettlementClient()
 	if client == nil {
 		return fmt.Errorf("settlement client not connected")
 	}
 
-	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-internal-token", string(worker.cfg.SettlementInternalToken))
+	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-internal-token", string(outboxWorker.cfg.SettlementInternalToken))
 
-	_, err = client.ApplyPaymentCredit(grpcCtx, &pb.ApplyPaymentCreditRequest{
+	_, err := client.ApplyPaymentCredit(grpcCtx, &pb.ApplyPaymentCreditRequest{
 		CustomerId:           payload.CustomerID,
 		AmountMicro:          payload.AmountMicro,
 		LedgerIdempotencyKey: payload.LedgerIdempotencyKey,

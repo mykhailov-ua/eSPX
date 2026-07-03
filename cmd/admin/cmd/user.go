@@ -245,34 +245,6 @@ var updateUserCmd = &cobra.Command{
 		}
 		defer pool.Close()
 
-		if block || unblock {
-			rdbs, _, err := getRedisShards(ctx)
-			if err != nil {
-				return fmt.Errorf("redis required for block/unblock revocation sync: %w", err)
-			}
-			defer func() {
-				for _, rdb := range rdbs {
-					_ = rdb.Close()
-				}
-			}()
-
-			repo := authdb.NewStore(pool)
-			svc := auth.NewService(repo, nil, nil, nil, rdbs[0])
-			if block {
-				if err := svc.BlockUser(ctx, email); err != nil {
-					return err
-				}
-			} else {
-				if err := svc.UnblockUser(ctx, email); err != nil {
-					return err
-				}
-			}
-			if role == "" && custIDStr == "" {
-				fmt.Printf("Successfully updated user %s\n", email)
-				return nil
-			}
-		}
-
 		var queryParts []string
 		var queryArgs []any
 		argIdx := 1
@@ -280,6 +252,15 @@ var updateUserCmd = &cobra.Command{
 		if role != "" {
 			queryParts = append(queryParts, fmt.Sprintf("role = $%d", argIdx))
 			queryArgs = append(queryArgs, role)
+			argIdx++
+		}
+		if block {
+			queryParts = append(queryParts, fmt.Sprintf("is_blocked = $%d", argIdx))
+			queryArgs = append(queryArgs, true)
+			argIdx++
+		} else if unblock {
+			queryParts = append(queryParts, fmt.Sprintf("is_blocked = $%d", argIdx))
+			queryArgs = append(queryArgs, false)
 			argIdx++
 		}
 		if custIDStr != "" {
@@ -340,7 +321,7 @@ var deleteUserCmd = &cobra.Command{
 	},
 }
 
-// pgUUIDToGoogleUUID maps sqlc UUIDs into google/uuid because CLI output and PASETO claims expect that type.
+// pgUUIDToGoogleUUID converts sqlc pgtype UUIDs into google/uuid for display and token minting.
 func pgUUIDToGoogleUUID(p pgtype.UUID) uuid.UUID {
 	if !p.Valid {
 		return uuid.Nil
@@ -348,7 +329,7 @@ func pgUUIDToGoogleUUID(p pgtype.UUID) uuid.UUID {
 	return p.Bytes
 }
 
-// init registers user commands because token minting and block/unblock belong in dev tooling, not gRPC auth.
+// init wires user and token subcommands into the admin CLI.
 func init() {
 	createTokenCmd.Flags().String("email", "", "User email address")
 	createTokenCmd.Flags().Bool("auto-create", false, "Auto-create user if they do not exist")

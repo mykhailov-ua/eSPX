@@ -7,7 +7,6 @@ import (
 	"testing"
 )
 
-// TestTopicRegistry ensures stable numeric IDs and idempotent topic registration.
 func TestTopicRegistry(t *testing.T) {
 	registry := NewTopicRegistry()
 
@@ -57,7 +56,6 @@ func TestTopicRegistry(t *testing.T) {
 	}
 }
 
-// TestBatchIterator validates zero-alloc iteration over batched wire messages.
 func TestBatchIterator(t *testing.T) {
 	var batch []byte
 
@@ -96,7 +94,6 @@ func TestBatchIterator(t *testing.T) {
 	}
 }
 
-// TestReadFrameNewCommands covers batch produce and topic registration decoding.
 func TestReadFrameNewCommands(t *testing.T) {
 	writeBuf := make([]byte, 1024)
 	readBuf := make([]byte, 1024)
@@ -144,7 +141,6 @@ func TestReadFrameNewCommands(t *testing.T) {
 	}
 }
 
-// BenchmarkTopicRegistryLookup guards lock-free lookup performance at scale.
 func BenchmarkTopicRegistryLookup(b *testing.B) {
 	registry := NewTopicRegistry()
 	var ids []uint16
@@ -168,7 +164,6 @@ func BenchmarkTopicRegistryLookup(b *testing.B) {
 	})
 }
 
-// BenchmarkBatchIterator measures batch walk cost for high-throughput produce paths.
 func BenchmarkBatchIterator(b *testing.B) {
 	var batch []byte
 	for i := 0; i < 100; i++ {
@@ -193,7 +188,6 @@ func BenchmarkBatchIterator(b *testing.B) {
 	}
 }
 
-// TestReadFrameChecksumVerification rejects corrupted payloads before handlers run.
 func TestReadFrameChecksumVerification(t *testing.T) {
 	writeBuf := make([]byte, 1024)
 	readBuf := make([]byte, 1024)
@@ -225,7 +219,6 @@ func TestReadFrameChecksumVerification(t *testing.T) {
 	}
 }
 
-// BenchmarkReadFrame tracks frame decode regression on the broker hot path.
 func BenchmarkReadFrame(b *testing.B) {
 	writeBuf := make([]byte, 1024)
 	readBuf := make([]byte, 1024)
@@ -252,7 +245,6 @@ func BenchmarkReadFrame(b *testing.B) {
 	}
 }
 
-// BenchmarkReadFrameSizes measures decode cost across typical batch payload sizes.
 func BenchmarkReadFrameSizes(b *testing.B) {
 	sizes := []int{0, 64, 512, 4096, 16384}
 	for _, size := range sizes {

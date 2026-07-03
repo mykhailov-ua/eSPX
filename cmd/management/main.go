@@ -1,4 +1,4 @@
-// Command management runs the HTMX admin gateway, background workers, and settlement gRPC sidecar.
+// Command management runs the admin API gateway, background workers, and settlement gRPC sidecar.
 package main
 
 import (
@@ -19,12 +19,13 @@ import (
 	"espx/internal/database"
 	"espx/internal/management"
 	pb_settle "espx/internal/management/pb"
+
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// main hosts the management HTTP API separately because admin RBAC, HTMX, and background workers must not share tracker resources.
+// main hosts the management HTTP API separately because admin RBAC and background workers must not share tracker resources.
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
@@ -55,11 +56,6 @@ func main() {
 	}
 
 	sharder := ads.NewStaticSlotSharder(len(rdbs))
-	if version, loadErr := ads.LoadActiveSlotMap(ctx, pool, sharder, len(rdbs)); loadErr != nil {
-		slog.Warn("slot map load failed, using modulo fallback", "error", loadErr)
-	} else {
-		slog.Info("management slot map loaded at startup", "version", version)
-	}
 
 	authTarget := "127.0.0.1:" + cfg.AuthServerPort
 	if host := os.Getenv("AUTH_SERVER_HOST"); host != "" {
@@ -92,7 +88,9 @@ func main() {
 	for _, rdb := range rdbs {
 		sw := ads.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond)
 		syncWorkers = append(syncWorkers, sw)
-		sw.Start(ctx)
+		svc.StartBackgroundWorker(func() {
+			sw.Start(ctx)
+		})
 	}
 
 	reconInterval := time.Duration(cfg.Management.ReconIntervalMs) * time.Millisecond
@@ -202,20 +200,12 @@ func main() {
 	select {
 	case <-settleStopped:
 		slog.Info("settlement gRPC server stopped cleanly")
-	case <-shutdownCtx.Done():
+	case <-time.After(5 * time.Second):
 		slog.Warn("settlement gRPC graceful shutdown timed out, force stopping")
 		settleServer.Stop()
 	}
 
 	svc.Close()
-
-	waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Duration(cfg.Lifecycle.WaitTimeoutMs)*time.Millisecond)
-	defer waitCancel()
-	for i, sw := range syncWorkers {
-		if err := sw.Wait(waitCtx); err != nil {
-			slog.Error("sync worker wait failed", "shard", i, "error", err)
-		}
-	}
 
 	for i, rdb := range rdbs {
 		if err := rdb.Close(); err != nil {

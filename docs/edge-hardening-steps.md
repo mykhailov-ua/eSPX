@@ -49,16 +49,7 @@ sudo systemctl start espx-edge-nic-tune
    Убедиться, что прерывания распределены по всем доступным ядрам (с помощью демона `irqbalance` или ручной привязки `/proc/irq/*/smp_affinity`).
 
 ### Шаг 0.2: Настройка параметров ядра (sysctl)
-Применить оптимизации сетевого стека из `deploy/edge/99-espx-edge.conf`:
-
-**Автоматизация (рекомендуется):**
-```bash
-sudo bash scripts/edge-sysctl.sh apply
-bash scripts/edge-sysctl.sh report
-bash scripts/edge-sysctl.sh verify
-```
-
-**Ручной вариант** — скопировать в `/etc/sysctl.d/99-espx-edge.conf`:
+Применить оптимизации сетевого стека в `/etc/sysctl.conf` или отдельном файле `/etc/sysctl.d/99-espx-edge.conf`:
 ```ini
 # Максимальное количество открытых сокетов в очереди accept()
 net.core.somaxconn = 16384
@@ -84,21 +75,16 @@ sudo sysctl --system
 ```
 
 ### Шаг 0.3: Снятие базовых метрик (SLA Baseline)
-**Минимальный замер (достаточно для Phase 0):** однократный снимок из Prometheus после поднятия стека:
-```bash
-bash scripts/edge-baseline.sh          # stdout + var/edge-baseline/latest.txt
-bash scripts/edge-baseline.sh verify   # exit 1, если p95/p99/redis_lua уже выше SLA
-```
-Переменные: `PROMETHEUS_URL` (по умолчанию `http://127.0.0.1:9190`), `STRICT=1` — падать, если Prometheus недоступен.
-
-Полный 24-часовой soak **опционален** (перед прод-канарейкой). Целевые значения для справки:
+Зафиксировать показатели системы под номинальной нагрузкой в течение 24 часов:
 1. **Задержка трекера (SLA):**
-   - p95 (`ad_http_request_duration_seconds`): < 50 ms.
-   - p99: < 80 ms.
+   - p95 задержки (`ad_http_request_duration_seconds`): целевое значение < 50 ms.
+   - p99 задержки: целевое значение < 80 ms.
 2. **Задержка Redis Lua:**
-   - p99 (`ad_redis_lua_duration_seconds`): < 15 ms.
-3. **Нагрузка на Ingress** (ручной мониторинг / Grafana, если нужен полный soak):
-   - CPU OpenResty/Nginx, `nginx_connections_active`, 503/504 на балансировщике.
+   - p99 выполнения `unified-filter.lua` (`ad_redis_lua_duration_seconds`): целевое значение < 15 ms.
+3. **Нагрузка на Ingress:**
+   - Утилизация CPU процессами OpenResty/Nginx.
+   - Количество активных TCP-соединений (`nginx_connections_active`).
+   - Количество ошибок 503/504 на балансировщике.
 
 ---
 

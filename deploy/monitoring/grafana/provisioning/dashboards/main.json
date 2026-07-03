@@ -719,7 +719,7 @@
         }
       ],
       "title": "Redis Lua Filter p99 (per shard)",
-      "description": "Per-shard unified-filter.lua latency; Lua blocks the Redis core while running.",
+      "description": "Per-shard unified_filter.lua latency; Lua blocks the Redis core while running.",
       "type": "timeseries"
     },
     {

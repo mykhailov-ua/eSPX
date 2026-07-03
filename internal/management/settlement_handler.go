@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
-
 	"espx/internal/config"
 	"espx/internal/management/pb"
 
@@ -14,14 +13,12 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// SettlementHandler serves internal payment outbox workers that credit customer balances.
 type SettlementHandler struct {
 	pb.UnimplementedSettlementServiceServer
 	service *Service
 	cfg     *config.Config
 }
 
-// NewSettlementHandler exposes ledger credit on a dedicated gRPC port so payment outbox does not use admin HTTP.
 func NewSettlementHandler(service *Service, cfg *config.Config) *SettlementHandler {
 	return &SettlementHandler{
 		service: service,
@@ -29,8 +26,8 @@ func NewSettlementHandler(service *Service, cfg *config.Config) *SettlementHandl
 	}
 }
 
-// ApplyPaymentCredit validates the internal token then credits the ledger idempotently for one succeeded intent.
 func (h *SettlementHandler) ApplyPaymentCredit(ctx context.Context, req *pb.ApplyPaymentCreditRequest) (*pb.ApplyPaymentCreditResponse, error) {
+	// Authenticate internal caller
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "missing metadata")

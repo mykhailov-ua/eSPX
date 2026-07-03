@@ -13,8 +13,6 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
-
-	"espx/internal/config"
 )
 
 // Alert mirrors one Alertmanager notification for decoding because webhook JSON is nested and partially typed.
@@ -129,7 +127,7 @@ func main() {
 	<-stop
 
 	slog.Info("shutting down proxy")
-	ctx, cancel := context.WithTimeout(context.Background(), config.LifecycleShutdownTimeout())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if err := server.Shutdown(ctx); err != nil {

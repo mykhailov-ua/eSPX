@@ -59,11 +59,11 @@ func NewMockProvider() *MockProvider {
 }
 
 // Name stays "stripe" on mock intents so webhook routing and provider_ref lookups stay uniform in tests.
-func (m *MockProvider) Name() string {
+func (mockProvider *MockProvider) Name() string {
 	return "stripe"
 }
 
 // CreateCheckout derives provider_ref from the idempotency key so mock webhooks can target the right intent.
-func (m *MockProvider) CreateCheckout(ctx context.Context, amountMicro int64, currency string, metadata map[string]string, idempotencyKey string) (string, string, error) {
+func (mockProvider *MockProvider) CreateCheckout(ctx context.Context, amountMicro int64, currency string, metadata map[string]string, idempotencyKey string) (string, string, error) {
 	return "pi_mock_" + idempotencyKey, "https://checkout.stripe.dev/pay/mock_" + idempotencyKey, nil
 }

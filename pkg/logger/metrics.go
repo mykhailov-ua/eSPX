@@ -96,7 +96,6 @@ func RegisterMetrics() {
 	_ = prometheus.Register(LogPersistQueueDroppedBytesTotal)
 }
 
-// StartMetricsReporter publishes ring saturation and persist-queue pressure for ops alerting.
 func (l *Logger) StartMetricsReporter(interval time.Duration) {
 	l.wg.Add(1)
 	go func() {
@@ -105,7 +104,6 @@ func (l *Logger) StartMetricsReporter(interval time.Duration) {
 	}()
 }
 
-// metricsReporterLoop samples shard cursors and drop counters on a fixed interval.
 func (l *Logger) metricsReporterLoop(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()

@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package ads.v1;
+
+option go_package = "espx/internal/ads/pb";
+
+message AdEvent {
+  bytes campaign_id = 1;
+  bytes event_type = 2;
+  EventMetadata metadata = 3;
+}
+
+message EventMetadata {
+  bytes click_id = 1;
+  bytes user_id = 2;
+  bytes device_type = 3;
+  bytes os = 4;
+  map<string, string> extra = 5;
+  bytes extra_bytes = 6;
+}
+
+message TrackResponse {
+  string request_id = 1;
+  string status = 2;
+  string landing_url = 3;
+}
+
+message AdStreamEvent {
+  bytes click_id = 1;
+  bytes campaign_id = 2;
+  bytes event_type = 3;
+  bytes payload = 4;
+  bytes ip = 5;
+  bytes ua = 6;
+  int64 created_at_unix = 7;
+}
+
+message AdDLQEvent {
+  AdStreamEvent original_event = 1;
+  bytes error = 2;
+  bytes original_id = 3;
+  int64 failed_at_unix = 4;
+  bytes worker_id = 5;
+  int32 retry_count = 6;
+}
+
+message AdLogRecord {
+  int64 timestamp_unix = 1;
+  bytes campaign_id = 2;
+  bytes click_id = 3;
+  bytes event_type = 4;
+  uint32 priority = 5;
+}

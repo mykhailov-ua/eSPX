@@ -26,7 +26,7 @@ func NewNginxConfigWorker(svc *Service, exportPath string) *NginxConfigWorker {
 }
 
 // Start periodically exports blacklist snapshots until the context is cancelled.
-func (w *NginxConfigWorker) Start(ctx context.Context, interval time.Duration) {
+func (nginxWorker *NginxConfigWorker) Start(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -35,7 +35,7 @@ func (w *NginxConfigWorker) Start(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := w.ExportAndReload(ctx); err != nil {
+			if err := nginxWorker.ExportAndReload(ctx); err != nil {
 				slog.Error("nginx export failed", "error", err)
 			}
 		}
@@ -43,36 +43,36 @@ func (w *NginxConfigWorker) Start(ctx context.Context, interval time.Duration) {
 }
 
 // ExportAndReload writes manual and auto deny configs from all Redis shards and sets a reload flag.
-func (w *NginxConfigWorker) ExportAndReload(ctx context.Context) error {
-	if len(w.svc.rdbs) == 0 {
+func (nginxWorker *NginxConfigWorker) ExportAndReload(ctx context.Context) error {
+	if len(nginxWorker.svc.rdbs) == 0 {
 		return fmt.Errorf("no redis client available")
 	}
 
 	var manual []string
-	for _, rdb := range w.svc.rdbs {
+	for _, rdb := range nginxWorker.svc.rdbs {
 		m, err := rdb.SMembers(ctx, "blacklist:manual").Result()
 		if err != nil {
 			return fmt.Errorf("failed to fetch manual blacklist from shard: %w", err)
 		}
 		manual = append(manual, m...)
 	}
-	if err := w.writeDenyFile("manual.conf", manual); err != nil {
+	if err := nginxWorker.writeDenyFile("manual.conf", manual); err != nil {
 		return err
 	}
 
 	var auto []string
-	for _, rdb := range w.svc.rdbs {
+	for _, rdb := range nginxWorker.svc.rdbs {
 		a, err := rdb.SMembers(ctx, "blacklist:auto").Result()
 		if err != nil {
 			return fmt.Errorf("failed to fetch auto blacklist from shard: %w", err)
 		}
 		auto = append(auto, a...)
 	}
-	if err := w.writeDenyFile("auto.conf", auto); err != nil {
+	if err := nginxWorker.writeDenyFile("auto.conf", auto); err != nil {
 		return err
 	}
 
-	flagPath := filepath.Join(w.exportPath, "reload_required.flg")
+	flagPath := filepath.Join(nginxWorker.exportPath, "reload_required.flg")
 	if err := os.WriteFile(flagPath, []byte("1\n"), 0644); err != nil {
 		return fmt.Errorf("failed to write reload flag: %w", err)
 	}
@@ -82,12 +82,12 @@ func (w *NginxConfigWorker) ExportAndReload(ctx context.Context) error {
 }
 
 // writeDenyFile atomically writes validated deny directives so nginx never reads a partial config.
-func (w *NginxConfigWorker) writeDenyFile(filename string, ips []string) (err error) {
-	if err := os.MkdirAll(w.exportPath, 0755); err != nil {
+func (nginxWorker *NginxConfigWorker) writeDenyFile(filename string, ips []string) (err error) {
+	if err := os.MkdirAll(nginxWorker.exportPath, 0755); err != nil {
 		return err
 	}
 
-	path := filepath.Join(w.exportPath, filename)
+	path := filepath.Join(nginxWorker.exportPath, filename)
 	tmpPath := path + ".tmp"
 
 	tmpFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)

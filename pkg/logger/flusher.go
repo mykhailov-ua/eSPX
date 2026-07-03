@@ -13,14 +13,12 @@ import (
 	"unsafe"
 )
 
-// AlignedBuffer batches framed log records on a page-aligned slice so NVMe writes avoid extra memcpy and unaligned syscall buffers.
 type AlignedBuffer struct {
 	raw     []byte
 	aligned []byte
 	offset  int
 }
 
-// NewAlignedBuffer allocates slack past the target size so the writable slice starts on a 4KiB boundary.
 func NewAlignedBuffer(size int) *AlignedBuffer {
 	raw := make([]byte, size+4096)
 	ptr := uintptr(unsafe.Pointer(&raw[0]))
@@ -37,39 +35,32 @@ func NewAlignedBuffer(size int) *AlignedBuffer {
 	}
 }
 
-// Write appends raw bytes into the current batch without allocating per record.
 func (b *AlignedBuffer) Write(data []byte) int {
 	n := copy(b.aligned[b.offset:], data)
 	b.offset += n
 	return n
 }
 
-// WriteByte appends one framed length or delimiter byte into the batch.
 func (b *AlignedBuffer) WriteByte(c byte) error {
 	b.aligned[b.offset] = c
 	b.offset++
 	return nil
 }
 
-// Reset clears the batch so a pooled buffer can be reused for the next drain cycle.
 func (b *AlignedBuffer) Reset() {
 	b.offset = 0
 }
 
-// Bytes returns the filled prefix of the batch ready for a single disk write.
 func (b *AlignedBuffer) Bytes() []byte {
 	return b.aligned[:b.offset]
 }
 
-// Available reports remaining capacity before the drainer must flush or grow the batch.
 func (b *AlignedBuffer) Available() int {
 	return len(b.aligned) - b.offset
 }
 
-// bufferPool recycles aligned batches so the drainer path does not allocate on every tick.
 var bufferPool sync.Pool
 
-// getBuffer returns a pooled batch sized for the configured flush threshold.
 func (l *Logger) getBuffer() *AlignedBuffer {
 	val := bufferPool.Get()
 	if val == nil {
@@ -82,7 +73,6 @@ func (l *Logger) getBuffer() *AlignedBuffer {
 	return buf
 }
 
-// StartDrainer runs the cold path that drains ring shards and batches records without blocking ingestion goroutines.
 func (l *Logger) StartDrainer() {
 	defer l.wg.Done()
 	ticker := time.NewTicker(5 * time.Millisecond)
@@ -113,7 +103,6 @@ func (l *Logger) StartDrainer() {
 	}
 }
 
-// drainShards collects ready payloads from every shard into one batch and sheds low-priority logs when disk is degraded.
 func (l *Logger) drainShards(buf *AlignedBuffer) (*AlignedBuffer, bool) {
 	degraded := l.diskDegraded.Load() == 1
 	var flushed bool
@@ -150,14 +139,12 @@ func (l *Logger) drainShards(buf *AlignedBuffer) (*AlignedBuffer, bool) {
 	return buf, flushed
 }
 
-// recordPersistQueueDrop counts batches dropped when the persist queue is full so audit loss is visible in metrics.
 func (l *Logger) recordPersistQueueDrop(buf *AlignedBuffer) {
 	l.persistQueueDrops.Add(1)
 	l.persistQueueDropBytes.Add(uint64(buf.offset))
 	l.loadSheddingEvents.Add(uint64(buf.offset / 100))
 }
 
-// sendBuffer hands a batch to the persister and times out on shutdown-except paths so the drainer never blocks ingestion indefinitely.
 func (l *Logger) sendBuffer(buf *AlignedBuffer, blocking bool) {
 	if buf.offset == 0 {
 		bufferPool.Put(buf)
@@ -183,7 +170,6 @@ func (l *Logger) sendBuffer(buf *AlignedBuffer, blocking bool) {
 	}
 }
 
-// StartPersister serializes disk appends through one goroutine so fsync contention stays off the drain and ingest paths.
 func (l *Logger) StartPersister() {
 	defer l.wg.Done()
 	for buf := range l.persistCh {
@@ -193,7 +179,6 @@ func (l *Logger) StartPersister() {
 	}
 }
 
-// writeBuffer appends a batch with fdatasync and updates latency EMA so the logger can enter degraded mode before NVMe backs up the hot path.
 func (l *Logger) writeBuffer(buf *AlignedBuffer) {
 	l.checkRotation()
 	if l.diskDegraded.Load() == 1 {
@@ -229,7 +214,6 @@ func (l *Logger) writeBuffer(buf *AlignedBuffer) {
 	l.bytesWritten += int64(n)
 }
 
-// checkDiskSpace toggles degraded mode from free space and write latency so billing logs survive before the disk fills or NVMe stalls.
 func (l *Logger) checkDiskSpace() {
 	var stat syscall.Statfs_t
 	err := syscall.Statfs(l.cfg.LogDir, &stat)
@@ -251,7 +235,6 @@ func (l *Logger) checkDiskSpace() {
 	}
 }
 
-// StartDiskMonitor periodically re-evaluates disk health so degraded shedding lifts only when storage is safe again.
 func (l *Logger) StartDiskMonitor() {
 	defer l.wg.Done()
 	ticker := time.NewTicker(5 * time.Second)
@@ -266,7 +249,6 @@ func (l *Logger) StartDiskMonitor() {
 	}
 }
 
-// checkRotation rolls active.log into bounded segments so log-evacuate can ship files without unbounded growth.
 func (l *Logger) checkRotation() {
 	if l.activeFile == nil {
 		l.openActiveFile()
@@ -285,7 +267,6 @@ func (l *Logger) checkRotation() {
 	}
 }
 
-// openActiveFile creates or reopens the writable segment after startup, rotation, or a prior disk error.
 func (l *Logger) openActiveFile() {
 	activePath := filepath.Join(l.cfg.LogDir, "active.log")
 	f, err := os.OpenFile(activePath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0666)

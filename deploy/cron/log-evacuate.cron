@@ -1,5 +1,1 @@
-# log-evacuate.cron: long-lived S3 evacuator for rotated tracker segments.
-# Prefer: docker compose --profile tools up -d log-evacuator
-# Legacy one-shot restart every 5 minutes (not recommended for fsnotify watcher):
-
-*/5 * * * * cd /opt/espx && docker compose --profile tools up -d log-evacuator >> /var/log/espx-evacuate.log 2>&1
+*/5 * * * * cd /opt/espx && docker compose --profile tools run --rm log-evacuator >> /var/log/espx-evacuate.log 2>&1

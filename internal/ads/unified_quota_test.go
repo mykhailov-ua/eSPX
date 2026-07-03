@@ -65,25 +65,7 @@ func TestUnifiedFilter_quotaDebit(t *testing.T) {
 	require.Equal(t, int64(400_000), remaining)
 }
 
-type mockQuotaCampaignRepo struct{}
-
-func (m *mockQuotaCampaignRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Campaign, error) {
-	return nil, fmt.Errorf("campaign not found in mock repo")
-}
-
-func (m *mockQuotaCampaignRepo) UpdateStatus(ctx context.Context, id uuid.UUID, status domain.CampaignStatus) error {
-	return nil
-}
-
-func (m *mockQuotaCampaignRepo) UpdateSpend(ctx context.Context, id uuid.UUID, amount int64, txID string) error {
-	return nil
-}
-
-func (m *mockQuotaCampaignRepo) ListActive(ctx context.Context) ([]*domain.Campaign, error) {
-	return nil, nil
-}
-
-func TestUnifiedFilter_quotaNoDualRead_noLegacyFallback(t *testing.T) {
+func TestUnifiedFilter_quotaDualRead_legacyFallback(t *testing.T) {
 	if testing.Short() {
 		t.Skip()
 	}
@@ -92,7 +74,6 @@ func TestUnifiedFilter_quotaNoDualRead_noLegacyFallback(t *testing.T) {
 	defer cleanup()
 
 	f := newQuotaUnifiedFilter(t, rdb)
-	f.repo = &mockQuotaCampaignRepo{}
 	require.NoError(t, f.PreloadScripts(ctx))
 
 	campID := uuid.New()
@@ -109,14 +90,14 @@ func TestUnifiedFilter_quotaNoDualRead_noLegacyFallback(t *testing.T) {
 		ClickID:    uuid.NewString(),
 	}
 	checkCtx := attachFilterDeadline(ctx, time.Second)
-	// Since dual-read is removed, this must fail/return error (budget miss) rather than fallback to budget:campaign
-	err := f.Check(checkCtx, evt)
-	require.Error(t, err)
+	require.NoError(t, f.Check(checkCtx, evt))
 
-	// Verify budget:campaign was NOT decremented
 	remaining, err := rdb.Get(ctx, camp.BudgetCampaignKey).Int64()
 	require.NoError(t, err)
-	require.Equal(t, int64(300_000), remaining)
+	require.Equal(t, int64(200_000), remaining)
+	exists, err := rdb.Exists(ctx, quotaKey(campID)).Result()
+	require.NoError(t, err)
+	require.Equal(t, int64(0), exists)
 }
 
 func TestUnifiedFilter_quotaExhausted_returns3(t *testing.T) {
@@ -290,63 +271,19 @@ func BenchmarkUnifiedFilter_Check_QuotaMode(b *testing.B) {
 	campID := uuid.New()
 	seedCampaignQuota(b, ctx, rdb, campID, 900_000_000_000)
 
-	evt := &domain.Event{
-		Type:       "click",
-		IP:         "203.0.113.16",
-		UserID:     "quota-bench",
-		CampaignID: campID,
-	}
-	checkCtx := attachFilterDeadline(ctx, time.Second)
-
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		evt.ClickID = ""
+		evt := &domain.Event{
+			Type:       "click",
+			IP:         "203.0.113.16",
+			UserID:     fmt.Sprintf("quota-bench-%d", i),
+			CampaignID: campID,
+			ClickID:    fmt.Sprintf("q-%d", i),
+		}
+		checkCtx := attachFilterDeadline(ctx, time.Second)
 		if err := f.Check(checkCtx, evt); err != nil {
 			b.Fatal(err)
 		}
 	}
-}
-
-func TestUnifiedFilter_localQuotaBlock(t *testing.T) {
-	if testing.Short() {
-		t.Skip()
-	}
-	ctx := context.Background()
-	rdb, cleanup := setupTestRedis(t)
-	defer cleanup()
-
-	f := newQuotaUnifiedFilter(t, rdb)
-	require.NoError(t, f.PreloadScripts(ctx))
-
-	campID := uuid.New()
-	// Seed with extremely low quota (50k), click is 100k, so it will exhaust immediately
-	seedCampaignQuota(t, ctx, rdb, campID, 50_000)
-
-	evt := &domain.Event{
-		Type:       "click",
-		IP:         "203.0.113.17",
-		UserID:     "quota-local-block",
-		CampaignID: campID,
-		ClickID:    uuid.NewString(),
-	}
-	checkCtx := attachFilterDeadline(ctx, time.Second)
-
-	// First check should fail with ErrBudgetExhausted and register local block
-	err := f.Check(checkCtx, evt)
-	require.ErrorIs(t, err, ErrBudgetExhausted)
-
-	// Now we increase the quota in Redis
-	seedCampaignQuota(t, ctx, rdb, campID, 500_000)
-
-	// Second check should STILL fail with ErrBudgetExhausted because it is locally blocked!
-	err = f.Check(checkCtx, evt)
-	require.ErrorIs(t, err, ErrBudgetExhausted)
-
-	// Wait for the block duration to expire (100ms)
-	time.Sleep(120 * time.Millisecond)
-
-	// Third check should now succeed because the local block has expired!
-	err = f.Check(checkCtx, evt)
-	require.NoError(t, err)
 }
