@@ -34,6 +34,15 @@ func (m *budgetMissOnceRedis) EvalSha(ctx context.Context, sha1 string, keys []s
 	return cmd
 }
 
+func (m *budgetMissOnceRedis) Process(ctx context.Context, cmd redis.Cmder) error {
+	if m.calls.Add(1) == 1 {
+		setProcessLuaInt64(cmd, -1)
+		return nil
+	}
+	setProcessLuaInt64(cmd, 0)
+	return nil
+}
+
 func (m *budgetMissOnceRedis) Eval(ctx context.Context, script string, keys []string, args ...any) *redis.Cmd {
 	return m.EvalSha(ctx, "", keys, args...)
 }

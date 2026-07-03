@@ -1,3 +1,4 @@
+// Command dlq maintains Redis dead-letter streams for offline archive, replay, and surgical edits after processor failures.
 package main
 
 import (
@@ -23,7 +24,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// main runs the DLQ maintenance CLI for archive, requeue, restore, inspect, and edit actions.
+// main is the operator CLI for DLQ streams because failed ad events must be recoverable without hot-path code changes.
 func main() {
 	var (
 		action    = flag.String("action", "archive", "Action to perform: archive, requeue, restore, inspect, or edit")
@@ -79,7 +80,7 @@ func main() {
 	}
 }
 
-// archiveDLQ drains a Redis stream into a length-prefixed protobuf archive and deletes source entries.
+// archiveDLQ persists stream entries to disk before XDEL because Redis memory must be reclaimed only after durable backup.
 func archiveDLQ(ctx context.Context, rdb *redis.Client, stream, destFile string, batchSize int64) error {
 	file, err := os.OpenFile(destFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -219,7 +220,7 @@ func archiveDLQ(ctx context.Context, rdb *redis.Client, stream, destFile string,
 	return nil
 }
 
-// requeueDLQ moves DLQ entries back to a live stream with optional per-second throttling.
+// requeueDLQ replays DLQ events into a live stream because operators need a controlled path back to normal ingestion.
 func requeueDLQ(ctx context.Context, rdb *redis.Client, dlqStream, targetStream string, batchSize int64, rateLimit int64) error {
 	startID := "0-0"
 	var totalProcessed int64
@@ -300,7 +301,7 @@ func requeueDLQ(ctx context.Context, rdb *redis.Client, dlqStream, targetStream 
 	return nil
 }
 
-// restoreDLQ replays a binary archive into a Redis stream with batched XADD and optional rate limiting.
+// restoreDLQ injects archived events into Redis because cold backups must be replayable after cluster rebuilds.
 func restoreDLQ(ctx context.Context, rdb *redis.Client, srcFile, targetStream string, batchSize int64, rateLimit int64) error {
 	file, err := os.Open(srcFile)
 	if err != nil {
@@ -502,6 +503,7 @@ func inspectStream(ctx context.Context, rdb *redis.Client, stream string, batchS
 	return nil
 }
 
+// EditableStreamEvent is the JSON edit view of AdStreamEvent because $EDITOR workflows cannot edit protobuf directly.
 type EditableStreamEvent struct {
 	ClickId       string `json:"click_id"`
 	CampaignId    string `json:"campaign_id"`
@@ -512,6 +514,7 @@ type EditableStreamEvent struct {
 	CreatedAtUnix int64  `json:"created_at_unix"`
 }
 
+// EditableDLQEvent wraps stream metadata for JSON editing because DLQ repair happens outside the hot path.
 type EditableDLQEvent struct {
 	ID            string              `json:"id"`
 	Error         string              `json:"error"`
@@ -522,7 +525,7 @@ type EditableDLQEvent struct {
 	OriginalEvent EditableStreamEvent `json:"original_event"`
 }
 
-// toEditable maps a protobuf DLQ event into JSON-friendly structs for interactive editing.
+// toEditable decodes protobuf into JSON structs because interactive edit uses human-readable fields, not wire types.
 func toEditable(id string, pbDLQ *pb.AdDLQEvent) EditableDLQEvent {
 	var orig EditableStreamEvent
 	if pbDLQ.OriginalEvent != nil {
@@ -557,7 +560,7 @@ func toEditable(id string, pbDLQ *pb.AdDLQEvent) EditableDLQEvent {
 	}
 }
 
-// fromEditable rebuilds a protobuf DLQ event from operator-edited JSON.
+// fromEditable re-encodes operator edits because the stream stores protobuf AdDLQEvent blobs, not JSON.
 func fromEditable(edit EditableDLQEvent) *pb.AdDLQEvent {
 	var campID []byte
 	if u, err := uuid.Parse(edit.OriginalEvent.CampaignId); err == nil {
@@ -584,7 +587,7 @@ func fromEditable(edit EditableDLQEvent) *pb.AdDLQEvent {
 	}
 }
 
-// launchEditor opens the operator's preferred editor so DLQ fixes stay out of the hot path.
+// launchEditor defers payload fixes to $EDITOR because inline flags cannot safely edit nested event JSON.
 func launchEditor(filepath string) error {
 	editor := os.Getenv("EDITOR")
 	if editor != "" {
@@ -609,7 +612,7 @@ func launchEditor(filepath string) error {
 	return fmt.Errorf("failed to start editor: please set your EDITOR environment variable")
 }
 
-// editDLQMessage loads one stream entry, edits it via JSON, and atomically replaces it in Redis.
+// editDLQMessage replaces one DLQ entry atomically because partial updates would leave duplicate or corrupt stream IDs.
 func editDLQMessage(ctx context.Context, rdb *redis.Client, stream, id string) error {
 	msgs, err := rdb.XRange(ctx, stream, id, id).Result()
 	if err != nil {

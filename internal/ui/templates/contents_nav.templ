@@ -1,0 +1,47 @@
+package templates
+
+templ ContentsNav() {
+	<div class="contents-nav">
+		<button type="button" class="btn contents-nav__trigger" aria-controls="contents-panel" aria-expanded="false">
+			Contents
+		</button>
+		<div id="contents-panel" class="contents-nav__panel" role="region" aria-label="Table of contents">
+			<table>
+				<tbody>
+					<tr>
+						<th scope="row"><a class="link-primary" href="#business">Business</a></th>
+						<td>Prepaid ledger, audit trail, cancel settlement</td>
+					</tr>
+					<tr>
+						<th scope="row"><a class="link-primary" href="#architecture">Architecture &amp; stack</a></th>
+						<td>Ingest, engine, telemetry pipeline, SSR admin UI</td>
+					</tr>
+					<tr>
+						<th scope="row"><a class="link-primary" href="#storage">Storage</a></th>
+						<td>PostgreSQL, ClickHouse, Redis — data ownership</td>
+					</tr>
+					<tr>
+						<th scope="row"><a class="link-primary" href="#roles">Access</a></th>
+						<td>SA / M / C / G permission matrix</td>
+					</tr>
+					<tr>
+						<th scope="row"><a class="link-primary" href="#lifecycle">Campaign lifecycle</a></th>
+						<td>Status transitions, cancel drain, ledger effects</td>
+					</tr>
+					<tr>
+						<th scope="row"><a class="link-primary" href="#deployment">Deployment</a></th>
+						<td>Host topology, ports, service boundaries</td>
+					</tr>
+					<tr>
+						<th scope="row"><a class="link-primary" href="#failures">Failure modes</a></th>
+						<td>Breaker, shard loss, CH lag, outbox stall</td>
+					</tr>
+					<tr>
+						<th scope="row"><a class="link-primary" href="#metrics">Performance</a></th>
+						<td>1M+ RPS, p99 bid latency, telemetry flush</td>
+					</tr>
+				</tbody>
+			</table>
+		</div>
+	</div>
+}

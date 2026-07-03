@@ -1,0 +1,13 @@
+package templates
+
+import "strings"
+
+templ IconCanvas(name string) {
+	<span class="ui-icon" data-icon={ name } aria-hidden="true">
+		<canvas width="16" height="16"></canvas>
+	</span>
+}
+
+templ CampaignStatus(status string) {
+	<span class="status-badge" data-status={ strings.ToLower(status) }>{ status }</span>
+}

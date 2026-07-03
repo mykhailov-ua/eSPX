@@ -1,8 +1,13 @@
 package ads
 
 import (
+	"sync/atomic"
+
 	"github.com/google/uuid"
 )
+
+// slotTable is an immutable 1024-entry shard map swapped via atomic.Value on reload.
+type slotTable [1024]uint16
 
 // Sharder maps campaign IDs to Redis shard indices for budget and filter keys.
 type Sharder interface {
@@ -15,19 +20,28 @@ type JumpHashSharder struct {
 }
 
 // StaticSlotSharder picks the lowest-latency shard for a fixed cluster size on the tracker hot path.
+// Slot lookup uses atomic.Value — no mutex on GetShard; reload swaps the whole table on cold path.
 type StaticSlotSharder struct {
-	slots [1024]uint16
+	slots         atomic.Value // *slotTable
+	activeVersion atomic.Int32 // Postgres active_version; 0 = modulo fallback only
+}
+
+// buildSlotTable precomputes slot % numBuckets routing for StaticSlotSharder.
+func buildSlotTable(numBuckets int) *slotTable {
+	if numBuckets <= 0 {
+		numBuckets = 1
+	}
+	var t slotTable
+	for i := range t {
+		t[i] = uint16(i % numBuckets)
+	}
+	return &t
 }
 
 // NewStaticSlotSharder precomputes shard slots for O(1) lookup at high RPS.
 func NewStaticSlotSharder(numBuckets int) *StaticSlotSharder {
-	if numBuckets <= 0 {
-		numBuckets = 1
-	}
 	s := &StaticSlotSharder{}
-	for i := 0; i < 1024; i++ {
-		s.slots[i] = uint16(i % numBuckets)
-	}
+	s.slots.Store(buildSlotTable(numBuckets))
 	return s
 }
 
@@ -35,7 +49,33 @@ func NewStaticSlotSharder(numBuckets int) *StaticSlotSharder {
 func (s *StaticSlotSharder) GetShard(id uuid.UUID) int {
 	key := crc32Castagnoli(&id)
 	slot := key & 1023
-	return int(s.slots[slot])
+	table := s.slots.Load().(*slotTable)
+	return int(table[slot])
+}
+
+// ReloadFromModulo atomically replaces the slot map for slot % N topology (cold path only).
+func (s *StaticSlotSharder) ReloadFromModulo(numBuckets int) {
+	s.slots.Store(buildSlotTable(numBuckets))
+}
+
+// StoreSlotMap atomically swaps a caller-built 1024-entry map (Phase 2 Fixed Slot Map).
+func (s *StaticSlotSharder) StoreSlotMap(table *[1024]uint16) {
+	if table == nil {
+		return
+	}
+	var copy slotTable
+	copy = slotTable(*table)
+	s.slots.Store(&copy)
+}
+
+// SetActiveVersion records the Postgres map version loaded into this sharder (cold path).
+func (s *StaticSlotSharder) SetActiveVersion(version int32) {
+	s.activeVersion.Store(version)
+}
+
+// ActiveVersion returns the loaded Postgres map version; 0 if only modulo fallback was used.
+func (s *StaticSlotSharder) ActiveVersion() int32 {
+	return s.activeVersion.Load()
 }
 
 // NewJumpHashSharder builds a consistent hasher for live cluster resize scenarios.
@@ -57,7 +97,7 @@ func (s *JumpHashSharder) GetShard(id uuid.UUID) int {
 	return int(jumpHash(key, int32(s.numBuckets)))
 }
 
-// jumpHash implements Google jump consistent hashing for shard selection.
+// jumpHash spreads campaigns across shards with minimal remapping when bucket count changes.
 func jumpHash(key uint64, numBuckets int32) int32 {
 	var b int64 = -1
 	var j int64

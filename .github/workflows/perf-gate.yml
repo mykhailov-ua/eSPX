@@ -1,0 +1,66 @@
+name: Performance Gate
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'internal/ads/**'
+      - 'internal/config/**'
+      - 'internal/database/redis*.go'
+      - 'deploy/nginx/lua/**'
+      - 'api/events.proto'
+      - 'api/buf.gen.yaml'
+      - 'scripts/perf-gate*.sh'
+      - 'scripts/perf_gate.go'
+      - 'scripts/stabilize-cpu.sh'
+      - 'scripts/install-benchstat.sh'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'internal/ads/**'
+      - 'internal/config/**'
+      - 'internal/database/redis*.go'
+      - 'deploy/nginx/lua/**'
+      - 'api/events.proto'
+      - 'api/buf.gen.yaml'
+      - 'scripts/perf-gate*.sh'
+      - 'scripts/perf_gate.go'
+      - 'scripts/stabilize-cpu.sh'
+      - 'scripts/install-benchstat.sh'
+
+jobs:
+  performance-gate:
+    name: Performance Gate
+    runs-on: ${{ vars.PERF_RUNNER_LABEL || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    env:
+      GOMAXPROCS: "1"
+      BASELINE_REF: ${{ github.event.pull_request.base.sha || 'main' }}
+      OUTDIR: ${{ github.workspace }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Stabilize CPU (performance governor)
+        run: bash scripts/stabilize-cpu.sh
+
+      - name: Run performance gate
+        run: bash scripts/perf-gate-run.sh
+
+      - name: Upload Benchmark Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: |
+            pr_bench.txt
+            baseline_bench.txt
+            gate_report.txt

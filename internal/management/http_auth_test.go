@@ -15,6 +15,7 @@ import (
 	"espx/internal/auth/pb"
 	"espx/internal/config"
 	"espx/internal/database"
+
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -279,6 +280,6 @@ func TestAuthHandler_MeRedisOutage(t *testing.T) {
 
 	mux.ServeHTTP(resp, req)
 
-	assert.Equal(t, http.StatusInternalServerError, resp.Code)
-	assert.Contains(t, resp.Body.String(), "security subsystem unavailable")
+	assert.Equal(t, http.StatusUnauthorized, resp.Code)
+	assert.Contains(t, resp.Body.String(), "security check failed")
 }

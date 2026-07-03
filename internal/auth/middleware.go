@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -35,13 +34,13 @@ func AuthMiddleware(tokenMaker Maker, rdb redis.UniversalClient, allowedRoles ..
 				return
 			}
 
-			if len(authorizationHeader) < 7 || !strings.EqualFold(authorizationHeader[:7], "bearer ") {
+			accessToken, ok := parseBearerToken(authorizationHeader)
+			if !ok {
 				err := errors.New("invalid authorization header format")
 				http.Error(w, err.Error(), http.StatusUnauthorized)
 				return
 			}
 
-			accessToken := strings.TrimSpace(authorizationHeader[7:])
 			payload, err := tokenMaker.VerifyToken(accessToken)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusUnauthorized)

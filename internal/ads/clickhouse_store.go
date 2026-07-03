@@ -16,6 +16,19 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
+// isFraudTelemetry routes events with fraud signals to the fraud_events table.
+func isFraudTelemetry(e *domain.Event) bool {
+	return e.FraudReason != "" || e.FraudScore > 0 || e.GhostEvent
+}
+
+// fraudGhostFlag maps ghost_event to ClickHouse UInt8 without per-row heap allocation.
+func fraudGhostFlag(e *domain.Event) uint8 {
+	if e.GhostEvent {
+		return 1
+	}
+	return 0
+}
+
 // slicePool recycles event batch slices for the ClickHouse background flusher.
 var slicePool = sync.Pool{
 	New: func() any {
@@ -55,12 +68,12 @@ func NewClickHouseStore(conn driver.Conn, writeTimeout time.Duration) *ClickHous
 	return s
 }
 
-// getBatchSize returns the current flush batch size atomically.
+// getBatchSize reads the runtime batch threshold without blocking the async flusher.
 func (s *ClickHouseStore) getBatchSize() int {
 	return int(s.batchSize.Load())
 }
 
-// getFlushInterval returns the current time-based flush interval atomically.
+// getFlushInterval reads the time-based flush cadence without blocking the async flusher.
 func (s *ClickHouseStore) getFlushInterval() time.Duration {
 	return time.Duration(s.flushInterval.Load())
 }
@@ -195,7 +208,7 @@ func (s *ClickHouseStore) backgroundFlusher() {
 			for {
 				select {
 				case e := <-s.eventChan:
-					if e.FraudReason != "" {
+					if isFraudTelemetry(e) {
 						*pFraud = append(*pFraud, e)
 					} else {
 						switch e.Type {
@@ -216,7 +229,7 @@ func (s *ClickHouseStore) backgroundFlusher() {
 			return
 
 		case e := <-s.eventChan:
-			if e.FraudReason != "" {
+			if isFraudTelemetry(e) {
 				*pFraud = append(*pFraud, e)
 				if len(*pFraud) >= s.getBatchSize() {
 					s.flushTableWithRetry("fraud_events", *pFraud, true)
@@ -334,6 +347,8 @@ func (s *ClickHouseStore) insertTable(ctx context.Context, table string, evts []
 				e.UA,
 				unsafeString(e.Payload),
 				e.FraudReason,
+				e.FraudScore,
+				fraudGhostFlag(e),
 				e.CreatedAt,
 			)
 		} else {
@@ -412,7 +427,7 @@ func (s *ClickHouseStore) insertToClickHouse(ctx context.Context, events []*doma
 
 	for i := range events {
 		e := events[i]
-		if e.FraudReason != "" {
+		if isFraudTelemetry(e) {
 			fraud = append(fraud, e)
 			continue
 		}
@@ -456,6 +471,8 @@ func (s *ClickHouseStore) insertToClickHouse(ctx context.Context, events []*doma
 					e.UA,
 					unsafeString(e.Payload),
 					e.FraudReason,
+					e.FraudScore,
+					fraudGhostFlag(e),
 					e.CreatedAt,
 				)
 			} else {

@@ -10,6 +10,7 @@ import (
 
 	"espx/internal/ads/db"
 	"espx/internal/ads/pb"
+	"espx/internal/config"
 	"espx/internal/domain"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -25,8 +26,19 @@ var idSequence uint64
 // cachedUnixMilli avoids time.Now syscalls for TTC and timestamp fields on the hot path.
 var cachedUnixMilli atomic.Int64
 
+// cachedUnixMilliAny mirrors cachedUnixMilli for zero-alloc Lua argv boxing.
+var cachedUnixMilliAny atomic.Value
+
 // cachedNowUTC holds wall time refreshed once per second for schedule and pacing checks.
 var cachedNowUTC atomic.Pointer[time.Time]
+
+// clockRefreshPaused freezes cached wall-clock updates for deterministic chaos tests.
+var clockRefreshPaused atomic.Bool
+
+// SetClockRefreshPaused stops background cachedUnixMilli/cachedNowUTC refresh (tests only).
+func SetClockRefreshPaused(paused bool) {
+	clockRefreshPaused.Store(paused)
+}
 
 // storeCachedNowUTC snapshots the current UTC instant for cached time readers.
 func storeCachedNowUTC() {
@@ -60,18 +72,27 @@ func init() {
 	nodeID = uint16(h ^ (h >> 16))
 
 	cachedUnixMilli.Store(time.Now().UnixMilli())
+	cachedUnixMilliAny.Store(cachedUnixMilli.Load())
 	storeCachedNowUTC()
 	go func() {
 		ticker := time.NewTicker(time.Millisecond)
 		defer ticker.Stop()
 		for range ticker.C {
-			cachedUnixMilli.Store(time.Now().UnixMilli())
+			if clockRefreshPaused.Load() {
+				continue
+			}
+			ms := time.Now().UnixMilli()
+			cachedUnixMilli.Store(ms)
+			cachedUnixMilliAny.Store(ms)
 		}
 	}()
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
+			if clockRefreshPaused.Load() {
+				continue
+			}
 			storeCachedNowUTC()
 		}
 	}()
@@ -146,26 +167,7 @@ func (r *CampaignRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Campa
 	if err != nil {
 		return nil, err
 	}
-
-	loc, _ := time.LoadLocation(row.Timezone)
-	if loc == nil {
-		loc = time.UTC
-	}
-
-	return &domain.Campaign{
-		ID:              id,
-		CustomerID:      uuid.UUID(row.CustomerID.Bytes),
-		BudgetLimit:     row.BudgetLimit,
-		CurrentSpend:    row.CurrentSpend,
-		Status:          domain.CampaignStatus(row.Status),
-		PacingMode:      domain.PacingMode(row.PacingMode),
-		DailyBudget:     row.DailyBudget,
-		Timezone:        row.Timezone,
-		Location:        loc,
-		FreqLimit:       row.FreqLimit.Int32,
-		FreqWindow:      row.FreqWindow.Int32,
-		TargetCountries: SliceToMap(row.TargetCountries),
-	}, nil
+	return campaignFromDBRow(row), nil
 }
 
 // UpdateStatus changes campaign lifecycle state in Postgres.
@@ -232,6 +234,15 @@ func (r *CampaignRepo) UpdateSpend(ctx context.Context, id uuid.UUID, amount int
 		return err
 	}
 
+	// Phase 1.5.1: decrease reserved_amount proportionally to spend flushed
+	sharder := NewStaticSlotSharder(config.ExpectedRedisShardCount)
+	shardID := int16(sharder.GetShard(id))
+	_ = q.DecreaseCampaignQuotaReserved(ctx, db.DecreaseCampaignQuotaReservedParams{
+		ShardID:        shardID,
+		CampaignID:     pgtype.UUID{Bytes: id, Valid: true},
+		ReservedAmount: amount,
+	})
+
 	if tx != nil {
 		return tx.Commit(ctx)
 	}
@@ -247,26 +258,7 @@ func (r *CampaignRepo) ListActive(ctx context.Context) ([]*domain.Campaign, erro
 
 	campaigns := make([]*domain.Campaign, len(rows))
 	for i, row := range rows {
-		loc, _ := time.LoadLocation(row.Timezone)
-		if loc == nil {
-			loc = time.UTC
-		}
-
-		campaigns[i] = &domain.Campaign{
-			ID:              uuid.UUID(row.ID.Bytes),
-			CustomerID:      uuid.UUID(row.CustomerID.Bytes),
-			Name:            row.Name,
-			BudgetLimit:     row.BudgetLimit,
-			CurrentSpend:    row.CurrentSpend,
-			Status:          domain.CampaignStatus(row.Status),
-			PacingMode:      domain.PacingMode(row.PacingMode),
-			DailyBudget:     row.DailyBudget,
-			Timezone:        row.Timezone,
-			Location:        loc,
-			FreqLimit:       row.FreqLimit.Int32,
-			FreqWindow:      row.FreqWindow.Int32,
-			TargetCountries: SliceToMap(row.TargetCountries),
-		}
+		campaigns[i] = campaignFromDBRow(row)
 	}
 	return campaigns, nil
 }
@@ -401,7 +393,10 @@ func DeepResetAdStreamEvent(m *pb.AdStreamEvent) {
 	m.Payload = m.Payload[:0]
 	m.Ip = m.Ip[:0]
 	m.Ua = m.Ua[:0]
+	m.FraudReason = m.FraudReason[:0]
 	m.CreatedAtUnix = 0
+	m.FraudScore = 0
+	m.GhostEvent = false
 }
 
 // ClearAdStreamEvent nils large byte fields so pooled protobuf objects do not pin payload memory.
@@ -415,7 +410,10 @@ func ClearAdStreamEvent(m *pb.AdStreamEvent) {
 	m.Payload = nil
 	m.Ip = nil
 	m.Ua = nil
+	m.FraudReason = nil
 	m.CreatedAtUnix = 0
+	m.FraudScore = 0
+	m.GhostEvent = false
 }
 
 // DeepResetAdDLQEvent clears nested stream events before returning DLQ protobuf objects to a pool.

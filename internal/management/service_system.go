@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"espx/internal/ads/db"
+	"espx/pkg/cold"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -20,11 +22,11 @@ type BlacklistDTO struct {
 	CreatedAt string `json:"created_at"`
 }
 
-// BlockIP persists a blacklist entry and propagates it to Redis and nginx via outbox.
+// BlockIP persists a blacklist entry and propagates it to Redis and nginx via cold.
 func (s *Service) BlockIP(ctx context.Context, ip string, source string) error {
 	reason := normalizeBlacklistReason(source)
 
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 		_, err := q.CreateBlacklistIP(ctx, db.CreateBlacklistIPParams{
 			Ip:     ip,
@@ -49,11 +51,11 @@ func (s *Service) BlockIP(ctx context.Context, ip string, source string) error {
 	})
 }
 
-// UnblockIP removes a blacklist entry and propagates the change to Redis and nginx via outbox.
+// UnblockIP removes a blacklist entry and propagates the change to Redis and nginx via cold.
 func (s *Service) UnblockIP(ctx context.Context, ip string, source string) error {
 	reason := normalizeBlacklistReason(source)
 
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 		err := q.DeleteBlacklistIP(ctx, ip)
 		if err != nil {
@@ -75,9 +77,9 @@ func (s *Service) UnblockIP(ctx context.Context, ip string, source string) error
 	})
 }
 
-// UpdateSettings persists system configuration and queues a hot-path sync via outbox.
+// UpdateSettings persists system configuration and queues a hot-path sync via cold.
 func (s *Service) UpdateSettings(ctx context.Context, settings map[string]string) error {
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 		for k, v := range settings {
 			err := q.SetSystemSetting(ctx, db.SetSystemSettingParams{
@@ -102,49 +104,37 @@ func (s *Service) UpdateSettings(ctx context.Context, settings map[string]string
 
 // ListBlacklist returns paginated blocked IPs for the admin UI.
 func (s *Service) ListBlacklist(ctx context.Context, limit, offset int32) ([]BlacklistDTO, int64, error) {
-	q := db.New(s.pool)
-	total, err := q.CountBlacklist(ctx)
-	if err != nil {
-		return nil, 0, err
-	}
-	if total == 0 {
-		return []BlacklistDTO{}, 0, nil
-	}
+	q := db.New(s.GetPool())
+	listParams := db.ListBlacklistParams{Limit: limit, Offset: offset}
+	return cold.PaginatedList(
+		func() (int64, error) { return q.CountBlacklist(ctx) },
+		func() ([]db.IpBlacklist, error) { return q.ListBlacklist(ctx, listParams) },
+		blacklistToDTO,
+	)
+}
 
-	rows, err := q.ListBlacklist(ctx, db.ListBlacklistParams{Limit: limit, Offset: offset})
-	if err != nil {
-		return nil, 0, err
+func blacklistToDTO(r db.IpBlacklist) BlacklistDTO {
+	return BlacklistDTO{
+		ID:        r.ID,
+		IP:        r.Ip,
+		Reason:    r.Reason,
+		CreatedAt: r.CreatedAt.Time.Format(time.RFC3339),
 	}
-
-	res := make([]BlacklistDTO, len(rows))
-	for i, r := range rows {
-		res[i] = BlacklistDTO{
-			ID:        r.ID,
-			IP:        r.Ip,
-			Reason:    r.Reason,
-			CreatedAt: r.CreatedAt.Time.Format(time.RFC3339),
-		}
-	}
-	return res, total, nil
 }
 
 // GetSettings loads all system settings from Postgres for the admin API.
 func (s *Service) GetSettings(ctx context.Context) (map[string]string, error) {
-	q := db.New(s.pool)
+	q := db.New(s.GetPool())
 	rows, err := q.GetAllSystemSettings(ctx)
 	if err != nil {
 		return nil, err
 	}
-	res := make(map[string]string)
-	for _, r := range rows {
-		res[r.Key] = r.Value
-	}
-	return res, nil
+	return cold.KeyByValue(rows, func(r db.GetAllSystemSettingsRow) string { return r.Key }, func(r db.GetAllSystemSettingsRow) string { return r.Value }), nil
 }
 
 // SyncSystemState pushes authoritative blacklist and settings snapshots from Postgres to all Redis shards.
 func (s *Service) SyncSystemState(ctx context.Context) error {
-	q := db.New(s.pool)
+	q := db.New(s.GetPool())
 
 	bl, err := q.GetAllBlacklist(ctx)
 	if err != nil {
@@ -185,8 +175,11 @@ func (s *Service) SyncSystemState(ctx context.Context) error {
 		for _, r := range st {
 			settingsMap[r.Key] = r.Value
 		}
-		if err := s.rdbs[0].HSet(ctx, "config:values", settingsMap).Err(); err != nil {
+		if err := syncGlobalConfigToAllShards(ctx, s.rdbs, settingsMap, 0); err != nil {
 			return fmt.Errorf("failed to sync settings to redis: %w", err)
+		}
+		if err := replicateConfigVersionFromPrimary(ctx, s.rdbs); err != nil {
+			return err
 		}
 	}
 
@@ -213,14 +206,14 @@ func (s *Service) RunSystemStateSyncer(ctx context.Context) {
 	}
 }
 
-// ToggleEmergencyBreaker flips the global kill switch and propagates it to the hot path via outbox.
+// ToggleEmergencyBreaker flips the global kill switch and propagates it to the hot path via cold.
 func (s *Service) ToggleEmergencyBreaker(ctx context.Context, active bool, reason string) error {
 	val := "false"
 	if active {
 		val = "true"
 	}
 
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err := pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 		err := q.SetSystemSetting(ctx, db.SetSystemSettingParams{
 			Key:   "emergency_breaker",

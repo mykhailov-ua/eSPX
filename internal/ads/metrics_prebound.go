@@ -91,6 +91,27 @@ func newRedisLuaObservers(numShards int) []prometheus.Observer {
 	return observers
 }
 
+// newRedisLuaNoScriptCounters pre-binds per-shard NOSCRIPT fallback counters.
+func newRedisLuaNoScriptCounters(numShards int) []prometheus.Counter {
+	if numShards <= 0 {
+		numShards = 1
+	}
+	counters := make([]prometheus.Counter, numShards)
+	for i := range counters {
+		counters[i] = metrics.RedisLuaNoScriptTotal.WithLabelValues(strconv.Itoa(i))
+	}
+	return counters
+}
+
+// incRedisLuaNoScript records a NOSCRIPT fallback on the pre-bound shard counter when available.
+func incRedisLuaNoScript(counters []prometheus.Counter, shard int) {
+	if shard >= 0 && shard < len(counters) {
+		counters[shard].Inc()
+		return
+	}
+	metrics.RedisLuaNoScriptTotal.WithLabelValues(strconv.Itoa(shard)).Inc()
+}
+
 // observeRedisLua records Lua duration on the pre-bound shard observer when available.
 func observeRedisLua(observers []prometheus.Observer, shard int, seconds float64) {
 	if shard >= 0 && shard < len(observers) {
@@ -98,4 +119,25 @@ func observeRedisLua(observers []prometheus.Observer, shard int, seconds float64
 		return
 	}
 	metrics.RedisLuaDuration.WithLabelValues(strconv.Itoa(shard)).Observe(seconds)
+}
+
+// newRedisOpsCounters pre-binds per-shard unified-filter Redis op counters.
+func newRedisOpsCounters(numShards int) []prometheus.Counter {
+	if numShards <= 0 {
+		numShards = 1
+	}
+	counters := make([]prometheus.Counter, numShards)
+	for i := range counters {
+		counters[i] = metrics.RedisOpsTotal.WithLabelValues(strconv.Itoa(i))
+	}
+	return counters
+}
+
+// incRedisOps records one EvalSha round trip on the pre-bound shard counter when available.
+func incRedisOps(counters []prometheus.Counter, shard int) {
+	if shard >= 0 && shard < len(counters) {
+		counters[shard].Inc()
+		return
+	}
+	metrics.RedisOpsTotal.WithLabelValues(strconv.Itoa(shard)).Inc()
 }

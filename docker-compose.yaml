@@ -1,0 +1,520 @@
+services:
+  tracker-0:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/tracker"]
+    network_mode: "${NET_MODE:-host}"
+    env_file:
+      - .env
+    environment:
+      - SERVER_PORT=8181
+      - GOMEMLIMIT=700MiB
+      - GOGC=50
+    volumes:
+      - ./deploy/geoip:/deploy/geoip:ro
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    healthcheck:
+      disable: true
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+
+  tracker-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/tracker"]
+    network_mode: "${NET_MODE:-host}"
+    env_file:
+      - .env
+    environment:
+      - SERVER_PORT=8182
+      - GOMEMLIMIT=700MiB
+      - GOGC=50
+    volumes:
+      - ./deploy/geoip:/deploy/geoip:ro
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    healthcheck:
+      disable: true
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+
+  tracker-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/tracker"]
+    network_mode: "${NET_MODE:-host}"
+    env_file:
+      - .env
+    environment:
+      - SERVER_PORT=8183
+      - GOMEMLIMIT=700MiB
+      - GOGC=50
+    volumes:
+      - ./deploy/geoip:/deploy/geoip:ro
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    healthcheck:
+      disable: true
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+
+  tracker-3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/tracker"]
+    network_mode: "${NET_MODE:-host}"
+    env_file:
+      - .env
+    environment:
+      - SERVER_PORT=8184
+      - GOMEMLIMIT=700MiB
+      - GOGC=50
+    volumes:
+      - ./deploy/geoip:/deploy/geoip:ro
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    healthcheck:
+      disable: true
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+
+  nginx:
+    image: openresty/openresty:alpine
+    network_mode: "${NET_MODE:-host}"
+    environment:
+      - REDIS_HOST=127.0.0.1
+      - REDIS_PORT=6479
+      - REDIS_PASS=${REDIS_PASSWORD}
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./deploy/nginx/nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
+      - ./deploy/nginx/lua:/etc/nginx/lua:ro
+    depends_on:
+      - tracker-0
+      - tracker-1
+      - tracker-2
+      - tracker-3
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+
+  processor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/processor"]
+    network_mode: "${NET_MODE:-host}"
+    env_file:
+      - .env
+    environment:
+      - DB_DSN=${DB_DSN}
+      - REDIS_ADDRS=localhost:6479,localhost:6480,localhost:6481,localhost:6482,localhost:6483,localhost:6484
+      - CH_DSN=${CH_DSN}
+      - PROCESSOR_PORT=${PROCESSOR_PORT}
+      - DB_PROCESSOR_MAX_CONNS=${DB_PROCESSOR_MAX_CONNS}
+      - GOMEMLIMIT=1500MiB
+      - GOGC=100
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis-0:
+        condition: service_healthy
+      clickhouse:
+        condition: service_started
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+
+  auth:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/auth"]
+    network_mode: "${NET_MODE:-host}"
+    env_file:
+      - .env
+    environment:
+      - AUTH_SERVER_PORT=51051
+      - DB_DSN=${DB_DSN}
+      - REDIS_ADDRS=127.0.0.1:6479
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis-0:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+
+  management:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/management"]
+    network_mode: "${NET_MODE:-host}"
+    env_file:
+      - .env
+    environment:
+      - MANAGEMENT_PORT=8188
+      - AUTH_SERVER_PORT=51051
+      - AUTH_SERVER_HOST=127.0.0.1
+      - DB_DSN=${DB_DSN}
+      - REDIS_ADDRS=127.0.0.1:6479
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    restart: always
+    depends_on:
+      auth:
+        condition: service_started
+      db:
+        condition: service_healthy
+      redis-0:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+
+  db:
+    image: postgres:${POSTGRES_VERSION}
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=${DB_NAME}
+    ports:
+      - "${DB_PORT}:${DB_PORT}"
+    command: ["postgres", "-p", "${DB_PORT}", "-c", "max_connections=600", "-c", "shared_buffers=1GB", "-c", "work_mem=64MB", "-c", "maintenance_work_mem=256MB", "-c", "effective_cache_size=3GB"]
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -p ${DB_PORT} -U ${DB_USER}"]
+      interval: ${HEALTHCHECK_INTERVAL}
+      timeout: ${HEALTHCHECK_TIMEOUT}
+      retries: ${HEALTHCHECK_RETRIES}
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+
+  redis-0:
+    image: redis:${REDIS_VERSION}
+    env_file:
+      - .env
+    ports:
+      - "6479:6379"
+    command: ["redis-server", "--port", "6379", "--requirepass", "${REDIS_PASSWORD}", "--save", ""]
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: ${HEALTHCHECK_INTERVAL}
+      timeout: ${HEALTHCHECK_TIMEOUT}
+      retries: ${HEALTHCHECK_RETRIES}
+
+  redis-1:
+    image: redis:${REDIS_VERSION}
+    env_file:
+      - .env
+    ports:
+      - "6480:6379"
+    command: ["redis-server", "--port", "6379", "--requirepass", "${REDIS_PASSWORD}", "--save", ""]
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: ${HEALTHCHECK_INTERVAL}
+      timeout: ${HEALTHCHECK_TIMEOUT}
+      retries: ${HEALTHCHECK_RETRIES}
+
+  redis-2:
+    image: redis:${REDIS_VERSION}
+    env_file:
+      - .env
+    ports:
+      - "6481:6379"
+    command: ["redis-server", "--port", "6379", "--requirepass", "${REDIS_PASSWORD}", "--save", ""]
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: ${HEALTHCHECK_INTERVAL}
+      timeout: ${HEALTHCHECK_TIMEOUT}
+      retries: ${HEALTHCHECK_RETRIES}
+
+  redis-3:
+    image: redis:${REDIS_VERSION}
+    env_file:
+      - .env
+    ports:
+      - "6482:6379"
+    command: ["redis-server", "--port", "6379", "--requirepass", "${REDIS_PASSWORD}", "--save", ""]
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: ${HEALTHCHECK_INTERVAL}
+      timeout: ${HEALTHCHECK_TIMEOUT}
+      retries: ${HEALTHCHECK_RETRIES}
+
+  redis-4:
+    image: redis:${REDIS_VERSION}
+    env_file:
+      - .env
+    ports:
+      - "6483:6379"
+    command: ["redis-server", "--port", "6379", "--requirepass", "${REDIS_PASSWORD}", "--save", ""]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: ${HEALTHCHECK_INTERVAL}
+      timeout: ${HEALTHCHECK_TIMEOUT}
+      retries: ${HEALTHCHECK_RETRIES}
+
+  redis-5:
+    image: redis:${REDIS_VERSION}
+    env_file:
+      - .env
+    ports:
+      - "6484:6379"
+    command: ["redis-server", "--port", "6379", "--requirepass", "${REDIS_PASSWORD}", "--save", ""]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: ${HEALTHCHECK_INTERVAL}
+      timeout: ${HEALTHCHECK_TIMEOUT}
+      retries: ${HEALTHCHECK_RETRIES}
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:${CH_VERSION}
+    env_file:
+      - .env
+    ports:
+      - "${CH_PORT}:${CH_PORT}"
+      - "${CH_HTTP_PORT}:8123"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./deploy/clickhouse/config.xml:/etc/clickhouse-server/config.d/memory_limit.xml:ro
+      - ./deploy/clickhouse/users.xml:/etc/clickhouse-server/users.d/custom_users.xml:ro
+      - ./deploy/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+    networks:
+      - database
+      - monitoring
+    environment:
+      - CLICKHOUSE_DB=${CH_NAME}
+      - CLICKHOUSE_USER=${CH_USER}
+      - CLICKHOUSE_PASSWORD=${CH_PASSWORD}
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+    healthcheck:
+      disable: true
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+
+  prometheus:
+    image: prom/prometheus:latest
+    network_mode: "${NET_MODE:-host}"
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--web.listen-address=:9190"]
+    volumes:
+      - ./deploy/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/monitoring/prometheus.rules.yml:/etc/prometheus/prometheus.rules.yml:ro
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+  grafana:
+    image: grafana/grafana:latest
+    network_mode: "${NET_MODE:-host}"
+    volumes:
+      - ./deploy/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    environment:
+      - GF_SERVER_HTTP_PORT=3100
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    network_mode: "${NET_MODE:-host}"
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml", "--web.listen-address=:9093"]
+    volumes:
+      - ./deploy/monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+  alertmanager-telegram:
+    build:
+      context: .
+      dockerfile: cmd/alertmanager-telegram/Dockerfile
+    network_mode: "${NET_MODE:-host}"
+    environment:
+      - PROXY_PORT=8222
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-YOUR_TELEGRAM_BOT_TOKEN_PLACEHOLDER}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-YOUR_TELEGRAM_CHAT_ID_PLACEHOLDER}
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+networks:
+  frontend:
+  backend:
+  database:
+  monitoring:
+
+volumes:
+  db_data:
+  clickhouse_data:

@@ -1,65 +1,108 @@
 # eSPX (Event Stream Pacing)
 
-Event ingestion and pacing pipeline.
+Real-time ad event ingestion, budget enforcement, and settlement pipeline. Go services on a client-sharded Redis edge state layer, PostgreSQL ledger, and ClickHouse telemetry.
 
-## Core Features
+## System Overview
 
-- **Ingestion**: Event-driven network handler based on `github.com/panjf2000/gnet/v2` with `SO_REUSEPORT` and `TCP_NODELAY` socket configurations.
-- **Validation**: Sharded Redis cluster utilizing client-side static hash slot mapping for budget, pacing, and frequency checks.
-- **Anti-Fraud**: MaxMind DC/VPN/Proxy checks, Time-To-Click (TTC) velocity checks, and geo-targeting validation.
-- **Creative Routing**: Weight-based deterministic creative selection via FNV-1a user-session hashing.
-- **Persistence**: Transactional outbox pattern using a high-throughput Postgres polling loop (`SKIP LOCKED`) and asynchronous multi-row batch writers.
-- **Lossy Telemetry Rings & Queues**: Memory-preallocated MPSC ring buffers for asynchronous fraud logs and latency tracking.
-- **Cache Warming**: Proactive budget cache warmer utilizing Redis SetNX pipelines and in-memory registry backup recovery to eliminate database contention during cache miss storms.
-- **Serialization**: Schema-optimized binary Protobuf formats utilizing zero-copy unmarshaling via `vtproto`.
-- **Infrastructure**: Automated PostgreSQL partition rotation, concurrent multi-shard Redis blacklist sync workers, and Nginx dynamic Lua-based load balancing.
+Request flow: Nginx (:8180) load-balances `/track` to tracker replicas (:8181-8184). Each tracker executes one Redis round trip per accepted event on the campaign's shard (:6479-6482). Accepted events land on per-shard `ad:events:stream`. Processor (:8186) consumes streams into Postgres and ClickHouse. Management (:8188), Auth gRPC (:51051), Payment gRPC (:51052), and Settlement gRPC (:51053) handle control plane and money movement.
 
----
+**Hot path:** `POST /track` on gnet trackers. One Redis round trip per accepted event via `unified-filter.lua` (budget, pacing, dedup, rate limit, fcap, stream enqueue). Go filters run before Lua for geo, schedule, fraud, and emergency breaker checks that cannot execute in Redis.
 
-## Ingestion Architecture
+**Cold path:** Management REST API, auth gRPC, payment webhooks, outbox workers, reconciliation, pacing controller.
 
-### Ingress (Tracker)
-- **Networking**: Stateless replicas running in host network mode using `gnet/v2` with 2 event loops per instance and OS thread locking disabled (`gnet.WithLockOSThread(false)`).
-- **Worker Pool**: Task dispatch to CPU-pinned workers using lock-free MPSC ring buffers with cache-line padding.
-- **Memory Footprint**: Lock-free, zero-allocation connection-local pool (`connContext`) bound to connection lifetime.
-- **Data Parsing**: Zero-copy DFA HTTP/1.1 request stream scanner mapping headers directly from socket ring buffers.
+## Services
 
-### Edge Caching & Routing
-- **Sharding**: Client-side `StaticSlotSharder` executing O(1) constant-time lookups over 1024 virtual slots.
-- **Filters**: Atomic pipelined Redis evaluations checking budget allocations, click deduplication, and frequency caps.
-- **Blacklist Cache**: Nginx Lua local shared dictionary (`blacklist_cache`) with 300-second TTL. It extracts campaign_id and user_id from JSON/Protobuf request bodies to hash via `ngx.crc32_long` to determine the target Redis shard, completely eliminating NAT-based shard hotspotting.
+| Binary | Port(s) | Role |
+| :--- | :--- | :--- |
+| `tracker` | 8181-8184 | gnet ingestion, Lua filter, registry sync, budget warmer |
+| `processor` | 8186 | Per-shard stream consumers to Postgres + ClickHouse; budget sync |
+| `management` | 8188, 51053 | Admin REST, outbox to Redis propagation, settlement gRPC |
+| `auth` | 51051 | gRPC: Argon2id, PASETO, sessions, API keys |
+| `payment` | 51052, 8187 | Payment intents gRPC, Stripe webhooks, settlement outbox |
+| `telegram` | 8222 | Alertmanager to Telegram proxy |
+| `broker` | — | mmap log broker (not in compose; optional log evacuation) |
+| `dlq`, `admin` | — | Operator CLIs |
 
-### Settlement
-- **Processor**: Consumers pulling batch streams from Redis Consumer Groups with integrated Circuit Breaker.
-- **Postgres 16**: ACID daily partitions with write idempotency tracking. Enforces strict deterministic sorting (`ORDER BY campaign_id, event_date`) in batch queries to completely eliminate row-level deadlocks under concurrency.
-- **ClickHouse**: Columnar batch writes buffered via an in-memory 1,000,000 capacity channel to limit LSM part fragmentation. Guarantees exactly-once persistence using `ReplicatedMergeTree` with `insert_deduplicate=1` settings and stable SHA-256 event click ID block tokens.
+## Redis Topology
 
----
+Six standalone Redis masters (not Redis Cluster). Campaign-scoped keys colocate on one shard via `StaticSlotSharder`: `crc32Castagnoli(campaignID) & 1023`, then `slot % N`.
+
+| Pattern | Scope | Purpose |
+| :--- | :--- | :--- |
+| `budget:campaign:{id}` | Shard-local | Live remaining budget (micro-units) |
+| `budget:sync:*`, `budget:dirty_*` | Shard-local | PG sync deltas and dirty sets |
+| `dup:*`, `idempotency:click:*` | Shard-local | Dedup and idempotency |
+| `fcap:*`, `imp_ts:*` | Shard-local | Frequency cap, time-to-click |
+| `ad:events:stream` | Shard-local | Ingestion stream (one namespace per shard) |
+| `config:values`, `blacklist:*` | All shards | Replicated global state |
+| `brand:creatives:{id}` | All shards | Creative rotation payload |
+
+**Why client sharding, not Cluster:** Lua scripts require multi-key atomicity within a single Redis instance. Cluster would force hash tags on every key and still complicate global replication. Fixed N=4 shards give predictable blast radius (one shard down affects ~1/N campaigns) without slot migration machinery.
+
+**Why StaticSlot over JumpHash:** O(1) table lookup, no branches, no float math on the hot path. Trade-off: changing N remaps ~100% of keys (vs ~1/N for JumpHash). Production policy locks N=6; resize requires blue/green key migration.
+
+**Sentinel:** Go services (`ConnectRedisShards`) and Nginx Lua use Sentinel when `REDIS_SENTINEL_ADDRS` is set. Empty sentinel addrs fall back to direct `REDIS_ADDRS`.
+
+## Unified Filter (Lua)
+
+`internal/ads/unified-filter.lua` embedded via `//go:embed`, preloaded with `SCRIPT LOAD` at tracker startup, invoked via `EVALSHA` with `EVAL` fallback on `NOSCRIPT`.
+
+Single atomic script per event: MGET budget state, TTC check, pacing, fcap, rate limit, dedup SET NX, budget decrement, sync delta, stream XADD.
+
+| Return | Meaning |
+| :--- | :--- |
+| `0` | Success or idempotent replay |
+| `-1` | Budget key missing; Go reloads from registry then Postgres |
+| `1`-`5` | Rate, dup, budget, pacing, fcap |
+| `6`-`7` | Low TTC, missing impression timestamp (fail-closed) |
+| `10` | TTC bypass (fail-open, no `imp_ts` key) |
+
+**Why one Lua script:** One network round trip replaces 8-12 pipelined commands. Trade-off: longer Redis engine lock per call; acceptable because all keys are colocated on one shard and the script avoids cross-key races without WATCH/MULTI.
+
+**Why Lua for filter but Go for geo/schedule:** MaxMind lookups and daypart logic are CPU-bound and change frequently. Running them in Redis would require embedding GeoIP data or RPC from Lua, neither viable at tracker RPS.
 
 ## Design Decisions
 
-| Subsystem | Selected Pattern | Justification |
-| :--- | :--- | :--- |
-| **Serialization** | Protobuf (`bytes` fields) | Bypasses reflective marshalling; permits zero-allocation slicing directly from stream buffers. |
-| **Networking** | `gnet` + Worker Pool | Dispatches connection events to pinned OS threads via lock-free ring buffers. |
-| **Sharding** | Static Slot Mapping | Bypasses JumpHash overhead. Achieves constant O(1) lookup via bitwise `key & 1023` masking. |
-| **Memory** | Connection-Local Context | Eliminates global `sync.Pool` lock contention, interface boxing, and type assertion overhead. |
-| **Budgeting** | Integer Scaling | Micro-unit integer representation (10^6) eliminating decimal/float parsing allocations. |
-| **Outbox I/O** | `SKIP LOCKED` Polling Loop | Decouples PG transaction scope from Redis write operations, avoiding connection pool starvation and Postgres notification queue RAM bloat. |
-| **Log Broker** | Asynchronous Compressor | Decouples compression and encryption from the hot path. Writes raw files directly with `syscall.Fdatasync` and processes them asynchronously via background worker. |
-| **Zero-Copy Writes** | `unsafe.Pointer` + mmap | Employs memory-mapped files (`syscall.Mmap`) with unsafe pointers and CPU hardware assembly `CRC32Q` (SSE4.2) to achieve actual `0 B/op` writes. |
-| **Rate Limiting** | Pipelined Atomic Commands | Replaces custom Lua scripts with pipelined atomic commands (`INCR` + `EXPIRE NX`/`PEXPIRE NX`) to reduce Redis engine lock time. |
-| **Monotonic Time** | `go:linkname` to `runtime.nanotime` | Measures elapsed time immune to wall-clock jumps, bypassing stdlib time wrapper heap escapes. |
-| **Telemetry Sampling** | Power-of-two Mask Downsampling | Employs fast bitwise `seq & mask == 0` check to reduce Prometheus histogram / CPU audit log overhead on hot paths. |
-| **Fraud Stream Queue** | Preallocated MPSC Ring Buffer | Implements `FraudStreamWriter` using a power-of-two ring buffer with fixed-size arrays to completely avoid heap allocations under enqueue. |
-| **Prebound Metrics** | Pre-resolved Prometheus Counters | Resolves Prometheus metric labels once at startup to completely eliminate label lookup overhead on the hot path. |
-| **Creative Routing** | Weight-based Deterministic Mapping | Employs FNV-1a hashing on brandID and userID to map users to brand creative landing URLs with actual `0 B/op` allocations. |
-| **Budget Cache Warmer** | Proactive `SetNX` pipeline | Seeds Redis budget keys prior to hot path evaluation and uses in-memory registry backup for cache-miss recoveries instead of hitting Postgres. |
+| Subsystem | Choice | Why | Trade-off |
+| :--- | :--- | :--- | :--- |
+| Serialization | Protobuf + vtproto | Pool-backed marshal/unmarshal; `bytes` fields slice from socket buffers | Schema evolution requires buf generate + deploy coordination |
+| Networking | gnet + pinned worker pool | Event-driven I/O; MPSC ring offload for parse/filter work | More complex than net/http; stdlib router kept for tests only |
+| Sharding | StaticSlot (1024 slots) | Bitwise mask + precomputed table; fits L1 | Cluster resize is a migration project, not a config change |
+| Budget | int64 micro-units (10^6) | No float rounding in Lua INCRBY or PG ledger | Display layer must divide; overflow range is ample for ad spend |
+| Outbox | `SKIP LOCKED` polling | Short PG transactions; Redis I/O outside TX boundary | Latency floor = poll interval (20ms mgmt, 100ms payment); no LISTEN/NOTIFY push |
+| Rate limiting | INCR + EXPIRE in Lua | Atomic without separate Lua script per concern | Per-IP counter lives on campaign shard, not IP shard |
+| Monotonic time | `go:linkname` nanotime | Filter deadlines immune to NTP jumps; no heap escape | Internal runtime dependency; breaks if Go renames symbol |
+| Telemetry | LatencyRing + sampling | Prometheus observations off gnet event loop | Lossy under overload; fraud ring drops at 4096 capacity |
+| Global config | Replicate to all shards | Shard-local reads on hot path; no cross-shard fetch | Write amplification on config change (4x HSET) |
+| Payment | Separate service + schema | Money state isolated from ingestion; advisory locks on amount | Cross-service gRPC for settlement; circular compose dependency |
+| Money source of truth | Postgres `balance_ledger` | ACID, audit trail, reconciliation | Redis budget is a cache; drift corrected by sync worker + recon |
 
----
+## Money Flow
+
+1. Operator or customer initiates top-up via management to payment gRPC `CreatePaymentIntent`.
+2. Stripe webhook (or mock provider) confirms payment; row in `payment.payment_outbox`.
+3. Payment outbox worker calls management settlement gRPC `ApplyPaymentCredit`.
+4. Management credits `balance_ledger` with `ON CONFLICT` guard on `payment_intent_id`.
+5. Campaign spend: tracker Lua decrements `budget:campaign:*`; processor sync worker flushes deltas to Postgres.
+
+Redis does not hold payment or ledger state.
 
 ## Observability
 
-- **Metrics**: End-to-end telemetry scraped by Prometheus.
-- **Visuals**: Grafana dashboards monitoring throughput, memory, and database latencies.
-- **Alerting**: Alertmanager routes anomalies to Telegram webhook gateway.
+- Prometheus scrapes tracker (:8181–8184 `/metrics`), processor (:8186), management (:8188), auth (:9091), payment (:8187). Tracker also exposes a metrics sidecar on :9090 when configured.
+- Grafana dashboards: throughput, Redis breaker state, Lua NOSCRIPT fallbacks, budget cache misses.
+- Alertmanager to `cmd/telegram` for Telegram delivery.
+- Key alerts: circuit breaker open >5m, DLQ >100, p99 tracker latency >15ms, TTC bypass rate >1%.
+
+## Tooling and CI
+
+Local workflows use `Makefile`, optional [Task](Taskfile.yml), and flat `scripts/` (codegen, compose, perf gate, Redis ops, chaos). See [Development Guide](docs/development.md) for commands and [CI_PERF.md](.github/CI_PERF.md) for GitHub Actions (lint, alloc gate, full test, perf gate, nightly regression, sentinel chaos).
+
+## Documentation
+
+- [Architecture](docs/architecture.md) — subsystem workflows, Lua key layout, failover, limitations
+- [Edge hardening plan](docs/edge-hardening-plan.md) — Lua edge fixes, XDP, SLA-aligned rollout (planned)
+- [Edge hardening steps](docs/edge-hardening-steps.md) — Step-by-step implementation guide (Russian, planned)
+- [Edge XDP design](docs/edge-xdp-design.md) — L4 filter, NIC/XDP constraints (planned)
+- [Development](docs/development.md) — setup, ports, scripts, runbooks, perf gate, verification
+- [CI / Perf](.github/CI_PERF.md) — workflows, self-hosted perf runner, script map

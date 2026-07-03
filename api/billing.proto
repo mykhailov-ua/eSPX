@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package billing;
+
+option go_package = "espx/internal/billing/pb;pb";
+
+import "google/protobuf/timestamp.proto";
+
+service BillingService {
+  // GenerateInvoice aggregates ledger spend for one customer and calendar month.
+  rpc GenerateInvoice(GenerateInvoiceRequest) returns (Invoice);
+
+  // GetInvoice returns a stored invoice by id.
+  rpc GetInvoice(GetInvoiceRequest) returns (Invoice);
+
+  // ListInvoices returns paginated invoice history for a customer.
+  rpc ListInvoices(ListInvoicesRequest) returns (ListInvoicesResponse);
+}
+
+message GenerateInvoiceRequest {
+  string customer_id = 1;
+  // billing_month is the first day of the month (UTC), e.g. 2026-06-01.
+  google.protobuf.Timestamp billing_month = 2;
+}
+
+message GetInvoiceRequest {
+  string invoice_id = 1;
+}
+
+message ListInvoicesRequest {
+  string customer_id = 1;
+  int32 limit = 2;
+  int32 offset = 3;
+}
+
+message ListInvoicesResponse {
+  repeated Invoice invoices = 1;
+  int64 total = 2;
+}
+
+message InvoiceLine {
+  string ledger_type = 1;
+  int64 amount_micro = 2;
+  int32 entry_count = 3;
+}
+
+message Invoice {
+  string id = 1;
+  string customer_id = 2;
+  google.protobuf.Timestamp billing_month = 3;
+  int64 subtotal_micro = 4;
+  int64 tax_micro = 5;
+  int64 total_micro = 6;
+  string currency = 7;
+  string tax_scheme = 8;
+  int32 tax_rate_bps = 9;
+  repeated InvoiceLine lines = 10;
+  google.protobuf.Timestamp created_at = 11;
+}

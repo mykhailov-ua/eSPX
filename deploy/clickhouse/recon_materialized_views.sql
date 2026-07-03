@@ -4,8 +4,8 @@
 
 USE ad_event_processor;
 
--- Hourly campaign event counts from impressions; O(1) volume lookup during recon runs.
-CREATE MATERIALIZED VIEW IF NOT EXISTS mv_campaign_hourly_events
+-- Hourly impression counts per campaign; O(1) volume lookup during recon runs.
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_campaign_hourly_impressions
 ENGINE = SummingMergeTree()
 PARTITION BY toYYYYMM(hour)
 ORDER BY (campaign_id, hour)
@@ -13,13 +13,25 @@ POPULATE
 AS SELECT
     campaign_id,
     toStartOfHour(created_at) AS hour,
-    count() AS event_count,
-    sum(1) AS impression_count,  -- placeholder; in real system would be conditional on table
-    sum(1) AS click_count
+    count() AS impression_count
 FROM impressions
 GROUP BY campaign_id, hour;
 
--- Extend with per-event-type MVs or a unified wide table before relying on this in prod recon.
--- Example query:
--- SELECT sum(event_count) FROM mv_campaign_hourly_events
+-- Hourly click counts per campaign; separate MV keeps SummingMergeTree semantics per event table.
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_campaign_hourly_clicks
+ENGINE = SummingMergeTree()
+PARTITION BY toYYYYMM(hour)
+ORDER BY (campaign_id, hour)
+POPULATE
+AS SELECT
+    campaign_id,
+    toStartOfHour(created_at) AS hour,
+    count() AS click_count
+FROM clicks
+GROUP BY campaign_id, hour;
+
+-- Example queries:
+-- SELECT sum(impression_count) FROM mv_campaign_hourly_impressions
+-- WHERE campaign_id = ? AND hour BETWEEN ? AND ?;
+-- SELECT sum(click_count) FROM mv_campaign_hourly_clicks
 -- WHERE campaign_id = ? AND hour BETWEEN ? AND ?;

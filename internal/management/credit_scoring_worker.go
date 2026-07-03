@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"espx/internal/ads/db"
+
 	"github.com/google/uuid"
 )
 
@@ -41,7 +42,7 @@ func (w *CreditScoringWorker) EvaluateAll(ctx context.Context) error {
 	opCtx, cancel := workerContext(ctx, workerBatchTimeout)
 	defer cancel()
 
-	queries := db.New(w.svc.pool)
+	queries := db.New(w.svc.GetPool())
 	rows, err := queries.ListCustomersForScoring(opCtx)
 	if err != nil {
 		return err

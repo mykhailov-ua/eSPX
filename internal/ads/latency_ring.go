@@ -6,6 +6,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// defaultLatencyRingCap is the fallback ring size when NewLatencyRing gets a non-power-of-two capacity.
 const defaultLatencyRingCap = 4096
 
 // LatencyRing buffers request durations off the hot path to avoid Prometheus CAS in gnet.
@@ -27,7 +28,7 @@ func NewLatencyRing(capacity int) *LatencyRing {
 	}
 }
 
-// Capacity returns the number of ring slots.
+// Capacity reports ring size for backpressure and observability checks.
 func (r *LatencyRing) Capacity() int {
 	if r == nil {
 		return 0
@@ -77,7 +78,7 @@ func (r *LatencyRing) FlushTo(observer prometheus.Observer) int {
 	return n
 }
 
-// Pending returns the number of samples not yet flushed to Prometheus.
+// Pending reports scrape lag so operators can detect saturated latency export buffers.
 func (r *LatencyRing) Pending() uint64 {
 	if r == nil {
 		return 0

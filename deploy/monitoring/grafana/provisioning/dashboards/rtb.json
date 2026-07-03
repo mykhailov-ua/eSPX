@@ -1,0 +1,235 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {
+      "title": "Main ops dashboard",
+      "type": "link",
+      "url": "/d/perf-overview"
+    }
+  ],
+  "liveNow": true,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "title": "RTB cutover gates",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [
+            {
+              "options": {
+                "0": { "color": "green", "index": 0, "text": "OK" },
+                "1": { "color": "red", "index": 1, "text": "DIVERGED" }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+      "id": 101,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "max(ad_rtb_budget_reconcile_high)",
+          "legendFormat": "reconcile_high",
+          "refId": "A"
+        }
+      ],
+      "title": "Budget reconcile (must be 0)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 9, "x": 6, "y": 1 },
+      "id": 102,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(ad_rtb_shadow_winner_mismatch_total[5m])) / sum(rate(ad_filter_throughput_total[5m]))",
+          "legendFormat": "shadow mismatch / track",
+          "refId": "A"
+        }
+      ],
+      "title": "Shadow winner mismatch rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 9, "x": 15, "y": 1 },
+      "id": 103,
+      "targets": [
+        {
+          "expr": "sum(rate(ad_rtb_auction_win_total[5m]))",
+          "legendFormat": "wins/s",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(ad_rtb_budget_spend_rejected_total[5m]))",
+          "legendFormat": "spend rejected/s",
+          "refId": "B"
+        }
+      ],
+      "title": "RTB wins vs spend rejections",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "id": 110,
+      "title": "Auction health",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "id": 111,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(ad_rtb_auction_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(ad_rtb_auction_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p50",
+          "refId": "B"
+        }
+      ],
+      "title": "In-process auction latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "id": 112,
+      "targets": [
+        {
+          "expr": "sum(rate(ad_rtb_auction_no_bid_total[5m])) by (reason)",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ],
+      "title": "No-bid rate by reason",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "id": 120,
+      "title": "Budget mirror",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 19 },
+      "id": 121,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(ad_rtb_budget_reconcile_divergence_micro_bucket[5m])) by (le)) / 1e6",
+          "legendFormat": "p99 divergence USD",
+          "refId": "A"
+        }
+      ],
+      "title": "Redis vs RTB budget divergence (p99)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 19 },
+      "id": 122,
+      "targets": [
+        {
+          "expr": "sum(rate(ad_rtb_shadow_no_bid_total[5m])) by (reason)",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(ad_rtb_shadow_price_delta_micro_count[5m]))",
+          "legendFormat": "price delta samples/s",
+          "refId": "B"
+        }
+      ],
+      "title": "Shadow no-bid + price delta samples",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["rtb", "cutover", "tracker"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "RTB Cutover",
+  "uid": "rtb-cutover",
+  "version": 1
+}

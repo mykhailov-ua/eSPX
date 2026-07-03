@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Reference hash used to verify JSON and protobuf routing alignment.
+// ComputeCompositeHash is the legacy string-concat reference for nginx alignment checks.
 func ComputeCompositeHash(campaignID, userID string) uint32 {
 	if campaignID == "" && userID == "" {
 		return 0
@@ -41,13 +41,13 @@ func TestCompositeRouting_JSONAndProtoAlignment(t *testing.T) {
 	jsonData, err := json.Marshal(jsonPayload)
 	require.NoError(t, err)
 
-	var reqJSON TrackRequest
-	err = reqJSON.UnmarshalJSON(jsonData)
+	var trackReq TrackRequest
+	err = ParseTrackRequestJSON(&trackReq, jsonData)
 	require.NoError(t, err)
 
-	jsonCampaignIDStr := reqJSON.CampaignID.String()
-	jsonUserIDStr := reqJSON.UserID
-	jsonHash := ComputeCompositeHash(jsonCampaignIDStr, jsonUserIDStr)
+	legacyHash := ComputeCompositeHash(trackReq.CampaignID.String(), trackReq.UserID)
+	jsonHash := ComputeCompositeHashFromTrackReq(&trackReq)
+	require.Equal(t, legacyHash, jsonHash)
 
 	pbReq := pb.AdEvent{
 		CampaignId: campaignUUID[:],
@@ -60,7 +60,9 @@ func TestCompositeRouting_JSONAndProtoAlignment(t *testing.T) {
 	protoData, err := pbReq.MarshalVT()
 	require.NoError(t, err)
 
-	var reqProto pb.AdEvent
+	reqProto := adEventPool.Get().(*pb.AdEvent)
+	defer putAdEvent(reqProto)
+
 	err = reqProto.UnmarshalVT(protoData)
 	require.NoError(t, err)
 
@@ -68,15 +70,41 @@ func TestCompositeRouting_JSONAndProtoAlignment(t *testing.T) {
 	require.NoError(t, err)
 	protoCampaignIDStr := protoCampaignUUID.String()
 	protoUserIDStr := string(reqProto.Metadata.UserId)
-	protoHash := ComputeCompositeHash(protoCampaignIDStr, protoUserIDStr)
+	protoLegacyHash := ComputeCompositeHash(protoCampaignIDStr, protoUserIDStr)
+	protoHash := ComputeCompositeHashFromProto(reqProto)
 
-	assert.Equal(t, jsonCampaignIDStr, protoCampaignIDStr, "Campaign IDs must be identical after extraction")
-	assert.Equal(t, jsonUserIDStr, protoUserIDStr, "User IDs must be identical after extraction")
-	assert.Equal(t, jsonHash, protoHash, "Hashes must be perfectly aligned across JSON and Protobuf")
+	assert.Equal(t, trackReq.CampaignID.String(), protoCampaignIDStr)
+	assert.Equal(t, trackReq.UserID, protoUserIDStr)
+	assert.Equal(t, legacyHash, protoHash)
+	assert.Equal(t, protoLegacyHash, protoHash)
 
-	t.Logf("Aligned Campaign ID: %s", jsonCampaignIDStr)
-	t.Logf("Aligned User ID: %s", jsonUserIDStr)
+	t.Logf("Aligned Campaign ID: %s", protoCampaignIDStr)
+	t.Logf("Aligned User ID: %s", protoUserIDStr)
 	t.Logf("Composite Routing Hash (CRC32): %d (0x%x)", jsonHash, jsonHash)
+}
+
+func TestComputeCompositeHashUUID_ZeroAlloc(t *testing.T) {
+	var campaignUUID uuid.UUID
+	copy(campaignUUID[:], []byte{0x6d, 0x94, 0x24, 0x9c, 0xa9, 0xb9, 0x4a, 0x73, 0x9c, 0x96, 0x30, 0xc4, 0x3c, 0x34, 0xbc, 0x3e})
+	userID := UnsafeBytes("user_987654321")
+
+	avg := testing.AllocsPerRun(100, func() {
+		_ = ComputeCompositeHashUUID(campaignUUID, userID)
+	})
+	if avg > 0 {
+		t.Fatalf("ComputeCompositeHashUUID allocated %f times per run, want 0", avg)
+	}
+}
+
+func TestFormatUUIDCanonical(t *testing.T) {
+	id := uuid.MustParse("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11")
+	var buf [36]byte
+	FormatUUIDCanonical(&buf, id)
+	require.Equal(t, id.String(), string(buf[:]))
+
+	var buf2 [36]byte
+	FormatUUIDCanonical(&buf2, id)
+	require.Equal(t, crc32.ChecksumIEEE(buf[:]), crc32IEEEInplace36(&buf2))
 }
 
 // Tracks JSON composite hash cost against protobuf for format migration decisions.
@@ -99,15 +127,15 @@ func BenchmarkCompositeRouting_JSON(b *testing.B) {
 	}
 	jsonData, _ := json.Marshal(jsonPayload)
 
-	b.ResetTimer()
+	var trackReq TrackRequest
+
 	b.ReportAllocs()
+	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		var reqJSON TrackRequest
-		_ = reqJSON.UnmarshalJSON(jsonData)
-		campaignIDStr := reqJSON.CampaignID.String()
-		userIDStr := reqJSON.UserID
-		_ = ComputeCompositeHash(campaignIDStr, userIDStr)
+		trackReq.Reset()
+		_ = ParseTrackRequestJSON(&trackReq, jsonData)
+		_ = ComputeCompositeHashFromTrackReq(&trackReq)
 	}
 }
 
@@ -126,22 +154,19 @@ func BenchmarkCompositeRouting_Protobuf(b *testing.B) {
 	}
 	protoData, _ := pbReq.MarshalVT()
 
-	b.ResetTimer()
+	reqProto := adEventPool.Get().(*pb.AdEvent)
+	defer putAdEvent(reqProto)
+
+	// Warm up pool allocations before timing.
+	resetAdEventInPlace(reqProto)
+	_ = reqProto.UnmarshalVT(protoData)
+
 	b.ReportAllocs()
+	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		var reqProto pb.AdEvent
+		resetAdEventInPlace(reqProto)
 		_ = reqProto.UnmarshalVT(protoData)
-
-		var extractedCamp uuid.UUID
-		copy(extractedCamp[:], reqProto.CampaignId)
-		campaignIDStr := extractedCamp.String()
-
-		var userIDStr string
-		if reqProto.Metadata != nil {
-			userIDStr = string(reqProto.Metadata.UserId)
-		}
-
-		_ = ComputeCompositeHash(campaignIDStr, userIDStr)
+		_ = ComputeCompositeHashFromProto(reqProto)
 	}
 }

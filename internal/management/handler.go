@@ -3,7 +3,6 @@ package management
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -11,7 +10,9 @@ import (
 
 	"espx/internal/ads/db"
 	"espx/internal/config"
+	"espx/pkg/cold"
 	"espx/pkg/httpresponse"
+
 	"github.com/google/uuid"
 )
 
@@ -21,10 +22,12 @@ type Handler struct {
 	cfg            *config.Config
 	ipLimiter      *ipRateLimiter
 	authMiddleware *AuthMiddleware
+	payment        *PaymentClient
+	billing        *BillingClient
 }
 
 // NewHandler constructs the admin HTTP handler with per-IP rate limits from config.
-func NewHandler(svc *Service, cfg *config.Config, authMiddleware *AuthMiddleware) *Handler {
+func NewHandler(svc *Service, cfg *config.Config, authMiddleware *AuthMiddleware, paymentClient *PaymentClient, billingClient *BillingClient) *Handler {
 	rps := 10.0
 	burst := 50
 	if cfg != nil {
@@ -36,6 +39,8 @@ func NewHandler(svc *Service, cfg *config.Config, authMiddleware *AuthMiddleware
 		cfg:            cfg,
 		ipLimiter:      newIPRateLimiter(rps, burst),
 		authMiddleware: authMiddleware,
+		payment:        paymentClient,
+		billing:        billingClient,
 	}
 }
 
@@ -43,6 +48,7 @@ func NewHandler(svc *Service, cfg *config.Config, authMiddleware *AuthMiddleware
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/customers", h.limit(h.perm(h.createCustomer, PermCustomersWrite)))
 	mux.HandleFunc("POST /admin/customers/{id}/topup", h.limit(h.perm(h.topUpBalance, PermCustomersWrite)))
+	mux.HandleFunc("POST /admin/customers/{id}/payment-intent", h.limit(h.perm(h.createCustomerPaymentIntent, PermCustomersWrite)))
 	mux.HandleFunc("POST /admin/campaigns", h.limit(h.perm(h.createCampaign, PermCampaignsWrite)))
 	mux.HandleFunc("POST /admin/brands", h.limit(h.perm(h.createBrand, PermBrandsWrite)))
 	mux.HandleFunc("GET /admin/brands", h.limit(h.perm(h.listBrands, PermBrandsRead)))
@@ -59,6 +65,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/customers", h.limit(h.perm(h.listCustomers, PermCustomersRead)))
 	mux.HandleFunc("GET /admin/customers/{id}", h.limit(h.perm(h.getCustomer, PermCustomersRead)))
 	mux.HandleFunc("GET /admin/customers/{id}/ledger", h.limit(h.perm(h.getCustomerLedger, PermCustomersRead)))
+	mux.HandleFunc("GET /admin/customers/{id}/billing", h.limit(h.perm(h.getCustomerBillingDashboard, PermCustomersRead)))
+	mux.HandleFunc("POST /admin/customers/{id}/billing/invoices", h.limit(h.perm(h.generateCustomerInvoice, PermCustomersWrite)))
 
 	mux.HandleFunc("GET /admin/campaigns", h.limit(h.perm(h.listCampaigns, PermCampaignsRead)))
 	mux.HandleFunc("GET /admin/campaigns/{id}", h.limit(h.perm(h.getCampaign, PermCampaignsRead)))
@@ -67,6 +75,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/blacklist", h.limit(h.perm(h.listBlacklist, PermBlacklistRead)))
 	mux.HandleFunc("GET /admin/settings", h.limit(h.perm(h.getSettings, PermSettingsRead)))
 	h.registerDeliveryRoutes(mux)
+	h.registerFraudRoutes(mux)
+	h.registerSlotMapRoutes(mux)
 }
 
 // limit wraps handlers with a per-client IP token bucket.
@@ -102,8 +112,7 @@ func (h *Handler) authFallback(next http.HandlerFunc) http.HandlerFunc {
 
 // createCustomer handles POST /admin/customers for onboarding billing accounts.
 func (h *Handler) createCustomer(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 65536)
-	body, err := io.ReadAll(r.Body)
+	body, err := cold.ReadLimitedBody(w, r, cold.DefaultMaxBody)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
@@ -151,8 +160,7 @@ func (h *Handler) topUpBalance(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid customer id")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 65536)
-	body, err := io.ReadAll(r.Body)
+	body, err := cold.ReadLimitedBody(w, r, cold.DefaultMaxBody)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
@@ -185,7 +193,11 @@ func (h *Handler) topUpBalance(w http.ResponseWriter, r *http.Request) {
 
 // createCampaign handles POST /admin/campaigns for launching new delivery with budget reservation.
 func (h *Handler) createCampaign(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 65536)
+	body, err := cold.ReadLimitedBody(w, r, cold.DefaultMaxBody)
+	if err != nil {
+		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "failed to read request body")
+		return
+	}
 	var req struct {
 		CustomerID       uuid.UUID  `json:"customer_id"`
 		BrandID          *uuid.UUID `json:"brand_id,omitempty"`
@@ -202,11 +214,6 @@ func (h *Handler) createCampaign(w http.ResponseWriter, r *http.Request) {
 		StartAt          *time.Time `json:"start_at,omitempty"`
 		EndAt            *time.Time `json:"end_at,omitempty"`
 		DaypartHours     []int16    `json:"daypart_hours,omitempty"`
-	}
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "failed to read request body")
-		return
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
@@ -287,7 +294,7 @@ func (h *Handler) cancelCampaign(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid campaign id")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 65536)
+	r.Body = http.MaxBytesReader(w, r.Body, cold.DefaultMaxBody)
 	var req struct {
 		Reason string `json:"reason"`
 	}
@@ -319,11 +326,10 @@ func (h *Handler) updateCampaignPacing(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid campaign id")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 65536)
-	var req struct {
+	req, err := cold.DecodeRequest[struct {
 		PacingMode string `json:"pacing_mode"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	}](w, r, cold.DefaultMaxBody)
+	if err != nil {
 		slog.Warn("failed to decode update campaign pacing request", "error", err)
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
@@ -354,9 +360,8 @@ func (h *Handler) updateCampaignPacing(w http.ResponseWriter, r *http.Request) {
 
 // updateSettings handles POST /admin/settings for system configuration changes.
 func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 65536)
-	var settings map[string]string
-	if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
+	settings, err := cold.DecodeRequest[map[string]string](w, r, cold.DefaultMaxBody)
+	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
@@ -369,12 +374,11 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 
 // toggleEmergencyBreaker handles POST /admin/system/breaker for the global ad delivery kill switch.
 func (h *Handler) toggleEmergencyBreaker(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 65536)
-	var req struct {
+	req, err := cold.DecodeRequest[struct {
 		Active bool   `json:"active"`
 		Reason string `json:"reason"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	}](w, r, cold.DefaultMaxBody)
+	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
@@ -387,12 +391,11 @@ func (h *Handler) toggleEmergencyBreaker(w http.ResponseWriter, r *http.Request)
 
 // blockIP handles POST /admin/blacklist for operator-initiated IP blocks.
 func (h *Handler) blockIP(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 65536)
-	var req struct {
+	req, err := cold.DecodeRequest[struct {
 		IP     string `json:"ip"`
 		Source string `json:"source"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
+	}](w, r, cold.DefaultMaxBody)
+	if err != nil || req.IP == "" {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
@@ -405,12 +408,11 @@ func (h *Handler) blockIP(w http.ResponseWriter, r *http.Request) {
 
 // unblockIP handles DELETE /admin/blacklist for removing blocked IPs.
 func (h *Handler) unblockIP(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 65536)
-	var req struct {
+	req, err := cold.DecodeRequest[struct {
 		IP     string `json:"ip"`
 		Source string `json:"source"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
+	}](w, r, cold.DefaultMaxBody)
+	if err != nil || req.IP == "" {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
@@ -459,8 +461,7 @@ func (h *Handler) listCustomers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("X-Total-Count", strconv.FormatInt(total, 10))
-	httpresponse.JSON(w, http.StatusOK, customers)
+	cold.WritePaginatedJSON(w, customers, total)
 }
 
 // getCustomer handles GET /admin/customers/{id} for account detail with spend stats.
@@ -509,8 +510,7 @@ func (h *Handler) getCustomerLedger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("X-Total-Count", strconv.FormatInt(total, 10))
-	httpresponse.JSON(w, http.StatusOK, ledger)
+	cold.WritePaginatedJSON(w, ledger, total)
 }
 
 // listCampaigns handles GET /admin/campaigns with optional customer and status filters.
@@ -536,8 +536,7 @@ func (h *Handler) listCampaigns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("X-Total-Count", strconv.FormatInt(total, 10))
-	httpresponse.JSON(w, http.StatusOK, campaigns)
+	cold.WritePaginatedJSON(w, campaigns, total)
 }
 
 // getCampaign handles GET /admin/campaigns/{id} for campaign detail views.
@@ -589,8 +588,7 @@ func (h *Handler) getCampaignHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("X-Total-Count", strconv.FormatInt(total, 10))
-	httpresponse.JSON(w, http.StatusOK, history)
+	cold.WritePaginatedJSON(w, history, total)
 }
 
 // listBlacklist handles GET /admin/blacklist for blocked IP inventory.
@@ -602,8 +600,7 @@ func (h *Handler) listBlacklist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("X-Total-Count", strconv.FormatInt(total, 10))
-	httpresponse.JSON(w, http.StatusOK, items)
+	cold.WritePaginatedJSON(w, items, total)
 }
 
 // getSettings handles GET /admin/settings for reading system configuration.
@@ -619,12 +616,11 @@ func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
 
 // createBrand handles POST /admin/brands for registering advertiser brands.
 func (h *Handler) createBrand(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 65536)
-	var req struct {
+	req, err := cold.DecodeRequest[struct {
 		CustomerID uuid.UUID `json:"customer_id"`
 		Name       string    `json:"name"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	}](w, r, cold.DefaultMaxBody)
+	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
@@ -681,7 +677,6 @@ func (h *Handler) listBrands(w http.ResponseWriter, r *http.Request) {
 
 // configureBrandFcap handles POST /admin/brands/{id}/fcap for brand-level frequency caps.
 func (h *Handler) configureBrandFcap(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 65536)
 	idStr := r.PathValue("id")
 	brandID, err := uuid.Parse(idStr)
 	if err != nil {
@@ -689,11 +684,11 @@ func (h *Handler) configureBrandFcap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
+	req, err := cold.DecodeRequest[struct {
 		FreqLimit  int32 `json:"freq_limit"`
 		FreqWindow int32 `json:"freq_window"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	}](w, r, cold.DefaultMaxBody)
+	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}

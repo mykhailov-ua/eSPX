@@ -1,3 +1,4 @@
+// Command auth runs the session and credential gRPC service as its own deployable unit.
 package main
 
 import (
@@ -21,7 +22,7 @@ import (
 	"google.golang.org/grpc/reflection"
 )
 
-// main starts the auth gRPC service, session cleanup, and a sidecar metrics HTTP listener.
+// main runs auth as an isolated gRPC service because session state and password hashing must not share the tracker process.
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
@@ -42,7 +43,9 @@ func main() {
 	}
 	defer pool.Close()
 
-	rdb, err := database.ConnectRedis(ctx, cfg.RedisAddrs[0], string(cfg.RedisPassword))
+	rdb, err := database.ConnectRedisShard(ctx, cfg, 0, database.RedisShardOptions{
+		PoolSize: cfg.RedisPoolSize,
+	})
 	if err != nil {
 		slog.Error("failed to connect to redis", "error", err)
 		os.Exit(1)
@@ -85,11 +88,18 @@ func main() {
 		reflection.Register(server)
 	}
 
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("/metrics", promhttp.Handler())
+	metricsSrv := &http.Server{
+		Addr:              ":" + cfg.AuthMetricsPort,
+		Handler:           metricsMux,
+		ReadHeaderTimeout: 2 * time.Second,
+		ReadTimeout:       5 * time.Second,
+		WriteTimeout:      10 * time.Second,
+	}
 	go func() {
-		mux := http.NewServeMux()
-		mux.Handle("/metrics", promhttp.Handler())
 		slog.Info("starting auth metrics server", "port", cfg.AuthMetricsPort)
-		if err := http.ListenAndServe(":"+cfg.AuthMetricsPort, mux); err != nil && err != http.ErrServerClosed {
+		if err := metricsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("metrics server failed", "error", err)
 		}
 	}()
@@ -109,6 +119,15 @@ func main() {
 
 	slog.Info("shutting down auth gRPC server")
 
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), time.Duration(cfg.Lifecycle.ShutdownTimeoutMs)*time.Millisecond)
+	defer shutdownCancel()
+
+	cancel()
+
+	if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("metrics server shutdown failed", "error", err)
+	}
+
 	stopped := make(chan struct{})
 	go func() {
 		server.GracefulStop()
@@ -118,7 +137,7 @@ func main() {
 	select {
 	case <-stopped:
 		slog.Info("gRPC server stopped cleanly")
-	case <-time.After(5 * time.Second):
+	case <-shutdownCtx.Done():
 		slog.Warn("gRPC graceful shutdown timed out, force stopping")
 		server.Stop()
 	}

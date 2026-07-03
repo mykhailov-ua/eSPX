@@ -12,6 +12,7 @@ import (
 	"espx/internal/ads/db"
 	"espx/internal/config"
 	"espx/internal/database"
+
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
@@ -33,11 +34,13 @@ func TestManagementAPI_CampaignPacing(t *testing.T) {
 	cfg := &config.Config{
 		AdminAPIKey:           "test-secret-pacing",
 		CampaignUpdateChannel: "test:campaign-updates-pacing",
+		TokenSymmetricKey:     "01234567890123456789012345678901",
 	}
 
+	authMW, tokenMaker := integrationTestAuth(t, rdb, cfg)
 	svc := NewService(pool, []redis.UniversalClient{rdb}, nil, cfg)
 	defer svc.Close()
-	h := NewHandler(svc, cfg, nil)
+	h := NewHandler(svc, cfg, authMW, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -62,7 +65,7 @@ func TestManagementAPI_CampaignPacing(t *testing.T) {
 	t.Run("InvalidPacingMode_BadRequest", func(t *testing.T) {
 		body, _ := json.Marshal(map[string]string{"pacing_mode": "INVALID"})
 		req, _ := http.NewRequest("POST", "/admin/campaigns/"+campID.String()+"/pacing", bytes.NewReader(body))
-		req.Header.Set("X-Admin-API-Key", "test-secret-pacing")
+		withAdminAPIKey(req, cfg)
 		resp := httptest.NewRecorder()
 		mux.ServeHTTP(resp, req)
 
@@ -73,17 +76,10 @@ func TestManagementAPI_CampaignPacing(t *testing.T) {
 		otherCustID := uuid.New()
 		body, _ := json.Marshal(map[string]string{"pacing_mode": "ASAP"})
 		req, _ := http.NewRequest("POST", "/admin/campaigns/"+campID.String()+"/pacing", bytes.NewReader(body))
-		req.Header.Set("X-Admin-API-Key", "test-secret-pacing")
-
-		user := AuthenticatedUser{
-			UserID:     uuid.New(),
-			Role:       RoleUser,
-			CustomerID: otherCustID,
-		}
-		ctx := context.WithValue(req.Context(), UserContextKey, user)
+		withSessionUser(req, tokenMaker, RoleUser, otherCustID)
 
 		resp := httptest.NewRecorder()
-		mux.ServeHTTP(resp, req.WithContext(ctx))
+		mux.ServeHTTP(resp, req)
 
 		assert.Equal(t, http.StatusForbidden, resp.Code)
 	})
@@ -91,17 +87,10 @@ func TestManagementAPI_CampaignPacing(t *testing.T) {
 	t.Run("UpdatePacing_Success", func(t *testing.T) {
 		body, _ := json.Marshal(map[string]string{"pacing_mode": "ASAP"})
 		req, _ := http.NewRequest("POST", "/admin/campaigns/"+campID.String()+"/pacing", bytes.NewReader(body))
-		req.Header.Set("X-Admin-API-Key", "test-secret-pacing")
-
-		user := AuthenticatedUser{
-			UserID:     uuid.New(),
-			Role:       RoleUser,
-			CustomerID: custID,
-		}
-		ctx := context.WithValue(req.Context(), UserContextKey, user)
+		withSessionUser(req, tokenMaker, RoleUser, custID)
 
 		resp := httptest.NewRecorder()
-		mux.ServeHTTP(resp, req.WithContext(ctx))
+		mux.ServeHTTP(resp, req)
 
 		assert.Equal(t, http.StatusOK, resp.Code)
 

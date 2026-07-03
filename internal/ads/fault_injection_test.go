@@ -3,7 +3,6 @@ package ads
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -34,7 +33,7 @@ func TestChaos_AdsRedisTerminateStopsTrack(t *testing.T) {
 
 	const preFault = 5
 	for i := 0; i < preFault; i++ {
-		require.Equal(t, http.StatusAccepted, postChaosClick(t, stack.Srv.URL, stack.CampaignID))
+		require.Equal(t, http.StatusAccepted, postChaosClick(t, stack.Handler, stack.CampaignID))
 	}
 	require.Eventually(t, func() bool {
 		return countChaosCampaignEvents(t, infra.Pool, stack.CampaignID) >= int64(preFault)
@@ -43,12 +42,12 @@ func TestChaos_AdsRedisTerminateStopsTrack(t *testing.T) {
 	ctx := context.Background()
 	require.NoError(t, infra.RedisContainer.Terminate(ctx))
 	requireAdsFaultActive(t, func() bool {
-		return postChaosClick(t, stack.Srv.URL, stack.CampaignID) != http.StatusAccepted
+		return postChaosClick(t, stack.Handler, stack.CampaignID) != http.StatusAccepted
 	}, "track must reject once Redis is dead")
 
 	postFaultFail := 0
 	for i := 0; i < adsChaosAttempts; i++ {
-		if postChaosClick(t, stack.Srv.URL, stack.CampaignID) != http.StatusAccepted {
+		if postChaosClick(t, stack.Handler, stack.CampaignID) != http.StatusAccepted {
 			postFaultFail++
 		}
 	}
@@ -129,7 +128,7 @@ func TestChaos_AdsStreamBacklogUnderPostgresOutage(t *testing.T) {
 
 	const seeded = 4
 	for i := 0; i < seeded; i++ {
-		require.Equal(t, http.StatusAccepted, postChaosClick(t, stack.Srv.URL, stack.CampaignID))
+		require.Equal(t, http.StatusAccepted, postChaosClick(t, stack.Handler, stack.CampaignID))
 	}
 	require.Eventually(t, func() bool {
 		return countChaosCampaignEvents(t, infra.Pool, stack.CampaignID) >= seeded
@@ -148,7 +147,7 @@ func TestChaos_AdsStreamBacklogUnderPostgresOutage(t *testing.T) {
 	postFaultAccepted := 0
 	const attempts = 6
 	for i := 0; i < attempts; i++ {
-		if postChaosClick(t, stack.Srv.URL, stack.CampaignID) == http.StatusAccepted {
+		if postChaosClick(t, stack.Handler, stack.CampaignID) == http.StatusAccepted {
 			postFaultAccepted++
 		}
 	}
@@ -169,6 +168,8 @@ func TestChaos_AdsStreamBacklogUnderPostgresOutage(t *testing.T) {
 }
 
 // TestChaos_AdsRedisStopStartTrackRecovery stops Redis, proves deny, then proves /track recovers.
+// Steady-state restoration is proven by ad_tracker_health_degraded==0 (StartHealthProbe mirror of /health)
+// and ad_redis_breaker_state{shard="0"}==closed after the container restarts.
 func TestChaos_AdsRedisStopStartTrackRecovery(t *testing.T) {
 	if testing.Short() {
 		t.Skip("chaos integration test")
@@ -177,15 +178,19 @@ func TestChaos_AdsRedisStopStartTrackRecovery(t *testing.T) {
 	infra, cleanup := setupAdsChaosInfra(t)
 	defer cleanup()
 
-	stack := startAdsIngestStack(t, infra, "ads-chaos-redis-recovery")
+	stack := startAdsIngestStackWithRedisMetrics(t, infra, "ads-chaos-redis-recovery")
 	defer stack.Close(t)
 
-	require.Equal(t, http.StatusAccepted, postChaosClick(t, stack.Srv.URL, stack.CampaignID))
+	require.Equal(t, http.StatusAccepted, postChaosClick(t, stack.Handler, stack.CampaignID))
+	requireRedisSteadyStateMetrics(t)
 
 	stopAdsContainer(t, infra.RedisContainer)
 	requireAdsFaultActive(t, func() bool {
-		return postChaosClick(t, stack.Srv.URL, stack.CampaignID) != http.StatusAccepted
+		return postChaosClick(t, stack.Handler, stack.CampaignID) != http.StatusAccepted
 	}, "track must reject while Redis is stopped")
+
+	tripChaosRedisBreaker(t, infra)
+	requireRedisOutageMetrics(t)
 
 	startAdsContainer(t, infra.RedisContainer)
 	infra.refreshRedisClient(t)
@@ -193,16 +198,24 @@ func TestChaos_AdsRedisStopStartTrackRecovery(t *testing.T) {
 
 	recovered := false
 	require.Eventually(t, func() bool {
-		recovered = postChaosClick(t, stack.Srv.URL, stack.CampaignID) == http.StatusAccepted
+		recovered = postChaosClick(t, stack.Handler, stack.CampaignID) == http.StatusAccepted
 		return recovered
 	}, 30*time.Second, 200*time.Millisecond, "track must recover after Redis restart")
 
+	// Allow StartHealthProbe (2s tick) to observe recovered Redis before §7 steady-state assert.
+	time.Sleep(2500 * time.Millisecond)
+	requireRedisSteadyStateMetrics(t)
+	AssertBudgetInvariant(t, context.Background(), infra.Pool, infra.Redis, stack.CampaignID)
+
 	logChaosProof(t, "redis_stop_start_recovery", map[string]string{
-		"subsystem":    "ads_ingest",
-		"op":           "track",
-		"baseline_ok":  "true",
-		"recovered":    strconv.FormatBool(recovered),
-		"fault_verify": "redis_container_stopped_then_started",
+		"subsystem":         "ads_ingest",
+		"op":                "track",
+		"baseline_ok":       "true",
+		"recovered":         strconv.FormatBool(recovered),
+		"health_degraded":   strconv.FormatFloat(trackerHealthDegradedMetric(t), 'f', 0, 64),
+		"breaker_shard0":    strconv.FormatFloat(redisBreakerStateMetric(t, chaosRedisShardLabel), 'f', 0, 64),
+		"steady_state":      "ad_tracker_health_degraded=0,ad_redis_breaker_state=closed",
+		"fault_verify":      "redis_container_stopped_then_started",
 	})
 }
 
@@ -254,6 +267,8 @@ func TestChaos_AdsPGStopStartConsumerRecovery(t *testing.T) {
 		return recovered
 	}, 30*time.Second, 200*time.Millisecond, "consumer must drain buffered events after PG restart")
 
+	AssertBudgetInvariant(t, ctx, infra.Pool, infra.Redis, stack.CampaignID)
+
 	logChaosProof(t, "postgres_stop_start_recovery", map[string]string{
 		"subsystem":      "ads_consumer",
 		"baseline_ok":    "true",
@@ -288,7 +303,7 @@ func TestChaos_AdsConcurrentTrackDuringRedisOutage(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 5; j++ {
-				if postChaosClick(t, stack.Srv.URL, stack.CampaignID) != http.StatusAccepted {
+				if postChaosClick(t, stack.Handler, stack.CampaignID) != http.StatusAccepted {
 					rejected.Add(1)
 				}
 			}
@@ -310,10 +325,14 @@ func TestChaos_AdsConcurrentTrackDuringRedisOutage(t *testing.T) {
 		"concurrent track must reject under Redis outage, got %d/%d", total, expected)
 }
 
-// restartAdsIngestStack rebuilds the HTTP router with a fresh Redis client after recovery.
+// restartAdsIngestStack rebuilds the gnet handler with a fresh Redis client after recovery.
 func restartAdsIngestStack(t *testing.T, infra *adsChaosInfra, stack *adsIngestStack) *adsIngestStack {
 	t.Helper()
-	stack.Srv.Close()
+	if stack.Handler != nil {
+		_ = stack.Handler.Stop(context.Background())
+	}
+
+	stack.restartConsumer(t, infra)
 
 	campaignRepo := NewCampaignRepo(infra.Queries)
 	unifiedFilter := NewUnifiedFilter(
@@ -332,7 +351,11 @@ func restartAdsIngestStack(t *testing.T, infra *adsChaosInfra, stack *adsIngestS
 	)
 	filterEngine := NewFilterEngine(time.Duration(stack.cfg.FilterTimeoutMs)*time.Millisecond, unifiedFilter)
 	sharder := NewJumpHashSharder(1)
-	router := NewRouter(stack.cfg, stack.Registry, filterEngine, infra.Pool, []redis.UniversalClient{infra.Redis}, sharder, stack.cfg.FraudStreamName, nil)
-	stack.Srv = httptest.NewServer(router)
+	stack.Handler = NewAdsPacketHandler(stack.cfg, stack.Registry, filterEngine, infra.Pool, []redis.UniversalClient{infra.Redis}, sharder, stack.cfg.FraudStreamName, nil)
+	if stack.redisMetrics {
+		stack.startRedisHealthProbe(t)
+	} else {
+		stack.Handler.SetHealthProbeState(true, true)
+	}
 	return stack
 }

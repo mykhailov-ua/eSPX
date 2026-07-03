@@ -7,7 +7,6 @@ import (
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -45,9 +44,7 @@ var (
 	}
 	trackRequestPool = sync.Pool{
 		New: func() any {
-			return &TrackRequest{
-				Payload: make([]byte, 0, 512),
-			}
+			return &TrackRequest{}
 		},
 	}
 	bufferPool = sync.Pool{
@@ -55,13 +52,19 @@ var (
 	}
 	fraudValuesPool = sync.Pool{
 		New: func() any {
-			s := make([]any, 18)
+			s := make([]any, 22)
 			return &s
 		},
 	}
 	responseBytesPool = sync.Pool{
 		New: func() any {
 			s := make([]byte, 4096)
+			return &s
+		},
+	}
+	extraBufPool = sync.Pool{
+		New: func() any {
+			s := make([]byte, 0, 1024)
 			return &s
 		},
 	}
@@ -74,11 +77,12 @@ var (
 // connContext holds per-connection parse and response buffers for the gnet handler.
 type connContext struct {
 	pbReq    pb.AdEvent
-	reqJSON  TrackRequest
+	trackReq TrackRequest
 	evt      domain.Event
 	valSlice []any
 	resp     pb.TrackResponse
 	bufSlice []byte
+	extraBuf []byte
 	wReqID   bufWrapper
 	wCamp    bufWrapper
 	wTime    bufWrapper
@@ -86,14 +90,14 @@ type connContext struct {
 	shardID  int
 }
 
-// init precomputes HTTP status strings for metrics label lookup.
+// init materializes HTTP status label strings once so gnet track metrics avoid per-request strconv.
 func init() {
 	for i := 0; i < 600; i++ {
 		statusStrings[i] = strconv.Itoa(i)
 	}
 }
 
-// putBuffer returns a bytes.Buffer to the pool when it is not oversized.
+// putBuffer recycles response buffers only when capacity stays bounded for the gnet track path.
 func putBuffer(buf *bytes.Buffer) {
 	if buf == nil || buf.Cap() > maxPoolObjectSize {
 		return
@@ -107,7 +111,7 @@ func putAdEvent(evt *pb.AdEvent) {
 	if evt == nil {
 		return
 	}
-	if evt.Metadata != nil && (len(evt.Metadata.Extra) > 100 || cap(evt.Metadata.ExtraBytes) > 4096) {
+	if evt.Metadata != nil && (len(evt.Metadata.ExtraKeys) > 100 || cap(evt.Metadata.ExtraBytes) > 4096) {
 		evt.Reset()
 		adEventPool.Put(evt)
 		return
@@ -119,9 +123,14 @@ func putAdEvent(evt *pb.AdEvent) {
 		evt.Metadata.UserId = evt.Metadata.UserId[:0]
 		evt.Metadata.DeviceType = evt.Metadata.DeviceType[:0]
 		evt.Metadata.Os = evt.Metadata.Os[:0]
-		for k := range evt.Metadata.Extra {
-			delete(evt.Metadata.Extra, k)
+		for i := range evt.Metadata.ExtraKeys {
+			evt.Metadata.ExtraKeys[i] = evt.Metadata.ExtraKeys[i][:0]
 		}
+		evt.Metadata.ExtraKeys = evt.Metadata.ExtraKeys[:0]
+		for i := range evt.Metadata.ExtraValues {
+			evt.Metadata.ExtraValues[i] = evt.Metadata.ExtraValues[i][:0]
+		}
+		evt.Metadata.ExtraValues = evt.Metadata.ExtraValues[:0]
 		evt.Metadata.ExtraBytes = evt.Metadata.ExtraBytes[:0]
 	}
 	adEventPool.Put(evt)
@@ -142,6 +151,8 @@ type Pinger interface {
 }
 
 // NewRouter builds the stdlib HTTP track handler with health, metrics, and pprof routes.
+// Deprecated: production ingestion uses gnet (AdsPacketHandler). POST /track delegates to
+// shared processTrack(); this router remains for integration and fault tests only.
 func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, filterEngine *FilterEngine, pool Pinger, rdbs []redis.UniversalClient, sharder Sharder, fraudStream string, creativeStore *BrandCreativeStore) http.Handler {
 	mux := http.NewServeMux()
 
@@ -153,6 +164,7 @@ func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, filterEngin
 
 	trackLatencyRing := NewLatencyRing(defaultLatencyRingCap)
 	fraudWriter := NewFraudStreamWriter(rdbs, fraudStream, int64(cfg.StreamMaxLen))
+	trackProc := newTrackProcessor(filterEngine, registry, creativeStore)
 
 	mux.Handle("GET /metrics", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		trackLatencyRing.FlushTo(trackDurationObserver)
@@ -250,8 +262,8 @@ func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, filterEngin
 				return
 			}
 
-			cid, err := uuid.ParseBytes(pbReq.CampaignId)
-			if err != nil {
+			var cid uuid.UUID
+			if !ParseUUID(pbReq.CampaignId, &cid) {
 				metrics.HttpParseErrors.WithLabelValues("invalid_campaign_id").Inc()
 				status = http.StatusBadRequest
 				http.Error(w, "invalid campaign_id", status)
@@ -266,12 +278,11 @@ func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, filterEngin
 				}
 				if len(pbReq.Metadata.ExtraBytes) > 0 {
 					payload = pbReq.Metadata.ExtraBytes
-				} else if pbReq.Metadata.Extra != nil {
-					var err error
-					payload, err = json.Marshal(pbReq.Metadata.Extra)
-					if err != nil {
-						metrics.HttpParseErrors.WithLabelValues("marshal_extra").Inc()
-					}
+				} else if len(pbReq.Metadata.ExtraKeys) > 0 {
+					bufPtr := extraBufPool.Get().(*[]byte)
+					*bufPtr = marshalExtra(*bufPtr, pbReq.Metadata.ExtraKeys, pbReq.Metadata.ExtraValues)
+					payload = *bufPtr
+					defer extraBufPool.Put(bufPtr)
 				}
 			}
 		} else {
@@ -286,14 +297,11 @@ func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, filterEngin
 			}
 
 			req := trackRequestPool.Get().(*TrackRequest)
-			req.CampaignID = uuid.Nil
-			req.UserID = ""
-			req.Type = ""
-			req.ClickID = ""
-			req.Payload = req.Payload[:0]
+			req.Reset()
 			defer trackRequestPool.Put(req)
 
-			if err := req.UnmarshalJSON(buf.Bytes()); err != nil {
+			err := ParseTrackRequestJSON(req, buf.Bytes())
+			if err != nil {
 				metrics.HttpParseErrors.WithLabelValues("invalid_json").Inc()
 				status = http.StatusBadRequest
 				http.Error(w, "invalid json", status)
@@ -327,38 +335,43 @@ func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, filterEngin
 		}
 		evt.UA = ua
 
+		var landing string
 		if filterEngine != nil {
-			if err := filterEngine.Check(context.Background(), evt); err != nil {
-				if kind, ok := classifyFilterErr(err); ok {
-					if kind == filterRejectFraud {
-						recordHTTPFilterReject(kind)
-						shard := sharder.GetShard(evt.CampaignID)
-						enqueueFraudReject(fraudWriter, shard, evt)
-						domain.EventPool.Put(evt)
-						accept := ""
-						if accSlice := r.Header["Accept"]; len(accSlice) > 0 {
-							accept = accSlice[0]
-						}
-						writeHTTPTrackAccepted(w, wReqID, requestIDStr, accept, "")
-						return
-					}
-					spec := filterRejectSpecs[kind]
-					domain.EventPool.Put(evt)
-					recordHTTPFilterReject(kind)
-					if kind == filterRejectInfra {
-						w.Header().Set("Retry-After", "1")
-					}
-					http.Error(w, spec.body, spec.status)
-					return
-				}
+			outcome := processTrack(trackProc, evt, nil)
+			switch outcome.Status {
+			case trackStatusFraudAccepted:
+				recordHTTPFilterReject(outcome.RejectKind)
+				shard := sharder.GetShard(evt.CampaignID)
+				enqueueFraudReject(fraudWriter, shard, evt)
 				domain.EventPool.Put(evt)
-				filterEngineFailures.Inc()
+				accept := ""
+				if accSlice := r.Header["Accept"]; len(accSlice) > 0 {
+					accept = accSlice[0]
+				}
+				writeHTTPTrackAccepted(w, wReqID, requestIDStr, accept, "")
+				return
+			case trackStatusRejected:
+				spec := filterRejectSpecs[outcome.RejectKind]
+				domain.EventPool.Put(evt)
+				recordHTTPFilterReject(outcome.RejectKind)
+				if outcome.RejectKind == filterRejectInfra {
+					w.Header().Set("Retry-After", "1")
+				}
+				if outcome.RejectKind == filterRejectRateLimit || outcome.RejectKind == filterRejectPacing {
+					w.Header().Set("Retry-After", "60")
+				}
+				http.Error(w, spec.body, spec.status)
+				return
+			case trackStatusInternalError:
+				domain.EventPool.Put(evt)
 				http.Error(w, "internal error", http.StatusInternalServerError)
 				return
+			case trackStatusAccepted:
+				landing = outcome.LandingURL
 			}
+		} else {
+			landing = ResolveLandingURL(registry, creativeStore, evt)
 		}
-
-		landing := ResolveLandingURL(registry, creativeStore, evt)
 		domain.EventPool.Put(evt)
 
 		accept := ""
@@ -465,10 +478,10 @@ var (
 	respEmergencyBreaker   = []byte("HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: 32\r\nConnection: keep-alive\r\n\r\nservice temporarily unavailable")
 	respWorkerPoolOverload = []byte("HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nRetry-After: 1\r\nContent-Length: 17\r\nConnection: keep-alive\r\n\r\nserver overloaded")
 	respInfraUnavailable   = []byte("HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nRetry-After: 1\r\nContent-Length: 19\r\nConnection: keep-alive\r\n\r\nservice unavailable")
-	respRateLimit          = []byte("HTTP/1.1 429 Too Many Requests\r\nContent-Type: text/plain\r\nContent-Length: 19\r\nConnection: keep-alive\r\n\r\nrate limit exceeded")
+	respRateLimit          = []byte("HTTP/1.1 429 Too Many Requests\r\nContent-Type: text/plain\r\nRetry-After: 60\r\nContent-Length: 19\r\nConnection: keep-alive\r\n\r\nrate limit exceeded")
 	respDuplicate          = []byte("HTTP/1.1 409 Conflict\r\nContent-Type: text/plain\r\nContent-Length: 15\r\nConnection: keep-alive\r\n\r\nduplicate event")
 	respBudget             = []byte("HTTP/1.1 402 Payment Required\r\nContent-Type: text/plain\r\nContent-Length: 16\r\nConnection: keep-alive\r\n\r\nbudget exhausted")
-	respPacing             = []byte("HTTP/1.1 429 Too Many Requests\r\nContent-Type: text/plain\r\nContent-Length: 20\r\nConnection: keep-alive\r\n\r\npacing limit reached")
+	respPacing             = []byte("HTTP/1.1 429 Too Many Requests\r\nContent-Type: text/plain\r\nRetry-After: 60\r\nContent-Length: 20\r\nConnection: keep-alive\r\n\r\npacing limit reached")
 	respFreq               = []byte("HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: 23\r\nConnection: keep-alive\r\n\r\nfrequency limit reached")
 	respGeo                = []byte("HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: 21\r\nConnection: keep-alive\r\n\r\ngeo-targeting blocked")
 	respSchedule           = []byte("HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: 26\r\nConnection: keep-alive\r\n\r\noutside delivery schedule")
@@ -505,6 +518,7 @@ type AdsPacketHandler struct {
 	auditLogSeq           atomic.Uint64
 	auditLogSampleMask    uint64
 	fraudWriter           *FraudStreamWriter
+	trackProc             trackProcessor
 	contextPool           sync.Pool
 	workerPool            *PinnedWorkerPool
 }
@@ -549,6 +563,7 @@ func NewAdsPacketHandler(cfg *config.Config, registry domain.CampaignRegistry, f
 		sharder:               sharder,
 		fraudStream:           fraudStream,
 		fraudWriter:           NewFraudStreamWriter(rdbs, fraudStream, int64(cfg.StreamMaxLen)),
+		trackProc:             newTrackProcessor(filterEngine, registry, creativeStore),
 		trackDurationObserver: trackDurationObserver,
 		trackStatusCounters:   trackStatusCounters,
 		trackMetrics:          newPreboundTrackMetrics(),
@@ -568,7 +583,7 @@ func NewAdsPacketHandler(cfg *config.Config, registry domain.CampaignRegistry, f
 				pbReq: pb.AdEvent{
 					Metadata: &pb.EventMetadata{},
 				},
-				reqJSON: TrackRequest{
+				trackReq: TrackRequest{
 					Payload: make([]byte, 0, 512),
 				},
 				evt: domain.Event{
@@ -607,6 +622,25 @@ func (h *AdsPacketHandler) recordMetrics(startMono int64, status int) {
 func (h *AdsPacketHandler) FlushLatency() {
 	if h.trackLatencyRing != nil {
 		h.trackLatencyRing.FlushTo(h.trackDurationObserver)
+	}
+}
+
+// SetHealthProbeState mirrors StartHealthProbe atomics for gnet health tests.
+func (h *AdsPacketHandler) SetHealthProbeState(healthy bool, shardOK ...bool) {
+	if healthy {
+		h.healthy.Store(1)
+	} else {
+		h.healthy.Store(0)
+	}
+	for i, ok := range shardOK {
+		if i >= len(h.rdbsHealthy) {
+			break
+		}
+		if ok {
+			h.rdbsHealthy[i].Store(1)
+		} else {
+			h.rdbsHealthy[i].Store(0)
+		}
 	}
 }
 
@@ -797,6 +831,11 @@ func (h *AdsPacketHandler) StartHealthProbe(ctx context.Context) {
 				} else {
 					h.healthy.Store(0)
 				}
+				shardStates := make([]int32, len(h.rdbsHealthy))
+				for i := range h.rdbsHealthy {
+					shardStates[i] = h.rdbsHealthy[i].Load()
+				}
+				exportHealthProbeMetrics(ok, shardStates)
 			}
 		}
 	}()
@@ -917,6 +956,9 @@ type parsedHTTPRequest struct {
 	ClientIP         []byte
 	UserAgent        []byte
 	Accept           []byte
+	TLSHash          []byte
+	SecCHUA          []byte
+	AcceptLang       []byte
 	Body             []byte
 	ContentLength    int
 	HasContentLength bool
@@ -992,6 +1034,12 @@ func (h *AdsPacketHandler) parseHTTP(data []byte) (int, parsedHTTPRequest, error
 			req.UserAgent = val
 		} else if equalFoldBytes(key, []byte("accept")) {
 			req.Accept = val
+		} else if equalFoldBytes(key, []byte("x-tls-hash")) {
+			req.TLSHash = val
+		} else if equalFoldBytes(key, []byte("sec-ch-ua")) {
+			req.SecCHUA = val
+		} else if equalFoldBytes(key, []byte("accept-language")) {
+			req.AcceptLang = val
 		}
 	}
 
@@ -1015,7 +1063,7 @@ func (h *AdsPacketHandler) React(req parsedHTTPRequest, c gnet.Conn) gnet.Action
 			pbReq: pb.AdEvent{
 				Metadata: &pb.EventMetadata{},
 			},
-			reqJSON: TrackRequest{
+			trackReq: TrackRequest{
 				Payload: make([]byte, 0, 512),
 			},
 			evt: domain.Event{
@@ -1093,17 +1141,9 @@ func (h *AdsPacketHandler) React(req parsedHTTPRequest, c gnet.Conn) gnet.Action
 	}
 
 	startMono := monotonicNano()
-	var status int
 
 	ip := extractClientIPGnet(ctx, &req, c, h.cfg.TrustedProxies)
 	ua := unsafeString(req.UserAgent)
-
-	var campaignID uuid.UUID
-	var eventType string
-	var userID string
-	var payload []byte
-	var clickID string
-	var requestIDStr string
 
 	id, _ := NewFastUUID()
 
@@ -1111,116 +1151,32 @@ func (h *AdsPacketHandler) React(req parsedHTTPRequest, c gnet.Conn) gnet.Action
 	wReqID.buf = wReqID.buf[:0]
 	wReqID.buf = appendUUID(wReqID.buf, id)
 
-	contentType := unsafeString(req.ContentType)
-	if contentType == "application/x-protobuf" || contentType == "" {
-		h.trackMetrics.throughputProto.Inc()
-		pbReq := &ctx.pbReq
-		pbReq.CampaignId = pbReq.CampaignId[:0]
-		pbReq.EventType = pbReq.EventType[:0]
-		if pbReq.Metadata != nil {
-			pbReq.Metadata.ClickId = pbReq.Metadata.ClickId[:0]
-			pbReq.Metadata.UserId = pbReq.Metadata.UserId[:0]
-			pbReq.Metadata.DeviceType = pbReq.Metadata.DeviceType[:0]
-			pbReq.Metadata.Os = pbReq.Metadata.Os[:0]
-			for k := range pbReq.Metadata.Extra {
-				delete(pbReq.Metadata.Extra, k)
-			}
-			pbReq.Metadata.ExtraBytes = pbReq.Metadata.ExtraBytes[:0]
-		}
-
-		if err := pbReq.UnmarshalVT(req.Body); err != nil {
-			status = http.StatusBadRequest
-			h.write(c, respInvalidProto, ctx)
-			h.recordMetrics(startMono, status)
-			return gnet.None
-		}
-
-		if len(pbReq.CampaignId) != 16 {
-			status = http.StatusBadRequest
-			h.write(c, respInvalidCampaign, ctx)
-			h.recordMetrics(startMono, status)
-			return gnet.None
-		}
-		copy(campaignID[:], pbReq.CampaignId)
-
-		eventType = unsafeString(pbReq.EventType)
-		if pbReq.Metadata != nil {
-			userID = unsafeString(pbReq.Metadata.UserId)
-			if len(pbReq.Metadata.ClickId) > 0 {
-				clickID = unsafeString(pbReq.Metadata.ClickId)
-			}
-			if len(pbReq.Metadata.ExtraBytes) > 0 {
-				payload = pbReq.Metadata.ExtraBytes
-			} else if pbReq.Metadata.Extra != nil {
-				payload, _ = json.Marshal(pbReq.Metadata.Extra)
-			}
-		}
-	} else {
-		h.trackMetrics.throughputJSON.Inc()
-		reqJSON := &ctx.reqJSON
-		reqJSON.CampaignID = uuid.Nil
-		reqJSON.UserID = ""
-		reqJSON.Type = ""
-		reqJSON.ClickID = ""
-		reqJSON.Payload = reqJSON.Payload[:0]
-
-		if err := reqJSON.UnmarshalJSON(req.Body); err != nil {
-			status = http.StatusBadRequest
-			h.write(c, respInvalidJSON, ctx)
-			h.recordMetrics(startMono, status)
-			return gnet.None
-		}
-		campaignID = reqJSON.CampaignID
-		userID = reqJSON.UserID
-		eventType = reqJSON.Type
-		payload = reqJSON.Payload
-		if reqJSON.ClickID != "" {
-			clickID = reqJSON.ClickID
-		}
+	fields, badResp, status, ok := h.parseTrackIngest(ctx, req, wReqID)
+	if !ok {
+		h.write(c, badResp, ctx)
+		h.recordMetrics(startMono, status)
+		return gnet.None
 	}
 
-	if clickID == "" {
+	var requestIDStr string
+	if fields.clickID == "" {
 		requestIDStr = unsafeString(wReqID.buf)
-		clickID = requestIDStr
+		fields.clickID = requestIDStr
 	}
 
 	evt := &ctx.evt
-	evt.Reset()
-	evt.ClickID = clickID
-	evt.CampaignID = campaignID
-	evt.UserID = userID
-	evt.Type = eventType
-	evt.Payload = append(evt.Payload[:0], payload...)
-	evt.IP = ip
-	evt.UA = ua
+	fillTrackEvent(evt, fields, ip, ua)
+	evt.TLSHash = unsafeString(req.TLSHash)
+	evt.SecCHUA = unsafeString(req.SecCHUA)
+	evt.AcceptLang = unsafeString(req.AcceptLang)
 
 	if h.filterEngine != nil {
-		if err := h.filterEngine.Check(context.Background(), evt); err != nil {
-			if kind, ok := classifyFilterErr(err); ok {
-				if kind == filterRejectFraud {
-					h.trackMetrics.recordFilterReject(kind)
-					shard := h.sharder.GetShard(evt.CampaignID)
-					enqueueFraudReject(h.fraudWriter, shard, evt)
-					h.writeGnetTrackAccepted(ctx, req, c, startMono, wReqID, requestIDStr, "")
-					return gnet.None
-				}
-				spec := filterRejectSpecs[kind]
-				h.trackMetrics.recordFilterReject(kind)
-				status = spec.status
-				h.write(c, spec.gnetResp, ctx)
-				h.recordMetrics(startMono, status)
-				return gnet.None
-			}
-			status = http.StatusInternalServerError
-			filterEngineFailures.Inc()
-			h.write(c, respInternalError, ctx)
-			h.recordMetrics(startMono, status)
-			return gnet.None
-		}
+		outcome := processTrack(h.trackProc, evt, fields.deviceType)
+		return h.deliverGnetTrack(ctx, req, c, evt, startMono, wReqID, requestIDStr, outcome)
 	}
 
 	h.trackMetrics.decisionAccepted.Inc()
-	writeAuditLog(h.logger, &h.auditLogSeq, h.auditLogSampleMask, ctx.shardID, CachedTimeUTC().Unix(), campaignID, clickID, eventType)
+	writeAuditLog(h.logger, &h.auditLogSeq, h.auditLogSampleMask, ctx.shardID, evt)
 	landing := ResolveLandingURL(h.registry, h.creativeStore, &ctx.evt)
 	h.writeGnetTrackAccepted(ctx, req, c, startMono, wReqID, requestIDStr, landing)
 	return gnet.None
@@ -1265,7 +1221,7 @@ func extractClientIPGnet(ctx *connContext, req *parsedHTTPRequest, c gnet.Conn, 
 	return remoteIP
 }
 
-// trimSpaceBytes trims ASCII whitespace from a header value slice.
+// trimSpaceBytes normalizes header values in-place on the zero-copy gnet parse buffer.
 func trimSpaceBytes(b []byte) []byte {
 	start := 0
 	for start < len(b) && (b[start] == ' ' || b[start] == '\t') {
@@ -1278,7 +1234,7 @@ func trimSpaceBytes(b []byte) []byte {
 	return b[start:end]
 }
 
-// equalFoldBytes compares header names case-insensitively without allocation.
+// equalFoldBytes matches HTTP header names on the gnet path without allocating folded strings.
 func equalFoldBytes(a, b []byte) bool {
 	if len(a) != len(b) {
 		return false
@@ -1299,7 +1255,7 @@ func equalFoldBytes(a, b []byte) bool {
 	return true
 }
 
-// parseDecimal parses a Content-Length header value from bytes.
+// parseDecimal decodes Content-Length on the gnet path without importing strconv.
 func parseDecimal(b []byte) int {
 	val := 0
 	for _, c := range b {

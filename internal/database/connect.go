@@ -1,3 +1,4 @@
+// Package database provides shared connection helpers and operational utilities for Postgres, Redis, ClickHouse, and event partitioning.
 package database
 
 import (

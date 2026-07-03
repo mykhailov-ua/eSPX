@@ -20,24 +20,12 @@ import (
 	redis "github.com/redis/go-redis/v9"
 )
 
-//go:embed unified_filter.lua
+// unifiedFilterLua holds the Redis script that enforces budget, pacing, dedup, and stream enqueue in one round trip.
+//
+//go:embed unified-filter.lua
 var unifiedFilterLua string
 
-// keysPool recycles Redis key slices for unified filter Lua calls.
-var keysPool = sync.Pool{
-	New: func() any {
-		s := make([]string, 12)
-		return &s
-	},
-}
-
-// argsPool recycles Redis argument slices for unified filter Lua calls.
-var argsPool = sync.Pool{
-	New: func() any {
-		s := make([]any, 23)
-		return &s
-	},
-}
+var unifiedFilterLuaAny any
 
 // StringVal wraps a string for zero-copy Redis binary marshaling in Lua args.
 type StringVal struct {
@@ -62,14 +50,47 @@ type UnifiedStringWrappers struct {
 	userID  StringVal
 }
 
-// unifiedWrappersPool recycles string wrapper structs for unified filter checks.
-var unifiedWrappersPool = sync.Pool{
+var (
+	dirtyCampaignsKeyVal = StringVal{s: "budget:dirty_campaigns"}
+	dirtyCustomersKeyVal = StringVal{s: "budget:dirty_customers"}
+	refillNeededKeyVal   = StringVal{s: "budget:refill_needed"}
+	fcapIgnoredKeyVal    = StringVal{s: "fcap:ignored"}
+)
+
+// unifiedCheckScratch holds pooled buffers for one UnifiedFilter.Check without defer.
+type unifiedCheckScratch struct {
+	wRL, wDup, wIdem, wDate, wDS, wFcap, wImpTS, wQuota, wRefillLock bufWrapper
+	args                                                             []any
+	wrappers                                                         UnifiedStringWrappers
+	keyVals                                                          [unifiedFilterKeyCount]StringVal
+	keyArgs                                                          [unifiedFilterKeyCount]any
+}
+
+var unifiedScratchPool = sync.Pool{
 	New: func() any {
-		return &UnifiedStringWrappers{}
+		s := &unifiedCheckScratch{
+			args: make([]any, 28),
+		}
+		s.wRL.buf = make([]byte, 0, 128)
+		s.wDup.buf = make([]byte, 0, 128)
+		s.wIdem.buf = make([]byte, 0, 128)
+		s.wDate.buf = make([]byte, 0, 128)
+		s.wDS.buf = make([]byte, 0, 128)
+		s.wFcap.buf = make([]byte, 0, 128)
+		s.wImpTS.buf = make([]byte, 0, 128)
+		s.wQuota.buf = make([]byte, 0, 128)
+		s.wRefillLock.buf = make([]byte, 0, 128)
+		for i := range s.keyVals {
+			s.keyArgs[i] = &s.keyVals[i]
+		}
+		return s
 	},
 }
 
-// appendDate formats YYYYMMDD into dst without time.Format allocations.
+func (s *unifiedCheckScratch) acquire() {}
+func (s *unifiedCheckScratch) release() {}
+
+// appendDate writes pacing date keys without time.Format allocations in unified filter Lua setup.
 func appendDate(dst []byte, t time.Time) []byte {
 	year, month, day := t.Date()
 	return append(dst,
@@ -95,6 +116,7 @@ var hourAnyCache [25]any
 
 // init fills hourAnyCache so Lua args avoid per-request boxing allocations.
 func init() {
+	unifiedFilterLuaAny = unifiedFilterLua
 	for i := 0; i <= 24; i++ {
 		hourAnyCache[i] = i
 	}
@@ -110,6 +132,8 @@ type UnifiedFilter struct {
 	rdbs                     []redis.UniversalClient
 	sharder                  Sharder
 	script                   *redis.Script
+	scriptHash               string
+	scriptHashAny            any
 	registry                 domain.CampaignRegistry
 	repo                     domain.CampaignRepository
 	geo                      GeoProvider
@@ -121,6 +145,7 @@ type UnifiedFilter struct {
 	clickAmountMicro         int64
 	impressionAmountMicro    int64
 	streamName               string
+	streamKeyVal             StringVal
 	maxStreamLen             int
 	rateLimitWindowAny       any
 	rateLimitAny             any
@@ -147,10 +172,18 @@ type UnifiedFilter struct {
 	ttcMinMsAny                  any
 	impTsTTLAny                  any
 	ttcFailClosedAny             any
+	skipBudgetDebitAny           any
+	quotaEnabledAny              any
+	quotaChunkSizeAny            any
+	quotaRefillThresholdPctAny   any
+	quotaMode                    string
+	localQuotaCache              *LocalQuotaCache
 	dbLookupTimeout              time.Duration
 	luaMetricsSeq                atomic.Uint64
 
 	luaDurationObservers []prometheus.Observer
+	luaNoScriptCounters  []prometheus.Counter
+	redisObservability   redisShardObservability
 }
 
 // SetTTCMin configures click fraud time-to-click thresholds for the Lua script.
@@ -168,6 +201,15 @@ func (f *UnifiedFilter) SetTTCFailClosed(v bool) {
 	}
 }
 
+// SetSkipBudgetDebit skips Lua campaign/customer/daily debits when rtb owns authoritative spend.
+func (f *UnifiedFilter) SetSkipBudgetDebit(skip bool) {
+	if skip {
+		f.skipBudgetDebitAny = oneAny
+	} else {
+		f.skipBudgetDebitAny = zeroAny
+	}
+}
+
 // SetGeoProvider attaches GeoIP lookup for bid floor enforcement before Lua.
 func (f *UnifiedFilter) SetGeoProvider(geo GeoProvider) {
 	f.geo = geo
@@ -181,7 +223,7 @@ func (f *UnifiedFilter) SetGeoBidFloor(country string, floor int64) {
 // parseBidMicroKey is the JSON field prefix scanned without full unmarshaling.
 var parseBidMicroKey = []byte(`"bid_micro"`)
 
-// parseBidMicro extracts bid_micro from JSON payload bytes on the hot path.
+// parseBidMicro reads bid_micro from JSON payloads without full unmarshaling on the track path.
 func parseBidMicro(payload []byte) int64 {
 	n := len(payload)
 	kLen := len(parseBidMicroKey)
@@ -235,10 +277,13 @@ func NewUnifiedFilter(
 	streamName string,
 	maxStreamLen int,
 ) *UnifiedFilter {
+	script := redis.NewScript(unifiedFilterLua)
 	return &UnifiedFilter{
 		rdbs:                         rdbs,
 		sharder:                      sharder,
-		script:                       redis.NewScript(unifiedFilterLua),
+		script:                       script,
+		scriptHash:                   script.Hash(),
+		scriptHashAny:                script.Hash(),
 		registry:                     registry,
 		repo:                         repo,
 		rateLimit:                    rateLimit,
@@ -248,6 +293,7 @@ func NewUnifiedFilter(
 		clickAmountMicro:             clickAmount,
 		impressionAmountMicro:        impressionAmount,
 		streamName:                   streamName,
+		streamKeyVal:                 StringVal{s: streamName},
 		maxStreamLen:                 maxStreamLen,
 		rateLimitWindowAny:           int(rateLimitWindow.Seconds()),
 		rateLimitAny:                 rateLimit,
@@ -259,9 +305,39 @@ func NewUnifiedFilter(
 		clickAmountMicroHalfAny:      clickAmount / 2,
 		impressionAmountMicroHalfAny: impressionAmount / 2,
 		ttcFailClosedAny:             zeroAny,
+		skipBudgetDebitAny:           zeroAny,
+		quotaEnabledAny:              zeroAny,
+		quotaChunkSizeAny:            zeroAny,
+		quotaRefillThresholdPctAny:   20,
+		quotaMode:                    "off",
+		localQuotaCache:              NewLocalQuotaCache(),
 		luaDurationObservers:         newRedisLuaObservers(len(rdbs)),
+		luaNoScriptCounters:          newRedisLuaNoScriptCounters(len(rdbs)),
+		redisObservability:           newRedisShardObservability(len(rdbs), luaMetricsSampleMask),
 		dbLookupTimeout:              2 * time.Second,
 	}
+}
+
+// SetMetricsSampleMask configures downsampling for per-campaign Redis observability counters.
+func (f *UnifiedFilter) SetMetricsSampleMask(mask int) {
+	f.redisObservability.sampleMask = histogramSampleMaskFromConfig(mask)
+}
+
+// SetQuotaConfig enables distributed quota keys in unified-filter.lua (Phase 1.3).
+// mode: off | shadow | live — off keeps legacy budget:campaign-only path.
+func (f *UnifiedFilter) SetQuotaConfig(mode string, chunkSize int64, thresholdPct int) {
+	f.quotaMode = mode
+	switch mode {
+	case "shadow", "live":
+		f.quotaEnabledAny = oneAny
+	default:
+		f.quotaEnabledAny = zeroAny
+	}
+	f.quotaChunkSizeAny = chunkSize
+	if thresholdPct <= 0 {
+		thresholdPct = 20
+	}
+	f.quotaRefillThresholdPctAny = thresholdPct
 }
 
 // SetSLATargets configures automatic spend throttling when DB latency exceeds SLA.
@@ -364,7 +440,7 @@ func (f *UnifiedFilter) StartSLASentinel(ctx context.Context, interval time.Dura
 	}()
 }
 
-// getRDB returns the Redis client shard for a campaign id.
+// getRDB selects the Redis shard for a campaign so Lua keys stay colocated with budget state.
 func (f *UnifiedFilter) getRDB(campaignID uuid.UUID) redis.UniversalClient {
 	if len(f.rdbs) <= 1 {
 		return f.rdbs[0]
@@ -395,6 +471,12 @@ func (f *UnifiedFilter) checkGeoBidFloor(evt *domain.Event) error {
 
 // Check runs the unified Lua filter, reloading budget from registry or Postgres on cache miss.
 func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
+	nowNano := time.Now().UnixNano()
+	if f.quotaMode == "live" && f.localQuotaCache.IsBlocked(evt.CampaignID, nowNano) {
+		metrics.TrackerLocalQuotaBlockTotal.WithLabelValues(evt.CampaignID.String()).Inc()
+		return ErrBudgetExhausted
+	}
+
 	campInfo, ok := f.registry.GetCampaign(evt.CampaignID)
 	if !ok {
 		return ErrCampaignNotFound
@@ -405,7 +487,8 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 		if err != nil {
 			return fmt.Errorf("failed to generate click id: %w", err)
 		}
-		evt.ClickID = id.String()
+		appendUUID(evt.ClickIDBuf[:0], id)
+		evt.ClickID = unsafeString(evt.ClickIDBuf[:])
 	}
 
 	if f.geo != nil {
@@ -429,29 +512,33 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 
 	rdb := f.getRDB(evt.CampaignID)
 
-	wRL := bufPool.Get().(*bufWrapper)
-	wDup := bufPool.Get().(*bufWrapper)
-	wIdem := bufPool.Get().(*bufWrapper)
-	wDate := bufPool.Get().(*bufWrapper)
-	wDS := bufPool.Get().(*bufWrapper)
-	wFcap := bufPool.Get().(*bufWrapper)
-	wImpTS := bufPool.Get().(*bufWrapper)
-	keysPtr := keysPool.Get().(*[]string)
-	argsPtr := argsPool.Get().(*[]any)
-	wrappers := unifiedWrappersPool.Get().(*UnifiedStringWrappers)
+	scratch := unifiedScratchPool.Get().(*unifiedCheckScratch)
+	scratch.acquire()
+	err := f.runUnifiedLua(ctx, evt, campInfo, amount, rdb, scratch)
+	scratch.release()
+	unifiedScratchPool.Put(scratch)
+	return err
+}
 
-	defer func() {
-		bufPool.Put(wRL)
-		bufPool.Put(wDup)
-		bufPool.Put(wIdem)
-		bufPool.Put(wDate)
-		bufPool.Put(wDS)
-		bufPool.Put(wFcap)
-		bufPool.Put(wImpTS)
-		keysPool.Put(keysPtr)
-		argsPool.Put(argsPtr)
-		unifiedWrappersPool.Put(wrappers)
-	}()
+func (f *UnifiedFilter) runUnifiedLua(
+	ctx context.Context,
+	evt *domain.Event,
+	campInfo *domain.Campaign,
+	amount any,
+	rdb redis.UniversalClient,
+	scratch *unifiedCheckScratch,
+) error {
+	wRL := &scratch.wRL
+	wDup := &scratch.wDup
+	wIdem := &scratch.wIdem
+	wDate := &scratch.wDate
+	wDS := &scratch.wDS
+	wFcap := &scratch.wFcap
+	wImpTS := &scratch.wImpTS
+	wQuota := &scratch.wQuota
+	wRefillLock := &scratch.wRefillLock
+	args := scratch.args
+	wrappers := &scratch.wrappers
 
 	wRL.buf = wRL.buf[:0]
 	wRL.buf = append(wRL.buf, "rl:ip:"...)
@@ -475,10 +562,6 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 	campaignSyncKey := campInfo.CampaignSyncKey
 	customerSyncKey := campInfo.CustomerSyncKey
 
-	dirtyCampaignsKey := "budget:dirty_campaigns"
-	dirtyCustomersKey := "budget:dirty_customers"
-	streamKey := f.streamName
-
 	var now time.Time
 	if campInfo.Location == nil || campInfo.Location == time.UTC {
 		now = CachedTimeUTC()
@@ -495,14 +578,10 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 	wDS.buf = append(wDS.buf, currentDate...)
 	dailySpendKey := unsafeString(wDS.buf)
 
-	var fcapKey string
 	if evt.UserID != "" {
 		wFcap.buf = wFcap.buf[:0]
 		wFcap.buf = append(wFcap.buf, campInfo.FcapKeyPrefix...)
 		wFcap.buf = append(wFcap.buf, evt.UserID...)
-		fcapKey = unsafeString(wFcap.buf)
-	} else {
-		fcapKey = "fcap:ignored"
 	}
 
 	wImpTS.buf = wImpTS.buf[:0]
@@ -512,19 +591,39 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 	wImpTS.buf = appendUUID(wImpTS.buf, evt.CampaignID)
 	impTSKey := unsafeString(wImpTS.buf)
 
-	keys := *keysPtr
-	keys[0] = rlKey
-	keys[1] = dupKey
-	keys[2] = budgetSourceKey
-	keys[3] = idempotencyKey
-	keys[4] = campaignSyncKey
-	keys[5] = customerSyncKey
-	keys[6] = dirtyCampaignsKey
-	keys[7] = dirtyCustomersKey
-	keys[8] = streamKey
-	keys[9] = dailySpendKey
-	keys[10] = fcapKey
-	keys[11] = impTSKey
+	wQuota.buf = wQuota.buf[:0]
+	wQuota.buf = append(wQuota.buf, "budget:quota:"...)
+	wQuota.buf = appendUUID(wQuota.buf, evt.CampaignID)
+	quotaKey := unsafeString(wQuota.buf)
+
+	wRefillLock.buf = wRefillLock.buf[:0]
+	wRefillLock.buf = append(wRefillLock.buf, "budget:refill_lock:"...)
+	wRefillLock.buf = appendUUID(wRefillLock.buf, evt.CampaignID)
+	refillLockKey := unsafeString(wRefillLock.buf)
+
+	kv := scratch.keyVals[:]
+	kv[0].s = rlKey
+	kv[1].s = dupKey
+	kv[2].s = budgetSourceKey
+	kv[3].s = idempotencyKey
+	kv[4].s = campaignSyncKey
+	kv[5].s = customerSyncKey
+	kv[9].s = dailySpendKey
+	kv[11].s = impTSKey
+	kv[12].s = quotaKey
+	kv[13].s = refillLockKey
+
+	keyArgs := scratch.keyArgs
+	keyArgs[6] = &dirtyCampaignsKeyVal
+	keyArgs[7] = &dirtyCustomersKeyVal
+	keyArgs[8] = &f.streamKeyVal
+	keyArgs[14] = &refillNeededKeyVal
+	if evt.UserID != "" {
+		kv[10].s = unsafeString(wFcap.buf)
+		keyArgs[10] = &kv[10]
+	} else {
+		keyArgs[10] = &fcapIgnoredKeyVal
+	}
 
 	isEven := zeroAny
 	if campInfo.PacingMode == domain.PacingModeEven {
@@ -546,7 +645,6 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 	wrappers.ua.s = evt.UA
 	wrappers.userID.s = evt.UserID
 
-	args := *argsPtr
 	args[0] = f.rateLimitWindowAny
 	args[1] = f.rateLimitAny
 	args[2] = f.dupTTLAny
@@ -567,24 +665,28 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 	args[17] = campInfo.FreqLimitAny
 	args[18] = campInfo.FreqWindowAny
 	args[19] = f.ttcMinMsAny
-	args[20] = cachedUnixMilli.Load()
+	args[20] = cachedUnixMilliAny.Load()
 	args[21] = f.impTsTTLAny
 	args[22] = f.ttcFailClosedAny
+	args[23] = f.skipBudgetDebitAny
+	args[24] = f.quotaEnabledAny
+	args[25] = f.quotaChunkSizeAny
+	args[26] = f.quotaRefillThresholdPctAny
 
 	shard := f.sharder.GetShard(evt.CampaignID)
 	for i := 0; i < 2; i++ {
 		seq := f.luaMetricsSeq.Add(1)
-		sampleLua := shouldSampleLuaMetrics(seq)
+		sampleLua := shouldSampleHistogram(seq, f.redisObservability.sampleMask)
 		var luaStart int64
 		if sampleLua {
 			luaStart = monotonicNano()
 		}
-		cmd := f.evalScript(ctx, rdb, shard, keys, args)
+		f.redisObservability.recordLuaOp(shard, evt.CampaignID, sampleLua)
+		res, err := f.evalScript(ctx, rdb, shard, keyArgs, args)
 
 		if sampleLua {
 			observeRedisLua(f.luaDurationObservers, shard, monoElapsedSeconds(luaStart))
 		}
-		res, err := cmd.Int64()
 
 		if err != nil {
 			return err
@@ -592,7 +694,7 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 
 		if res == -1 {
 			metrics.BudgetCacheMissTotal.Inc()
-			if filterDeadlineExceeded(ctx) {
+			if filterDeadlineExceededEvt(evt, ctx) {
 				return context.DeadlineExceeded
 			}
 			if i > 0 {
@@ -608,7 +710,7 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 			}
 
 			dbTimeout := f.dbLookupTimeout
-			if rem, ok := filterDeadlineRemaining(ctx); ok {
+			if rem, ok := filterDeadlineRemainingEvt(evt, ctx); ok {
 				if rem <= 0 {
 					return context.DeadlineExceeded
 				}
@@ -645,26 +747,48 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 		case 2:
 			return ErrDuplicateEvent
 		case 3:
+			if f.quotaMode == "live" {
+				f.localQuotaCache.Block(evt.CampaignID, time.Now().UnixNano())
+			}
 			return ErrBudgetExhausted
 		case 4:
 			return ErrPacingExhausted
 		case 5:
 			return ErrFreqLimitExceeded
 		case 6:
-			evt.FraudReason = "low_ttc"
-			return ErrFraudDetected
+			addFraudSignal(evt, FraudReasonLowTTC)
+			return nil
 		case 7:
-			evt.FraudReason = "missing_imp_ts"
-			return ErrFraudDetected
+			addFraudSignal(evt, FraudReasonMissingImpTS)
+			return nil
 		case 10:
 			metrics.TTCBypassTotal.Inc()
 			metrics.EventsProcessed.Inc()
+			f.recordAcceptedSpendIfDebited(shard, evt.CampaignID, amount, sampleLua)
 			return nil
 		default:
 			metrics.EventsProcessed.Inc()
+			f.recordAcceptedSpendIfDebited(shard, evt.CampaignID, amount, sampleLua)
 			return nil
 		}
 	}
 
 	return nil
+}
+
+// recordAcceptedSpendIfDebited emits sampled spend only when Lua debited budget.
+func (f *UnifiedFilter) recordAcceptedSpendIfDebited(shard int, campaignID uuid.UUID, amount any, sample bool) {
+	if f.skipBudgetDebitAny == oneAny {
+		return
+	}
+	f.redisObservability.recordAcceptedSpend(shard, campaignID, spendMicroFromAny(amount), sample)
+}
+
+// spendMicroFromAny extracts the Lua debit amount from pre-boxed int64 args.
+func spendMicroFromAny(amount any) int64 {
+	v, ok := amount.(int64)
+	if !ok {
+		return 0
+	}
+	return v
 }

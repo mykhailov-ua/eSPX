@@ -2,8 +2,11 @@ package management
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"time"
+
+	"espx/internal/ads"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -31,4 +34,31 @@ func RegisterOpsRoutes(mux *http.ServeMux, pool *pgxpool.Pool, rdbs []redis.Univ
 		_, _ = w.Write([]byte("OK"))
 	})
 	mux.Handle("GET /metrics", promhttp.Handler())
+	mux.HandleFunc("GET /ops/shards/slot-map", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+
+		repo := ads.NewSlotMapRepo(pool)
+		active, err := repo.GetActiveVersion(ctx)
+		if err != nil {
+			http.Error(w, "slot map meta unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		rows, err := repo.ListVersion(ctx, active)
+		if err != nil {
+			http.Error(w, "slot map unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		slots, err := ads.SlotMapShardTable(rows)
+		if err != nil {
+			http.Error(w, "slot map incomplete", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ads.OpsSlotMapResponse{
+			Version:       active,
+			ActiveVersion: active,
+			Slots:         slots,
+		})
+	})
 }

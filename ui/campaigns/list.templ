@@ -1,0 +1,103 @@
+package campaigns
+
+import (
+	"espx/ui/layout"
+)
+
+templ List(page ListPage) {
+	@layout.Base(layout.PageData{
+		Title:      "Campaigns",
+		CSRF:       page.CSRF,
+		UserEmail:  page.UserEmail,
+		UserRole:   page.UserRole,
+		ActiveNav:  "campaigns",
+		GrafanaURL: page.GrafanaURL,
+	}, listBody(page))
+}
+
+templ listBody(page ListPage) {
+	<div class="stack page-stack">
+		<div class="page-toolbar">
+			<div>
+				<h1 class="page-title">Campaigns</h1>
+				<p class="muted page-subtitle">Delivery control plane</p>
+			</div>
+			<a class="btn btn-primary btn-auto" href="/admin/campaigns/new">New campaign</a>
+		</div>
+		if page.FlashOK != "" {
+			<div class="alert alert-ok" role="status">{ page.FlashOK }</div>
+		}
+		if page.FlashError != "" {
+			<div class="alert alert-error" role="alert">{ page.FlashError }</div>
+		}
+		<div class="panel">
+			if len(page.Campaigns) == 0 {
+				<p class="muted empty-state">No campaigns yet. Create one to start delivery.</p>
+			} else {
+				<div class="table-wrap">
+					<table class="table">
+						<thead>
+							<tr>
+								<th scope="col">Name</th>
+								<th scope="col">Status</th>
+								<th scope="col">Budget</th>
+								<th scope="col">Spend</th>
+								<th scope="col">Pacing</th>
+								<th scope="col">Customer</th>
+								<th scope="col"></th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, c := range page.Campaigns {
+								<tr>
+									<td>{ c.Name }</td>
+									<td><span class={ statusClass(c.Status) }>{ c.Status }</span></td>
+									<td class="mono tabular-nums">{ c.BudgetLimit }</td>
+									<td class="mono tabular-nums">{ c.CurrentSpend }</td>
+									<td>{ c.PacingMode }</td>
+									<td class="mono">{ shortID(c.CustomerID) }</td>
+									<td class="row-actions">
+										if canCancel(c.Status) {
+											<form
+												method="post"
+												action={ "/admin/campaigns/" + c.ID + "/cancel" }
+												hx-post={ "/admin/campaigns/" + c.ID + "/cancel" }
+												hx-confirm="Cancel this campaign?"
+												hx-swap="none"
+											>
+												<button class="btn btn-sm" type="submit">Cancel</button>
+											</form>
+										}
+									</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
+				<p class="muted table-meta">Showing { len(page.Campaigns) } of { page.Total }</p>
+			}
+		</div>
+	</div>
+}
+
+func statusClass(status string) string {
+	switch status {
+	case "ACTIVE":
+		return "badge badge-ok"
+	case "PAUSED", "DRAINING":
+		return "badge badge-warn"
+	default:
+		return "badge"
+	}
+}
+
+func canCancel(status string) bool {
+	return status == "ACTIVE" || status == "PAUSED"
+}
+
+func shortID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
+}

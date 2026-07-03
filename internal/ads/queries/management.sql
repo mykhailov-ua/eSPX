@@ -27,8 +27,8 @@ SELECT * FROM campaigns
 WHERE id = $1;
 
 -- name: CreateLedgerEntry :one
-INSERT INTO balance_ledger (customer_id, campaign_id, amount, type, idempotency_hash)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO balance_ledger (customer_id, campaign_id, amount, type, idempotency_hash, payment_intent_id)
+VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
 
 -- name: GetLedgerByHash :one
@@ -38,6 +38,11 @@ WHERE idempotency_hash = $1;
 -- name: GetLedgerByHashForUpdate :one
 SELECT * FROM balance_ledger
 WHERE idempotency_hash = $1
+FOR UPDATE;
+
+-- name: GetLedgerByPaymentIntentForUpdate :one
+SELECT * FROM balance_ledger
+WHERE payment_intent_id = $1 AND type = 'PAYMENT_TOPUP'
 FOR UPDATE;
 
 -- name: CreateStatusHistory :exec
@@ -171,7 +176,7 @@ SELECT
     COALESCE(SUM(l.amount), 0)::bigint AS topup_sum_30d
 FROM customers c
 LEFT JOIN balance_ledger l ON l.customer_id = c.id 
-    AND l.type = 'TOPUP' 
+    AND (l.type = 'TOPUP' OR l.type = 'PAYMENT_TOPUP') 
     AND l.created_at >= CURRENT_TIMESTAMP - INTERVAL '30 days'
 GROUP BY c.id;
 
@@ -242,6 +247,18 @@ FOR UPDATE;
 -- name: UpdateCampaignPacing :one
 UPDATE campaigns
 SET pacing_mode = $2,
+    updated_at = CURRENT_TIMESTAMP
+WHERE id = $1
+RETURNING *;
+
+-- name: UpdateCampaignFraudConfig :one
+UPDATE campaigns
+SET fraud_threshold_pass = $2,
+    fraud_threshold_suspect = $3,
+    fraud_threshold_ivt = $4,
+    fraud_threshold_block = $5,
+    ghost_ivt_enabled = $6,
+    behavior_flags = $7,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = $1
 RETURNING *;

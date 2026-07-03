@@ -1,0 +1,47 @@
+package templates
+
+templ DashboardLayout(title string, user UserDTO, tab string) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			@Head(title)
+		</head>
+		<body class="dashboard-body">
+			<a class="skip-link" href="#dashboard-main">Skip to content</a>
+			<div class="dashboard">
+				<aside class="dashboard-sidebar" aria-label="Dashboard">
+					<div class="dashboard-sidebar__brand">
+						<a class="dashboard-sidebar__logo link-secondary" href="/">
+							@SiteLogoMark()
+							<span>ESPX</span>
+						</a>
+					</div>
+					<nav class="dashboard-sidebar__nav">
+						@DashboardNavLink(tab, "campaigns", "Campaigns", "/dashboard?tab=campaigns")
+						if user.Role == "SA" || user.Role == "M" || user.Role == "C" {
+							@DashboardNavLink(tab, "new-campaign", "New campaign", "/dashboard?tab=new-campaign")
+						}
+						@DashboardNavLink(tab, "stats", "Real-time stats", "/dashboard?tab=stats")
+						@DashboardNavLink(tab, "api", "API access", "/dashboard?tab=api")
+						@DashboardNavLink(tab, "billing", "Billing", "/dashboard?tab=billing")
+					</nav>
+					<div class="dashboard-sidebar__user text-muted">
+						<p class="dashboard-sidebar__role">{ RoleLabel(user.Role) }</p>
+						@CopyableID(user.ID, "session ID")
+					</div>
+				</aside>
+				<main id="dashboard-main" class="dashboard-main">
+					{ children... }
+				</main>
+			</div>
+		</body>
+	</html>
+}
+
+templ DashboardNavLink(activeTab, tab, label, href string) {
+	if activeTab == tab {
+		<a class="dashboard-nav-link dashboard-nav-link--active" href={ href } aria-current="page">{ label }</a>
+	} else {
+		<a class="dashboard-nav-link" href={ href }>{ label }</a>
+	}
+}

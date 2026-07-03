@@ -1,0 +1,57 @@
+package authpage
+
+import (
+	"espx/ui/components"
+)
+
+templ Login(page LoginPage) {
+	@components.AuthShell("Sign In", page.CSRF, loginBody(page))
+}
+
+templ loginBody(page LoginPage) {
+	<div class="auth-wrap stack">
+		@components.AuthNav("login")
+		<div class="auth-panel panel stack">
+			<div>
+				<h1 class="auth-title">Sign In</h1>
+				<p class="muted auth-subtitle">eSPX management console</p>
+			</div>
+			if page.Error != "" {
+				<div class="alert alert-error" role="alert">{ page.Error }</div>
+			}
+			if page.Message != "" {
+				<div class="alert alert-ok" role="status">{ page.Message }</div>
+			}
+			<form
+				id="login-form"
+				class="stack"
+				method="post"
+				action="/admin/login"
+				hx-post="/admin/login"
+				hx-target="#login-errors"
+				hx-swap="innerHTML"
+				autocomplete="off"
+			>
+				<div id="login-errors"></div>
+				<div>
+					<label class="label" for="email">Email</label>
+					<input class="input" id="email" name="email" type="email" value="" autocomplete="off" required/>
+				</div>
+				<div>
+					<label class="label" for="password">Password</label>
+					<input class="input" id="password" name="password" type="password" value="" autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" required/>
+				</div>
+				<button class="btn btn-primary" type="submit" id="login-submit">
+					Sign In
+				</button>
+			</form>
+			@components.AuthSwitch("login")
+		</div>
+	</div>
+}
+
+templ LoginErrors(errs FieldErrors) {
+	if errs.General != "" {
+		@components.ErrorAlert(errs.General)
+	}
+}

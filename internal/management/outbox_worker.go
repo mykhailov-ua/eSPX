@@ -10,6 +10,7 @@ import (
 
 	"espx/internal/ads"
 	"espx/internal/ads/db"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -72,8 +73,10 @@ func (w *OutboxWorker) Start(ctx context.Context, interval time.Duration) {
 			return
 		case <-recoveryTicker.C:
 			w.reclaimStaleProcessing(ctx)
+			w.recordOutboxLagMetrics(ctx)
 		case <-pollTimer.C:
 			processed, err := w.ProcessOutboxWithCount(ctx, 1000)
+			w.recordOutboxLagMetrics(ctx)
 			if err != nil {
 				if ctx.Err() != nil {
 					return
@@ -98,7 +101,7 @@ func (w *OutboxWorker) Start(ctx context.Context, interval time.Duration) {
 
 // reclaimStaleProcessing resets outbox rows stuck in PROCESSING after worker crashes.
 func (w *OutboxWorker) reclaimStaleProcessing(ctx context.Context) {
-	_, err := w.svc.pool.Exec(ctx, `
+	_, err := w.svc.GetPool().Exec(ctx, `
 		UPDATE outbox_events
 		SET status = 'PENDING', processing_started_at = NULL
 		WHERE status = 'PROCESSING'
@@ -122,7 +125,7 @@ func (w *OutboxWorker) ProcessOutboxWithCount(ctx context.Context, limit int32) 
 
 	var events []db.OutboxEvent
 
-	err := pgx.BeginFunc(opCtx, w.svc.pool, func(tx pgx.Tx) error {
+	err := pgx.BeginFunc(opCtx, w.svc.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 		var err error
 		events, err = q.GetPendingOutboxEventsForUpdate(opCtx, limit)
@@ -162,14 +165,14 @@ func (w *OutboxWorker) ProcessOutboxWithCount(ctx context.Context, limit int32) 
 	}
 
 	if len(processedIDs) > 0 {
-		_, err = w.svc.pool.Exec(opCtx, "UPDATE outbox_events SET status = 'PROCESSED' WHERE id = ANY($1)", processedIDs)
+		_, err = w.svc.GetPool().Exec(opCtx, "UPDATE outbox_events SET status = 'PROCESSED' WHERE id = ANY($1)", processedIDs)
 		if err != nil {
 			slog.Error("failed to mark outbox events as processed", "error", err)
 		}
 	}
 
 	if len(revertIDs) > 0 {
-		_, err = w.svc.pool.Exec(opCtx, `
+		_, err = w.svc.GetPool().Exec(opCtx, `
 			UPDATE outbox_events
 			SET status = 'PENDING', processing_started_at = NULL
 			WHERE id = ANY($1)`, revertIDs)
@@ -184,7 +187,7 @@ func (w *OutboxWorker) ProcessOutboxWithCount(ctx context.Context, limit int32) 
 // campaignRemainingBudget reads authoritative remaining budget from Postgres for Redis seeding.
 func (w *OutboxWorker) campaignRemainingBudget(ctx context.Context, campaignID uuid.UUID) (int64, error) {
 	var limit, spend int64
-	err := w.svc.pool.QueryRow(ctx, `
+	err := w.svc.GetPool().QueryRow(ctx, `
 		SELECT budget_limit, current_spend
 		FROM campaigns
 		WHERE id = $1`, ads.ToUUID(campaignID)).Scan(&limit, &spend)
@@ -219,6 +222,8 @@ func ToUUID(u uuid.UUID) pgtype.UUID {
 	return pgtype.UUID{Bytes: u, Valid: true}
 }
 
+const fraudQuarantineChannel = "fraud:quarantine"
+
 // applyBlacklistPayload mirrors a blacklist change to every Redis shard.
 func (w *OutboxWorker) applyBlacklistPayload(ctx context.Context, p BlacklistPayload) error {
 	if len(w.svc.rdbs) == 0 {
@@ -240,6 +245,9 @@ func (w *OutboxWorker) applyBlacklistPayload(ctx context.Context, p BlacklistPay
 			return fmt.Errorf("blacklist sync failed on shard: %w", err)
 		}
 	}
+	if reason == "fraud" && p.Action == "add" && w.svc.rdbs[0] != nil {
+		_ = w.svc.rdbs[0].Publish(ctx, fraudQuarantineChannel, p.IP).Err()
+	}
 	return nil
 }
 
@@ -249,7 +257,7 @@ func (w *OutboxWorker) syncBrandCreativesToRedis(ctx context.Context, brandIDStr
 	if err != nil {
 		return err
 	}
-	rows, err := db.New(w.svc.pool).ListActiveBrandCreatives(ctx, ToUUID(brandID))
+	rows, err := db.New(w.svc.GetPool()).ListActiveBrandCreatives(ctx, ToUUID(brandID))
 	if err != nil {
 		return err
 	}

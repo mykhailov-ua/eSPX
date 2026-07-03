@@ -158,7 +158,7 @@ func requireMgmtFaultActive(t *testing.T, faultActive func() bool, msg string) {
 }
 
 func rebindBareService(svc *Service, infra *mgmtChaosInfra) {
-	svc.pool = infra.Pool
+	svc.SetPool(infra.Pool)
 	svc.rdbs = []redis.UniversalClient{infra.Redis}
 }
 

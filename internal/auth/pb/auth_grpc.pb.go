@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.2
 // - protoc             (unknown)
-// source: api/proto/auth.proto
+// source: auth.proto
 
 package pb
 
@@ -35,17 +35,19 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type AuthServiceClient interface {
+	// Separate gRPC service so credential hashing and session state do not share the management HTTP pool.
 	Register(ctx context.Context, in *RegisterRequest, opts ...grpc.CallOption) (*RegisterResponse, error)
 	Login(ctx context.Context, in *LoginRequest, opts ...grpc.CallOption) (*LoginResponse, error)
+	// Management middleware calls this on every admin request instead of parsing tokens locally.
 	VerifyToken(ctx context.Context, in *VerifyTokenRequest, opts ...grpc.CallOption) (*VerifyTokenResponse, error)
 	RefreshToken(ctx context.Context, in *RefreshTokenRequest, opts ...grpc.CallOption) (*RefreshTokenResponse, error)
 	RevokeToken(ctx context.Context, in *RevokeTokenRequest, opts ...grpc.CallOption) (*RevokeTokenResponse, error)
-	// API key lifecycle. Raw secret is returned exactly once.
+	// Raw secret returned once at creation; hashing stays in auth service, not callers.
 	CreateAPIKey(ctx context.Context, in *CreateAPIKeyRequest, opts ...grpc.CallOption) (*CreateAPIKeyResponse, error)
 	ListAPIKeys(ctx context.Context, in *ListAPIKeysRequest, opts ...grpc.CallOption) (*ListAPIKeysResponse, error)
-	// Self-service password rotation with explicit old-password check (anti-account-takeover).
+	// Old-password check blocks takeover when a session is already compromised.
 	ChangePassword(ctx context.Context, in *ChangePasswordRequest, opts ...grpc.CallOption) (*ChangePasswordResponse, error)
-	// Email ownership verification flow. Token is short-lived and single-use.
+	// Short-lived single-use token; email delivery is caller responsibility in production.
 	RequestEmailVerification(ctx context.Context, in *RequestEmailVerificationRequest, opts ...grpc.CallOption) (*RequestEmailVerificationResponse, error)
 	ConfirmEmailVerification(ctx context.Context, in *ConfirmEmailVerificationRequest, opts ...grpc.CallOption) (*ConfirmEmailVerificationResponse, error)
 }
@@ -162,17 +164,19 @@ func (c *authServiceClient) ConfirmEmailVerification(ctx context.Context, in *Co
 // All implementations must embed UnimplementedAuthServiceServer
 // for forward compatibility.
 type AuthServiceServer interface {
+	// Separate gRPC service so credential hashing and session state do not share the management HTTP pool.
 	Register(context.Context, *RegisterRequest) (*RegisterResponse, error)
 	Login(context.Context, *LoginRequest) (*LoginResponse, error)
+	// Management middleware calls this on every admin request instead of parsing tokens locally.
 	VerifyToken(context.Context, *VerifyTokenRequest) (*VerifyTokenResponse, error)
 	RefreshToken(context.Context, *RefreshTokenRequest) (*RefreshTokenResponse, error)
 	RevokeToken(context.Context, *RevokeTokenRequest) (*RevokeTokenResponse, error)
-	// API key lifecycle. Raw secret is returned exactly once.
+	// Raw secret returned once at creation; hashing stays in auth service, not callers.
 	CreateAPIKey(context.Context, *CreateAPIKeyRequest) (*CreateAPIKeyResponse, error)
 	ListAPIKeys(context.Context, *ListAPIKeysRequest) (*ListAPIKeysResponse, error)
-	// Self-service password rotation with explicit old-password check (anti-account-takeover).
+	// Old-password check blocks takeover when a session is already compromised.
 	ChangePassword(context.Context, *ChangePasswordRequest) (*ChangePasswordResponse, error)
-	// Email ownership verification flow. Token is short-lived and single-use.
+	// Short-lived single-use token; email delivery is caller responsibility in production.
 	RequestEmailVerification(context.Context, *RequestEmailVerificationRequest) (*RequestEmailVerificationResponse, error)
 	ConfirmEmailVerification(context.Context, *ConfirmEmailVerificationRequest) (*ConfirmEmailVerificationResponse, error)
 	mustEmbedUnimplementedAuthServiceServer()
@@ -465,5 +469,5 @@ var AuthService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "api/proto/auth.proto",
+	Metadata: "auth.proto",
 }

@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"espx/pkg/httpresponse"
+
 	"golang.org/x/time/rate"
 )
 
@@ -18,6 +19,7 @@ type ipRateLimiter struct {
 	entries map[string]*rate.Limiter
 }
 
+// newIPRateLimiter builds per-IP buckets so one abusive client cannot exhaust the shared admin gateway quota.
 func newIPRateLimiter(rps float64, burst int) *ipRateLimiter {
 	if rps <= 0 {
 		rps = 10
@@ -32,6 +34,7 @@ func newIPRateLimiter(rps float64, burst int) *ipRateLimiter {
 	}
 }
 
+// allow throttles a single client IP independently so one peer cannot exhaust the shared gateway quota.
 func (l *ipRateLimiter) allow(ip string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -44,6 +47,7 @@ func (l *ipRateLimiter) allow(ip string) bool {
 	return lim.Allow()
 }
 
+// clientIP resolves the caller address behind reverse proxies so rate limits apply to the real client.
 func clientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		parts := strings.Split(xff, ",")

@@ -9,6 +9,7 @@ import (
 
 	"espx/internal/config"
 	"espx/internal/database"
+
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
@@ -28,12 +29,14 @@ func TestManagementAPI_Customers(t *testing.T) {
 	defer cleanupRedis()
 
 	cfg := &config.Config{
-		AdminAPIKey: "test-secret",
+		AdminAPIKey:       "test-secret",
+		TokenSymmetricKey: "01234567890123456789012345678901",
 	}
 
+	authMW, tokenMaker := integrationTestAuth(t, rdb, cfg)
 	svc := NewService(pool, []redis.UniversalClient{rdb}, nil, cfg)
 	defer svc.Close()
-	h := NewHandler(svc, cfg, nil)
+	h := NewHandler(svc, cfg, authMW, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -46,7 +49,7 @@ func TestManagementAPI_Customers(t *testing.T) {
 
 	t.Run("ListCustomers", func(t *testing.T) {
 		req, _ := http.NewRequest("GET", "/admin/customers?limit=10", nil)
-		req.Header.Set("X-Admin-API-Key", "test-secret")
+		withAdminAPIKey(req, cfg)
 		resp := httptest.NewRecorder()
 		mux.ServeHTTP(resp, req)
 
@@ -72,7 +75,7 @@ func TestManagementAPI_Customers(t *testing.T) {
 
 	t.Run("GetCustomerByID", func(t *testing.T) {
 		req, _ := http.NewRequest("GET", "/admin/customers/"+custID.String(), nil)
-		req.Header.Set("X-Admin-API-Key", "test-secret")
+		withAdminAPIKey(req, cfg)
 		resp := httptest.NewRecorder()
 		mux.ServeHTTP(resp, req)
 
@@ -87,7 +90,7 @@ func TestManagementAPI_Customers(t *testing.T) {
 
 	t.Run("GetCustomerLedger", func(t *testing.T) {
 		req, _ := http.NewRequest("GET", "/admin/customers/"+custID.String()+"/ledger", nil)
-		req.Header.Set("X-Admin-API-Key", "test-secret")
+		withAdminAPIKey(req, cfg)
 		resp := httptest.NewRecorder()
 		mux.ServeHTTP(resp, req)
 
@@ -106,17 +109,10 @@ func TestManagementAPI_Customers(t *testing.T) {
 		otherCustID := uuid.New()
 
 		req, _ := http.NewRequest("GET", "/admin/customers/"+custID.String(), nil)
-		req.Header.Set("X-Admin-API-Key", "test-secret")
-
-		user := AuthenticatedUser{
-			UserID:     uuid.New(),
-			Role:       RoleUser,
-			CustomerID: otherCustID,
-		}
-		ctx := context.WithValue(req.Context(), UserContextKey, user)
+		withSessionUser(req, tokenMaker, RoleUser, otherCustID)
 
 		resp := httptest.NewRecorder()
-		mux.ServeHTTP(resp, req.WithContext(ctx))
+		mux.ServeHTTP(resp, req)
 
 		assert.Equal(t, http.StatusForbidden, resp.Code)
 	})

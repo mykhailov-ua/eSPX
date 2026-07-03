@@ -2,8 +2,10 @@ package ads
 
 import (
 	"sync/atomic"
+	"time"
 
 	"espx/internal/ads/pb"
+	"espx/internal/domain"
 	"espx/internal/metrics"
 	"espx/pkg/logger"
 
@@ -13,7 +15,7 @@ import (
 // auditLogSampleMaskDefault inherits the Lua metrics downsampling rate for audit logs.
 const auditLogSampleMaskDefault = luaMetricsSampleMask
 
-// auditLogSampleMaskFromConfig maps config to audit log sampling mask.
+// auditLogSampleMaskFromConfig aligns audit downsampling with Lua histogram sampling from ops config.
 func auditLogSampleMaskFromConfig(cfgVal int) uint64 {
 	return histogramSampleMaskFromConfig(cfgVal)
 }
@@ -28,39 +30,43 @@ func auditLogPriority(eventType string) uint8 {
 	}
 }
 
-// writeAuditLog emits a sampled protobuf audit record for accepted track events.
+// writeAuditLog emits a sampled AdStreamEvent protobuf for accepted track events (broker ingest path).
 func writeAuditLog(
 	l *logger.Logger,
 	seq *atomic.Uint64,
 	sampleMask uint64,
 	shardID int,
-	timestampUnix int64,
-	campaignID uuid.UUID,
-	clickID, eventType string,
+	evt *domain.Event,
 ) {
-	if l == nil {
+	if l == nil || evt == nil {
 		return
 	}
-	priority := auditLogPriority(eventType)
+	priority := auditLogPriority(evt.Type)
 	if priority == 0 {
 		if !shouldSampleHistogram(seq.Add(1), sampleMask) {
 			return
 		}
 	}
 
-	rec := adLogRecordPool.Get().(*pb.AdLogRecord)
-	rec.TimestampUnix = timestampUnix
-	if cap(rec.CampaignId) < 16 {
-		rec.CampaignId = make([]byte, 16)
-	} else {
-		rec.CampaignId = rec.CampaignId[:16]
+	createdAt := evt.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = CachedTimeUTC()
 	}
-	copy(rec.CampaignId, campaignID[:])
-	rec.ClickId = UnsafeBytes(clickID)
-	rec.EventType = UnsafeBytes(eventType)
-	rec.Priority = uint32(priority)
 
-	size := rec.SizeVT()
+	pbEvt := streamEventPool.Get().(*pb.AdStreamEvent)
+	pbEvt.ClickId = UnsafeBytes(evt.ClickID)
+	pbEvt.CampaignId = evt.CampaignID[:]
+	pbEvt.EventType = UnsafeBytes(evt.Type)
+	pbEvt.Payload = evt.Payload
+	pbEvt.Ip = UnsafeBytes(evt.IP)
+	pbEvt.Ua = UnsafeBytes(evt.UA)
+	pbEvt.UserId = UnsafeBytes(evt.UserID)
+	pbEvt.CreatedAtUnix = createdAt.Unix()
+	pbEvt.FraudScore = evt.FraudScore
+	pbEvt.FraudReason = UnsafeBytes(evt.FraudReason)
+	pbEvt.GhostEvent = evt.GhostEvent
+
+	size := pbEvt.SizeVT()
 	bufPtr := logBufPool.Get().(*[]byte)
 	buf := *bufPtr
 	if cap(buf) < size {
@@ -69,7 +75,7 @@ func writeAuditLog(
 		buf = buf[:size]
 	}
 
-	n, err := rec.MarshalToSizedBufferVT(buf)
+	n, err := pbEvt.MarshalToSizedBufferVT(buf)
 	if err == nil {
 		if !l.WriteToShard(shardID, priority, buf[:n]) {
 			metrics.HandlerLogDropTotal.Inc()
@@ -78,10 +84,19 @@ func writeAuditLog(
 	*bufPtr = buf
 	logBufPool.Put(bufPtr)
 
-	campIDSaved := rec.CampaignId
-	rec.Reset()
-	if cap(campIDSaved) >= 16 {
-		rec.CampaignId = campIDSaved[:0]
+	ClearAdStreamEvent(pbEvt)
+	streamEventPool.Put(pbEvt)
+}
+
+// auditEventFromFields builds a minimal domain event for cold-path audit writes.
+func auditEventFromFields(ts int64, campaignID uuid.UUID, clickID, eventType string) *domain.Event {
+	evt := domain.EventPool.Get().(*domain.Event)
+	evt.Reset()
+	evt.ClickID = clickID
+	evt.CampaignID = campaignID
+	evt.Type = eventType
+	if ts > 0 {
+		evt.CreatedAt = time.Unix(ts, 0)
 	}
-	adLogRecordPool.Put(rec)
+	return evt
 }

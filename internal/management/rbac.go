@@ -17,6 +17,7 @@ var rolePermissions = map[string][]string{
 		"blacklist:write", "blacklist:read",
 		"audit:read",
 		"users:write",
+		"shards:write", "shards:read",
 	},
 	RoleManager: {
 		"customers:write", "customers:read",

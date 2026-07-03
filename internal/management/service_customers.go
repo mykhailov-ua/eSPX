@@ -7,6 +7,8 @@ import (
 
 	"espx/internal/ads"
 	"espx/internal/ads/db"
+	"espx/pkg/cold"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -34,6 +36,22 @@ type LedgerDTO struct {
 	CreatedAt       string `json:"created_at"`
 }
 
+func ledgerToDTO(r db.BalanceLedger) LedgerDTO {
+	var campID string
+	if r.CampaignID.Valid {
+		campID = uuid.UUID(r.CampaignID.Bytes).String()
+	}
+	return LedgerDTO{
+		ID:              r.ID,
+		CustomerID:      uuid.UUID(r.CustomerID.Bytes).String(),
+		CampaignID:      campID,
+		Amount:          formatMicro(r.Amount),
+		Type:            string(r.Type),
+		IdempotencyHash: r.IdempotencyHash.String,
+		CreatedAt:       r.CreatedAt.Time.Format(time.RFC3339),
+	}
+}
+
 // formatMicro converts micro-unit balances to a two-decimal string for JSON responses.
 func formatMicro(m int64) string {
 	return fmt.Sprintf("%.2f", float64(m)/1_000_000.0)
@@ -41,7 +59,7 @@ func formatMicro(m int64) string {
 
 // ListCustomers returns a paginated customer list enriched with campaign spend aggregates.
 func (s *Service) ListCustomers(ctx context.Context, limit, offset int32) ([]CustomerDTO, int64, error) {
-	q := db.New(s.pool)
+	q := db.New(s.GetPool())
 	total, err := q.CountCustomers(ctx)
 	if err != nil {
 		return nil, 0, err
@@ -65,18 +83,17 @@ func (s *Service) ListCustomers(ctx context.Context, limit, offset int32) ([]Cus
 		return nil, 0, err
 	}
 
-	statsMap := make(map[uuid.UUID]db.GetCustomerStatsRow)
-	for _, st := range stats {
+	statsMap := cold.KeyBy(stats, func(st db.GetCustomerStatsRow) (uuid.UUID, bool) {
 		if st.CustomerID.Valid {
-			statsMap[uuid.UUID(st.CustomerID.Bytes)] = st
+			return uuid.UUID(st.CustomerID.Bytes), true
 		}
-	}
+		return uuid.Nil, false
+	})
 
-	res := make([]CustomerDTO, len(rows))
-	for i, r := range rows {
+	return cold.MapSlice(rows, func(r db.Customer) CustomerDTO {
 		uid := uuid.UUID(r.ID.Bytes)
 		st := statsMap[uid]
-		res[i] = CustomerDTO{
+		return CustomerDTO{
 			ID:              uid.String(),
 			Name:            r.Name,
 			Balance:         formatMicro(r.Balance),
@@ -86,14 +103,12 @@ func (s *Service) ListCustomers(ctx context.Context, limit, offset int32) ([]Cus
 			CreatedAt:       r.CreatedAt.Time.Format(time.RFC3339),
 			UpdatedAt:       r.UpdatedAt.Time.Format(time.RFC3339),
 		}
-	}
-
-	return res, total, nil
+	}), total, nil
 }
 
 // GetCustomerDTO loads one customer with aggregated stats for detail views.
 func (s *Service) GetCustomerDTO(ctx context.Context, id uuid.UUID) (CustomerDTO, error) {
-	q := db.New(s.pool)
+	q := db.New(s.GetPool())
 	r, err := q.GetCustomerByID(ctx, ads.ToUUID(id))
 	if err != nil {
 		return CustomerDTO{}, err
@@ -123,40 +138,16 @@ func (s *Service) GetCustomerDTO(ctx context.Context, id uuid.UUID) (CustomerDTO
 
 // ListCustomerLedger returns paginated ledger entries for a customer's billing history.
 func (s *Service) ListCustomerLedger(ctx context.Context, customerID uuid.UUID, limit, offset int32) ([]LedgerDTO, int64, error) {
-	q := db.New(s.pool)
+	q := db.New(s.GetPool())
 	tid := ads.ToUUID(customerID)
-	total, err := q.CountCustomerLedger(ctx, tid)
-	if err != nil {
-		return nil, 0, err
-	}
-	if total == 0 {
-		return []LedgerDTO{}, 0, nil
-	}
-
-	rows, err := q.ListCustomerLedger(ctx, db.ListCustomerLedgerParams{
+	listParams := db.ListCustomerLedgerParams{
 		CustomerID: tid,
 		Limit:      limit,
 		Offset:     offset,
-	})
-	if err != nil {
-		return nil, 0, err
 	}
-
-	res := make([]LedgerDTO, len(rows))
-	for i, r := range rows {
-		var campID string
-		if r.CampaignID.Valid {
-			campID = uuid.UUID(r.CampaignID.Bytes).String()
-		}
-		res[i] = LedgerDTO{
-			ID:              r.ID,
-			CustomerID:      uuid.UUID(r.CustomerID.Bytes).String(),
-			CampaignID:      campID,
-			Amount:          formatMicro(r.Amount),
-			Type:            string(r.Type),
-			IdempotencyHash: r.IdempotencyHash.String,
-			CreatedAt:       r.CreatedAt.Time.Format(time.RFC3339),
-		}
-	}
-	return res, total, nil
+	return cold.PaginatedList(
+		func() (int64, error) { return q.CountCustomerLedger(ctx, tid) },
+		func() ([]db.BalanceLedger, error) { return q.ListCustomerLedger(ctx, listParams) },
+		ledgerToDTO,
+	)
 }

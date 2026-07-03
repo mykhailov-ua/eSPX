@@ -1,0 +1,39 @@
+package layout
+
+// PageData is shared shell context for authenticated admin pages.
+type PageData struct {
+	Title      string
+	CSRF       string
+	UserEmail  string
+	UserRole   string
+	ActiveNav  string
+	GrafanaURL string
+}
+
+templ Base(data PageData, content templ.Component) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="UTF-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+			<title>{ data.Title } - eSPX Admin</title>
+			<link rel="stylesheet" href="/admin/static/css/app.css"/>
+			<script src="/admin/static/vendor/htmx.min.js"></script>
+			<meta name="csrf-token" content={ data.CSRF }/>
+			<script>
+				document.addEventListener('htmx:configRequest', function (evt) {
+					var token = document.querySelector('meta[name="csrf-token"]');
+					if (token && token.content) {
+						evt.detail.headers['X-CSRF-Token'] = token.content;
+					}
+				});
+			</script>
+		</head>
+		<body class="admin-page">
+			@Nav(data)
+			<main class="main admin-main">
+				@content
+			</main>
+		</body>
+	</html>
+}

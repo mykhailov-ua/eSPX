@@ -1,12 +1,9 @@
 package ads
 
-import ()
-
 import (
 	"context"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"espx/internal/config"
@@ -42,41 +39,33 @@ func (m *mockFailRedis) Ping(ctx context.Context) *redis.StatusCmd {
 	return cmd
 }
 
-// Guards health endpoint reports 503 when Postgres or any Redis shard is down.
+// Guards gnet GET /health reports OK or DEGRADED from probe atomics (production path).
 func TestHealthCheckPartialFailure(t *testing.T) {
 	cfg := &config.Config{}
 	registry := &mockRegistry{}
 
 	t.Run("All Healthy", func(t *testing.T) {
-		rdbs := []redis.UniversalClient{
-			&mockFailRedis{fail: false},
-		}
+		rdbs := []redis.UniversalClient{&mockFailRedis{fail: false}}
 		pool := &mockPinger{fail: false}
 		sharder := NewJumpHashSharder(1)
-		handler := NewRouter(cfg, registry, nil, pool, rdbs, sharder, "fraud-stream", nil)
+		handler := NewAdsPacketHandler(cfg, registry, nil, pool, rdbs, sharder, "fraud-stream", nil)
+		handler.SetHealthProbeState(true, true)
 
-		req := httptest.NewRequest("GET", "/health", nil)
-		w := httptest.NewRecorder()
-		handler.ServeHTTP(w, req)
-
-		assert.Equal(t, http.StatusOK, w.Code)
-		assert.Equal(t, "OK", w.Body.String())
+		status, body := GetHealthGnet(handler)
+		assert.Equal(t, http.StatusOK, status)
+		assert.Contains(t, body, "OK")
 	})
 
 	t.Run("Postgres Down", func(t *testing.T) {
-		rdbs := []redis.UniversalClient{
-			&mockFailRedis{fail: false},
-		}
+		rdbs := []redis.UniversalClient{&mockFailRedis{fail: false}}
 		pool := &mockPinger{fail: true}
 		sharder := NewJumpHashSharder(1)
-		handler := NewRouter(cfg, registry, nil, pool, rdbs, sharder, "fraud-stream", nil)
+		handler := NewAdsPacketHandler(cfg, registry, nil, pool, rdbs, sharder, "fraud-stream", nil)
+		handler.SetHealthProbeState(false, true)
 
-		req := httptest.NewRequest("GET", "/health", nil)
-		w := httptest.NewRecorder()
-		handler.ServeHTTP(w, req)
-
-		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-		assert.Contains(t, w.Body.String(), "postgres unreachable")
+		status, body := GetHealthGnet(handler)
+		assert.Equal(t, http.StatusServiceUnavailable, status)
+		assert.Contains(t, body, "DEGRADED")
 	})
 
 	t.Run("Redis Shard 2 Down", func(t *testing.T) {
@@ -86,13 +75,12 @@ func TestHealthCheckPartialFailure(t *testing.T) {
 		}
 		pool := &mockPinger{fail: false}
 		sharder := NewJumpHashSharder(1)
-		handler := NewRouter(cfg, registry, nil, pool, rdbs, sharder, "fraud-stream", nil)
+		handler := NewAdsPacketHandler(cfg, registry, nil, pool, rdbs, sharder, "fraud-stream", nil)
+		handler.SetHealthProbeState(false, true, false)
 
-		req := httptest.NewRequest("GET", "/health", nil)
-		w := httptest.NewRecorder()
-		handler.ServeHTTP(w, req)
-
-		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-		assert.Contains(t, w.Body.String(), "redis shard unreachable")
+		status, body := GetHealthGnet(handler)
+		assert.Equal(t, http.StatusServiceUnavailable, status)
+		assert.Contains(t, body, "DEGRADED")
+		assert.Contains(t, body, "redis=")
 	})
 }

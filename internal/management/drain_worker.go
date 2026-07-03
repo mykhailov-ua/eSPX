@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"espx/internal/ads/db"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -68,7 +69,7 @@ func (w *CampaignDrainWorker) ProcessDraining(ctx context.Context) error {
 // finalizeNextDraining locks and completes one draining campaign that has passed the wait threshold.
 func (w *CampaignDrainWorker) finalizeNextDraining(ctx context.Context, threshold time.Time) (bool, error) {
 	finalized := false
-	err := pgx.BeginFunc(ctx, w.svc.pool, func(tx pgx.Tx) error {
+	err := pgx.BeginFunc(ctx, w.svc.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 		camps, err := q.GetDrainingCampaignsForUpdate(ctx, db.GetDrainingCampaignsForUpdateParams{
 			UpdatedAt: pgtype.Timestamptz{Time: threshold, Valid: true},

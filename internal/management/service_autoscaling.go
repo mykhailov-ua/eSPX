@@ -8,6 +8,7 @@ import (
 
 	"espx/internal/ads"
 	"espx/internal/ads/db"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -21,7 +22,7 @@ func (s *Service) AutoscaleBudgets(ctx context.Context, syncWorkers []*ads.SyncW
 		sw.SyncAll(opCtx)
 	}
 
-	return pgx.BeginFunc(opCtx, s.pool, func(tx pgx.Tx) error {
+	return pgx.BeginFunc(opCtx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 		rows, err := q.GetAllActiveCampaignsWithStats(ctx)
 		if err != nil {
@@ -79,13 +80,28 @@ func (s *Service) AutoscaleBudgets(ctx context.Context, syncWorkers []*ads.SyncW
 					continue
 				}
 
-				worstLocked, err := q.GetCampaignForUpdate(ctx, worstCamp.ID)
-				if err != nil {
-					return fmt.Errorf("failed to lock worst campaign %s: %w", worstID, err)
-				}
-				bestLocked, err := q.GetCampaignForUpdate(ctx, bestCamp.ID)
-				if err != nil {
-					return fmt.Errorf("failed to lock best campaign %s: %w", bestID, err)
+				var worstLocked, bestLocked db.Campaign
+				var err error
+
+				// To prevent deadlocks, always lock campaigns in a consistent sorted order (by UUID string ascending)
+				if worstID.String() < bestID.String() {
+					worstLocked, err = q.GetCampaignForUpdate(ctx, worstCamp.ID)
+					if err != nil {
+						return fmt.Errorf("failed to lock worst campaign %s: %w", worstID, err)
+					}
+					bestLocked, err = q.GetCampaignForUpdate(ctx, bestCamp.ID)
+					if err != nil {
+						return fmt.Errorf("failed to lock best campaign %s: %w", bestID, err)
+					}
+				} else {
+					bestLocked, err = q.GetCampaignForUpdate(ctx, bestCamp.ID)
+					if err != nil {
+						return fmt.Errorf("failed to lock best campaign %s: %w", bestID, err)
+					}
+					worstLocked, err = q.GetCampaignForUpdate(ctx, worstCamp.ID)
+					if err != nil {
+						return fmt.Errorf("failed to lock worst campaign %s: %w", worstID, err)
+					}
 				}
 				if worstLocked.Status != db.CampaignStatusTypeACTIVE || bestLocked.Status != db.CampaignStatusTypeACTIVE {
 					continue

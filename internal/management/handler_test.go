@@ -11,6 +11,7 @@ import (
 
 	"espx/internal/config"
 	"espx/internal/database"
+
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,7 +35,7 @@ func TestManagementAPI_Hardening(t *testing.T) {
 
 	svc := NewService(pool, []redis.UniversalClient{rdb}, nil, cfg)
 	defer svc.Close()
-	h := NewHandler(svc, cfg, nil)
+	h := NewHandler(svc, cfg, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 

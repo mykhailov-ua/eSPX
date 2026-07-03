@@ -1,3 +1,4 @@
+// Command telegram bridges Alertmanager webhooks to Telegram because on-call needs mobile alerts without exposing the Bot API from Prometheus.
 package main
 
 import (
@@ -12,8 +13,11 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"espx/internal/config"
 )
 
+// Alert mirrors one Alertmanager notification for decoding because webhook JSON is nested and partially typed.
 type Alert struct {
 	Status      string            `json:"status"`
 	Labels      map[string]string `json:"labels"`
@@ -22,6 +26,7 @@ type Alert struct {
 	EndsAt      time.Time         `json:"endsAt"`
 }
 
+// AlertmanagerPayload is the webhook envelope Alertmanager posts because alerts arrive batched with shared labels.
 type AlertmanagerPayload struct {
 	Receiver          string            `json:"receiver"`
 	Status            string            `json:"status"`
@@ -32,7 +37,7 @@ type AlertmanagerPayload struct {
 	ExternalURL       string            `json:"externalURL"`
 }
 
-// main runs an Alertmanager webhook proxy that forwards firing alerts to Telegram.
+// main accepts Alertmanager webhooks locally because Telegram Bot API calls must not run inside Alertmanager itself.
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
@@ -124,7 +129,7 @@ func main() {
 	<-stop
 
 	slog.Info("shutting down proxy")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), config.LifecycleShutdownTimeout())
 	defer cancel()
 
 	if err := server.Shutdown(ctx); err != nil {
@@ -133,7 +138,7 @@ func main() {
 	slog.Info("proxy shutdown complete")
 }
 
-// sendTelegramMessage posts an HTML-formatted alert to the Telegram Bot API.
+// sendTelegramMessage delivers HTML alerts because Telegram is the mobile on-call channel configured for this stack.
 func sendTelegramMessage(token, chatID, htmlMessage string) error {
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
 	payload := map[string]interface{}{

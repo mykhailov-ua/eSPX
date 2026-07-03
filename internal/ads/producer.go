@@ -79,7 +79,11 @@ func (p *StreamProducer) Process(evt *domain.Event) error {
 	pbEvt.Payload = evt.Payload
 	pbEvt.Ip = UnsafeBytes(evt.IP)
 	pbEvt.Ua = UnsafeBytes(evt.UA)
+	pbEvt.UserId = UnsafeBytes(evt.UserID)
 	pbEvt.CreatedAtUnix = evt.CreatedAt.Unix()
+	pbEvt.FraudScore = evt.FraudScore
+	pbEvt.FraudReason = UnsafeBytes(evt.FraudReason)
+	pbEvt.GhostEvent = evt.GhostEvent
 
 	size := pbEvt.SizeVT()
 	bufPtr := byteBufPool.Get().(*[]byte)

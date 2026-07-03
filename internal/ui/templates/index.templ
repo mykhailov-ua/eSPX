@@ -1,0 +1,274 @@
+package templates
+
+templ Index(loggedIn bool) {
+	@Layout("ESPX — Real-Time Bidding Platform", true, loggedIn) {
+		<div class="prose">
+			<header class="doc-intro">
+				<p class="page-meta">ESPX · v0.1 · AdTech SaaS</p>
+				<h1>ESPX</h1>
+				<p>
+					High-throughput <abbr title="Real-Time Bidding">RTB</abbr> platform: stateless ingestion,
+					sub-millisecond bidding, prepaid ledger, immutable audit. Cold-path admin UI — Templ + HTMX, SSR-only.
+				</p>
+				<table>
+					<tbody>
+						<tr>
+							<th scope="row">Ingest</th>
+							<td>Protobuf / vtproto, horizontal trackers behind L7 LB, zero session affinity</td>
+						</tr>
+						<tr>
+							<th scope="row">Hot path</th>
+							<td>Data-oriented Go, Redis Lua counters, ClickHouse telemetry batching</td>
+						</tr>
+					</tbody>
+				</table>
+				<pre class="grammar"><code>BidRequest → Filter → Auction → Ledger → BidResponse</code></pre>
+				<div class="doc-intro__cta">
+					<div class="doc-actions">
+						<a class="btn btn--primary" href="/auth">Create account</a>
+						<a class="btn" href="#architecture">View architecture</a>
+					</div>
+				</div>
+			</header>
+
+			<aside role="note" class="callout callout--note">
+				<strong>Note.</strong> Management API and dashboard require authentication.
+				<a class="link-primary" href="/auth">Sign in</a> to access campaigns and billing.
+			</aside>
+		</div>
+
+		<section id="business" class="prose-wide doc-section" aria-labelledby="business-heading">
+			<h2 id="business-heading">Business</h2>
+			<p>
+				Prepaid ledger with immutable audit on every bid and spend event. Campaign cancel runs through
+				outbox drain with fee settlement — agencies reconcile without gaps.
+			</p>
+		</section>
+
+		<section id="architecture" class="prose-wide doc-section" aria-labelledby="architecture-heading">
+			<h2 id="architecture-heading">Architecture &amp; stack</h2>
+			<table>
+				<tbody>
+					<tr>
+						<th scope="row">Ingestion</th>
+						<td>Stateless trackers behind L7 LB. Protobuf / <code>vtproto</code>, zero session affinity.</td>
+					</tr>
+					<tr>
+						<th scope="row">Engine</th>
+						<td>Go 1.22+ hot path: flat slices, pooled buffers, Redis Lua budget counters.</td>
+					</tr>
+					<tr>
+						<th scope="row">Telemetry</th>
+						<td>Redis streams → processor → batched ClickHouse writes. Jump-hash sharded Redis.</td>
+					</tr>
+					<tr>
+						<th scope="row">Admin UI</th>
+						<td>Templ + HTMX SSR gateway. No client-side data rendering.</td>
+					</tr>
+				</tbody>
+			</table>
+		</section>
+
+		<section id="storage" class="prose-wide doc-section" aria-labelledby="storage-heading">
+			<h2 id="storage-heading">Storage</h2>
+			<table>
+				<thead>
+					<tr>
+						<th scope="col">Store</th>
+						<th scope="col">Engine</th>
+						<th scope="col">Data</th>
+					</tr>
+				</thead>
+				<tbody>
+					<tr>
+						<td>PostgreSQL</td>
+						<td>Relational / pgx pool</td>
+						<td>Customers, campaigns, brands, prepaid ledger, audit log, outbox</td>
+					</tr>
+					<tr>
+						<td>ClickHouse</td>
+						<td>Columnar OLAP</td>
+						<td>Impression and event telemetry, aggregates, retention by partition</td>
+					</tr>
+					<tr>
+						<td>Redis</td>
+						<td>Sharded key-value + Lua</td>
+						<td>Budget counters, frequency caps, idempotency, breaker state, config sync</td>
+					</tr>
+				</tbody>
+			</table>
+		</section>
+
+		<section id="roles" class="prose-wide doc-section" aria-labelledby="roles-heading">
+			<h2 id="roles-heading">Access</h2>
+			<table>
+				<thead>
+					<tr>
+						<th scope="col">Role</th>
+						<th scope="col">Customers</th>
+						<th scope="col">Campaigns</th>
+						<th scope="col">Settings</th>
+						<th scope="col">Blacklist</th>
+						<th scope="col">Audit</th>
+					</tr>
+				</thead>
+				<tbody>
+					<tr>
+						<td><abbr title="Super Admin">SA</abbr></td>
+						<td>read, write</td>
+						<td>read, write</td>
+						<td>read, write</td>
+						<td>read, write</td>
+						<td>read</td>
+					</tr>
+					<tr>
+						<td><abbr title="Manager">M</abbr></td>
+						<td>read, write</td>
+						<td>read, write</td>
+						<td>—</td>
+						<td>—</td>
+						<td>read</td>
+					</tr>
+					<tr>
+						<td><abbr title="Customer">C</abbr></td>
+						<td>read</td>
+						<td>read, write</td>
+						<td>—</td>
+						<td>—</td>
+						<td>—</td>
+					</tr>
+					<tr>
+						<td><abbr title="Guest">G</abbr></td>
+						<td>—</td>
+						<td>read</td>
+						<td>—</td>
+						<td>—</td>
+						<td>—</td>
+					</tr>
+				</tbody>
+			</table>
+		</section>
+
+		<section id="lifecycle" class="prose-wide doc-section" aria-labelledby="lifecycle-heading">
+			<h2 id="lifecycle-heading">Campaign lifecycle</h2>
+			<pre class="grammar"><code>ACTIVE ⇄ PAUSED → EXHAUSTED → cancel → DRAINING → DELETED</code></pre>
+			<table>
+				<tbody>
+					<tr>
+						<th scope="row">ACTIVE</th>
+						<td>Bidding enabled. Budget reserved in Redis, spend synced to Postgres ledger.</td>
+					</tr>
+					<tr>
+						<th scope="row">PAUSED</th>
+						<td>No bids. Registry entry kept, resume without redeploy.</td>
+					</tr>
+					<tr>
+						<th scope="row">EXHAUSTED</th>
+						<td>Daily or total budget reached. Auto-pause until top-up or pacing reset.</td>
+					</tr>
+					<tr>
+						<th scope="row">DRAINING</th>
+						<td>Cancel requested. Outbox worker finalizes spend, applies cancellation fee.</td>
+					</tr>
+					<tr>
+						<th scope="row">DELETED</th>
+						<td>Removed from registry. Immutable audit row retained.</td>
+					</tr>
+				</tbody>
+			</table>
+		</section>
+
+		<section id="deployment" class="prose-wide doc-section" aria-labelledby="deployment-heading">
+			<h2 id="deployment-heading">Deployment</h2>
+			<p>Default docker-compose layout, host networking. All ports configurable via env.</p>
+			<pre class="grammar"><code>{ deploymentDiagram }</code></pre>
+			<table>
+				<tbody>
+					<tr>
+						<th scope="row">Trackers</th>
+						<td>Horizontally scaled, no sticky sessions. GeoIP filter optional.</td>
+					</tr>
+					<tr>
+						<th scope="row">Processor</th>
+						<td>Redis stream consumer, batched ClickHouse writer, budget sync loop.</td>
+					</tr>
+					<tr>
+						<th scope="row">Management</th>
+						<td>Admin REST + SSR UI gateway. Auth via gRPC + PASETO tokens.</td>
+					</tr>
+				</tbody>
+			</table>
+		</section>
+
+		<section id="failures" class="prose-wide doc-section" aria-labelledby="failures-heading">
+			<h2 id="failures-heading">Failure modes</h2>
+			<details>
+				<summary>Degradation matrix</summary>
+				<table>
+					<thead>
+						<tr>
+							<th scope="col">Condition</th>
+							<th scope="col">System response</th>
+						</tr>
+					</thead>
+					<tbody>
+						<tr>
+							<td>Emergency breaker open</td>
+							<td>Ingest rejected at filter stage. SA toggles via <code>POST /admin/system/breaker</code>. State synced to Redis.</td>
+						</tr>
+						<tr>
+							<td>Redis shard unavailable</td>
+							<td>Circuit breaker hook on pool. Counter updates fail fast, no silent drift.</td>
+						</tr>
+						<tr>
+							<td>ClickHouse flush lag</td>
+							<td>In-memory batch buffer grows. Processor backpressure, no LSM micro-part spam.</td>
+						</tr>
+						<tr>
+							<td>Outbox worker stall</td>
+							<td>Stale PROCESSING rows reverted to PENDING after timeout. Cancel drain retried.</td>
+						</tr>
+						<tr>
+							<td>Customer balance zero</td>
+							<td>Active campaigns suspended in edge pool until top-up.</td>
+						</tr>
+					</tbody>
+				</table>
+			</details>
+		</section>
+
+		<section id="metrics" class="prose-wide doc-section" aria-labelledby="metrics-heading">
+			<h2 id="metrics-heading">Performance</h2>
+			<table>
+				<thead>
+					<tr>
+						<th scope="col">Metric</th>
+						<th scope="col">Target</th>
+						<th scope="col">Notes</th>
+					</tr>
+				</thead>
+				<tbody>
+					<tr>
+						<td>Requests per second</td>
+						<td class="metric-inline">1,000,000+</td>
+						<td>Per ingestion cluster, horizontal scale</td>
+					</tr>
+					<tr>
+						<td>Bid latency (p99)</td>
+						<td class="metric-inline">&lt; 2 ms</td>
+						<td>Hot path, no GC stalls in auction loop</td>
+					</tr>
+					<tr>
+						<td>Telemetry flush</td>
+						<td class="metric-inline">&lt; 100 ms</td>
+						<td>Batched ClickHouse writes</td>
+					</tr>
+				</tbody>
+			</table>
+		</section>
+
+		<footer class="site-footer prose">
+			<p>ESPX · Open source · 2026</p>
+		</footer>
+	}
+}

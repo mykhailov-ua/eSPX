@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"espx/internal/database"
+
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -97,5 +98,21 @@ func TestBlockIP_MultipleShards(t *testing.T) {
 			require.NoError(t, err)
 			assert.True(t, isMember, "IP should be synced on shard %d", i+1)
 		}
+	})
+
+	t.Run("SyncSystemState replicates config values", func(t *testing.T) {
+		require.NoError(t, svc.UpdateSettings(ctx, map[string]string{
+			"rate_limit_per_min": "77",
+		}))
+
+		assert.Eventually(t, func() bool {
+			for _, rdb := range []redis.UniversalClient{rdb1, rdb2, rdb3} {
+				val, err := rdb.HGet(ctx, redisConfigValuesKey, "rate_limit_per_min").Result()
+				if err != nil || val != "77" {
+					return false
+				}
+			}
+			return true
+		}, 3*time.Second, 50*time.Millisecond)
 	})
 }

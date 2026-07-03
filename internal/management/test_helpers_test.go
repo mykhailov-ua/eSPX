@@ -2,15 +2,46 @@ package management
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"espx/internal/ads"
+	"espx/internal/auth"
 	"espx/internal/config"
+
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
+
+// integrationTestAuth wires session auth like production so tenant isolation tests are not clobbered by authFallback API-key admin.
+func integrationTestAuth(t *testing.T, rdb redis.UniversalClient, cfg *config.Config) (*AuthMiddleware, auth.Maker) {
+	t.Helper()
+	if cfg.TokenSymmetricKey == "" {
+		cfg.TokenSymmetricKey = "01234567890123456789012345678901"
+	}
+	tokenMaker, err := auth.NewPasetoMaker(string(cfg.TokenSymmetricKey))
+	if err != nil {
+		t.Fatalf("token maker: %v", err)
+	}
+	return NewAuthMiddleware(tokenMaker, rdb, cfg), tokenMaker
+}
+
+// withSessionUser attaches a PASETO session cookie for integration tests exercising tenant RBAC.
+func withSessionUser(req *http.Request, tokenMaker auth.Maker, role string, customerID uuid.UUID) {
+	token, err := tokenMaker.CreateToken(uuid.New(), uuid.New(), role, customerID, time.Hour)
+	if err != nil {
+		panic(err)
+	}
+	req.AddCookie(&http.Cookie{Name: "accessToken", Value: token})
+}
+
+// withAdminAPIKey attaches the shared admin API key for staff integration tests.
+func withAdminAPIKey(req *http.Request, cfg *config.Config) {
+	req.Header.Set("X-Admin-API-Key", string(cfg.AdminAPIKey))
+}
 
 // newBareService exists so chaos tests avoid background workers that contend on the database pool.
 func newBareService(t *testing.T, pool *pgxpool.Pool, rdbs []redis.UniversalClient, cfg *config.Config) *Service {
@@ -24,13 +55,13 @@ func newBareService(t *testing.T, pool *pgxpool.Pool, rdbs []redis.UniversalClie
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	svc := &Service{
-		pool:    pool,
 		rdbs:    rdbs,
-		sharder: ads.NewJumpHashSharder(shardCount),
+		sharder: ads.NewStaticSlotSharder(shardCount),
 		cfg:     cfg,
 		ctx:     ctx,
 		cancel:  cancel,
 	}
+	svc.pool.Store(pool)
 	t.Cleanup(func() {
 		cancel()
 		svc.Close()

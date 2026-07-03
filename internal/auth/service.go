@@ -9,17 +9,16 @@ import (
 	"log/slog"
 	"regexp"
 	"runtime"
-	"strings"
 	"time"
 
 	"espx/internal/auth/db"
 	"espx/internal/auth/pb"
+	"espx/pkg/cold"
+
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Domain errors keep auth responses stable for clients, metrics, and gRPC mapping without leaking internals.
@@ -127,7 +126,7 @@ type RegisterDTO struct {
 
 // Register seeds password history on creation so later rotations can detect reuse.
 func (s *Service) Register(ctx context.Context, req RegisterDTO) (uuid.UUID, error) {
-	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
+	req.Email = normalizeEmail(req.Email)
 	if !emailRegex.MatchString(req.Email) {
 		slog.Warn("registration failed", slog.String("reason", "invalid email format"), slog.String("email", req.Email))
 		return uuid.Nil, ErrValidation
@@ -166,7 +165,7 @@ func (s *Service) Register(ctx context.Context, req RegisterDTO) (uuid.UUID, err
 		if err != nil {
 			return err
 		}
-		userID = uuid.UUID(userRow.ID.Bytes)
+		userID = uuidFromPg(userRow.ID)
 
 		return q.CreatePasswordHistoryEntry(ctx, db.CreatePasswordHistoryEntryParams{
 			UserID:       userRow.ID,
@@ -175,8 +174,7 @@ func (s *Service) Register(ctx context.Context, req RegisterDTO) (uuid.UUID, err
 	})
 
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		if cold.IsUniqueViolation(err) {
 			slog.Warn("registration failed", slog.String("reason", "user already exists"), slog.String("email", req.Email))
 			return uuid.Nil, ErrUserAlreadyExists
 		}
@@ -196,7 +194,7 @@ type LoginDTO struct {
 
 // Login centralizes lockout, constant-time verification, and session binding for every client.
 func (s *Service) Login(ctx context.Context, email, password, userAgent, clientIP string, duration time.Duration) (pb.LoginResponse, error) {
-	email = strings.ToLower(strings.TrimSpace(email))
+	email = normalizeEmail(email)
 	if !emailRegex.MatchString(email) {
 		slog.Warn("login failed", slog.String("reason", "invalid email format"), slog.String("email", email), slog.String("ip", clientIP))
 		return pb.LoginResponse{}, ErrValidation
@@ -350,10 +348,10 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, clientI
 	refreshTokenId := uuid.Must(uuid.NewV7())
 
 	accessToken, err := s.tokenMaker.CreateToken(
-		uuid.UUID(user.ID.Bytes),
+		uuidFromPg(user.ID),
 		refreshTokenId,
 		user.Role,
-		uuid.UUID(user.CustomerID.Bytes),
+		uuidFromPg(user.CustomerID),
 		duration,
 	)
 	if err != nil {
@@ -364,21 +362,9 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, clientI
 	AuthLoginAttempts.WithLabelValues("success", "").Inc()
 
 	refreshTokenStr := uuid.NewString()
-	expiresAt := time.Now().Add(7 * 24 * time.Hour)
 
 	err = s.repo.ExecTx(ctx, func(q db.Querier) error {
-		if _, err = q.CreateSession(ctx, db.CreateSessionParams{
-			ID:           pgtype.UUID{Bytes: refreshTokenId, Valid: true},
-			UserID:       user.ID,
-			RefreshToken: refreshTokenStr,
-			UserAgent:    userAgent,
-			ClientIp:     clientIP,
-			IsBlocked:    false,
-			ExpiresAt:    pgtype.Timestamptz{Time: expiresAt, Valid: true},
-		}); err != nil {
-			return err
-		}
-		return nil
+		return createRefreshSession(ctx, q, user.ID, refreshTokenId, refreshTokenStr, userAgent, clientIP)
 	})
 
 	if err != nil {
@@ -391,13 +377,7 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, clientI
 	return pb.LoginResponse{
 		AccessToken:  accessToken,
 		RefreshToken: refreshTokenStr,
-		User: &pb.User{
-			Id:         uuid.UUID(user.ID.Bytes).String(),
-			Email:      user.Email,
-			Role:       user.Role,
-			CustomerId: uuid.UUID(user.CustomerID.Bytes).String(),
-			CreatedAt:  timestamppb.New(user.CreatedAt.Time),
-		},
+		User:         userToPB(user),
 	}, nil
 }
 
@@ -421,7 +401,7 @@ func (s *Service) VerifyToken(ctx context.Context, accessToken string) (db.User,
 		}
 	}
 
-	user, err := s.repo.GetUserByID(ctx, pgtype.UUID{Bytes: payload.UserID, Valid: true})
+	user, err := s.repo.GetUserByID(ctx, toPgUUID(payload.UserID))
 	if err != nil {
 		AuthTokenErrors.WithLabelValues("user_lookup_failed").Inc()
 		slog.Error("failed to load user during verify (fail-closed)", slog.Any("error", err))
@@ -443,9 +423,8 @@ func (s *Service) RefreshToken(ctx context.Context, refreshTokenStr string, dura
 	if s.rdb != nil {
 		cached, err := s.rdb.Get(ctx, "idempotency:refresh:"+refreshTokenStr).Result()
 		if err == nil && cached != "" {
-			parts := strings.Split(cached, " ")
-			if len(parts) == 2 {
-				return parts[0], parts[1], nil
+			if access, refresh, ok := parseRefreshIdempotency(cached); ok {
+				return access, refresh, nil
 			}
 		}
 	}
@@ -464,11 +443,10 @@ func (s *Service) RefreshToken(ctx context.Context, refreshTokenStr string, dura
 			if s.rdb != nil {
 				cached, errCached := s.rdb.Get(ctx, "idempotency:refresh:"+refreshTokenStr).Result()
 				if errCached == nil && cached != "" {
-					parts := strings.Split(cached, " ")
-					if len(parts) == 2 {
+					if access, refresh, ok := parseRefreshIdempotency(cached); ok {
 						return &idempotentResultError{
-							accessToken:  parts[0],
-							refreshToken: parts[1],
+							accessToken:  access,
+							refreshToken: refresh,
 						}
 					}
 				}
@@ -505,10 +483,10 @@ func (s *Service) RefreshToken(ctx context.Context, refreshTokenStr string, dura
 		newRefreshTokenId := uuid.Must(uuid.NewV7())
 
 		accessToken, err = s.tokenMaker.CreateToken(
-			uuid.UUID(user.ID.Bytes),
+			uuidFromPg(user.ID),
 			newRefreshTokenId,
 			user.Role,
-			uuid.UUID(user.CustomerID.Bytes),
+			uuidFromPg(user.CustomerID),
 			duration,
 		)
 		if err != nil {
@@ -517,17 +495,8 @@ func (s *Service) RefreshToken(ctx context.Context, refreshTokenStr string, dura
 		}
 
 		newRefreshTokenStr = uuid.NewString()
-		expiresAt := time.Now().Add(7 * 24 * time.Hour)
 
-		if _, err = q.CreateSession(ctx, db.CreateSessionParams{
-			ID:           pgtype.UUID{Bytes: newRefreshTokenId, Valid: true},
-			UserID:       user.ID,
-			RefreshToken: newRefreshTokenStr,
-			UserAgent:    session.UserAgent,
-			ClientIp:     session.ClientIp,
-			IsBlocked:    false,
-			ExpiresAt:    pgtype.Timestamptz{Time: expiresAt, Valid: true},
-		}); err != nil {
+		if err := createRefreshSession(ctx, q, user.ID, newRefreshTokenId, newRefreshTokenStr, session.UserAgent, session.ClientIp); err != nil {
 			slog.Error("refresh token failed", slog.String("reason", "failed to create new session"), slog.Any("error", err))
 			return err
 		}
@@ -584,7 +553,7 @@ func (s *Service) AuditLog(ctx context.Context, userID uuid.UUID, action, target
 
 	var uid pgtype.UUID
 	if userID != uuid.Nil {
-		uid = pgtype.UUID{Bytes: userID, Valid: true}
+		uid = toPgUUID(userID)
 	}
 
 	_, err = s.repo.CreateAuthAuditLog(ctx, db.CreateAuthAuditLogParams{
@@ -611,7 +580,7 @@ func (s *Service) ChangePassword(ctx context.Context, userID uuid.UUID, oldPassw
 		return ErrValidation
 	}
 
-	user, err := s.repo.GetUserByID(ctx, pgtype.UUID{Bytes: userID, Valid: true})
+	user, err := s.repo.GetUserByID(ctx, toPgUUID(userID))
 	if err != nil {
 		return err
 	}
@@ -624,7 +593,7 @@ func (s *Service) ChangePassword(ctx context.Context, userID uuid.UUID, oldPassw
 	}
 
 	historyHashes, err := s.repo.GetPasswordHistory(ctx, db.GetPasswordHistoryParams{
-		UserID: pgtype.UUID{Bytes: userID, Valid: true},
+		UserID: toPgUUID(userID),
 		Limit:  3,
 	})
 	if err != nil {
@@ -654,7 +623,7 @@ func (s *Service) ChangePassword(ctx context.Context, userID uuid.UUID, oldPassw
 		}
 
 		return q.CreatePasswordHistoryEntry(ctx, db.CreatePasswordHistoryEntryParams{
-			UserID:       pgtype.UUID{Bytes: userID, Valid: true},
+			UserID:       toPgUUID(userID),
 			PasswordHash: newHash,
 		})
 	})
@@ -692,7 +661,7 @@ func (s *Service) CreateAPIKey(ctx context.Context, userID uuid.UUID, name strin
 
 	row, err := s.repo.CreateAPIKey(ctx, db.CreateAPIKeyParams{
 		KeyHash:   keyHash,
-		UserID:    pgtype.UUID{Bytes: userID, Valid: true},
+		UserID:    toPgUUID(userID),
 		Name:      name,
 		ExpiresAt: exp,
 	})
@@ -700,7 +669,7 @@ func (s *Service) CreateAPIKey(ctx context.Context, userID uuid.UUID, name strin
 		return uuid.Nil, "", err
 	}
 
-	id = uuid.UUID(row.ID.Bytes)
+	id = uuidFromPg(row.ID)
 	s.AuditLog(ctx, userID, "API_KEY_CREATED", "api_key", id.String(), "", "",
 		map[string]any{"name": name, "expires_at": expiresAt}, nil)
 	return id, rawKey, nil
@@ -708,7 +677,7 @@ func (s *Service) CreateAPIKey(ctx context.Context, userID uuid.UUID, name strin
 
 // ListUserAPIKeys exposes metadata only; stored secrets are never retrievable after creation.
 func (s *Service) ListUserAPIKeys(ctx context.Context, userID uuid.UUID) ([]db.ListUserAPIKeysRow, error) {
-	return s.repo.ListUserAPIKeys(ctx, pgtype.UUID{Bytes: userID, Valid: true})
+	return s.repo.ListUserAPIKeys(ctx, toPgUUID(userID))
 }
 
 // RequestEmailVerification stores a short-lived token in Redis to prove mailbox ownership out of band.
@@ -739,7 +708,7 @@ func (s *Service) ConfirmEmailVerification(ctx context.Context, token string) (u
 		return uuid.Nil, err
 	}
 
-	if err := s.repo.SetEmailVerified(ctx, pgtype.UUID{Bytes: uid, Valid: true}); err != nil {
+	if err := s.repo.SetEmailVerified(ctx, toPgUUID(uid)); err != nil {
 		return uuid.Nil, err
 	}
 	s.AuditLog(ctx, uid, "EMAIL_VERIFIED", "user", uid.String(), "", "", nil, nil)
@@ -748,7 +717,7 @@ func (s *Service) ConfirmEmailVerification(ctx context.Context, token string) (u
 
 // BlockUser must invalidate in-flight access tokens because Postgres block alone is not checked on every request.
 func (s *Service) BlockUser(ctx context.Context, email string) error {
-	email = strings.ToLower(strings.TrimSpace(email))
+	email = normalizeEmail(email)
 	user, err := s.repo.GetUserByEmail(ctx, email)
 	if err != nil {
 		return err
@@ -756,7 +725,7 @@ func (s *Service) BlockUser(ctx context.Context, email string) error {
 	if err := s.repo.BlockUser(ctx, email); err != nil {
 		return err
 	}
-	userID := uuid.UUID(user.ID.Bytes)
+	userID := uuidFromPg(user.ID)
 	if err := RevokeUserAccess(ctx, s.rdb, userID, defaultUserRevocationTTL); err != nil {
 		slog.Error("failed to publish user revocation marker", slog.String("email", email), slog.Any("error", err))
 	}
@@ -766,7 +735,7 @@ func (s *Service) BlockUser(ctx context.Context, email string) error {
 
 // UnblockUser clears the Redis marker so restored accounts are not rejected by stale revocation state.
 func (s *Service) UnblockUser(ctx context.Context, email string) error {
-	email = strings.ToLower(strings.TrimSpace(email))
+	email = normalizeEmail(email)
 	user, err := s.repo.GetUserByEmail(ctx, email)
 	if err != nil {
 		return err
@@ -774,7 +743,7 @@ func (s *Service) UnblockUser(ctx context.Context, email string) error {
 	if err := s.repo.UnblockUser(ctx, email); err != nil {
 		return err
 	}
-	userID := uuid.UUID(user.ID.Bytes)
+	userID := uuidFromPg(user.ID)
 	if err := ClearUserRevocation(ctx, s.rdb, userID); err != nil {
 		slog.Error("failed to clear user revocation marker", slog.String("email", email), slog.Any("error", err))
 	}

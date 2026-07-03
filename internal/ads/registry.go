@@ -3,7 +3,6 @@ package ads
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -11,32 +10,18 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"espx/internal/ads/db"
 	"espx/internal/domain"
 	"espx/internal/metrics"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
 	redis "github.com/redis/go-redis/v9"
 )
 
-// campaignInfo pairs a domain campaign with its registry sync status.
 type campaignInfo struct {
 	campaign *domain.Campaign
 	status   db.CampaignStatusType
 }
 
-// CampaignRegistry is the lock-free in-memory source of campaign metadata for the hot path.
-type CampaignRegistry struct {
-	repo          db.Querier
-	data          atomic.Value
-	manuallyAdded map[uuid.UUID]bool
-	mu            sync.Mutex
-	replicaPath   string
-	wg            sync.WaitGroup
-	budgetWarmer  *BudgetCacheWarmer
-}
-
-// campaignReplicaDTO serializes registry snapshots to disk for cold-start recovery.
 type campaignReplicaDTO struct {
 	ID               uuid.UUID             `json:"id"`
 	CustomerID       uuid.UUID             `json:"customer_id"`
@@ -53,15 +38,28 @@ type campaignReplicaDTO struct {
 	FreqLimit        int32                 `json:"freq_limit"`
 	FreqWindow       int32                 `json:"freq_window"`
 	TargetCountries  []string              `json:"target_countries,omitempty"`
-	StartAt          *time.Time            `json:"start_at,omitempty"`
-	EndAt            *time.Time            `json:"end_at,omitempty"`
-	DaypartHours     []int16               `json:"daypart_hours,omitempty"`
 	RegistryStatus   string                `json:"registry_status"`
 }
 
-// NewRegistry creates an empty registry backed by Postgres sync and optional file replica.
-func NewRegistry(repo db.Querier) *CampaignRegistry {
-	r := &CampaignRegistry{
+// Registry maintains a dynamic, in-memory replica of active advertisement campaigns.
+//
+// Concurrency:
+//   - Read Operations (Exists, GetCampaign, GetCustomerID): Completely lock-free. Operates on a double-buffered
+//     immutable campaign map using Go's atomic pointer swaps (atomic.Value).
+//   - Write/Sync Operations (Add, Sync): Mutex-serialized. Uses a Copy-On-Write (COW) pattern to update campaign
+//     definitions, cloning the backing map and swapping pointers atomically to eliminate read lock contention
+//     on high-throughput hot paths.
+type Registry struct {
+	repo          db.Querier
+	data          atomic.Value // holds map[uuid.UUID]campaignInfo
+	manuallyAdded map[uuid.UUID]bool
+	mu            sync.Mutex // guards writes (updates to data map, manuallyAdded)
+	replicaPath   string
+	wg            sync.WaitGroup
+}
+
+func NewRegistry(repo db.Querier) *Registry {
+	r := &Registry{
 		manuallyAdded: make(map[uuid.UUID]bool),
 		repo:          repo,
 		replicaPath:   "campaigns_replica.json",
@@ -70,55 +68,15 @@ func NewRegistry(repo db.Querier) *CampaignRegistry {
 	return r
 }
 
-// SetReplicaPath configures where local JSON snapshots are written on sync.
-func (r *CampaignRegistry) SetReplicaPath(path string) {
+// SetReplicaPath updates the path used to persist the campaign cache replica.
+func (r *Registry) SetReplicaPath(path string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.replicaPath = path
 }
 
-// SetBudgetWarmer attaches the Redis budget warmer invoked after registry sync.
-func (r *CampaignRegistry) SetBudgetWarmer(w *BudgetCacheWarmer) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.budgetWarmer = w
-}
-
-// ActiveCampaigns returns ACTIVE campaigns from the current registry snapshot.
-func (r *CampaignRegistry) ActiveCampaigns() []*domain.Campaign {
-	m, _ := r.data.Load().(map[uuid.UUID]campaignInfo)
-	if len(m) == 0 {
-		return nil
-	}
-	out := make([]*domain.Campaign, 0, len(m))
-	for _, info := range m {
-		if info.status == db.CampaignStatusTypeACTIVE && info.campaign != nil {
-			out = append(out, info.campaign)
-		}
-	}
-	return out
-}
-
-// warmBudgetCache seeds Redis budget keys after a full registry reload.
-func (r *CampaignRegistry) warmBudgetCache(ctx context.Context) {
-	r.mu.Lock()
-	w := r.budgetWarmer
-	r.mu.Unlock()
-	if w == nil {
-		return
-	}
-	n, err := w.WarmFromRegistry(ctx, r)
-	if err != nil {
-		slog.Error("budget cache warm failed", "error", err)
-		return
-	}
-	if n > 0 {
-		slog.Debug("budget cache warmed", "keys_inserted", n)
-	}
-}
-
-// Exists reports whether an ACTIVE campaign is present in the current snapshot.
-func (r *CampaignRegistry) Exists(id uuid.UUID) bool {
+// Exists checks if an active campaign exists in the registry.
+func (r *Registry) Exists(id uuid.UUID) bool {
 	m, _ := r.data.Load().(map[uuid.UUID]campaignInfo)
 	if m == nil {
 		return false
@@ -127,8 +85,8 @@ func (r *CampaignRegistry) Exists(id uuid.UUID) bool {
 	return ok && info.status == db.CampaignStatusTypeACTIVE
 }
 
-// GetCustomerID resolves the billing customer for a campaign id.
-func (r *CampaignRegistry) GetCustomerID(campaignID uuid.UUID) (uuid.UUID, bool) {
+// GetCustomerID gets the CustomerID for a campaign.
+func (r *Registry) GetCustomerID(campaignID uuid.UUID) (uuid.UUID, bool) {
 	m, _ := r.data.Load().(map[uuid.UUID]campaignInfo)
 	if m == nil {
 		return uuid.Nil, false
@@ -140,8 +98,8 @@ func (r *CampaignRegistry) GetCustomerID(campaignID uuid.UUID) (uuid.UUID, bool)
 	return info.campaign.CustomerID, true
 }
 
-// GetCampaign returns the campaign snapshot; callers must not mutate the pointer.
-func (r *CampaignRegistry) GetCampaign(id uuid.UUID) (*domain.Campaign, bool) {
+// GetCampaign retrieves a domain.Campaign struct.
+func (r *Registry) GetCampaign(id uuid.UUID) (*domain.Campaign, bool) {
 	m, _ := r.data.Load().(map[uuid.UUID]campaignInfo)
 	if m == nil {
 		return nil, false
@@ -153,8 +111,8 @@ func (r *CampaignRegistry) GetCampaign(id uuid.UUID) (*domain.Campaign, bool) {
 	return info.campaign, true
 }
 
-// Add inserts a manually registered campaign into the in-memory snapshot.
-func (r *CampaignRegistry) Add(id, customerID uuid.UUID, brandID *uuid.UUID, brandFcapKey string, pacingMode domain.PacingMode, dailyBudget int64, timezone string, freqLimit, freqWindow int32, targetCountries []string) {
+// Add manually inserts a campaign into the registry.
+func (r *Registry) Add(id, customerID uuid.UUID, brandID *uuid.UUID, brandFcapKey string, pacingMode domain.PacingMode, dailyBudget int64, timezone string, freqLimit, freqWindow int32, targetCountries []string) {
 	loc, err := time.LoadLocation(timezone)
 	if err != nil {
 		slog.Error("invalid timezone in registry Add", "timezone", timezone, "error", err)
@@ -228,8 +186,18 @@ func (r *CampaignRegistry) Add(id, customerID uuid.UUID, brandID *uuid.UUID, bra
 	}
 }
 
-// Sync reloads active campaigns from Postgres and preserves manually added entries.
-func (r *CampaignRegistry) Sync(ctx context.Context) (int, error) {
+// Sync loads active campaigns from PostgreSQL and updates the local double-buffered memory map.
+//
+// Memory Impact:
+// - Allocates a fresh campaign map to perform Copy-on-Write swap.
+//
+// Concurrency:
+// - Mutex serialized to isolate write/sync operations. Safe to call concurrently from background loops.
+//
+// Recovery/Fault Tolerance:
+//   - If PostgreSQL becomes unreachable, dynamically attempts to reload campaign state from the local
+//     JSON replica file (`campaigns_replica.json`) to prevent system startup failures.
+func (r *Registry) Sync(ctx context.Context) (int, error) {
 	rows, err := r.repo.ListActiveCampaigns(ctx)
 	if err != nil {
 		r.mu.Lock()
@@ -251,6 +219,9 @@ func (r *CampaignRegistry) Sync(ctx context.Context) (int, error) {
 	for _, row := range rows {
 		id := uuid.UUID(row.ID.Bytes)
 
+		// Measure the lag between the database-recorded UpdatedAt timestamp and the
+		// current time at cache load. This captures end-to-end propagation delay from
+		// management write → PostgreSQL → Sync → in-memory registry.
 		if row.UpdatedAt.Valid {
 			lag := time.Since(row.UpdatedAt.Time).Seconds()
 			if lag >= 0 {
@@ -258,7 +229,14 @@ func (r *CampaignRegistry) Sync(ctx context.Context) (int, error) {
 			}
 		}
 
+		loc, err := time.LoadLocation(row.Timezone)
+		if err != nil {
+			slog.Warn("failed to load location, fallback to UTC", "campaign", id, "timezone", row.Timezone)
+			loc = time.UTC
+		}
+
 		customerID := uuid.UUID(row.CustomerID.Bytes)
+		dailyBudgetMicro := row.DailyBudget
 
 		var brandIDPtr *uuid.UUID
 		if row.BrandID.Valid {
@@ -266,18 +244,50 @@ func (r *CampaignRegistry) Sync(ctx context.Context) (int, error) {
 			brandIDPtr = &brandID
 		}
 
-		camp := buildDomainCampaign(id, customerID, brandIDPtr, row.BrandFcapKey, row.PacingMode, row.DailyBudget, row.Timezone, row.FreqLimit.Int32, row.FreqWindow.Int32, row.TargetCountries, row.StartAt, row.EndAt, row.DaypartHours)
-		camp.Name = row.Name
-		camp.BudgetLimit = row.BudgetLimit
-		camp.CurrentSpend = row.CurrentSpend
-		camp.Status = domain.CampaignStatus(row.Status)
+		idStr := id.String()
+		customerIDStr := customerID.String()
+
+		var fcapPrefix string
+		if row.BrandFcapKey != "" {
+			fcapPrefix = row.BrandFcapKey + ":u:"
+		} else {
+			fcapPrefix = "fcap:c:" + idStr + ":u:"
+		}
+
 		fresh[id] = campaignInfo{
-			campaign: camp,
-			status:   row.Status,
+			campaign: &domain.Campaign{
+				ID:                  id,
+				IDStr:               idStr,
+				IDStrAny:            idStr,
+				CustomerID:          customerID,
+				CustomerIDStr:       customerIDStr,
+				CustomerIDStrAny:    customerIDStr,
+				BrandID:             brandIDPtr,
+				BrandFcapKey:        row.BrandFcapKey,
+				PacingMode:          domain.PacingMode(row.PacingMode),
+				DailyBudget:         row.DailyBudget,
+				DailyBudgetMicro:    dailyBudgetMicro,
+				DailyBudgetMicroAny: dailyBudgetMicro,
+				Timezone:            row.Timezone,
+				Location:            loc,
+				FreqLimit:           row.FreqLimit.Int32,
+				FreqLimitAny:        row.FreqLimit.Int32,
+				FreqWindow:          row.FreqWindow.Int32,
+				FreqWindowAny:       row.FreqWindow.Int32,
+				TargetCountries:     SliceToMap(row.TargetCountries),
+				BudgetCampaignKey:   "budget:campaign:" + idStr,
+				CampaignSyncKey:     "budget:sync:campaign:" + idStr,
+				CustomerSyncKey:     "budget:sync:customer:" + customerIDStr,
+				FcapKeyPrefix:       fcapPrefix,
+				DailySpendKeyPrefix: "budget:daily_spent:campaign:" + idStr + ":",
+			},
+			status: row.Status,
 		}
 	}
 
 	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	for id := range fresh {
 		delete(r.manuallyAdded, id)
 	}
@@ -287,20 +297,17 @@ func (r *CampaignRegistry) Sync(ctx context.Context) (int, error) {
 			fresh[id] = info
 		}
 	}
+
 	r.data.Store(fresh)
-	r.mu.Unlock()
 
 	if err := r.saveReplica(fresh); err != nil {
 		slog.Error("failed to save local file replica in Sync", "error", err)
 	}
 
-	r.warmBudgetCache(ctx)
-
 	return len(fresh), nil
 }
 
-// saveReplica atomically writes the registry snapshot to the configured replica file.
-func (r *CampaignRegistry) saveReplica(m map[uuid.UUID]campaignInfo) error {
+func (r *Registry) saveReplica(m map[uuid.UUID]campaignInfo) error {
 	dtos := make([]campaignReplicaDTO, 0, len(m))
 	for _, info := range m {
 		var targetCountries []string
@@ -339,7 +346,7 @@ func (r *CampaignRegistry) saveReplica(m map[uuid.UUID]campaignInfo) error {
 	tempFile := r.replicaPath + ".tmp"
 	f, err := os.OpenFile(tempFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
-
+		// Auto-fallback to /tmp if primary directory is not writable
 		if !strings.HasPrefix(r.replicaPath, "/tmp/") {
 			r.replicaPath = "/tmp/campaigns_replica.json"
 			tempFile = r.replicaPath + ".tmp"
@@ -367,8 +374,7 @@ func (r *CampaignRegistry) saveReplica(m map[uuid.UUID]campaignInfo) error {
 	return os.Rename(tempFile, r.replicaPath)
 }
 
-// loadReplica reads a JSON registry snapshot from disk for cold-start fallback.
-func (r *CampaignRegistry) loadReplica() (map[uuid.UUID]campaignInfo, error) {
+func (r *Registry) loadReplica() (map[uuid.UUID]campaignInfo, error) {
 	data, err := os.ReadFile(r.replicaPath)
 	if err != nil {
 		if !strings.HasPrefix(r.replicaPath, "/tmp/") {
@@ -446,73 +452,7 @@ func (r *CampaignRegistry) loadReplica() (map[uuid.UUID]campaignInfo, error) {
 	return m, nil
 }
 
-// buildDomainCampaign constructs a hot-path campaign struct from Postgres row fields.
-func buildDomainCampaign(
-	id, customerID uuid.UUID,
-	brandID *uuid.UUID,
-	brandFcapKey string,
-	pacingMode db.PacingModeType,
-	dailyBudget int64,
-	timezone string,
-	freqLimit, freqWindow int32,
-	targetCountries []string,
-	startAt, endAt pgtype.Timestamptz,
-	daypartHours []int16,
-) *domain.Campaign {
-	loc, err := time.LoadLocation(timezone)
-	if err != nil {
-		loc = time.UTC
-	}
-	idStr := id.String()
-	customerIDStr := customerID.String()
-	var fcapPrefix string
-	if brandFcapKey != "" {
-		fcapPrefix = brandFcapKey + ":u:"
-	} else {
-		fcapPrefix = "fcap:c:" + idStr + ":u:"
-	}
-	var startPtr, endPtr *time.Time
-	if startAt.Valid {
-		t := startAt.Time
-		startPtr = &t
-	}
-	if endAt.Valid {
-		t := endAt.Time
-		endPtr = &t
-	}
-	return &domain.Campaign{
-		ID:                  id,
-		IDStr:               idStr,
-		IDStrAny:            idStr,
-		CustomerID:          customerID,
-		CustomerIDStr:       customerIDStr,
-		CustomerIDStrAny:    customerIDStr,
-		BrandID:             brandID,
-		BrandFcapKey:        brandFcapKey,
-		PacingMode:          domain.PacingMode(pacingMode),
-		DailyBudget:         dailyBudget,
-		DailyBudgetMicro:    dailyBudget,
-		DailyBudgetMicroAny: dailyBudget,
-		Timezone:            timezone,
-		Location:            loc,
-		FreqLimit:           freqLimit,
-		FreqLimitAny:        freqLimit,
-		FreqWindow:          freqWindow,
-		FreqWindowAny:       freqWindow,
-		TargetCountries:     SliceToMap(targetCountries),
-		BudgetCampaignKey:   "budget:campaign:" + idStr,
-		CampaignSyncKey:     "budget:sync:campaign:" + idStr,
-		CustomerSyncKey:     "budget:sync:customer:" + customerIDStr,
-		FcapKeyPrefix:       fcapPrefix,
-		DailySpendKeyPrefix: "budget:daily_spent:campaign:" + idStr + ":",
-		StartAt:             startPtr,
-		EndAt:               endPtr,
-		DaypartHours:        DaypartSliceToSet(daypartHours),
-	}
-}
-
-// StartSync runs periodic Postgres registry refresh until the context is cancelled.
-func (r *CampaignRegistry) StartSync(ctx context.Context, interval time.Duration) {
+func (r *Registry) StartSync(ctx context.Context, interval time.Duration) {
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
@@ -535,70 +475,7 @@ func (r *CampaignRegistry) StartSync(ctx context.Context, interval time.Duration
 	}()
 }
 
-// UpdateAndWarmCampaign refreshes one campaign from Postgres and warms its Redis budget key.
-func (r *CampaignRegistry) UpdateAndWarmCampaign(ctx context.Context, id uuid.UUID) error {
-	pgID := pgtype.UUID{Bytes: id, Valid: true}
-	row, err := r.repo.GetCampaignBudget(ctx, pgID)
-	if err != nil {
-		return fmt.Errorf("failed to get campaign budget from pg: %w", err)
-	}
-
-	r.mu.Lock()
-	currentMap, _ := r.data.Load().(map[uuid.UUID]campaignInfo)
-	info, exists := currentMap[id]
-
-	var camp *domain.Campaign
-	if exists {
-		clonedCamp := *info.campaign
-		clonedCamp.BudgetLimit = row.BudgetLimit
-		clonedCamp.CurrentSpend = row.CurrentSpend
-		clonedCamp.Status = domain.CampaignStatus(row.Status)
-
-		camp = &clonedCamp
-
-		newMap := make(map[uuid.UUID]campaignInfo, len(currentMap))
-		for k, v := range currentMap {
-			newMap[k] = v
-		}
-		newMap[id] = campaignInfo{
-			campaign: camp,
-			status:   row.Status,
-		}
-		r.data.Store(newMap)
-
-		if err := r.saveReplica(newMap); err != nil {
-			slog.Error("failed to save local file replica in UpdateAndWarmCampaign", "error", err)
-		}
-	} else {
-		idStr := id.String()
-		camp = &domain.Campaign{
-			ID:                id,
-			IDStr:             idStr,
-			IDStrAny:          idStr,
-			CustomerID:        uuid.UUID(row.CustomerID.Bytes),
-			BudgetLimit:       row.BudgetLimit,
-			CurrentSpend:      row.CurrentSpend,
-			Status:            domain.CampaignStatus(row.Status),
-			BudgetCampaignKey: "budget:campaign:" + idStr,
-		}
-	}
-	w := r.budgetWarmer
-	r.mu.Unlock()
-
-	if row.Status == db.CampaignStatusTypeACTIVE && w != nil {
-		warmed, err := w.WarmOne(ctx, camp)
-		if err != nil {
-			return fmt.Errorf("failed to warm single campaign budget: %w", err)
-		}
-		if warmed {
-			slog.Debug("single campaign budget cache warmed via pubsub", "campaign_id", id)
-		}
-	}
-	return nil
-}
-
-// StartWatch listens for campaign change pubsub messages and triggers incremental sync.
-func (r *CampaignRegistry) StartWatch(ctx context.Context, rdb redis.UniversalClient, channel string) {
+func (r *Registry) StartWatch(ctx context.Context, rdb redis.UniversalClient, channel string) {
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
@@ -641,13 +518,6 @@ func (r *CampaignRegistry) StartWatch(ctx context.Context, rdb redis.UniversalCl
 					slog.Warn("received invalid campaign id in pubsub", "payload", msg.Payload)
 					continue
 				}
-
-				go func(cid uuid.UUID) {
-					if err := r.UpdateAndWarmCampaign(ctx, cid); err != nil {
-						slog.Error("failed to incremental warm campaign via pubsub", "campaign_id", cid, "error", err)
-					}
-				}(id)
-
 				select {
 				case syncTrigger <- struct{}{}:
 				default:
@@ -658,8 +528,7 @@ func (r *CampaignRegistry) StartWatch(ctx context.Context, rdb redis.UniversalCl
 	}()
 }
 
-// Wait blocks until background registry goroutines exit or the context is cancelled.
-func (r *CampaignRegistry) Wait(ctx context.Context) error {
+func (r *Registry) Wait(ctx context.Context) error {
 	done := make(chan struct{})
 	go func() {
 		r.wg.Wait()

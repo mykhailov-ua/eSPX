@@ -1,12 +1,13 @@
+// Command management runs the HTMX admin gateway, background workers, and settlement gRPC sidecar.
 package main
 
 import (
 	"context"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -17,12 +18,13 @@ import (
 	"espx/internal/config"
 	"espx/internal/database"
 	"espx/internal/management"
+	pb_settle "espx/internal/management/pb"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// main starts the management HTTP gateway with auth, RBAC, background workers, and ops endpoints.
+// main hosts the management HTTP API separately because admin RBAC, HTMX, and background workers must not share tracker resources.
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
@@ -44,36 +46,20 @@ func main() {
 	defer pool.Close()
 
 	var rdbs []redis.UniversalClient
-	for i, addr := range cfg.RedisAddrs {
-		rdb := redis.NewUniversalClient(&redis.UniversalOptions{
-			Addrs:    []string{addr},
-			Password: string(cfg.RedisPassword),
-			PoolSize: cfg.RedisPoolSize,
-		})
-
-		var rdbErr error
-		for j := 0; j < 30; j++ {
-			if rdbErr = rdb.Ping(ctx).Err(); rdbErr == nil {
-				break
-			}
-			slog.Warn("waiting for redis...", "addr", addr, "error", rdbErr)
-			time.Sleep(time.Second)
-		}
-
-		if rdbErr != nil {
-			slog.Error("failed to connect to redis shard", "addr", addr, "error", rdbErr)
-			os.Exit(1)
-		}
-		breaker := database.NewRedisBreaker(
-			int64(cfg.RedisBreakerFailThreshold),
-			int64(cfg.RedisBreakerHalfOpen),
-			time.Duration(cfg.RedisBreakerOpenTimeoutMs)*time.Millisecond,
-		)
-		rdb.AddHook(database.NewRedisCircuitBreakerHook(breaker, strconv.Itoa(i)))
-		rdbs = append(rdbs, rdb)
+	rdbs, err = database.ConnectRedisShards(ctx, cfg, database.RedisShardOptions{
+		PoolSize: cfg.RedisPoolSize,
+	})
+	if err != nil {
+		slog.Error("failed to connect to redis shards", "error", err)
+		os.Exit(1)
 	}
 
-	sharder := ads.NewJumpHashSharder(len(rdbs))
+	sharder := ads.NewStaticSlotSharder(len(rdbs))
+	if version, loadErr := ads.LoadActiveSlotMap(ctx, pool, sharder, len(rdbs)); loadErr != nil {
+		slog.Warn("slot map load failed, using modulo fallback", "error", loadErr)
+	} else {
+		slog.Info("management slot map loaded at startup", "version", version)
+	}
 
 	authTarget := "127.0.0.1:" + cfg.AuthServerPort
 	if host := os.Getenv("AUTH_SERVER_HOST"); host != "" {
@@ -106,9 +92,7 @@ func main() {
 	for _, rdb := range rdbs {
 		sw := ads.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond)
 		syncWorkers = append(syncWorkers, sw)
-		svc.StartBackgroundWorker(func() {
-			sw.Start(ctx)
-		})
+		sw.Start(ctx)
 	}
 
 	reconInterval := time.Duration(cfg.Management.ReconIntervalMs) * time.Millisecond
@@ -130,7 +114,27 @@ func main() {
 		slog.Info("started nginx deny export worker", "path", exportPath)
 	}
 
-	mgmtHandler := management.NewHandler(svc, cfg, authMiddleware)
+	paymentClient, err := management.NewPaymentClient(cfg)
+	if err != nil {
+		slog.Error("failed to connect to payment gRPC server", "error", err)
+		os.Exit(1)
+	}
+	if paymentClient != nil {
+		defer paymentClient.Close()
+		slog.Info("payment gRPC client enabled", "target", cfg.PaymentServerHost+":"+cfg.PaymentServerPort)
+	}
+
+	billingClient, err := management.NewBillingClient(cfg)
+	if err != nil {
+		slog.Error("failed to connect to billing gRPC server", "error", err)
+		os.Exit(1)
+	}
+	if billingClient != nil {
+		defer billingClient.Close()
+		slog.Info("billing gRPC client enabled", "target", cfg.Billing.ServerHost+":"+cfg.Billing.Port)
+	}
+
+	mgmtHandler := management.NewHandler(svc, cfg, authMiddleware, paymentClient, billingClient)
 
 	mux := http.NewServeMux()
 	management.RegisterOpsRoutes(mux, pool, rdbs)
@@ -151,6 +155,22 @@ func main() {
 		WriteTimeout:      time.Duration(cfg.HttpWriteTimeoutMs) * time.Millisecond,
 		IdleTimeout:       time.Duration(cfg.HttpIdleTimeoutMs) * time.Millisecond,
 	}
+
+	settleLis, err := net.Listen("tcp", ":"+cfg.SettlementServerPort)
+	if err != nil {
+		slog.Error("failed to listen on settlement port", "error", err)
+		os.Exit(1)
+	}
+	settleServer := grpc.NewServer()
+	settleHandler := management.NewSettlementHandler(svc, cfg)
+	pb_settle.RegisterSettlementServiceServer(settleServer, settleHandler)
+
+	go func() {
+		slog.Info("starting settlement gRPC server", "port", cfg.SettlementServerPort)
+		if err := settleServer.Serve(settleLis); err != nil {
+			slog.Error("settlement gRPC server failed", "error", err)
+		}
+	}()
 
 	go func() {
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -173,7 +193,29 @@ func main() {
 		slog.Error("management server shutdown failed", "error", err)
 	}
 
+	settleStopped := make(chan struct{})
+	go func() {
+		settleServer.GracefulStop()
+		close(settleStopped)
+	}()
+
+	select {
+	case <-settleStopped:
+		slog.Info("settlement gRPC server stopped cleanly")
+	case <-shutdownCtx.Done():
+		slog.Warn("settlement gRPC graceful shutdown timed out, force stopping")
+		settleServer.Stop()
+	}
+
 	svc.Close()
+
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Duration(cfg.Lifecycle.WaitTimeoutMs)*time.Millisecond)
+	defer waitCancel()
+	for i, sw := range syncWorkers {
+		if err := sw.Wait(waitCtx); err != nil {
+			slog.Error("sync worker wait failed", "shard", i, "error", err)
+		}
+	}
 
 	for i, rdb := range rdbs {
 		if err := rdb.Close(); err != nil {

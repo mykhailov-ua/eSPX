@@ -13,6 +13,7 @@ import (
 	"espx/internal/config"
 	"espx/internal/database"
 	"espx/internal/domain"
+
 	"github.com/google/uuid"
 	redis "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
@@ -39,13 +40,13 @@ func TestEmergencyCircuitBreaker(t *testing.T) {
 
 	svc := NewService(pool, []redis.UniversalClient{rdb}, nil, cfg)
 	defer svc.Close()
-	h := NewHandler(svc, cfg, nil)
+	h := NewHandler(svc, cfg, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
 	ctx := context.Background()
 
-	sw := ads.NewSettingsWatcher(rdb, cfg)
+	sw := ads.NewSettingsWatcher([]redis.UniversalClient{rdb}, cfg)
 	assert.False(t, sw.Get().EmergencyBreaker)
 
 	reqBody := map[string]any{

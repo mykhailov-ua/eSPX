@@ -1,0 +1,15 @@
+version: v1
+plugins:
+  - plugin: buf.build/protocolbuffers/go
+    out: ..
+    opt:
+      - module=espx
+  - plugin: buf.build/grpc/go
+    out: ..
+    opt:
+      - module=espx
+  - name: go-vtproto
+    out: ..
+    opt:
+      - module=espx
+      - features=marshal+unmarshal+size+pool

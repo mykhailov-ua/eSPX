@@ -54,6 +54,78 @@ var filterRejectSpecs = [...]filterRejectSpec{
 	filterRejectInfra:            {http.StatusServiceUnavailable, "service unavailable", respInfraUnavailable, "infra_unavailable"},
 }
 
+// FraudReasonID indexes stable fraud signal codes shared by filters, metrics, and ClickHouse.
+type FraudReasonID uint8
+
+// Stable fraud_reason string values written to streams and fraud_events.
+const (
+	FraudReasonCodeDatacenterIP = "datacenter_ip"
+	FraudReasonCodeLowTTC       = "low_ttc"
+	FraudReasonCodeMissingImpTS = "missing_imp_ts"
+	FraudReasonCodeL3Blocklist  = "l3_blocklist"
+	FraudReasonCodeTLSBlocklist = "tls_blocklist"
+	FraudReasonCodeDeviceMismatch = "device_mismatch"
+)
+
+// Fraud signal identifiers; values are stable across deploys for metrics label binding.
+const (
+	FraudReasonNone FraudReasonID = iota
+	FraudReasonDatacenterIP
+	FraudReasonLowTTC
+	FraudReasonMissingImpTS
+	FraudReasonL3Blocklist
+	FraudReasonTLSBlocklist
+	FraudReasonDeviceMismatch
+	fraudReasonCount
+)
+
+const (
+	fraudSignalL1High uint8 = 1 << 0
+	fraudSignalL2Weak uint8 = 1 << 1
+	fraudSignalL3     uint8 = 1 << 2
+)
+
+type fraudReasonEntry struct {
+	code   string
+	weight uint8
+	flags  uint8
+}
+
+// fraudReasonRegistry maps signal IDs to stable codes and weighted score contributions.
+var fraudReasonRegistry = [fraudReasonCount]fraudReasonEntry{
+	FraudReasonNone:         {},
+	FraudReasonDatacenterIP: {code: FraudReasonCodeDatacenterIP, weight: 45, flags: fraudSignalL1High},
+	FraudReasonLowTTC:       {code: FraudReasonCodeLowTTC, weight: 45, flags: fraudSignalL1High},
+	FraudReasonMissingImpTS: {code: FraudReasonCodeMissingImpTS, weight: 35, flags: fraudSignalL2Weak},
+	FraudReasonL3Blocklist:  {code: FraudReasonCodeL3Blocklist, weight: 100, flags: fraudSignalL3},
+	FraudReasonTLSBlocklist: {code: FraudReasonCodeTLSBlocklist, weight: 45, flags: fraudSignalL1High},
+	FraudReasonDeviceMismatch: {code: FraudReasonCodeDeviceMismatch, weight: 35, flags: fraudSignalL2Weak},
+}
+
+// FraudReasonCode returns the stable string code for metrics and ClickHouse.
+func FraudReasonCode(id FraudReasonID) string {
+	if id >= fraudReasonCount {
+		return ""
+	}
+	return fraudReasonRegistry[id].code
+}
+
+// FraudSignalWeight returns weighted score points for a registered fraud signal.
+func FraudSignalWeight(id FraudReasonID) uint8 {
+	if id >= fraudReasonCount {
+		return 0
+	}
+	return fraudReasonRegistry[id].weight
+}
+
+// FraudSignalFlags returns L1/L2/L3 classification flags for a registered signal.
+func FraudSignalFlags(id FraudReasonID) uint8 {
+	if id >= fraudReasonCount {
+		return 0
+	}
+	return fraudReasonRegistry[id].flags
+}
+
 // classifyFilterErr maps domain filter errors to a stable rejection kind.
 func classifyFilterErr(err error) (filterRejectKind, bool) {
 	switch {

@@ -1,173 +1,67 @@
 package rtb
 
-import (
-	"github.com/google/uuid"
-)
-
-// BidRequest field order removes struct padding so each request stays compact in L1 cache lines.
-type BidRequest struct {
-	CategoryMask uint64
-	MinBid       int64
-	GeoHash      uint32
-	DeviceType   uint8
+// RunAuction selects a campaign and debits the winner budget on the hot bid path.
+func (registry *Registry) RunAuction(req *BidRequest) (AuctionResult, NoBidReason) {
+	return registry.runAuction(req, true)
 }
 
-// AuctionResult carries the clearing outcome to callers without extra heap allocation on the hot path.
-type AuctionResult struct {
-	CampaignID uuid.UUID
-	Price      int64
+// RunAuctionEval runs the auction without debiting budget for shadow validation.
+func (registry *Registry) RunAuctionEval(req *BidRequest) (AuctionResult, NoBidReason) {
+	return registry.runAuction(req, false)
 }
 
-// RunAuction selects a campaign on the hot bid path without locks, using second-price clearing
-// so winners pay above the floor only when competition requires it.
-func (r *Registry) RunAuction(req *BidRequest) (AuctionResult, bool) {
+func (registry *Registry) runAuction(req *BidRequest, spend bool) (AuctionResult, NoBidReason) {
+	start := auctionStartMono()
+
 	if req == nil || req.MinBid < 0 {
-		return AuctionResult{}, false
+		recordAuctionOutcome(start, NoBidInvalidRequest, 0)
+		return AuctionResult{}, NoBidInvalidRequest
 	}
-	shardIdx := req.GeoHash & 15
-	reg := r.LoadShard(shardIdx)
+	reg := registry.LoadShard(req.GeoHash)
 	if reg == nil || reg.Count == 0 {
-		return AuctionResult{}, false
+		recordAuctionOutcome(start, NoBidEmptyShard, 0)
+		return AuctionResult{}, NoBidEmptyShard
 	}
 
-	count := reg.Count
-	campaignIDs := reg.CampaignIDs
-	bidFloors := reg.BidFloors
-	deviceMasks := reg.DeviceMasks
-	categoryMasks := reg.CategoryMasks
-	geoHashes := reg.GeoHashes
-	budgetIndices := reg.BudgetIndices
-
-	if count > len(campaignIDs) || count > len(bidFloors) || count > len(deviceMasks) ||
-		count > len(categoryMasks) || count > len(geoHashes) || count > len(budgetIndices) {
-		return AuctionResult{}, false
+	if !registry.catalogSlicesValid(reg) {
+		recordAuctionOutcome(start, NoBidCorruptCatalog, reg.Count)
+		return AuctionResult{}, NoBidCorruptCatalog
 	}
 
-	var candidates [128]uint32
-	matchedCount := 0
+	bucket, bucketStart, bucketEnd, ok := registry.candidateRange(reg, req)
+	if !ok {
+		recordAuctionOutcome(start, NoBidNoCandidates, 0)
+		return AuctionResult{}, NoBidNoCandidates
+	}
 
-	for i := 0; i < count; i++ {
-		if geoHashes[i] != req.GeoHash {
-			continue
-		}
-		if (deviceMasks[i] & req.DeviceType) == 0 {
-			continue
-		}
-		if (categoryMasks[i] & req.CategoryMask) == 0 {
-			continue
-		}
-		bid := bidFloors[i]
-		if bid < req.MinBid {
-			continue
-		}
-		budgetIdx := budgetIndices[i]
-		if r.store.LoadBudget(budgetIdx) < bid {
-			continue
-		}
+	clearing := registry.ClearingMode()
+	winnerIdx, secondBid, scanned, noBid := registry.rankCandidates(reg, req, bucket, bucketStart, bucketEnd)
+	if noBid != NoBidNone {
+		recordAuctionOutcome(start, noBid, scanned)
+		return AuctionResult{}, noBid
+	}
 
-		if matchedCount < 128 {
-			candidates[matchedCount] = uint32(i)
-			matchedCount++
-		} else {
-			if matchedCount == 128 {
-				for parent := 63; parent >= 0; parent-- {
-					siftDown128(&candidates, bidFloors, parent)
-				}
-				matchedCount++
-			}
-			if bid > bidFloors[candidates[0]] {
-				candidates[0] = uint32(i)
-				siftDown128(&candidates, bidFloors, 0)
-			}
+	price := registry.clearingPrice(clearing, req.MinBid, bidsAt(reg, winnerIdx), secondBid)
+	price = applyReserve(price, reg.Reserves[winnerIdx], bidsAt(reg, winnerIdx))
+
+	if winnerIdx >= len(reg.BudgetIndices) || winnerIdx >= len(reg.CampaignIDs) {
+		recordAuctionOutcome(start, NoBidCorruptCatalog, scanned)
+		return AuctionResult{}, NoBidCorruptCatalog
+	}
+
+	if spend {
+		winnerBudgetIdx := reg.BudgetIndices[winnerIdx]
+		customerIdx := reg.CustomerBudgetIndices[winnerIdx]
+		dailyLimit := reg.DailyBudgets[winnerIdx]
+		if !registry.store.CheckAndSpendAll(winnerBudgetIdx, customerIdx, price, dailyLimit) {
+			recordAuctionOutcome(start, NoBidSpendFailed, scanned)
+			return AuctionResult{}, NoBidSpendFailed
 		}
 	}
 
-	if matchedCount == 0 {
-		return AuctionResult{}, false
-	}
-
-	limit := matchedCount
-	if limit > 128 {
-		limit = 128
-	}
-
-	var winnerIdx int = -1
-	var maxBid int64 = -1
-	var secondBid int64 = -1
-
-	_ = bidFloors[len(bidFloors)-1]
-
-	for i := 0; i < limit; i++ {
-		cIdx := candidates[i]
-		bVal := bidFloors[cIdx]
-		if bVal > maxBid {
-			secondBid = maxBid
-			maxBid = bVal
-			winnerIdx = int(cIdx)
-		} else if bVal > secondBid {
-			secondBid = bVal
-		}
-	}
-
-	if winnerIdx == -1 {
-		return AuctionResult{}, false
-	}
-
-	price := req.MinBid
-	if secondBid != -1 && secondBid > price {
-		price = secondBid
-	}
-
-	if winnerIdx >= len(budgetIndices) || winnerIdx >= len(campaignIDs) {
-		return AuctionResult{}, false
-	}
-
-	winnerBudgetIdx := budgetIndices[winnerIdx]
-	if !r.store.CheckAndSpend(winnerBudgetIdx, price) {
-		return AuctionResult{}, false
-	}
-
+	recordAuctionOutcome(start, NoBidNone, scanned)
 	return AuctionResult{
-		CampaignID: campaignIDs[winnerIdx],
+		CampaignID: reg.CampaignIDs[winnerIdx],
 		Price:      price,
-	}, true
-}
-
-// siftDown128 keeps only the strongest bid candidates when a shard exceeds the fixed
-// candidate cap, without allocating a growable slice on the auction hot path.
-func siftDown128(heap *[128]uint32, bids []int64, idx int) {
-	const n = 128
-	for {
-		left := (idx << 1) + 1
-		right := left + 1
-		if left >= n {
-			break
-		}
-		smallest := idx
-		smallestCand := heap[smallest]
-		leftCand := heap[left]
-
-		if int(smallestCand) >= len(bids) || int(leftCand) >= len(bids) {
-			break
-		}
-
-		if bids[leftCand] < bids[smallestCand] {
-			smallest = left
-			smallestCand = leftCand
-		}
-		if right < n {
-			rightCand := heap[right]
-			if int(rightCand) >= len(bids) {
-				break
-			}
-			if bids[rightCand] < bids[smallestCand] {
-				smallest = right
-			}
-		}
-		if smallest == idx {
-			break
-		}
-		heap[idx], heap[smallest] = heap[smallest], heap[idx]
-		idx = smallest
-	}
+	}, NoBidNone
 }

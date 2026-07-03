@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-// TestChaos_ReadonlyDataDirHealthz chmods the data directory to 0000 and proves probeDisk and healthz fail.
-func TestChaos_ReadonlyDataDirHealthz(t *testing.T) {
+// Guards readonly data directory surfaces unhealthy healthz without panicking.
+func TestChaos_ReadonlyDataDir_HealthzUnavailable(t *testing.T) {
 	dir, err := os.MkdirTemp("", "chaos-disk-*")
 	if err != nil {
 		t.Fatal(err)

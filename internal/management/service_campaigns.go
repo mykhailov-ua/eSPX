@@ -8,6 +8,8 @@ import (
 
 	"espx/internal/ads"
 	"espx/internal/ads/db"
+	"espx/pkg/cold"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -42,6 +44,21 @@ type StatusHistoryDTO struct {
 	NewStatus  string `json:"new_status"`
 	Reason     string `json:"reason,omitempty"`
 	CreatedAt  string `json:"created_at"`
+}
+
+func statusHistoryToDTO(r db.CampaignStatusHistory) StatusHistoryDTO {
+	var oldStatus string
+	if r.OldStatus.Valid {
+		oldStatus = string(r.OldStatus.CampaignStatusType)
+	}
+	return StatusHistoryDTO{
+		ID:         r.ID,
+		CampaignID: uuid.UUID(r.CampaignID.Bytes).String(),
+		OldStatus:  oldStatus,
+		NewStatus:  string(r.NewStatus),
+		Reason:     r.Reason.String,
+		CreatedAt:  r.CreatedAt.Time.Format(time.RFC3339),
+	}
 }
 
 // toCampaignDTO maps a database campaign row into the admin API representation.
@@ -90,7 +107,7 @@ func daypartOrEmpty(h []int16) []int16 {
 
 // ListCampaigns returns paginated campaigns filtered by customer and status for the admin UI.
 func (s *Service) ListCampaigns(ctx context.Context, customerID uuid.UUID, status string, limit, offset int32) ([]CampaignDTO, int64, error) {
-	q := db.New(s.pool)
+	q := db.New(s.GetPool())
 
 	var cid pgtype.UUID
 	if customerID != uuid.Nil {
@@ -106,16 +123,6 @@ func (s *Service) ListCampaigns(ctx context.Context, customerID uuid.UUID, statu
 		CustomerID: cid,
 		Status:     st,
 	}
-
-	total, err := q.CountCampaigns(ctx, countParams)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	if total == 0 {
-		return []CampaignDTO{}, 0, nil
-	}
-
 	listParams := db.ListCampaignsParams{
 		Limit:      limit,
 		Offset:     offset,
@@ -123,22 +130,16 @@ func (s *Service) ListCampaigns(ctx context.Context, customerID uuid.UUID, statu
 		Status:     st,
 	}
 
-	rows, err := q.ListCampaigns(ctx, listParams)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	res := make([]CampaignDTO, len(rows))
-	for i, r := range rows {
-		res[i] = toCampaignDTO(r)
-	}
-
-	return res, total, nil
+	return cold.PaginatedList(
+		func() (int64, error) { return q.CountCampaigns(ctx, countParams) },
+		func() ([]db.Campaign, error) { return q.ListCampaigns(ctx, listParams) },
+		toCampaignDTO,
+	)
 }
 
 // GetCampaignDTO loads a single campaign for detail views and access checks.
 func (s *Service) GetCampaignDTO(ctx context.Context, id uuid.UUID) (CampaignDTO, error) {
-	q := db.New(s.pool)
+	q := db.New(s.GetPool())
 	c, err := q.GetCampaignFull(ctx, ads.ToUUID(id))
 	if err != nil {
 		return CampaignDTO{}, err
@@ -148,45 +149,22 @@ func (s *Service) GetCampaignDTO(ctx context.Context, id uuid.UUID) (CampaignDTO
 
 // ListStatusHistory returns paginated status transitions for a campaign audit trail.
 func (s *Service) ListStatusHistory(ctx context.Context, campaignID uuid.UUID, limit, offset int32) ([]StatusHistoryDTO, int64, error) {
-	q := db.New(s.pool)
+	q := db.New(s.GetPool())
 	cid := ads.ToUUID(campaignID)
 
-	total, err := q.CountStatusHistory(ctx, cid)
-	if err != nil {
-		return nil, 0, err
-	}
-	if total == 0 {
-		return []StatusHistoryDTO{}, 0, nil
-	}
-
-	rows, err := q.ListStatusHistory(ctx, db.ListStatusHistoryParams{
+	listParams := db.ListStatusHistoryParams{
 		CampaignID: cid,
 		Limit:      limit,
 		Offset:     offset,
-	})
-	if err != nil {
-		return nil, 0, err
 	}
-
-	res := make([]StatusHistoryDTO, len(rows))
-	for i, r := range rows {
-		var oldStatus string
-		if r.OldStatus.Valid {
-			oldStatus = string(r.OldStatus.CampaignStatusType)
-		}
-		res[i] = StatusHistoryDTO{
-			ID:         r.ID,
-			CampaignID: uuid.UUID(r.CampaignID.Bytes).String(),
-			OldStatus:  oldStatus,
-			NewStatus:  string(r.NewStatus),
-			Reason:     r.Reason.String,
-			CreatedAt:  r.CreatedAt.Time.Format(time.RFC3339),
-		}
-	}
-	return res, total, nil
+	return cold.PaginatedList(
+		func() (int64, error) { return q.CountStatusHistory(ctx, cid) },
+		func() ([]db.CampaignStatusHistory, error) { return q.ListStatusHistory(ctx, listParams) },
+		statusHistoryToDTO,
+	)
 }
 
-// UpdateCampaignPacing changes manual pacing mode and propagates the update to the hot path via outbox.
+// UpdateCampaignPacing changes manual pacing mode and propagates the update to the hot path via cold.
 func (s *Service) UpdateCampaignPacing(ctx context.Context, campaignID uuid.UUID, newMode string) (CampaignDTO, error) {
 	var pacing db.PacingModeType
 	switch newMode {
@@ -199,7 +177,7 @@ func (s *Service) UpdateCampaignPacing(ctx context.Context, campaignID uuid.UUID
 	}
 
 	var updatedCamp db.Campaign
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err := pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 
 		camp, err := q.GetCampaignForUpdate(ctx, ads.ToUUID(campaignID))

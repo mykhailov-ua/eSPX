@@ -15,7 +15,7 @@ DB_NAME=${DB_NAME:-ad_event_processor}
 REDIS_PASSWORD=${REDIS_PASSWORD:-redis_secure_pass_456}
 CH_HTTP_PORT=${CH_HTTP_PORT:-8123}
 
-REDIS_PORTS=(6479 6480 6481 6482 6483 6484)
+REDIS_PORTS=(6479 6480 6481 6482)
 
 echo "Checking Local Environment Dependencies..."
 

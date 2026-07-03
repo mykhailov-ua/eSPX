@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"espx/internal/ads"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -23,7 +24,7 @@ func (s *Service) AuditLog(ctx context.Context, q db.Querier, adminID uuid.UUID,
 	}
 
 	if q == nil {
-		q = db.New(s.pool)
+		q = db.New(s.GetPool())
 	}
 
 	_, err := q.CreateAuditLog(ctx, db.CreateAuditLogParams{
@@ -61,7 +62,7 @@ type Days int
 // cleanOldLogs removes audit entries older than the retention threshold to bound table growth.
 func (s *Service) cleanOldLogs(ctx context.Context, retention Days) {
 	threshold := time.Now().AddDate(0, 0, -int(retention))
-	err := db.New(s.pool).CleanupAuditLogs(ctx, pgtype.Timestamptz{Time: threshold, Valid: true})
+	err := db.New(s.GetPool()).CleanupAuditLogs(ctx, pgtype.Timestamptz{Time: threshold, Valid: true})
 	if err != nil {
 		slog.Error("failed to cleanup audit logs", "error", err)
 	} else {

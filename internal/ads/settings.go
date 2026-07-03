@@ -13,25 +13,34 @@ import (
 
 // DynamicConfig holds runtime-tunable limits pushed from the management plane.
 type DynamicConfig struct {
-	Version          int64 `json:"version"`
-	RateLimitPerMin  int   `json:"rate_limit_per_min"`
-	RateLimitWindow  int   `json:"rate_limit_window_ms"`
-	ClickAmount      int64 `json:"click_amount"`
-	ImpressionAmount int64 `json:"impression_amount"`
-	EmergencyBreaker bool  `json:"emergency_breaker"`
+	Version              int64  `json:"version"`
+	RateLimitPerMin      int    `json:"rate_limit_per_min"`
+	RateLimitWindow      int    `json:"rate_limit_window_ms"`
+	ClickAmount          int64  `json:"click_amount"`
+	ImpressionAmount     int64  `json:"impression_amount"`
+	EmergencyBreaker     bool   `json:"emergency_breaker"`
+	FraudRLSuspectPct    int    `json:"fraud_rl_suspect_pct"`
+	FraudRLIVTPct        int    `json:"fraud_rl_ivt_pct"`
+	FraudRLBlockPct      int    `json:"fraud_rl_block_pct"`
+	FraudRLRetrySuspect  int    `json:"fraud_rl_retry_suspect_sec"`
+	FraudRLRetryIVT      int    `json:"fraud_rl_retry_ivt_sec"`
+	FraudRLRetryBlock    int    `json:"fraud_rl_retry_block_sec"`
+	ASNCDNWhitelist      string `json:"asn_cdn_whitelist"`
+	ASNMobileWhitelist   string `json:"asn_mobile_whitelist"`
+	TLSHashBlocklist     string `json:"tls_hash_blocklist"`
 }
 
 // SettingsWatcher polls Redis for config changes without restarting trackers.
 type SettingsWatcher struct {
-	rdb            redis.UniversalClient
+	rdbs           []redis.UniversalClient
 	currentVersion int64
 	snapshot       atomic.Value
 }
 
 // NewSettingsWatcher seeds dynamic config from static startup values.
-func NewSettingsWatcher(rdb redis.UniversalClient, initial *config.Config) *SettingsWatcher {
+func NewSettingsWatcher(rdbs []redis.UniversalClient, initial *config.Config) *SettingsWatcher {
 	sw := &SettingsWatcher{
-		rdb: rdb,
+		rdbs: rdbs,
 	}
 
 	sw.snapshot.Store(&DynamicConfig{
@@ -66,12 +75,50 @@ func (sw *SettingsWatcher) Start(ctx context.Context, interval time.Duration) {
 	}
 }
 
+// readConfigVersion returns config:version from the first responsive Redis shard.
+func (sw *SettingsWatcher) readConfigVersion(ctx context.Context) (int64, redis.UniversalClient, error) {
+	for i, rdb := range sw.rdbs {
+		if rdb == nil {
+			continue
+		}
+		v, err := rdb.Get(ctx, "config:version").Int64()
+		if err == nil {
+			return v, rdb, nil
+		}
+		if err != redis.Nil {
+			slog.Warn("failed to check config version on redis shard", "shard", i, "error", err)
+		}
+	}
+	return 0, nil, redis.Nil
+}
+
+// readConfigValues loads config:values from the given shard, falling back across the pool on error.
+func (sw *SettingsWatcher) readConfigValues(ctx context.Context, preferred redis.UniversalClient) (map[string]string, error) {
+	if preferred != nil {
+		data, err := preferred.HGetAll(ctx, "config:values").Result()
+		if err == nil {
+			return data, nil
+		}
+	}
+	for i, rdb := range sw.rdbs {
+		if rdb == nil || rdb == preferred {
+			continue
+		}
+		data, err := rdb.HGetAll(ctx, "config:values").Result()
+		if err == nil {
+			return data, nil
+		}
+		slog.Warn("failed to fetch config values on redis shard", "shard", i, "error", err)
+	}
+	return nil, redis.Nil
+}
+
 // sync reloads config from Redis when the version advances.
 func (sw *SettingsWatcher) sync(ctx context.Context) {
-	v, err := sw.rdb.Get(ctx, "config:version").Int64()
+	v, rdb, err := sw.readConfigVersion(ctx)
 	if err != nil {
 		if err != redis.Nil {
-			slog.Error("failed to check config version", "error", err)
+			slog.Error("failed to check config version on all redis shards", "error", err)
 		}
 		return
 	}
@@ -80,9 +127,9 @@ func (sw *SettingsWatcher) sync(ctx context.Context) {
 		return
 	}
 
-	data, err := sw.rdb.HGetAll(ctx, "config:values").Result()
+	data, err := sw.readConfigValues(ctx, rdb)
 	if err != nil {
-		slog.Error("failed to fetch config values", "error", err)
+		slog.Error("failed to fetch config values from redis", "error", err)
 		return
 	}
 
@@ -104,6 +151,15 @@ func (sw *SettingsWatcher) parseConfig(version int64, data map[string]string) *D
 	updateMicro(&next.ClickAmount, data["click_amount"])
 	updateMicro(&next.ImpressionAmount, data["impression_amount"])
 	updateBool(&next.EmergencyBreaker, data["emergency_breaker"])
+	updateInt(&next.FraudRLSuspectPct, data["fraud_rl_suspect_pct"])
+	updateInt(&next.FraudRLIVTPct, data["fraud_rl_ivt_pct"])
+	updateInt(&next.FraudRLBlockPct, data["fraud_rl_block_pct"])
+	updateInt(&next.FraudRLRetrySuspect, data["fraud_rl_retry_suspect_sec"])
+	updateInt(&next.FraudRLRetryIVT, data["fraud_rl_retry_ivt_sec"])
+	updateInt(&next.FraudRLRetryBlock, data["fraud_rl_retry_block_sec"])
+	updateString(&next.ASNCDNWhitelist, data["asn_cdn_whitelist"])
+	updateString(&next.ASNMobileWhitelist, data["asn_mobile_whitelist"])
+	updateString(&next.TLSHashBlocklist, data["tls_hash_blocklist"])
 
 	return &next
 }
@@ -135,5 +191,12 @@ func updateBool(target *bool, val string) {
 	}
 	if b, err := strconv.ParseBool(val); err == nil {
 		*target = b
+	}
+}
+
+// updateString applies a non-empty string override.
+func updateString(target *string, val string) {
+	if val != "" {
+		*target = val
 	}
 }

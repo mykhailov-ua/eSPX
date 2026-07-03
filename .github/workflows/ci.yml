@@ -20,10 +20,42 @@ jobs:
       - name: Run Lint
         run: make lint
 
+      - name: Hot-path alloc gate
+        run: make test-alloc-gate
+
       - name: Run Tests
         run: make test
 
       - name: Build Docker
         run: make build
 
+  full-test:
+    name: Full test suite (no -short)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
 
+      - name: Generate sqlc
+        run: make gen
+
+      - name: Run full test suite
+        run: go test ./... -count=1 -timeout 30m
+
+  chaos:
+    name: Container chaos tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Run chaos suite
+        run: make test-chaos

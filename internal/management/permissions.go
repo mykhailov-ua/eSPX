@@ -13,4 +13,6 @@ const (
 	PermBlacklistWrite = "blacklist:write"
 	PermAuditRead      = "audit:read"
 	PermUsersWrite     = "users:write"
+	PermShardsRead     = "shards:read"
+	PermShardsWrite    = "shards:write"
 )

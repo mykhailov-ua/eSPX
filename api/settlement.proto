@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package settlement;
+
+option go_package = "espx/internal/management/pb;pb";
+
+service SettlementService {
+  // Called from payment outbox; ledger idempotency makes retries safe after transient gRPC failures.
+  rpc ApplyPaymentCredit(ApplyPaymentCreditRequest) returns (ApplyPaymentCreditResponse);
+}
+
+message ApplyPaymentCreditRequest {
+  string customer_id = 1;
+  int64 amount_micro = 2;
+  string ledger_idempotency_key = 3;  // e.g. "stripe:evt_01H..."
+  string payment_intent_id = 4;
+  string provider = 5;
+  string provider_ref = 6;
+}
+
+message ApplyPaymentCreditResponse {
+  bool applied = 1;       // false = duplicate idempotency hit (still success)
+  int64 ledger_entry_id = 2;
+}

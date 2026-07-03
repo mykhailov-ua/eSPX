@@ -9,6 +9,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// revocationCheckTimeout bounds Redis revocation lookups so token verification does not stall request paths.
 const revocationCheckTimeout = 100 * time.Millisecond
 
 // defaultUserRevocationTTL covers the longest access-token lifetime we issue.

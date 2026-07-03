@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+// Wire format for tracker ingest and processor streams; bytes fields avoid UTF-8 validation on the hot path.
+package ads.v1;
+
+option go_package = "espx/internal/ads/pb;pb";
+
+message AdEvent {
+  bytes campaign_id = 1;
+  bytes event_type = 2;
+  EventMetadata metadata = 3;
+}
+
+// Optional fields use bytes so vtproto can pool and zero-copy into Redis/ClickHouse writers.
+message EventMetadata {
+  bytes click_id = 1;
+  bytes user_id = 2;
+  bytes device_type = 3;
+  bytes os = 4;
+  repeated bytes extra_keys = 5;
+  repeated bytes extra_values = 7;
+  bytes extra_bytes = 6;
+}
+
+// Returned on /track success so the tracker can redirect without a second Postgres round trip.
+message TrackResponse {
+  string request_id = 1;
+  string status = 2;
+  string landing_url = 3;
+}
+
+// Flat stream record for Redis XADD; unix timestamp avoids protobuf Timestamp alloc on ingest.
+message AdStreamEvent {
+  bytes click_id = 1;
+  bytes campaign_id = 2;
+  bytes event_type = 3;
+  bytes payload = 4;
+  bytes ip = 5;
+  bytes ua = 6;
+  int64 created_at_unix = 7;
+  uint32 fraud_score = 8;
+  bytes fraud_reason = 9;
+  bool ghost_event = 10;
+  bytes user_id = 11;
+}
+
+// DLQ envelope preserves the original stream entry for replay after processor failure.
+message AdDLQEvent {
+  AdStreamEvent original_event = 1;
+  bytes error = 2;
+  bytes original_id = 3;
+  int64 failed_at_unix = 4;
+  bytes worker_id = 5;
+  int32 retry_count = 6;
+}
+
+// Binary log segment record for mmap logger persistence off the gnet event loop.
+message AdLogRecord {
+  int64 timestamp_unix = 1;
+  bytes campaign_id = 2;
+  bytes click_id = 3;
+  bytes event_type = 4;
+  uint32 priority = 5;
+}

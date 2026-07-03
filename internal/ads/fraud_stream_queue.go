@@ -3,6 +3,7 @@ package ads
 import (
 	"context"
 	"runtime"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -52,6 +53,9 @@ type fraudStreamSlot struct {
 	ua      [fraudSlotUAMax]byte
 	payload [fraudSlotPayloadMax]byte
 	reason  [fraudSlotReasonMax]byte
+
+	fraudScore uint32
+	ghostEvent bool
 }
 
 // FraudStreamWriter decouples fraud telemetry from the gnet hot path via a lossy async queue.
@@ -89,7 +93,7 @@ func NewFraudStreamWriter(rdbs []redis.UniversalClient, stream string, maxLen in
 	return q
 }
 
-// copyFraudField copies a string into a fixed slot buffer and returns the written length.
+// copyFraudField stores fraud strings in fixed ring slots so enqueue avoids heap allocations.
 func copyFraudField(dst []byte, s string) int {
 	n := len(s)
 	if n > len(dst) {
@@ -148,6 +152,8 @@ func (q *FraudStreamWriter) Enqueue(shard int, evt *domain.Event) bool {
 		slot.uaLen = uint16(copyFraudField(slot.ua[:], evt.UA))
 		slot.payloadLen = uint16(copyFraudField(slot.payload[:], unsafeString(evt.Payload)))
 		slot.reasonLen = uint16(copyFraudField(slot.reason[:], evt.FraudReason))
+		slot.fraudScore = evt.FraudScore
+		slot.ghostEvent = evt.GhostEvent
 		slot.ready.Store(1)
 
 		for {
@@ -160,7 +166,7 @@ func (q *FraudStreamWriter) Enqueue(shard int, evt *domain.Event) bool {
 	}
 }
 
-// Pending returns the number of fraud events not yet flushed to Redis.
+// Pending exposes ring backlog so operators can alert before fraud telemetry is dropped.
 func (q *FraudStreamWriter) Pending() uint64 {
 	if q == nil {
 		return 0
@@ -289,7 +295,7 @@ func (q *FraudStreamWriter) flushBatch(ctx context.Context, batch []*fraudStream
 	}
 }
 
-// fillFraudStreamValuesFromSlot builds Redis stream field pairs from a ring slot.
+// fillFraudStreamValuesFromSlot materializes Redis stream fields from ring slots without per-event heap boxing.
 func fillFraudStreamValuesFromSlot(valSlice []any, slot *fraudStreamSlot, wCamp, wTime *bufWrapper) {
 	wCamp.buf = wCamp.buf[:0]
 	wCamp.buf = appendUUID(wCamp.buf, slot.campaignID)
@@ -315,8 +321,18 @@ func fillFraudStreamValuesFromSlot(valSlice []any, slot *fraudStreamSlot, wCamp,
 	valSlice[13] = unsafeString(slot.payload[:slot.payloadLen])
 	valSlice[14] = "fraud_reason"
 	valSlice[15] = unsafeString(slot.reason[:slot.reasonLen])
-	valSlice[16] = "created_at"
-	valSlice[17] = timeStr
+	wCamp.buf = wCamp.buf[:0]
+	wCamp.buf = strconv.AppendUint(wCamp.buf, uint64(slot.fraudScore), 10)
+	valSlice[16] = "fraud_score"
+	valSlice[17] = unsafeString(wCamp.buf)
+	valSlice[18] = "ghost_event"
+	if slot.ghostEvent {
+		valSlice[19] = "1"
+	} else {
+		valSlice[19] = "0"
+	}
+	valSlice[20] = "created_at"
+	valSlice[21] = timeStr
 }
 
 // enqueueFraudReject enqueues a rejected fraud event, counting drops when the ring is full.

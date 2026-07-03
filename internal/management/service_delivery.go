@@ -10,6 +10,8 @@ import (
 
 	"espx/internal/ads"
 	"espx/internal/ads/db"
+	"espx/pkg/cold"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -28,7 +30,7 @@ func (s *Service) CreateCampaign(ctx context.Context, spec CampaignCreateSpec) (
 	now := time.Now()
 	initialStatus := resolveScheduleStatus(now, spec.StartAt, spec.EndAt)
 
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err := pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 		existing, err := q.GetLedgerByHashForUpdate(ctx, pgtype.Text{String: spec.IdempotencyKey, Valid: true})
 		if err == nil {
@@ -104,6 +106,7 @@ func (s *Service) CreateCampaign(ctx context.Context, spec CampaignCreateSpec) (
 			Amount:          spec.BudgetLimit,
 			Type:            db.LedgerTypeFREEZE,
 			IdempotencyHash: pgtype.Text{String: spec.IdempotencyKey, Valid: true},
+			PaymentIntentID: pgtype.UUID{},
 		})
 		if err != nil {
 			return err
@@ -148,9 +151,9 @@ func (s *Service) emitCampaignLifecycleOutbox(ctx context.Context, q db.Querier,
 	}
 }
 
-// PauseCampaign stops delivery for an active campaign and notifies the hot path via outbox.
+// PauseCampaign stops delivery for an active campaign and notifies the hot path via cold.
 func (s *Service) PauseCampaign(ctx context.Context, campaignID uuid.UUID, reason string) error {
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 		camp, err := q.GetCampaignForUpdate(ctx, ads.ToUUID(campaignID))
 		if err != nil {
@@ -191,7 +194,7 @@ func (s *Service) PauseCampaign(ctx context.Context, campaignID uuid.UUID, reaso
 
 // ResumeCampaign reactivates a paused campaign when schedule and balance constraints allow.
 func (s *Service) ResumeCampaign(ctx context.Context, campaignID uuid.UUID, reason string) error {
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 		camp, err := q.GetCampaignForUpdate(ctx, ads.ToUUID(campaignID))
 		if err != nil {
@@ -248,7 +251,7 @@ func (s *Service) UpdateCampaignSchedule(ctx context.Context, campaignID uuid.UU
 		return err
 	}
 
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 		locked, err := q.GetCampaignForUpdate(ctx, ads.ToUUID(campaignID))
 		if err != nil {
@@ -330,7 +333,7 @@ func (s *Service) CreateCampaignTemplate(ctx context.Context, customerID uuid.UU
 		brandParam = ads.ToUUID(*brandID)
 	}
 
-	_, err = db.New(s.pool).CreateCampaignTemplate(ctx, db.CreateCampaignTemplateParams{
+	_, err = db.New(s.GetPool()).CreateCampaignTemplate(ctx, db.CreateCampaignTemplateParams{
 		ID:              ads.ToUUID(templateID),
 		CustomerID:      ads.ToUUID(customerID),
 		Name:            name,
@@ -349,29 +352,23 @@ func (s *Service) CreateCampaignTemplate(ctx context.Context, customerID uuid.UU
 
 // ListCampaignTemplates returns paginated templates for a customer's campaign library.
 func (s *Service) ListCampaignTemplates(ctx context.Context, customerID uuid.UUID, limit, offset int32) ([]CampaignTemplateDTO, int64, error) {
-	q := db.New(s.pool)
-	total, err := q.CountCampaignTemplates(ctx, ads.ToUUID(customerID))
-	if err != nil || total == 0 {
-		return []CampaignTemplateDTO{}, total, err
-	}
-	rows, err := q.ListCampaignTemplates(ctx, db.ListCampaignTemplatesParams{
-		CustomerID: ads.ToUUID(customerID),
+	q := db.New(s.GetPool())
+	cid := ads.ToUUID(customerID)
+	listParams := db.ListCampaignTemplatesParams{
+		CustomerID: cid,
 		Limit:      limit,
 		Offset:     offset,
-	})
-	if err != nil {
-		return nil, 0, err
 	}
-	res := make([]CampaignTemplateDTO, len(rows))
-	for i, r := range rows {
-		res[i] = templateToDTO(r)
-	}
-	return res, total, nil
+	return cold.PaginatedList(
+		func() (int64, error) { return q.CountCampaignTemplates(ctx, cid) },
+		func() ([]db.CampaignTemplate, error) { return q.ListCampaignTemplates(ctx, listParams) },
+		templateToDTO,
+	)
 }
 
 // CreateCampaignFromTemplate instantiates a live campaign from a stored template with optional overrides.
 func (s *Service) CreateCampaignFromTemplate(ctx context.Context, templateID uuid.UUID, customerID uuid.UUID, name string, budgetLimit *int64, idempotencyKey string) (uuid.UUID, error) {
-	tmpl, err := db.New(s.pool).GetCampaignTemplate(ctx, ads.ToUUID(templateID))
+	tmpl, err := db.New(s.GetPool()).GetCampaignTemplate(ctx, ads.ToUUID(templateID))
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("template not found: %w", err)
 	}
@@ -443,7 +440,7 @@ func (s *Service) SaveCampaignAsTemplate(ctx context.Context, campaignID uuid.UU
 	)
 }
 
-// UpsertBrandCreative creates a weighted landing URL variant and queues a Redis sync via outbox.
+// UpsertBrandCreative creates a weighted landing URL variant and queues a Redis sync via cold.
 func (s *Service) UpsertBrandCreative(ctx context.Context, brandID uuid.UUID, name, landingURL string, weight int32, status string) (uuid.UUID, error) {
 	if weight <= 0 {
 		return uuid.Nil, fmt.Errorf("weight must be positive")
@@ -460,7 +457,7 @@ func (s *Service) UpsertBrandCreative(ctx context.Context, brandID uuid.UUID, na
 		return uuid.Nil, err
 	}
 
-	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err = pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 		if _, err := q.GetBrand(ctx, ads.ToUUID(brandID)); err != nil {
 			return fmt.Errorf("brand not found: %w", err)
@@ -483,20 +480,16 @@ func (s *Service) UpsertBrandCreative(ctx context.Context, brandID uuid.UUID, na
 
 // ListBrandCreatives returns active and paused creatives for a brand.
 func (s *Service) ListBrandCreatives(ctx context.Context, brandID uuid.UUID) ([]BrandCreativeDTO, error) {
-	rows, err := db.New(s.pool).ListBrandCreatives(ctx, ads.ToUUID(brandID))
+	rows, err := db.New(s.GetPool()).ListBrandCreatives(ctx, ads.ToUUID(brandID))
 	if err != nil {
 		return nil, err
 	}
-	res := make([]BrandCreativeDTO, len(rows))
-	for i, r := range rows {
-		res[i] = creativeToDTO(r)
-	}
-	return res, nil
+	return cold.MapSlice(rows, creativeToDTO), nil
 }
 
-// UpdateBrandCreative edits a creative and triggers hot-path resync via outbox.
+// UpdateBrandCreative edits a creative and triggers hot-path resync via cold.
 func (s *Service) UpdateBrandCreative(ctx context.Context, creativeID uuid.UUID, name, landingURL string, weight int32, status string) error {
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 		existing, err := q.GetBrandCreative(ctx, ads.ToUUID(creativeID))
 		if err != nil {
@@ -516,9 +509,9 @@ func (s *Service) UpdateBrandCreative(ctx context.Context, creativeID uuid.UUID,
 	})
 }
 
-// DeleteBrandCreative removes a creative and triggers hot-path resync via outbox.
+// DeleteBrandCreative removes a creative and triggers hot-path resync via cold.
 func (s *Service) DeleteBrandCreative(ctx context.Context, creativeID uuid.UUID) error {
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 		existing, err := q.GetBrandCreative(ctx, ads.ToUUID(creativeID))
 		if err != nil {
@@ -560,7 +553,7 @@ func (s *Service) processNextScheduledCampaign(ctx context.Context) (done bool, 
 	var campID uuid.UUID
 	var desired db.CampaignStatusType
 
-	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err = pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 		camp, err := q.ClaimScheduledCampaignForUpdate(ctx)
 		if err != nil {

@@ -1,0 +1,21 @@
+package components
+
+templ ChartHost(chartJSON string, title string, summary string) {
+	<div
+		id="dashboard-chart-host"
+		class="chart-host panel"
+		role="img"
+		aria-label={ summary }
+	>
+		<script type="application/json" class="chart-data">
+			@templ.Raw(chartJSON)
+		</script>
+		<div class="chart-head">
+			<h2 class="chart-title">{ title }</h2>
+			<span class="chart-legend muted font-mono tabular-nums">req/s</span>
+		</div>
+		<div class="chart-body" aria-hidden="true">
+			<span class="chart-live-label font-mono tabular-nums muted" data-chart-live-label aria-hidden="true"></span>
+		</div>
+	</div>
+}

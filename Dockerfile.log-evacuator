@@ -1,6 +1,12 @@
-# Log evacuation container environment
-FROM alpine:3.19
-RUN apk add --no-cache rsync zstd openssh-client bash coreutils
-COPY scripts/log-evacuate.sh /scripts/log-evacuate.sh
-RUN chmod +x /scripts/log-evacuate.sh
-ENTRYPOINT ["/scripts/log-evacuate.sh"]
+# Log evacuator: ships rotated .log.zst.ready segments to S3 with checkpoint persistence.
+FROM golang:1.25-alpine AS builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -tags timetzdata -ldflags="-s -w" -o /bin/log-evacuator ./cmd/log-evacuator
+
+FROM gcr.io/distroless/static-debian12
+COPY --from=builder /bin/log-evacuator /log-evacuator
+USER nonroot:nonroot
+ENTRYPOINT ["/log-evacuator"]

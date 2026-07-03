@@ -66,8 +66,8 @@ func (b *RedisBreaker) State() CircuitState {
 }
 
 // Allow reports whether a Redis command may proceed or should fast-fail while the shard recovers.
-func (b *RedisBreaker) Allow() bool {
-	state := atomic.LoadInt32(&b.state)
+func (breaker *RedisBreaker) Allow() bool {
+	state := atomic.LoadInt32(&breaker.state)
 	if state == int32(CircuitClosed) {
 		return true
 	}
@@ -77,12 +77,12 @@ func (b *RedisBreaker) Allow() bool {
 	}
 
 	if state == int32(CircuitOpen) {
-		lastOpened := atomic.LoadInt64(&b.lastOpenedUnix)
-		if time.Since(time.Unix(0, lastOpened)) >= b.openTimeout {
+		lastOpened := atomic.LoadInt64(&breaker.lastOpenedUnix)
+		if time.Since(time.Unix(0, lastOpened)) >= breaker.openTimeout {
 
-			if atomic.CompareAndSwapInt32(&b.state, int32(CircuitOpen), int32(CircuitHalfOpen)) {
-				atomic.StoreInt64(&b.successes, 0)
-				atomic.StoreInt64(&b.failures, 0)
+			if atomic.CompareAndSwapInt32(&breaker.state, int32(CircuitOpen), int32(CircuitHalfOpen)) {
+				atomic.StoreInt64(&breaker.successes, 0)
+				atomic.StoreInt64(&breaker.failures, 0)
 				return true
 			}
 		}
@@ -184,51 +184,51 @@ func (h *RedisCircuitBreakerHook) DialHook(next redis.DialHook) redis.DialHook {
 }
 
 // ProcessHook enforces breaker gating and outcome recording on single Redis commands.
-func (h *RedisCircuitBreakerHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+func (hook *RedisCircuitBreakerHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
-		if !h.breaker.Allow() {
+		if !hook.breaker.Allow() {
 			cmd.SetErr(ErrRedisCircuitOpen)
-			h.reportState()
+			hook.reportState()
 			return ErrRedisCircuitOpen
 		}
 
 		err := next(ctx, cmd)
 		if err != nil {
 			if IsNetworkOrSystemError(err) {
-				h.breaker.RecordFailure()
+				hook.breaker.RecordFailure()
 			} else {
-				h.breaker.RecordSuccess()
+				hook.breaker.RecordSuccess()
 			}
 		} else {
-			h.breaker.RecordSuccess()
+			hook.breaker.RecordSuccess()
 		}
-		h.reportState()
+		hook.reportState()
 		return err
 	}
 }
 
 // ProcessPipelineHook enforces breaker gating and outcome recording on pipelined Redis commands.
-func (h *RedisCircuitBreakerHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+func (hook *RedisCircuitBreakerHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
-		if !h.breaker.Allow() {
+		if !hook.breaker.Allow() {
 			for _, cmd := range cmds {
 				cmd.SetErr(ErrRedisCircuitOpen)
 			}
-			h.reportState()
+			hook.reportState()
 			return ErrRedisCircuitOpen
 		}
 
 		err := next(ctx, cmds)
 		if err != nil {
 			if IsNetworkOrSystemError(err) {
-				h.breaker.RecordFailure()
+				hook.breaker.RecordFailure()
 			} else {
-				h.breaker.RecordSuccess()
+				hook.breaker.RecordSuccess()
 			}
 		} else {
-			h.breaker.RecordSuccess()
+			hook.breaker.RecordSuccess()
 		}
-		h.reportState()
+		hook.reportState()
 		return err
 	}
 }

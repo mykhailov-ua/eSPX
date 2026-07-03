@@ -1,3 +1,4 @@
+// Command processor drains Redis ad-event streams into Postgres, ClickHouse, and fraud analytics.
 package main
 
 import (
@@ -6,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -20,7 +20,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// main starts per-shard stream consumers that drain Redis into Postgres and ClickHouse.
+// main runs stream consumers per Redis shard because ad events fan out to Postgres, ClickHouse, and fraud pipelines independently.
 func main() {
 	if len(os.Args) > 2 && os.Args[1] == "--health-probe" {
 		resp, err := http.Get(os.Args[2])
@@ -57,8 +57,11 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	procCtx, procCancel := context.WithCancel(context.Background())
-	defer procCancel()
+	consumerCtx, consumerCancel := context.WithCancel(context.Background())
+	defer consumerCancel()
+
+	syncCtx, syncCancel := context.WithCancel(context.Background())
+	defer syncCancel()
 
 	pool, err := database.Connect(ctx, string(cfg.DBDSN), cfg.DBProcessorMaxConns, cfg.DBMinConns)
 	if err != nil {
@@ -79,33 +82,12 @@ func main() {
 	defer chConn.Close()
 
 	var rdbs []redis.UniversalClient
-	for i, addr := range cfg.RedisAddrs {
-		rdb := redis.NewUniversalClient(&redis.UniversalOptions{
-			Addrs:    []string{addr},
-			Password: string(cfg.RedisPassword),
-			PoolSize: cfg.RedisPoolSize,
-		})
-
-		var rdbErr error
-		for j := 0; j < 30; j++ {
-			if rdbErr = rdb.Ping(ctx).Err(); rdbErr == nil {
-				break
-			}
-			slog.Warn("waiting for redis...", "addr", addr, "error", rdbErr)
-			time.Sleep(time.Second)
-		}
-
-		if rdbErr != nil {
-			slog.Error("failed to connect to redis shard", "addr", addr, "error", rdbErr)
-			os.Exit(1)
-		}
-		breaker := database.NewRedisBreaker(
-			int64(cfg.RedisBreakerFailThreshold),
-			int64(cfg.RedisBreakerHalfOpen),
-			time.Duration(cfg.RedisBreakerOpenTimeoutMs)*time.Millisecond,
-		)
-		rdb.AddHook(database.NewRedisCircuitBreakerHook(breaker, strconv.Itoa(i)))
-		rdbs = append(rdbs, rdb)
+	rdbs, err = database.ConnectRedisShards(ctx, cfg, database.RedisShardOptions{
+		PoolSize: cfg.RedisPoolSize,
+	})
+	if err != nil {
+		slog.Error("failed to connect to redis shards", "error", err)
+		os.Exit(1)
 	}
 
 	pgStore := ads.NewPostgresStore(queries, time.Duration(cfg.WriteTimeoutMs)*time.Millisecond)
@@ -116,6 +98,8 @@ func main() {
 
 	var pgConsumers []*ads.StreamConsumer
 	var chConsumers []*ads.StreamConsumer
+	var brokerConsumers []*ads.BrokerStreamConsumer
+	var brokerReconcile *ads.BrokerReconcileWorker
 	var syncWorkers []*ads.SyncWorker
 
 	for i, rdb := range rdbs {
@@ -123,7 +107,7 @@ func main() {
 
 		sw := ads.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond)
 		syncWorkers = append(syncWorkers, sw)
-		sw.Start(procCtx)
+		sw.Start(syncCtx)
 
 		pc := ads.NewStreamConsumer(
 			pgStore,
@@ -144,7 +128,7 @@ func main() {
 		pc.SetLogger(appLogger)
 		pc.SetAuditLogSampleMask(cfg.AuditLogSampleMask)
 		pgConsumers = append(pgConsumers, pc)
-		pc.Start(procCtx)
+		pc.Start(consumerCtx)
 
 		cc := ads.NewStreamConsumer(
 			chStore,
@@ -165,7 +149,7 @@ func main() {
 		cc.SetLogger(appLogger)
 		cc.SetAuditLogSampleMask(cfg.AuditLogSampleMask)
 		chConsumers = append(chConsumers, cc)
-		cc.Start(procCtx)
+		cc.Start(consumerCtx)
 
 		fc := ads.NewStreamConsumer(
 			chStore,
@@ -186,7 +170,74 @@ func main() {
 		fc.SetLogger(appLogger)
 		fc.SetAuditLogSampleMask(cfg.AuditLogSampleMask)
 		chConsumers = append(chConsumers, fc)
-		fc.Start(procCtx)
+		fc.Start(consumerCtx)
+	}
+
+	if cfg.BrokerEnabled() {
+		brokerRedisURL := cfg.Broker.RedisURL
+		if brokerRedisURL == "" && len(cfg.RedisAddrs) > 0 {
+			brokerRedisURL = "redis://" + cfg.RedisAddrs[0] + "/0"
+		}
+		brokerBase := ads.BrokerConsumerConfig{
+			BrokerAddr: cfg.Broker.URL,
+			RedisURL:   brokerRedisURL,
+			Topic:      cfg.Broker.Topic,
+			BatchSize:  cfg.EventBatchSize,
+			FlushInt:   time.Duration(cfg.EventFlushMs) * time.Millisecond,
+			MaxBytes:   uint32(cfg.Broker.MaxBytes),
+			Timeout:    time.Duration(cfg.Broker.TimeoutMs) * time.Millisecond,
+			ShadowMode: cfg.Broker.ShadowMode,
+		}
+		partCount := cfg.Broker.PartitionCount
+		if partCount <= 0 {
+			partCount = 1
+		}
+		writeTimeout := time.Duration(cfg.WriteTimeoutMs) * time.Millisecond
+		retryInit := time.Duration(cfg.RetryInitialWaitMs) * time.Millisecond
+		retryMax := time.Duration(cfg.RetryMaxWaitMs) * time.Millisecond
+
+		for p := 0; p < partCount; p++ {
+			pgBrokerCfg := brokerBase
+			pgBrokerCfg.Partition = uint16(p)
+			pgBrokerCfg.Group = cfg.RedisGroupName + "_pg_broker"
+			pgBroker := ads.NewBrokerStreamConsumer(pgStore, pgBrokerCfg, writeTimeout, retryInit, retryMax, cfg.MaxRetries)
+			pgBroker.SetLogger(appLogger)
+			brokerConsumers = append(brokerConsumers, pgBroker)
+			pgBroker.Start(consumerCtx)
+
+			chBrokerCfg := brokerBase
+			chBrokerCfg.Partition = uint16(p)
+			chBrokerCfg.Group = cfg.RedisGroupName + "_ch_broker"
+			chBrokerCfg.BatchSize = cfg.CHBatchSize
+			chBrokerCfg.FlushInt = time.Duration(cfg.CHFlushIntervalMs) * time.Millisecond
+			chBroker := ads.NewBrokerStreamConsumer(chStore, chBrokerCfg, writeTimeout, retryInit, retryMax, cfg.MaxRetries)
+			chBroker.SetLogger(appLogger)
+			brokerConsumers = append(brokerConsumers, chBroker)
+			chBroker.Start(consumerCtx)
+		}
+
+		if len(rdbs) > 0 {
+			brokerReconcile = ads.NewBrokerReconcileWorker(ads.BrokerReconcileConfig{
+				BrokerAddr:          cfg.Broker.URL,
+				BrokerRedis:         brokerRedisURL,
+				Topic:               cfg.Broker.Topic,
+				PartitionCount:      partCount,
+				BrokerGroup:         cfg.RedisGroupName + "_pg_broker",
+				StreamName:          cfg.RedisStreamName,
+				Interval:            time.Duration(cfg.Broker.ReconcileIntervalMs) * time.Millisecond,
+				DivergenceThreshold: cfg.Broker.DivergenceThreshold,
+			}, rdbs)
+			brokerReconcile.Start(consumerCtx)
+		}
+
+		slog.Info("broker ingest bridge enabled",
+			"broker", cfg.Broker.URL,
+			"topic", cfg.Broker.Topic,
+			"partitions", partCount,
+			"shadow_mode", cfg.Broker.ShadowMode,
+			"pg_group", cfg.RedisGroupName+"_pg_broker",
+			"ch_group", cfg.RedisGroupName+"_ch_broker",
+		)
 	}
 
 	slog.Info("starting ad-event-processor worker",
@@ -247,7 +298,14 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), time.Duration(cfg.Lifecycle.ShutdownTimeoutMs)*time.Millisecond)
 	defer shutdownCancel()
 
-	procCancel()
+	consumerCancel()
+
+	for _, bc := range brokerConsumers {
+		bc.Close()
+	}
+	if brokerReconcile != nil {
+		brokerReconcile.Close()
+	}
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		slog.Error("processor server shutdown failed", "error", err)
@@ -255,6 +313,17 @@ func main() {
 
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Duration(cfg.Lifecycle.WaitTimeoutMs)*time.Millisecond)
 	defer waitCancel()
+
+	for _, bc := range brokerConsumers {
+		if err := bc.Wait(waitCtx); err != nil {
+			slog.Error("broker consumer wait failed", "error", err)
+		}
+	}
+	if brokerReconcile != nil {
+		if err := brokerReconcile.Wait(waitCtx); err != nil {
+			slog.Error("broker reconcile wait failed", "error", err)
+		}
+	}
 
 	for _, pc := range pgConsumers {
 		pc.Close()
@@ -272,6 +341,7 @@ func main() {
 	}
 	chStore.Close()
 
+	syncCancel()
 	for i, sw := range syncWorkers {
 		if err := sw.Wait(waitCtx); err != nil {
 			slog.Error("sync worker wait failed", "shard", i, "error", err)

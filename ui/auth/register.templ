@@ -1,0 +1,58 @@
+package authpage
+
+import (
+	"espx/ui/components"
+)
+
+templ Register(page RegisterPage) {
+	@components.AuthShell("Register", page.CSRF, registerBody(page))
+}
+
+templ registerBody(page RegisterPage) {
+	<div class="auth-wrap stack">
+		@components.AuthNav("register")
+		<div class="auth-panel panel stack">
+			<div>
+				<h1 class="auth-title">Register</h1>
+				<p class="muted auth-subtitle">Create a manager account</p>
+			</div>
+			if page.Error != "" {
+				<div class="alert alert-error" role="alert">{ page.Error }</div>
+			}
+			<form
+				id="register-form"
+				class="stack"
+				method="post"
+				action="/admin/register"
+				hx-post="/admin/register"
+				hx-target="#register-errors"
+				hx-swap="innerHTML"
+				autocomplete="off"
+			>
+				<div id="register-errors"></div>
+				<div>
+					<label class="label" for="reg-email">Email</label>
+					<input class="input" id="reg-email" name="email" type="email" value="" autocomplete="off" required/>
+				</div>
+				<div>
+					<label class="label" for="reg-password">Password</label>
+					<input class="input" id="reg-password" name="password" type="password" value="" autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" required minlength="8"/>
+				</div>
+				<div>
+					<label class="label" for="reg-password-confirm">Confirm password</label>
+					<input class="input" id="reg-password-confirm" name="password_confirm" type="password" value="" autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" required minlength="8"/>
+				</div>
+				<button class="btn btn-primary" type="submit" id="register-submit">
+					Register
+				</button>
+			</form>
+			@components.AuthSwitch("register")
+		</div>
+	</div>
+}
+
+templ RegisterErrors(errs FieldErrors) {
+	if errs.General != "" {
+		@components.ErrorAlert(errs.General)
+	}
+}

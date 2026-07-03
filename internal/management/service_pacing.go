@@ -9,6 +9,7 @@ import (
 
 	"espx/internal/ads"
 	"espx/internal/ads/db"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -22,7 +23,7 @@ func (s *Service) ClosedLoopPacingController(ctx context.Context, syncWorkers []
 		sw.SyncAll(opCtx)
 	}
 
-	return pgx.BeginFunc(opCtx, s.pool, func(tx pgx.Tx) error {
+	return pgx.BeginFunc(opCtx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 		rows, err := q.GetAllActiveCampaignsWithStats(ctx)
 		if err != nil {

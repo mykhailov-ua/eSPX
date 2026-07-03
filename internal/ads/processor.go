@@ -178,7 +178,7 @@ func (p *StreamConsumer) Wait(ctx context.Context) error {
 	}
 }
 
-// workerConsumerID returns the Redis consumer name for a worker index.
+// workerConsumerID names each worker in the consumer group so PEL recovery stays shard-local.
 func (p *StreamConsumer) workerConsumerID(workerIdx int) string {
 	return fmt.Sprintf("%s-w%d", p.consumerID, workerIdx)
 }
@@ -619,7 +619,7 @@ func (p *StreamConsumer) moveToDLQ(ctx context.Context, batch []*domain.Event, m
 	return nil
 }
 
-// parseMessage converts a Redis stream entry into a pooled domain event.
+// parseMessage rebuilds pooled domain events from stream entries for batched store writes.
 func (p *StreamConsumer) parseMessage(id string, values map[string]interface{}) *domain.Event {
 	evt := domain.EventPool.Get().(*domain.Event)
 	evt.Reset()
@@ -649,12 +649,14 @@ func (p *StreamConsumer) parseMessage(id string, values map[string]interface{}) 
 			evt.StringBuffer = append(evt.StringBuffer, pbEvt.Ua...)
 			evt.UA = unsafeString(evt.StringBuffer[len(evt.StringBuffer)-len(pbEvt.Ua):])
 
-			if len(pbEvt.CampaignId) == 16 {
-				copy(evt.CampaignID[:], pbEvt.CampaignId)
-			} else {
-				evt.CampaignID, _ = uuid.ParseBytes(pbEvt.CampaignId)
-			}
+			_ = ParseUUID(pbEvt.CampaignId, &evt.CampaignID)
 			evt.Payload = append(evt.Payload[:0], pbEvt.Payload...)
+			if len(pbEvt.FraudReason) > 0 {
+				evt.StringBuffer = append(evt.StringBuffer, pbEvt.FraudReason...)
+				evt.FraudReason = unsafeString(evt.StringBuffer[len(evt.StringBuffer)-len(pbEvt.FraudReason):])
+			}
+			evt.FraudScore = pbEvt.FraudScore
+			evt.GhostEvent = pbEvt.GhostEvent
 			if pbEvt.CreatedAtUnix > 0 {
 				evt.CreatedAt = time.Unix(pbEvt.CreatedAtUnix, 0)
 			}
@@ -688,6 +690,14 @@ func (p *StreamConsumer) parseMessage(id string, values map[string]interface{}) 
 		if v, ok := values["fraud_reason"].(string); ok {
 			evt.FraudReason = v
 		}
+		if v, ok := values["fraud_score"].(string); ok {
+			if n, err := strconv.ParseUint(v, 10, 32); err == nil {
+				evt.FraudScore = uint32(n)
+			}
+		}
+		if v, ok := values["ghost_event"].(string); ok {
+			evt.GhostEvent = v == "1" || v == "true"
+		}
 	}
 
 	if evt.CreatedAt.IsZero() {
@@ -705,7 +715,7 @@ func (p *StreamConsumer) parseMessage(id string, values map[string]interface{}) 
 	return evt
 }
 
-// firstN returns up to n message ids for debug logging.
+// firstN caps stream id lists in debug logs during large batch failures.
 func firstN(ids []string, n int) []string {
 	if len(ids) <= n {
 		return ids
@@ -746,7 +756,7 @@ func (p *StreamConsumer) flushBatch(ctx context.Context, batch []*domain.Event, 
 			}
 		}
 		for _, e := range batch {
-			writeAuditLog(p.logger, &p.auditLogSeq, p.auditLogSampleMask, workerIdx, e.CreatedAt.Unix(), e.CampaignID, e.ClickID, e.Type)
+			writeAuditLog(p.logger, &p.auditLogSeq, p.auditLogSampleMask, workerIdx, e)
 		}
 	}
 

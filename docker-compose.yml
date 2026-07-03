@@ -1,6 +1,43 @@
 # eSPX local stack. Default NET_MODE=host binds services on loopback ports documented in docs/development.md.
 # Ingestion (trackers + nginx) and observability use host networking; stateful stores sit on the database network.
 
+x-redis-replica: &redis-replica
+  image: redis:${REDIS_VERSION}
+  env_file:
+    - .env
+  networks:
+    - database
+  deploy:
+    resources:
+      limits:
+        memory: 512M
+  healthcheck:
+    test: ["CMD", "redis-cli", "-p", "6379", "-a", "${REDIS_PASSWORD}", "ping"]
+    interval: ${HEALTHCHECK_INTERVAL}
+    timeout: ${HEALTHCHECK_TIMEOUT}
+    retries: ${HEALTHCHECK_RETRIES}
+
+x-redis-sentinel: &redis-sentinel
+  image: redis:${REDIS_VERSION}
+  env_file:
+    - .env
+  environment:
+    - REDIS_SHARD_COUNT=4
+  entrypoint: ["/bin/sh", "/sentinel-entrypoint.sh"]
+  volumes:
+    - ./deploy/redis/sentinel-entrypoint.sh:/sentinel-entrypoint.sh:ro
+  networks:
+    - database
+  deploy:
+    resources:
+      limits:
+        memory: 256M
+  healthcheck:
+    test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+    interval: ${HEALTHCHECK_INTERVAL}
+    timeout: ${HEALTHCHECK_TIMEOUT}
+    retries: ${HEALTHCHECK_RETRIES}
+
 services:
   # Ingestion plane: stateless gnet trackers, one process per port (8181-8184)
   # SO_REUSEPORT is configured in the binary; host mode avoids Docker NAT on the hot path.
@@ -44,10 +81,6 @@ services:
       redis-2:
         condition: service_healthy
       redis-3:
-        condition: service_healthy
-      redis-4:
-        condition: service_healthy
-      redis-5:
         condition: service_healthy
     logging:
       driver: "json-file"
@@ -97,10 +130,6 @@ services:
         condition: service_healthy
       redis-3:
         condition: service_healthy
-      redis-4:
-        condition: service_healthy
-      redis-5:
-        condition: service_healthy
     logging:
       driver: "json-file"
       options:
@@ -148,10 +177,6 @@ services:
       redis-2:
         condition: service_healthy
       redis-3:
-        condition: service_healthy
-      redis-4:
-        condition: service_healthy
-      redis-5:
         condition: service_healthy
     logging:
       driver: "json-file"
@@ -201,10 +226,6 @@ services:
         condition: service_healthy
       redis-3:
         condition: service_healthy
-      redis-4:
-        condition: service_healthy
-      redis-5:
-        condition: service_healthy
     logging:
       driver: "json-file"
       options:
@@ -220,7 +241,12 @@ services:
       - REDIS_HOST=127.0.0.1
       - REDIS_PORT=6479
       - REDIS_PASS=${REDIS_PASSWORD}
-      - REDIS_ADDRS=127.0.0.1:6479,127.0.0.1:6480,127.0.0.1:6481,127.0.0.1:6482,127.0.0.1:6483,127.0.0.1:6484
+      - REDIS_ADDRS=127.0.0.1:6479,127.0.0.1:6480,127.0.0.1:6481,127.0.0.1:6482
+      - REDIS_SENTINEL_ADDRS=127.0.0.1:26379,127.0.0.1:26380,127.0.0.1:26381
+      - REDIS_MASTER_NAMES=espx-shard-0,espx-shard-1,espx-shard-2,espx-shard-3
+      - EDGE_BODY_MODE=full
+      - EDGE_MAX_BODY_BYTES=8192
+      - EDGE_BL_STALE_SEC=30
     volumes:
       - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./deploy/nginx/nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
@@ -250,6 +276,37 @@ services:
         max-file: "3"
 
 
+  # XDP L4 filter + BPF blacklist sync (optional: docker compose --profile xdp up -d edge-xdp).
+  edge-xdp:
+    profiles: ["xdp"]
+    build:
+      context: .
+      dockerfile: deploy/edge-xdp/Dockerfile
+    privileged: true
+    network_mode: "${NET_MODE:-host}"
+    volumes:
+      - /sys/fs/bpf:/sys/fs/bpf:rw
+      - /lib/modules:/lib/modules:ro
+    environment:
+      - REDIS_ADDRS=127.0.0.1:6479,127.0.0.1:6480,127.0.0.1:6481,127.0.0.1:6482
+      - REDIS_PASS=${REDIS_PASSWORD}
+      - INGRESS_INTERFACE=${INGRESS_INTERFACE:-eth0}
+      - XDP_MODE=${XDP_MODE:-generic}
+      - BPF_PIN_DIR=/sys/fs/bpf/espx
+      - BPF_BLOCKLIST_MAP=/sys/fs/bpf/espx/blocklist_v4
+      - BPF_ALLOWLIST_MAP=/sys/fs/bpf/espx/allow_v4
+      - SYNC_INTERVAL=5s
+    depends_on:
+      redis-0:
+        condition: service_healthy
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+
   # Settlement: Redis stream consumer groups -> Postgres (ledger/stats) + ClickHouse (telemetry).
   processor:
     build:
@@ -263,13 +320,18 @@ services:
       - espx_logs:/var/log/espx:rw
     environment:
       - DB_DSN=${DB_DSN}
-      - REDIS_ADDRS=127.0.0.1:6479,127.0.0.1:6480,127.0.0.1:6481,127.0.0.1:6482,127.0.0.1:6483,127.0.0.1:6484
+      - REDIS_ADDRS=127.0.0.1:6479,127.0.0.1:6480,127.0.0.1:6481,127.0.0.1:6482
       - CH_DSN=${CH_DSN}
       - PROCESSOR_PORT=${PROCESSOR_PORT:-8186}
       - DB_PROCESSOR_MAX_CONNS=${DB_PROCESSOR_MAX_CONNS}
       - ENV=${ENV:-development}
       - GOMEMLIMIT=1500MiB  # processor holds larger in-flight batches; needs wider heap
       - GOGC=100            # standard GC pace; processor is not latency-critical
+      - BROKER_URL=127.0.0.1:9092
+      - BROKER_REDIS_URL=redis://127.0.0.1:6490/0
+      - BROKER_TOPIC=tracker-logs
+      - BROKER_PARTITION_COUNT=6
+      - BROKER_SHADOW_MODE=1
     healthcheck:
       test: ["CMD", "/processor", "--health-probe", "http://127.0.0.1:8186/health"]
       interval: 10s
@@ -287,6 +349,109 @@ services:
       redis-0:
         condition: service_healthy
       clickhouse:
+        condition: service_healthy
+      broker:
+        condition: service_started
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+
+  # Broker coordination Redis (leader election + offsets). Separate from ad shards 6479-6482.
+  broker-redis:
+    image: redis:${REDIS_VERSION}
+    env_file:
+      - .env
+    ports:
+      - "6490:6379"
+    command: ["redis-server", "--port", "6379", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - broker_redis_data:/data
+    networks:
+      - database
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: ${HEALTHCHECK_INTERVAL}
+      timeout: ${HEALTHCHECK_TIMEOUT}
+      retries: ${HEALTHCHECK_RETRIES}
+
+
+  # mmap log broker: async ingest buffer between tracker audit log and processor settlement.
+  broker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint:
+      - "/broker"
+      - "-addr"
+      - "127.0.0.1:9092"
+      - "-health-addr"
+      - "127.0.0.1:8081"
+      - "-data-dir"
+      - "/data"
+      - "-node-id"
+      - "broker-1"
+      - "-redis-url"
+      - "redis://127.0.0.1:6490/0"
+    network_mode: "${NET_MODE:-host}"
+    volumes:
+      - broker_data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "/broker", "--health-probe", "http://127.0.0.1:8081/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: always
+    depends_on:
+      broker-redis:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+
+  # Tails tracker mmap audit log and produces AdStreamEvent records to broker partitions.
+  log-shipper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint:
+      - "/log-shipper"
+      - "-broker"
+      - "127.0.0.1:9092"
+      - "-redis-url"
+      - "redis://127.0.0.1:6490/0"
+      - "-log-file"
+      - "/var/log/espx/active.log"
+      - "-topic"
+      - "tracker-logs"
+      - "-partitions"
+      - "6"
+    network_mode: "${NET_MODE:-host}"
+    volumes:
+      - espx_logs:/var/log/espx:ro
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    restart: always
+    depends_on:
+      broker:
+        condition: service_healthy
+      tracker-0:
         condition: service_healthy
     logging:
       driver: "json-file"
@@ -338,6 +503,10 @@ services:
       - MANAGEMENT_PORT=8188
       - AUTH_SERVER_PORT=51051
       - AUTH_SERVER_HOST=127.0.0.1
+      - SETTLEMENT_SERVER_PORT=51053
+      - PAYMENT_SERVER_HOST=127.0.0.1
+      - PAYMENT_SERVER_PORT=51052
+      - PAYMENT_INTERNAL_TOKEN=${PAYMENT_INTERNAL_TOKEN}
       - DB_DSN=${DB_DSN}
       - REDIS_ADDRS=127.0.0.1:6479
     deploy:
@@ -352,6 +521,104 @@ services:
         condition: service_healthy
       redis-0:
         condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+
+  # Payment: isolated process for gRPC intents, Stripe webhooks, and settlement outbox.
+  # Host networking keeps webhook and settlement dial targets on 127.0.0.1 without bridge NAT.
+  # depends_on management: settlement gRPC must be up before outbox worker can credit ledgers.
+  payment:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/payment"]
+    network_mode: "${NET_MODE:-host}"
+    env_file:
+      - .env
+    environment:
+      - PAYMENT_SERVER_PORT=51052
+      - PAYMENT_WEBHOOK_PORT=8187
+      - SETTLEMENT_SERVER_PORT=51053
+      - PAYMENT_INTERNAL_TOKEN=${PAYMENT_INTERNAL_TOKEN}
+      - SETTLEMENT_INTERNAL_TOKEN=${SETTLEMENT_INTERNAL_TOKEN}
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+      - DB_DSN=${DB_DSN}
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    restart: always
+    depends_on:
+      management:
+        condition: service_started
+      db:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+  # Billing: gRPC invoice generation and ledger drift checks for financial reporting.
+  billing:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/billing"]
+    network_mode: "${NET_MODE:-host}"
+    env_file:
+      - .env
+    environment:
+      - BILLING_SERVER_PORT=51054
+      - BILLING_INTERNAL_TOKEN=${BILLING_INTERNAL_TOKEN}
+      - DB_DSN=${DB_DSN}
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+  # IVT detector: ClickHouse anomaly scan -> management blacklist:fraud outbox enqueue.
+  ivt-detector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/ivt-detector"]
+    network_mode: "${NET_MODE:-host}"
+    env_file:
+      - .env
+    environment:
+      - DB_DSN=${DB_DSN}
+      - CH_DSN=${CH_DSN}
+      - ADMIN_API_KEY=${ADMIN_API_KEY}
+      - MANAGEMENT_URL=${MANAGEMENT_URL:-http://127.0.0.1:8188}
+      - IVT_DETECTOR_SCAN_INTERVAL_MS=${IVT_DETECTOR_SCAN_INTERVAL_MS:-300000}
+      - IVT_DETECTOR_OUTBOX_PENDING_LIMIT=${IVT_DETECTOR_OUTBOX_PENDING_LIMIT:-500}
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      management:
+        condition: service_started
     logging:
       driver: "json-file"
       options:
@@ -397,7 +664,7 @@ services:
         max-file: "3"
 
 
-  # Redis shards (client-side StaticSlotSharder, ports 6479-6484)
+  # Redis shards (client-side StaticSlotSharder, ports 6479-6482)
   # AOF everysec + noeviction: budget/pacing keys must not be silently dropped under memory pressure.
   redis-0:
     image: redis:${REDIS_VERSION}
@@ -491,51 +758,83 @@ services:
       timeout: ${HEALTHCHECK_TIMEOUT}
       retries: ${HEALTHCHECK_RETRIES}
 
-  redis-4:
-    image: redis:${REDIS_VERSION}
-    env_file:
-      - .env
-    ports:
-      - "6483:6379"
+  redis-0-replica:
+    <<: *redis-replica
     command: ["redis-server", "--port", "6379", "--requirepass", "${REDIS_PASSWORD}",
+              "--masterauth", "${REDIS_PASSWORD}", "--replicaof", "redis-0", "6379",
               "--appendonly", "yes", "--appendfsync", "everysec",
               "--maxmemory-policy", "noeviction"]
     volumes:
-      - redis_4_data:/data
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-    networks:
-      - database
-    healthcheck:
-      test: ["CMD", "redis-cli", "-p", "6379", "-a", "${REDIS_PASSWORD}", "ping"]
-      interval: ${HEALTHCHECK_INTERVAL}
-      timeout: ${HEALTHCHECK_TIMEOUT}
-      retries: ${HEALTHCHECK_RETRIES}
+      - redis_0_replica_data:/data
+    depends_on:
+      redis-0:
+        condition: service_healthy
 
-  redis-5:
-    image: redis:${REDIS_VERSION}
-    env_file:
-      - .env
-    ports:
-      - "6484:6379"
+  redis-1-replica:
+    <<: *redis-replica
     command: ["redis-server", "--port", "6379", "--requirepass", "${REDIS_PASSWORD}",
+              "--masterauth", "${REDIS_PASSWORD}", "--replicaof", "redis-1", "6379",
               "--appendonly", "yes", "--appendfsync", "everysec",
               "--maxmemory-policy", "noeviction"]
     volumes:
-      - redis_5_data:/data
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-    networks:
-      - database
-    healthcheck:
-      test: ["CMD", "redis-cli", "-p", "6379", "-a", "${REDIS_PASSWORD}", "ping"]
-      interval: ${HEALTHCHECK_INTERVAL}
-      timeout: ${HEALTHCHECK_TIMEOUT}
-      retries: ${HEALTHCHECK_RETRIES}
+      - redis_1_replica_data:/data
+    depends_on:
+      redis-1:
+        condition: service_healthy
+
+  redis-2-replica:
+    <<: *redis-replica
+    command: ["redis-server", "--port", "6379", "--requirepass", "${REDIS_PASSWORD}",
+              "--masterauth", "${REDIS_PASSWORD}", "--replicaof", "redis-2", "6379",
+              "--appendonly", "yes", "--appendfsync", "everysec",
+              "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis_2_replica_data:/data
+    depends_on:
+      redis-2:
+        condition: service_healthy
+
+  redis-3-replica:
+    <<: *redis-replica
+    command: ["redis-server", "--port", "6379", "--requirepass", "${REDIS_PASSWORD}",
+              "--masterauth", "${REDIS_PASSWORD}", "--replicaof", "redis-3", "6379",
+              "--appendonly", "yes", "--appendfsync", "everysec",
+              "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis_3_replica_data:/data
+    depends_on:
+      redis-3:
+        condition: service_healthy
+
+  sentinel-0:
+    <<: *redis-sentinel
+    ports:
+      - "26379:26379"
+    depends_on:
+      redis-0: {condition: service_healthy}
+      redis-1: {condition: service_healthy}
+      redis-2: {condition: service_healthy}
+      redis-3: {condition: service_healthy}
+      redis-0-replica: {condition: service_healthy}
+      redis-1-replica: {condition: service_healthy}
+      redis-2-replica: {condition: service_healthy}
+      redis-3-replica: {condition: service_healthy}
+
+  sentinel-1:
+    <<: *redis-sentinel
+    ports:
+      - "26380:26379"
+    depends_on:
+      sentinel-0:
+        condition: service_healthy
+
+  sentinel-2:
+    <<: *redis-sentinel
+    ports:
+      - "26381:26379"
+    depends_on:
+      sentinel-0:
+        condition: service_healthy
 
   # Columnar event store. Processor batches inserts; insert_deduplicate handles at-least-once from streams.
   clickhouse:
@@ -554,6 +853,7 @@ services:
       - ./deploy/clickhouse/config.xml:/etc/clickhouse-server/config.d/memory_limit.xml:ro
       - ./deploy/clickhouse/users.xml:/etc/clickhouse-server/users.d/custom_users.xml:ro
       - ./deploy/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./deploy/clickhouse/recon_materialized_views.sql:/docker-entrypoint-initdb.d/recon_materialized_views.sql:ro
     deploy:
       resources:
         limits:
@@ -654,22 +954,29 @@ services:
         max-size: "100m"
         max-file: "3"
 
-  # Off-path rsync of rotated .log.zst.ready segments to remote storage. Profile "tools" only.
+  # Off-path upload of rotated .log.zst.ready segments to S3. Profile "tools" only.
   log-evacuator:
     build:
       context: .
       dockerfile: Dockerfile.log-evacuator
     volumes:
       - espx_logs:/var/log/espx:rw
-      - ${STORAGE_BOX_SSH_KEY_PATH:-~/.ssh/id_rsa}:/root/.ssh/id_rsa:ro
+      - log_evacuator_state:/var/lib/espx:rw
     environment:
-      - LOG_DIR=/var/log/espx
-      - STORAGE_BOX_HOST=${STORAGE_BOX_HOST}
-      - STORAGE_BOX_USER=${STORAGE_BOX_USER}
-      - STORAGE_BOX_PATH=${STORAGE_BOX_PATH:-/}
-      - RSYNC_BWLIMIT=${RSYNC_BWLIMIT:-5000}
+      - LOG_EVACUATOR_LOG_DIR=/var/log/espx
+      - LOG_EVACUATOR_CHECKPOINT_PATH=/var/lib/espx/log-evacuator.checkpoint
+      - LOG_EVACUATOR_S3_REGION=${LOG_EVACUATOR_S3_REGION:-${AWS_REGION}}
+      - LOG_EVACUATOR_S3_BUCKET=${LOG_EVACUATOR_S3_BUCKET}
+      - LOG_EVACUATOR_S3_PREFIX=${LOG_EVACUATOR_S3_PREFIX:-audit-logs}
+      - LOG_EVACUATOR_S3_ENDPOINT=${LOG_EVACUATOR_S3_ENDPOINT:-}
+      - LOG_EVACUATOR_S3_FORCE_PATH_STYLE=${LOG_EVACUATOR_S3_FORCE_PATH_STYLE:-false}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - LOG_EVACUATOR_SCAN_INTERVAL_MS=${LOG_EVACUATOR_SCAN_INTERVAL_MS:-5000}
+      - LOG_EVACUATOR_MULTIPART_THRESHOLD_BYTES=${LOG_EVACUATOR_MULTIPART_THRESHOLD_BYTES:-8388608}
     profiles:
       - tools
+    restart: unless-stopped
     logging:
       driver: "json-file"
       options:
@@ -689,6 +996,11 @@ volumes:
   redis_1_data:
   redis_2_data:
   redis_3_data:
-  redis_4_data:
-  redis_5_data:
+  redis_0_replica_data:
+  redis_1_replica_data:
+  redis_2_replica_data:
+  redis_3_replica_data:
   espx_logs:         # shared mmap audit logs from all trackers/processor
+  log_evacuator_state: # checkpoint file for log-evacuator resume after crash
+  broker_data:       # broker mmap segments per topic partition
+  broker_redis_data: # broker HA coordination (leader election, offsets, topic registry)

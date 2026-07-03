@@ -11,6 +11,7 @@ import (
 	"espx/internal/ads/db"
 	"espx/internal/config"
 	"espx/internal/database"
+
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
@@ -101,6 +102,15 @@ func (c *failingRedisClient) Pipelined(ctx context.Context, fn func(redis.Pipeli
 		return nil, errors.New("simulated redis pipeline failure")
 	}
 	return failPipe.Pipeliner.Exec(ctx)
+}
+
+func (c *failingRedisClient) Publish(ctx context.Context, channel string, message interface{}) *redis.IntCmd {
+	if msgStr, ok := message.(string); ok && msgStr == c.failCampaignID {
+		cmd := redis.NewIntCmd(ctx)
+		cmd.SetErr(errors.New("simulated redis publish failure"))
+		return cmd
+	}
+	return c.UniversalClient.Publish(ctx, channel, message)
 }
 
 type failingPipeliner struct {

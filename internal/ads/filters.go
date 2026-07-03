@@ -44,7 +44,7 @@ var bufPool = sync.Pool{
 // hexChars is the lookup table for allocation-free UUID string formatting.
 const hexChars = "0123456789abcdef"
 
-// appendUUID formats a UUID into dst without fmt or strconv allocations.
+// appendUUID writes canonical UUID text into reusable buffers to avoid fmt on the filter hot path.
 func appendUUID(dst []byte, u uuid.UUID) []byte {
 	return append(dst,
 		hexChars[u[0]>>4], hexChars[u[0]&0xf],
@@ -94,10 +94,8 @@ func NewFraudFilter(geo GeoProvider) *FraudFilter {
 func (f *FraudFilter) Check(ctx context.Context, evt *domain.Event) error {
 	isAnon, err := f.geo.IsAnonymous(evt.IP)
 	if err == nil && isAnon {
-		evt.FraudReason = "datacenter_ip"
-		return ErrFraudDetected
+		addFraudSignal(evt, FraudReasonDatacenterIP)
 	}
-
 	return nil
 }
 
@@ -129,8 +127,18 @@ func (f *GeoFilter) Check(ctx context.Context, evt *domain.Event) error {
 		return nil
 	}
 
-	country, err := f.geo.GetCountry(evt.IP)
-	if err != nil {
+	var country string
+	if evt.IngestGeoResolved {
+		country = evt.GeoCountry
+	} else {
+		var err error
+		country, err = f.geo.GetCountry(evt.IP)
+		if err != nil {
+			filterGeoLookupErrors.Inc()
+			return nil
+		}
+	}
+	if country == "" {
 		filterGeoLookupErrors.Inc()
 		return nil
 	}
@@ -189,8 +197,9 @@ type EventFilter interface {
 
 // FilterEngine runs an ordered filter chain under one shared deadline budget.
 type FilterEngine struct {
-	filters []EventFilter
-	timeout time.Duration
+	filters  []EventFilter
+	timeout  time.Duration
+	registry domain.CampaignRegistry
 }
 
 // NewFilterEngine composes filters with a monotonic deadline enforced between checks.
@@ -198,18 +207,68 @@ func NewFilterEngine(timeout time.Duration, filters ...EventFilter) *FilterEngin
 	return &FilterEngine{filters: filters, timeout: timeout}
 }
 
+// SetRegistry attaches the campaign catalog used for per-campaign fraud tier mapping.
+func (e *FilterEngine) SetRegistry(registry domain.CampaignRegistry) {
+	e.registry = registry
+}
+
 // Check runs filters in order until one rejects or the deadline expires.
+// Production tracker stores the monotonic deadline on evt.FilterDeadlineMono (zero allocs).
 func (e *FilterEngine) Check(ctx context.Context, evt *domain.Event) error {
-	ctx = attachFilterDeadline(ctx, e.timeout)
+	if e.timeout > 0 && evt != nil {
+		evt.FilterDeadlineMono = monotonicNano() + e.timeout.Nanoseconds()
+	}
+	acc := attachFraudAccumulator(evt)
+
+	var retErr error
 	for _, f := range e.filters {
-		if filterDeadlineExceeded(ctx) {
-			return context.DeadlineExceeded
+		if filterDeadlineExceededEvt(evt, ctx) {
+			retErr = context.DeadlineExceeded
+			break
+		}
+		if _, ok := f.(*UnifiedFilter); ok && acc.shouldShortCircuitFraudBudget() {
+			var camp *domain.Campaign
+			if e.registry != nil && evt != nil {
+				camp, _ = e.registry.GetCampaign(evt.CampaignID)
+			}
+			layer, err := applyFraudLayerDecision(evt, acc, camp)
+			if err != nil {
+				retErr = err
+				break
+			}
+			if layer == FraudLayerL1Reject {
+				retErr = ErrFraudDetected
+				break
+			}
+			if layer == FraudLayerL2Shadow {
+				break
+			}
+			continue
 		}
 		if err := f.Check(ctx, evt); err != nil {
-			return err
+			retErr = err
+			break
 		}
 	}
-	return nil
+
+	if retErr == nil {
+		var camp *domain.Campaign
+		if e.registry != nil && evt != nil {
+			camp, _ = e.registry.GetCampaign(evt.CampaignID)
+		}
+		layer, err := applyFraudLayerDecision(evt, acc, camp)
+		if err != nil {
+			retErr = err
+		} else if layer == FraudLayerL1Reject {
+			retErr = ErrFraudDetected
+		}
+	}
+
+	if evt != nil && evt.FilterDeadlineMono > 0 {
+		evt.FilterDeadlineMono = 0
+	}
+	releaseFraudAccumulator(evt, acc)
+	return retErr
 }
 
 // IPRateLimiter caps per-IP event rates to mitigate abuse on the track endpoint.

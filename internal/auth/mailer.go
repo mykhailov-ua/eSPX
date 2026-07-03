@@ -10,18 +10,28 @@ import (
 
 // Mailer delivers user-facing security, billing, and operational notifications without coupling auth to a specific email provider.
 type Mailer interface {
+	// SendPasswordChangedEmail alerts the owner because a stolen session may have initiated the change.
 	SendPasswordChangedEmail(ctx context.Context, toEmail, clientIP, userAgent string) error
 
+	// SendNewIPLoginEmail gives the owner a chance to react before further abuse from a new location.
 	SendNewIPLoginEmail(ctx context.Context, toEmail, clientIP, userAgent string) error
+	// SendAccountLockedEmail explains the lockout so users do not mistake it for an account deletion.
 	SendAccountLockedEmail(ctx context.Context, toEmail, clientIP, lockDuration string) error
+	// Send2FACodeEmail delivers an out-of-band factor because password alone is insufficient for step-up.
 	Send2FACodeEmail(ctx context.Context, toEmail, code string) error
 
+	// SendTopUpBalanceEmail confirms funds landed because billing disputes start from missing receipts.
 	SendTopUpBalanceEmail(ctx context.Context, toEmail, amount, currency string) error
+	// SendLowBalanceAlertEmail warns before delivery stops for prepaid accounts with thin runway.
 	SendLowBalanceAlertEmail(ctx context.Context, toEmail, currentBalance, remainingHours string) error
+	// SendMonthlyInvoiceEmail prompts review because spend reconciliation depends on timely statements.
 	SendMonthlyInvoiceEmail(ctx context.Context, toEmail, period, amount string) error
 
+	// SendCampaignDepletedEmail explains why delivery halted so budgets are not misread as platform faults.
 	SendCampaignDepletedEmail(ctx context.Context, toEmail, campaignName, campaignID string) error
+	// SendWeeklyPerformanceEmail surfaces trends without requiring dashboard access for every stakeholder.
 	SendWeeklyPerformanceEmail(ctx context.Context, toEmail, clicks, impressions, ctr string) error
+	// SendCreativeModerationEmail closes the loop because rejected creatives otherwise look stuck in review.
 	SendCreativeModerationEmail(ctx context.Context, toEmail, creativeID, status, reason string) error
 }
 

@@ -340,7 +340,7 @@ var deleteUserCmd = &cobra.Command{
 	},
 }
 
-// pgUUIDToGoogleUUID converts sqlc pgtype UUIDs into google/uuid for display and token minting.
+// pgUUIDToGoogleUUID maps sqlc UUIDs into google/uuid because CLI output and PASETO claims expect that type.
 func pgUUIDToGoogleUUID(p pgtype.UUID) uuid.UUID {
 	if !p.Valid {
 		return uuid.Nil
@@ -348,7 +348,7 @@ func pgUUIDToGoogleUUID(p pgtype.UUID) uuid.UUID {
 	return p.Bytes
 }
 
-// init wires user and token subcommands into the admin CLI.
+// init registers user commands because token minting and block/unblock belong in dev tooling, not gRPC auth.
 func init() {
 	createTokenCmd.Flags().String("email", "", "User email address")
 	createTokenCmd.Flags().Bool("auto-create", false, "Auto-create user if they do not exist")

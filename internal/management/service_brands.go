@@ -8,6 +8,8 @@ import (
 
 	"espx/internal/ads"
 	"espx/internal/ads/db"
+	"espx/pkg/cold"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -43,7 +45,7 @@ func (s *Service) CreateBrand(ctx context.Context, customerID uuid.UUID, name st
 		return uuid.Nil, err
 	}
 
-	q := db.New(s.pool)
+	q := db.New(s.GetPool())
 	_, err = q.GetCustomerByID(ctx, ads.ToUUID(customerID))
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("customer not found: %w", err)
@@ -63,7 +65,7 @@ func (s *Service) CreateBrand(ctx context.Context, customerID uuid.UUID, name st
 
 // GetBrandDTO loads a single brand for admin display and access checks.
 func (s *Service) GetBrandDTO(ctx context.Context, id uuid.UUID) (BrandDTO, error) {
-	q := db.New(s.pool)
+	q := db.New(s.GetPool())
 	b, err := q.GetBrand(ctx, ads.ToUUID(id))
 	if err != nil {
 		return BrandDTO{}, err
@@ -73,22 +75,18 @@ func (s *Service) GetBrandDTO(ctx context.Context, id uuid.UUID) (BrandDTO, erro
 
 // ListBrandsByCustomer returns all brands owned by a customer for the admin UI.
 func (s *Service) ListBrandsByCustomer(ctx context.Context, customerID uuid.UUID) ([]BrandDTO, error) {
-	q := db.New(s.pool)
+	q := db.New(s.GetPool())
 	rows, err := q.ListBrandsByCustomer(ctx, ads.ToUUID(customerID))
 	if err != nil {
 		return nil, err
 	}
 
-	res := make([]BrandDTO, len(rows))
-	for i, r := range rows {
-		res[i] = toBrandDTO(r)
-	}
-	return res, nil
+	return cold.MapSlice(rows, toBrandDTO), nil
 }
 
-// ConfigureBrandFcap updates brand-level frequency caps and notifies the hot path via outbox.
+// ConfigureBrandFcap updates brand-level frequency caps and notifies the hot path via cold.
 func (s *Service) ConfigureBrandFcap(ctx context.Context, brandID uuid.UUID, limit, window int32) error {
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 
 		brand, err := q.GetBrandForUpdate(ctx, ads.ToUUID(brandID))

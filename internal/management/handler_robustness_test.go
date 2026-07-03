@@ -11,6 +11,7 @@ import (
 
 	"espx/internal/config"
 	"espx/internal/database"
+
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 )
@@ -33,7 +34,7 @@ func TestManagementAPI_Robustness(t *testing.T) {
 
 	svc := NewService(pool, []redis.UniversalClient{rdb}, nil, cfg)
 	defer svc.Close()
-	h := NewHandler(svc, cfg, nil)
+	h := NewHandler(svc, cfg, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -87,7 +88,7 @@ func TestManagementAPI_Robustness(t *testing.T) {
 
 		badSvc := NewService(badPool, []redis.UniversalClient{rdb}, nil, cfg)
 		defer badSvc.Close()
-		badH := NewHandler(badSvc, cfg, nil)
+		badH := NewHandler(badSvc, cfg, nil, nil, nil)
 		badMux := http.NewServeMux()
 		badH.RegisterRoutes(badMux)
 

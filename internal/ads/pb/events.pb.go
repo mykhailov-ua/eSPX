@@ -2,7 +2,9 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        (unknown)
-// source: api/proto/events.proto
+// source: events.proto
+
+// Wire format for tracker ingest and processor streams; bytes fields avoid UTF-8 validation on the hot path.
 
 package pb
 
@@ -32,7 +34,7 @@ type AdEvent struct {
 
 func (x *AdEvent) Reset() {
 	*x = AdEvent{}
-	mi := &file_api_proto_events_proto_msgTypes[0]
+	mi := &file_events_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -44,7 +46,7 @@ func (x *AdEvent) String() string {
 func (*AdEvent) ProtoMessage() {}
 
 func (x *AdEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_events_proto_msgTypes[0]
+	mi := &file_events_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -57,7 +59,7 @@ func (x *AdEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdEvent.ProtoReflect.Descriptor instead.
 func (*AdEvent) Descriptor() ([]byte, []int) {
-	return file_api_proto_events_proto_rawDescGZIP(), []int{0}
+	return file_events_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *AdEvent) GetCampaignId() []byte {
@@ -81,13 +83,15 @@ func (x *AdEvent) GetMetadata() *EventMetadata {
 	return nil
 }
 
+// Optional fields use bytes so vtproto can pool and zero-copy into Redis/ClickHouse writers.
 type EventMetadata struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ClickId       []byte                 `protobuf:"bytes,1,opt,name=click_id,json=clickId,proto3" json:"click_id,omitempty"`
 	UserId        []byte                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	DeviceType    []byte                 `protobuf:"bytes,3,opt,name=device_type,json=deviceType,proto3" json:"device_type,omitempty"`
 	Os            []byte                 `protobuf:"bytes,4,opt,name=os,proto3" json:"os,omitempty"`
-	Extra         map[string]string      `protobuf:"bytes,5,rep,name=extra,proto3" json:"extra,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	ExtraKeys     [][]byte               `protobuf:"bytes,5,rep,name=extra_keys,json=extraKeys,proto3" json:"extra_keys,omitempty"`
+	ExtraValues   [][]byte               `protobuf:"bytes,7,rep,name=extra_values,json=extraValues,proto3" json:"extra_values,omitempty"`
 	ExtraBytes    []byte                 `protobuf:"bytes,6,opt,name=extra_bytes,json=extraBytes,proto3" json:"extra_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -95,7 +99,7 @@ type EventMetadata struct {
 
 func (x *EventMetadata) Reset() {
 	*x = EventMetadata{}
-	mi := &file_api_proto_events_proto_msgTypes[1]
+	mi := &file_events_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -107,7 +111,7 @@ func (x *EventMetadata) String() string {
 func (*EventMetadata) ProtoMessage() {}
 
 func (x *EventMetadata) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_events_proto_msgTypes[1]
+	mi := &file_events_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -120,7 +124,7 @@ func (x *EventMetadata) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EventMetadata.ProtoReflect.Descriptor instead.
 func (*EventMetadata) Descriptor() ([]byte, []int) {
-	return file_api_proto_events_proto_rawDescGZIP(), []int{1}
+	return file_events_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *EventMetadata) GetClickId() []byte {
@@ -151,9 +155,16 @@ func (x *EventMetadata) GetOs() []byte {
 	return nil
 }
 
-func (x *EventMetadata) GetExtra() map[string]string {
+func (x *EventMetadata) GetExtraKeys() [][]byte {
 	if x != nil {
-		return x.Extra
+		return x.ExtraKeys
+	}
+	return nil
+}
+
+func (x *EventMetadata) GetExtraValues() [][]byte {
+	if x != nil {
+		return x.ExtraValues
 	}
 	return nil
 }
@@ -165,17 +176,19 @@ func (x *EventMetadata) GetExtraBytes() []byte {
 	return nil
 }
 
+// Returned on /track success so the tracker can redirect without a second Postgres round trip.
 type TrackResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RequestId     string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	LandingUrl    string                 `protobuf:"bytes,3,opt,name=landing_url,json=landingUrl,proto3" json:"landing_url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *TrackResponse) Reset() {
 	*x = TrackResponse{}
-	mi := &file_api_proto_events_proto_msgTypes[2]
+	mi := &file_events_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -187,7 +200,7 @@ func (x *TrackResponse) String() string {
 func (*TrackResponse) ProtoMessage() {}
 
 func (x *TrackResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_events_proto_msgTypes[2]
+	mi := &file_events_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -200,7 +213,7 @@ func (x *TrackResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TrackResponse.ProtoReflect.Descriptor instead.
 func (*TrackResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_events_proto_rawDescGZIP(), []int{2}
+	return file_events_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *TrackResponse) GetRequestId() string {
@@ -217,6 +230,14 @@ func (x *TrackResponse) GetStatus() string {
 	return ""
 }
 
+func (x *TrackResponse) GetLandingUrl() string {
+	if x != nil {
+		return x.LandingUrl
+	}
+	return ""
+}
+
+// Flat stream record for Redis XADD; unix timestamp avoids protobuf Timestamp alloc on ingest.
 type AdStreamEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ClickId       []byte                 `protobuf:"bytes,1,opt,name=click_id,json=clickId,proto3" json:"click_id,omitempty"`
@@ -226,13 +247,17 @@ type AdStreamEvent struct {
 	Ip            []byte                 `protobuf:"bytes,5,opt,name=ip,proto3" json:"ip,omitempty"`
 	Ua            []byte                 `protobuf:"bytes,6,opt,name=ua,proto3" json:"ua,omitempty"`
 	CreatedAtUnix int64                  `protobuf:"varint,7,opt,name=created_at_unix,json=createdAtUnix,proto3" json:"created_at_unix,omitempty"`
+	FraudScore    uint32                 `protobuf:"varint,8,opt,name=fraud_score,json=fraudScore,proto3" json:"fraud_score,omitempty"`
+	FraudReason   []byte                 `protobuf:"bytes,9,opt,name=fraud_reason,json=fraudReason,proto3" json:"fraud_reason,omitempty"`
+	GhostEvent    bool                   `protobuf:"varint,10,opt,name=ghost_event,json=ghostEvent,proto3" json:"ghost_event,omitempty"`
+	UserId        []byte                 `protobuf:"bytes,11,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *AdStreamEvent) Reset() {
 	*x = AdStreamEvent{}
-	mi := &file_api_proto_events_proto_msgTypes[3]
+	mi := &file_events_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -244,7 +269,7 @@ func (x *AdStreamEvent) String() string {
 func (*AdStreamEvent) ProtoMessage() {}
 
 func (x *AdStreamEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_events_proto_msgTypes[3]
+	mi := &file_events_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -257,7 +282,7 @@ func (x *AdStreamEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdStreamEvent.ProtoReflect.Descriptor instead.
 func (*AdStreamEvent) Descriptor() ([]byte, []int) {
-	return file_api_proto_events_proto_rawDescGZIP(), []int{3}
+	return file_events_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *AdStreamEvent) GetClickId() []byte {
@@ -309,6 +334,35 @@ func (x *AdStreamEvent) GetCreatedAtUnix() int64 {
 	return 0
 }
 
+func (x *AdStreamEvent) GetFraudScore() uint32 {
+	if x != nil {
+		return x.FraudScore
+	}
+	return 0
+}
+
+func (x *AdStreamEvent) GetFraudReason() []byte {
+	if x != nil {
+		return x.FraudReason
+	}
+	return nil
+}
+
+func (x *AdStreamEvent) GetGhostEvent() bool {
+	if x != nil {
+		return x.GhostEvent
+	}
+	return false
+}
+
+func (x *AdStreamEvent) GetUserId() []byte {
+	if x != nil {
+		return x.UserId
+	}
+	return nil
+}
+
+// DLQ envelope preserves the original stream entry for replay after processor failure.
 type AdDLQEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	OriginalEvent *AdStreamEvent         `protobuf:"bytes,1,opt,name=original_event,json=originalEvent,proto3" json:"original_event,omitempty"`
@@ -323,7 +377,7 @@ type AdDLQEvent struct {
 
 func (x *AdDLQEvent) Reset() {
 	*x = AdDLQEvent{}
-	mi := &file_api_proto_events_proto_msgTypes[4]
+	mi := &file_events_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -335,7 +389,7 @@ func (x *AdDLQEvent) String() string {
 func (*AdDLQEvent) ProtoMessage() {}
 
 func (x *AdDLQEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_events_proto_msgTypes[4]
+	mi := &file_events_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -348,7 +402,7 @@ func (x *AdDLQEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdDLQEvent.ProtoReflect.Descriptor instead.
 func (*AdDLQEvent) Descriptor() ([]byte, []int) {
-	return file_api_proto_events_proto_rawDescGZIP(), []int{4}
+	return file_events_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *AdDLQEvent) GetOriginalEvent() *AdStreamEvent {
@@ -393,6 +447,7 @@ func (x *AdDLQEvent) GetRetryCount() int32 {
 	return 0
 }
 
+// Binary log segment record for mmap logger persistence off the gnet event loop.
 type AdLogRecord struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TimestampUnix int64                  `protobuf:"varint,1,opt,name=timestamp_unix,json=timestampUnix,proto3" json:"timestamp_unix,omitempty"`
@@ -406,7 +461,7 @@ type AdLogRecord struct {
 
 func (x *AdLogRecord) Reset() {
 	*x = AdLogRecord{}
-	mi := &file_api_proto_events_proto_msgTypes[5]
+	mi := &file_events_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -418,7 +473,7 @@ func (x *AdLogRecord) String() string {
 func (*AdLogRecord) ProtoMessage() {}
 
 func (x *AdLogRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_events_proto_msgTypes[5]
+	mi := &file_events_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -431,7 +486,7 @@ func (x *AdLogRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdLogRecord.ProtoReflect.Descriptor instead.
 func (*AdLogRecord) Descriptor() ([]byte, []int) {
-	return file_api_proto_events_proto_rawDescGZIP(), []int{5}
+	return file_events_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *AdLogRecord) GetTimestampUnix() int64 {
@@ -469,34 +524,34 @@ func (x *AdLogRecord) GetPriority() uint32 {
 	return 0
 }
 
-var File_api_proto_events_proto protoreflect.FileDescriptor
+var File_events_proto protoreflect.FileDescriptor
 
-const file_api_proto_events_proto_rawDesc = "" +
+const file_events_proto_rawDesc = "" +
 	"\n" +
-	"\x16api/proto/events.proto\x12\x06ads.v1\"|\n" +
+	"\fevents.proto\x12\x06ads.v1\"|\n" +
 	"\aAdEvent\x12\x1f\n" +
 	"\vcampaign_id\x18\x01 \x01(\fR\n" +
 	"campaignId\x12\x1d\n" +
 	"\n" +
 	"event_type\x18\x02 \x01(\fR\teventType\x121\n" +
-	"\bmetadata\x18\x03 \x01(\v2\x15.ads.v1.EventMetadataR\bmetadata\"\x87\x02\n" +
+	"\bmetadata\x18\x03 \x01(\v2\x15.ads.v1.EventMetadataR\bmetadata\"\xd7\x01\n" +
 	"\rEventMetadata\x12\x19\n" +
 	"\bclick_id\x18\x01 \x01(\fR\aclickId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\fR\x06userId\x12\x1f\n" +
 	"\vdevice_type\x18\x03 \x01(\fR\n" +
 	"deviceType\x12\x0e\n" +
-	"\x02os\x18\x04 \x01(\fR\x02os\x126\n" +
-	"\x05extra\x18\x05 \x03(\v2 .ads.v1.EventMetadata.ExtraEntryR\x05extra\x12\x1f\n" +
-	"\vextra_bytes\x18\x06 \x01(\fR\n" +
-	"extraBytes\x1a8\n" +
+	"\x02os\x18\x04 \x01(\fR\x02os\x12\x1d\n" +
 	"\n" +
-	"ExtraEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"F\n" +
+	"extra_keys\x18\x05 \x03(\fR\textraKeys\x12!\n" +
+	"\fextra_values\x18\a \x03(\fR\vextraValues\x12\x1f\n" +
+	"\vextra_bytes\x18\x06 \x01(\fR\n" +
+	"extraBytes\"g\n" +
 	"\rTrackResponse\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\"\xcc\x01\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12\x1f\n" +
+	"\vlanding_url\x18\x03 \x01(\tR\n" +
+	"landingUrl\"\xca\x02\n" +
 	"\rAdStreamEvent\x12\x19\n" +
 	"\bclick_id\x18\x01 \x01(\fR\aclickId\x12\x1f\n" +
 	"\vcampaign_id\x18\x02 \x01(\fR\n" +
@@ -506,7 +561,14 @@ const file_api_proto_events_proto_rawDesc = "" +
 	"\apayload\x18\x04 \x01(\fR\apayload\x12\x0e\n" +
 	"\x02ip\x18\x05 \x01(\fR\x02ip\x12\x0e\n" +
 	"\x02ua\x18\x06 \x01(\fR\x02ua\x12&\n" +
-	"\x0fcreated_at_unix\x18\a \x01(\x03R\rcreatedAtUnix\"\xe5\x01\n" +
+	"\x0fcreated_at_unix\x18\a \x01(\x03R\rcreatedAtUnix\x12\x1f\n" +
+	"\vfraud_score\x18\b \x01(\rR\n" +
+	"fraudScore\x12!\n" +
+	"\ffraud_reason\x18\t \x01(\fR\vfraudReason\x12\x1f\n" +
+	"\vghost_event\x18\n" +
+	" \x01(\bR\n" +
+	"ghostEvent\x12\x17\n" +
+	"\auser_id\x18\v \x01(\fR\x06userId\"\xe5\x01\n" +
 	"\n" +
 	"AdDLQEvent\x12<\n" +
 	"\x0eoriginal_event\x18\x01 \x01(\v2\x15.ads.v1.AdStreamEventR\roriginalEvent\x12\x14\n" +
@@ -524,61 +586,59 @@ const file_api_proto_events_proto_rawDesc = "" +
 	"\bclick_id\x18\x03 \x01(\fR\aclickId\x12\x1d\n" +
 	"\n" +
 	"event_type\x18\x04 \x01(\fR\teventType\x12\x1a\n" +
-	"\bpriority\x18\x05 \x01(\rR\bpriorityB\x16Z\x14espx/internal/ads/pbb\x06proto3"
+	"\bpriority\x18\x05 \x01(\rR\bpriorityB\x19Z\x17espx/internal/ads/pb;pbb\x06proto3"
 
 var (
-	file_api_proto_events_proto_rawDescOnce sync.Once
-	file_api_proto_events_proto_rawDescData []byte
+	file_events_proto_rawDescOnce sync.Once
+	file_events_proto_rawDescData []byte
 )
 
-func file_api_proto_events_proto_rawDescGZIP() []byte {
-	file_api_proto_events_proto_rawDescOnce.Do(func() {
-		file_api_proto_events_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_api_proto_events_proto_rawDesc), len(file_api_proto_events_proto_rawDesc)))
+func file_events_proto_rawDescGZIP() []byte {
+	file_events_proto_rawDescOnce.Do(func() {
+		file_events_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_events_proto_rawDesc), len(file_events_proto_rawDesc)))
 	})
-	return file_api_proto_events_proto_rawDescData
+	return file_events_proto_rawDescData
 }
 
-var file_api_proto_events_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
-var file_api_proto_events_proto_goTypes = []any{
+var file_events_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_events_proto_goTypes = []any{
 	(*AdEvent)(nil),       // 0: ads.v1.AdEvent
 	(*EventMetadata)(nil), // 1: ads.v1.EventMetadata
 	(*TrackResponse)(nil), // 2: ads.v1.TrackResponse
 	(*AdStreamEvent)(nil), // 3: ads.v1.AdStreamEvent
 	(*AdDLQEvent)(nil),    // 4: ads.v1.AdDLQEvent
 	(*AdLogRecord)(nil),   // 5: ads.v1.AdLogRecord
-	nil,                   // 6: ads.v1.EventMetadata.ExtraEntry
 }
-var file_api_proto_events_proto_depIdxs = []int32{
+var file_events_proto_depIdxs = []int32{
 	1, // 0: ads.v1.AdEvent.metadata:type_name -> ads.v1.EventMetadata
-	6, // 1: ads.v1.EventMetadata.extra:type_name -> ads.v1.EventMetadata.ExtraEntry
-	3, // 2: ads.v1.AdDLQEvent.original_event:type_name -> ads.v1.AdStreamEvent
-	3, // [3:3] is the sub-list for method output_type
-	3, // [3:3] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	3, // 1: ads.v1.AdDLQEvent.original_event:type_name -> ads.v1.AdStreamEvent
+	2, // [2:2] is the sub-list for method output_type
+	2, // [2:2] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
-func init() { file_api_proto_events_proto_init() }
-func file_api_proto_events_proto_init() {
-	if File_api_proto_events_proto != nil {
+func init() { file_events_proto_init() }
+func file_events_proto_init() {
+	if File_events_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_proto_events_proto_rawDesc), len(file_api_proto_events_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_events_proto_rawDesc), len(file_events_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   7,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
-		GoTypes:           file_api_proto_events_proto_goTypes,
-		DependencyIndexes: file_api_proto_events_proto_depIdxs,
-		MessageInfos:      file_api_proto_events_proto_msgTypes,
+		GoTypes:           file_events_proto_goTypes,
+		DependencyIndexes: file_events_proto_depIdxs,
+		MessageInfos:      file_events_proto_msgTypes,
 	}.Build()
-	File_api_proto_events_proto = out.File
-	file_api_proto_events_proto_goTypes = nil
-	file_api_proto_events_proto_depIdxs = nil
+	File_events_proto = out.File
+	file_events_proto_goTypes = nil
+	file_events_proto_depIdxs = nil
 }

@@ -180,11 +180,7 @@ func BenchmarkStreamReadProto(b *testing.B) {
 			buf := unsafe.Slice(unsafe.StringData(rawBytesStr), len(rawBytesStr))
 			if err := pbEvt.UnmarshalVT(buf); err == nil {
 				evt.ClickID = unsafeString(pbEvt.ClickId)
-				if len(pbEvt.CampaignId) == 16 {
-					copy(evt.CampaignID[:], pbEvt.CampaignId)
-				} else {
-					evt.CampaignID, _ = uuid.ParseBytes(pbEvt.CampaignId)
-				}
+				_ = ParseUUID(pbEvt.CampaignId, &evt.CampaignID)
 				evt.Type = unsafeString(pbEvt.EventType)
 				evt.Payload = append(evt.Payload[:0], pbEvt.Payload...)
 				evt.IP = unsafeString(pbEvt.Ip)

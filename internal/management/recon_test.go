@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 
+	"espx/internal/database"
+
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
@@ -87,6 +89,64 @@ func TestRecon_RaceConcurrentAdjustments(t *testing.T) {
 	expected := int64(10_000_000) + (int64(goroutines) * deltaPerGoroutine)
 	assert.Equal(t, expected, final, "concurrent adjustments must be linear and race-free")
 	assert.GreaterOrEqual(t, final, int64(0), "budget must never go negative from recon corrections")
+}
+
+// TestRecon_AdjustRealRedis exercises production recon Lua against live Redis (not mock Eval).
+func TestRecon_AdjustRealRedis(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
+
+	rdb, cleanup := database.SetupTestRedis(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	campID := uuid.New()
+	key := "budget:sync:campaign:" + campID.String()
+	recon := &ReconService{}
+
+	require.NoError(t, rdb.Set(ctx, key, 10_000_000, 0).Err())
+
+	const goroutines = 20
+	const deltaPerGoroutine = -100_000
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	start := make(chan struct{})
+
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			err := recon.adjustRedisBudgetAtomically(ctx, rdb, campID, deltaPerGoroutine)
+			require.NoError(t, err)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	final, err := rdb.Get(ctx, key).Int64()
+	if err == redis.Nil {
+		final = 0
+	} else {
+		require.NoError(t, err)
+	}
+
+	expected := int64(10_000_000) + (int64(goroutines) * deltaPerGoroutine)
+	assert.Equal(t, expected, final, "concurrent Lua adjustments must be linearizable")
+	assert.GreaterOrEqual(t, final, int64(0), "sync key must not go negative")
+
+	t.Run("LargeNegativeDeltaClampsToZero", func(t *testing.T) {
+		smallID := uuid.New()
+		smallKey := "budget:sync:campaign:" + smallID.String()
+		require.NoError(t, rdb.Set(ctx, smallKey, 1_000_000, 0).Err())
+
+		err := recon.adjustRedisBudgetAtomically(ctx, rdb, smallID, -100_000_000)
+		require.NoError(t, err)
+
+		exists, err := rdb.Exists(ctx, smallKey).Result()
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), exists, "Lua must delete key instead of leaving negative balance")
+	})
 }
 
 // TestRecon_EdgeCases guards large negative recon deltas clamp budget to zero instead of going negative.

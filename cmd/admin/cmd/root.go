@@ -1,3 +1,5 @@
+// Package cmd is the internal developer CLI for budget recovery, auth tokens, and database ops
+// that would be unsafe or awkward to expose on the management HTTP API.
 package cmd
 
 import (
@@ -44,17 +46,17 @@ var rootCmd = &cobra.Command{
 	},
 }
 
-// Execute runs the admin CLI root command tree.
+// Execute is the single entry for operator-facing dev tooling kept off the production HTTP surface.
 func Execute() error {
 	return rootCmd.Execute()
 }
 
-// init registers global flags shared by all admin subcommands.
+// init binds persistent flags early so every subcommand shares the same config and env bootstrap.
 func init() {
 	rootCmd.PersistentFlags().StringVar(&envPath, "env-path", ".env", "path to .env configuration file")
 }
 
-// loadEnvFile seeds process env from a dotenv file without overriding variables already set.
+// loadEnvFile fills unset env vars from a dotenv file because admin runs outside Docker compose injection.
 func loadEnvFile(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -88,29 +90,17 @@ func loadEnvFile(path string) error {
 	return scanner.Err()
 }
 
-// getDB opens a small Postgres pool for one-shot admin commands.
+// getDB opens a short-lived pool because admin commands are one-shot and must not hold production-sized pools.
 func getDB(ctx context.Context) (*pgxpool.Pool, error) {
 	return database.Connect(ctx, string(cfg.DBDSN), 5, 1)
 }
 
-// getRedisShards connects to every configured Redis shard and pairs clients with JumpHash routing for cold-path ops.
-func getRedisShards(ctx context.Context) ([]redis.UniversalClient, *ads.JumpHashSharder, error) {
-	var clients []redis.UniversalClient
-	for _, addr := range cfg.RedisAddrs {
-		rdb := redis.NewUniversalClient(&redis.UniversalOptions{
-			Addrs:    []string{addr},
-			Password: string(cfg.RedisPassword),
-			PoolSize: 10,
-		})
-		if err := rdb.Ping(ctx).Err(); err != nil {
-			for _, c := range clients {
-				_ = c.Close()
-			}
-			return nil, nil, fmt.Errorf("failed to ping redis shard at %s: %w", addr, err)
-		}
-		clients = append(clients, rdb)
+// getRedisShards dials every shard with StaticSlot routing aligned to tracker hot-path sharding.
+func getRedisShards(ctx context.Context) ([]redis.UniversalClient, *ads.StaticSlotSharder, error) {
+	clients, err := database.ConnectRedisShards(ctx, cfg, database.RedisShardOptions{PoolSize: 10})
+	if err != nil {
+		return nil, nil, err
 	}
-
-	sharder := ads.NewJumpHashSharder(len(clients))
+	sharder := ads.NewStaticSlotSharder(len(clients))
 	return clients, sharder, nil
 }

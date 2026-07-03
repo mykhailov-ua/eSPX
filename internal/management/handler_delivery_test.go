@@ -13,6 +13,7 @@ import (
 	"espx/internal/auth"
 	"espx/internal/config"
 	"espx/internal/database"
+
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
@@ -35,7 +36,7 @@ func TestManagementAPI_DeliveryRoutes(t *testing.T) {
 		CampaignUpdateChannel: "test:delivery-routes",
 	}
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
-	h := NewHandler(svc, cfg, nil)
+	h := NewHandler(svc, cfg, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -215,7 +216,7 @@ func TestManagementAPI_RoleUserForbiddenSettings(t *testing.T) {
 
 	authMdl := NewAuthMiddleware(tokenMaker, rdb, cfg)
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
-	h := NewHandler(svc, cfg, authMdl)
+	h := NewHandler(svc, cfg, authMdl, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -256,7 +257,7 @@ func TestManagementAPI_RoleUserForbiddenBlacklist(t *testing.T) {
 
 	authMdl := NewAuthMiddleware(tokenMaker, rdb, cfg)
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
-	h := NewHandler(svc, cfg, authMdl)
+	h := NewHandler(svc, cfg, authMdl, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -288,7 +289,7 @@ func TestManagementAPI_RoleUserForbiddenEmergencyBreaker(t *testing.T) {
 
 	authMdl := NewAuthMiddleware(tokenMaker, rdb, cfg)
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
-	h := NewHandler(svc, cfg, authMdl)
+	h := NewHandler(svc, cfg, authMdl, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 

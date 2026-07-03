@@ -8,6 +8,7 @@ import (
 	"espx/internal/auth"
 	"espx/internal/config"
 	"espx/pkg/httpresponse"
+
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -96,6 +97,7 @@ func (m *AuthMiddleware) RequireAuth(allowedRoles ...string) func(http.HandlerFu
 	}
 }
 
+// authenticate resolves the caller from a shared API key or session cookie before RBAC checks run.
 func (m *AuthMiddleware) authenticate(w http.ResponseWriter, r *http.Request) (AuthenticatedUser, bool) {
 	if key := r.Header.Get("X-Admin-API-Key"); key != "" && m.cfg != nil && key == string(m.cfg.AdminAPIKey) {
 		return AuthenticatedUser{

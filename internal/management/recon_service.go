@@ -8,6 +8,7 @@ import (
 
 	"espx/internal/ads"
 	"espx/internal/metrics"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	redis "github.com/redis/go-redis/v9"
@@ -35,7 +36,7 @@ func (s *ReconService) ReconcileWindow(ctx context.Context, start, end time.Time
 		return err
 	}
 
-	ledgerRows, err := s.mgmt.pool.Query(opCtx, `
+	ledgerRows, err := s.mgmt.GetPool().Query(opCtx, `
 		SELECT campaign_id, COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END), 0)::bigint
 		FROM balance_ledger
 		WHERE created_at >= $1 AND created_at < $2
@@ -87,7 +88,7 @@ func (s *ReconService) ReconcileWindow(ctx context.Context, start, end time.Time
 		}
 
 		var customerID pgtype.UUID
-		err = s.mgmt.pool.QueryRow(opCtx, `SELECT customer_id FROM campaigns WHERE id = $1`, ads.ToUUID(campID)).Scan(&customerID)
+		err = s.mgmt.GetPool().QueryRow(opCtx, `SELECT customer_id FROM campaigns WHERE id = $1`, ads.ToUUID(campID)).Scan(&customerID)
 		if err != nil {
 			slog.Error("failed to resolve campaign customer in recon", "campaign_id", campID, "error", err)
 			metrics.ReconAdjustmentErrors.Inc()
@@ -96,7 +97,7 @@ func (s *ReconService) ReconcileWindow(ctx context.Context, start, end time.Time
 
 		discrepancies++
 
-		_, err = s.mgmt.pool.Exec(opCtx, `
+		_, err = s.mgmt.GetPool().Exec(opCtx, `
 			INSERT INTO recon_discrepancies (run_id, campaign_id, customer_id, expected_spend, actual_spend, delta, redis_adjusted)
 			VALUES ($1, $2, $3, $4, $5, $6, false)
 		`, run.ID, ads.ToUUID(campID), customerID, syncVal, ledgerSpent, delta)
@@ -109,7 +110,7 @@ func (s *ReconService) ReconcileWindow(ctx context.Context, start, end time.Time
 		}
 
 		adjType := "RECONCILIATION_ADJUST"
-		_, err = s.mgmt.pool.Exec(opCtx, `
+		_, err = s.mgmt.GetPool().Exec(opCtx, `
 			INSERT INTO balance_ledger (customer_id, campaign_id, amount, type, created_at)
 			VALUES ($1, $2, $3, $4, NOW())
 		`, customerID, ads.ToUUID(campID), -delta, adjType)
@@ -125,7 +126,7 @@ func (s *ReconService) ReconcileWindow(ctx context.Context, start, end time.Time
 			continue
 		}
 
-		_, err = s.mgmt.pool.Exec(opCtx, `
+		_, err = s.mgmt.GetPool().Exec(opCtx, `
 			UPDATE recon_discrepancies 
 			SET redis_adjusted = true 
 			WHERE run_id = $1 AND campaign_id = $2
@@ -138,7 +139,7 @@ func (s *ReconService) ReconcileWindow(ctx context.Context, start, end time.Time
 		totalDelta += delta
 	}
 
-	_, err = s.mgmt.pool.Exec(opCtx, `
+	_, err = s.mgmt.GetPool().Exec(opCtx, `
 		UPDATE recon_runs 
 		SET status = 'COMPLETED', total_delta = $1, campaigns_checked = $2, discrepancies_found = $3, completed_at = NOW()
 		WHERE id = $4
@@ -182,7 +183,7 @@ func (s *ReconService) adjustRedisBudgetAtomically(ctx context.Context, rdb redi
 // createRun records a recon run row so partial failures and outcomes remain auditable.
 func (s *ReconService) createRun(ctx context.Context, start, end time.Time) (struct{ ID int64 }, error) {
 	var run struct{ ID int64 }
-	err := s.mgmt.pool.QueryRow(ctx, `
+	err := s.mgmt.GetPool().QueryRow(ctx, `
 		INSERT INTO recon_runs (period_start, period_end, status) VALUES ($1, $2, 'PENDING') RETURNING id
 	`, start, end).Scan(&run.ID)
 	return run, err
@@ -190,7 +191,7 @@ func (s *ReconService) createRun(ctx context.Context, start, end time.Time) (str
 
 // failRun marks a recon run as failed when the pipeline cannot complete the window.
 func (s *ReconService) failRun(ctx context.Context, id int64, err error) {
-	_, execErr := s.mgmt.pool.Exec(ctx, `UPDATE recon_runs SET status = 'FAILED' WHERE id = $1`, id)
+	_, execErr := s.mgmt.GetPool().Exec(ctx, `UPDATE recon_runs SET status = 'FAILED' WHERE id = $1`, id)
 	if execErr != nil {
 		slog.Error("failed to mark recon run status as failed in postgres", "run_id", id, "error", execErr)
 	}

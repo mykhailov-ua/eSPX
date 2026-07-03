@@ -1,0 +1,34 @@
+package layout
+
+templ Nav(data PageData) {
+	<header class="site-header">
+		<div class="site-header-inner">
+			<a class="brand" href="/admin/campaigns/manage">eSPX Admin</a>
+			<nav aria-label="Main">
+				<ul class="nav-links">
+					<li>
+						<a href="/admin/campaigns/manage" class={ navClass(data.ActiveNav, "campaigns") }>Campaigns</a>
+					</li>
+					if data.GrafanaURL != "" {
+						<li>
+							<a href={ data.GrafanaURL } class={ navClass(data.ActiveNav, "metrics") } target="_blank" rel="noopener noreferrer">Metrics</a>
+						</li>
+					}
+					if data.UserEmail != "" {
+						<li class="muted">{ data.UserEmail } ({ data.UserRole })</li>
+					}
+					<li>
+						<button type="button" class="btn" hx-post="/admin/logout" hx-swap="none">Logout</button>
+					</li>
+				</ul>
+			</nav>
+		</div>
+	</header>
+}
+
+func navClass(active, item string) string {
+	if active == item {
+		return "nav-link is-active"
+	}
+	return "nav-link"
+}

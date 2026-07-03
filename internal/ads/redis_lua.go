@@ -38,13 +38,12 @@ func (f *UnifiedFilter) PreloadScripts(ctx context.Context) error {
 	return nil
 }
 
-// evalScript runs the unified filter Lua via EVALSHA with a one-shot EVAL fallback.
-func (f *UnifiedFilter) evalScript(ctx context.Context, rdb redis.UniversalClient, shard int, keys []string, args []any) *redis.Cmd {
-	shardLabel := strconv.Itoa(shard)
-	cmd := f.script.EvalSha(ctx, rdb, keys, args...)
-	if err := cmd.Err(); err != nil && isNoScriptErr(err) {
-		metrics.RedisLuaNoScriptTotal.WithLabelValues(shardLabel).Inc()
-		cmd = f.script.Eval(ctx, rdb, keys, args...)
+// evalScript prefers pooled EVALSHA and falls back once so cold Redis shards still load the unified filter script.
+func (f *UnifiedFilter) evalScript(ctx context.Context, rdb redis.UniversalClient, shard int, keyArgs [unifiedFilterKeyCount]any, args []any) (int64, error) {
+	res, err := evalShaPooled(ctx, rdb, f.scriptHashAny, keyArgs, args)
+	if err != nil && isNoScriptErr(err) {
+		incRedisLuaNoScript(f.luaNoScriptCounters, shard)
+		return evalPooled(ctx, rdb, unifiedFilterLuaAny, keyArgs, args)
 	}
-	return cmd
+	return res, err
 }

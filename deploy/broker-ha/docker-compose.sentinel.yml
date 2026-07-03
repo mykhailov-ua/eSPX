@@ -1,0 +1,44 @@
+# Optional Sentinel overlay for deploy/broker-ha/ lab.
+# Usage:
+#   docker compose -f deploy/broker-ha/docker-compose.yml \
+#     -f deploy/broker-ha/docker-compose.sentinel.yml up -d
+#   export BROKER_REDIS_SENTINEL_MASTER=broker-coord
+#   export BROKER_REDIS_SENTINEL_ADDRS=127.0.0.1:26379
+
+services:
+  redis:
+    command: ["redis-server", "--appendonly", "yes"]
+
+  redis-replica:
+    image: redis:7-alpine
+    network_mode: host
+    command: ["redis-server", "--port", "6380", "--replicaof", "127.0.0.1", "6379"]
+
+  redis-sentinel:
+    image: redis:7-alpine
+    network_mode: host
+    depends_on:
+      - redis
+      - redis-replica
+    command:
+      - sh
+      - -c
+      - |
+        cat > /tmp/sentinel.conf <<'EOF'
+        port 26379
+        sentinel monitor broker-coord 127.0.0.1 6379 1
+        sentinel down-after-milliseconds broker-coord 5000
+        sentinel failover-timeout broker-coord 10000
+        sentinel parallel-syncs broker-coord 1
+        EOF
+        exec redis-sentinel /tmp/sentinel.conf
+
+  broker-1:
+    environment:
+      BROKER_REDIS_SENTINEL_MASTER: broker-coord
+      BROKER_REDIS_SENTINEL_ADDRS: 127.0.0.1:26379
+
+  broker-2:
+    environment:
+      BROKER_REDIS_SENTINEL_MASTER: broker-coord
+      BROKER_REDIS_SENTINEL_ADDRS: 127.0.0.1:26379

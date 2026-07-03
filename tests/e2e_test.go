@@ -1,11 +1,9 @@
 package tests
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -19,7 +17,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/proto"
 )
 
 // TestE2EFlow is the JSON wire-format smoke test for the full ingest chain:
@@ -87,9 +84,8 @@ func TestE2EFlow(t *testing.T) {
 	defer consumer.Close()
 
 	sharder := ads.NewJumpHashSharder(1)
-	router := ads.NewRouter(cfg, registry, filterEngine, pool, []redis.UniversalClient{rdb}, sharder, cfg.FraudStreamName, nil)
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	handler := ads.NewAdsPacketHandler(cfg, registry, filterEngine, pool, []redis.UniversalClient{rdb}, sharder, cfg.FraudStreamName, nil)
+	defer handler.Stop(ctx)
 
 	payload := map[string]any{
 		"campaign_id": campaignID,
@@ -98,9 +94,8 @@ func TestE2EFlow(t *testing.T) {
 	}
 	body, _ := json.Marshal(payload)
 
-	resp, err := http.Post(srv.URL+"/track", "application/json", bytes.NewBuffer(body))
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+	status, _ := ads.PostTrackGnetJSON(handler, body)
+	assert.Equal(t, http.StatusAccepted, status)
 
 	time.Sleep(1 * time.Second)
 
@@ -176,12 +171,11 @@ func TestE2EFlow_Protobuf(t *testing.T) {
 	defer consumer.Close()
 
 	sharder := ads.NewJumpHashSharder(1)
-	router := ads.NewRouter(cfg, registry, filterEngine, pool, []redis.UniversalClient{rdb}, sharder, cfg.FraudStreamName, nil)
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	handler := ads.NewAdsPacketHandler(cfg, registry, filterEngine, pool, []redis.UniversalClient{rdb}, sharder, cfg.FraudStreamName, nil)
+	defer handler.Stop(ctx)
 
 	pbEvt := &pb.AdEvent{
-		CampaignId: []byte(campaignID.String()),
+		CampaignId: campaignID[:],
 		EventType:  []byte("impression"),
 		Metadata: &pb.EventMetadata{
 			ClickId:    []byte("click_123"),
@@ -190,19 +184,15 @@ func TestE2EFlow_Protobuf(t *testing.T) {
 			Os:         []byte("android"),
 		},
 	}
-	body, _ := proto.Marshal(pbEvt)
-
-	req, _ := http.NewRequest("POST", srv.URL+"/track", bytes.NewBuffer(body))
-	req.Header.Set("Content-Type", "application/x-protobuf")
-	req.Header.Set("Accept", "application/x-protobuf")
-
-	resp, err := http.DefaultClient.Do(req)
+	body, err := pbEvt.MarshalVT()
 	require.NoError(t, err)
-	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+	status, _ := ads.PostTrackGnet(handler, body, "application/x-protobuf", "application/x-protobuf")
+	assert.Equal(t, http.StatusAccepted, status)
 
 	assert.Eventually(t, func() bool {
 		var imps int64
-		err = pool.QueryRow(ctx, "SELECT impressions_count FROM campaign_stats WHERE campaign_id = $1", campaignID).Scan(&imps)
+		err := pool.QueryRow(ctx, "SELECT impressions_count FROM campaign_stats WHERE campaign_id = $1", campaignID).Scan(&imps)
 		return err == nil && imps == 1
 	}, 5*time.Second, 100*time.Millisecond, "Should have 1 impression in campaign_stats")
 }

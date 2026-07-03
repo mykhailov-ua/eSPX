@@ -1,61 +1,71 @@
 package ads
 
 import (
-	"encoding/json"
 	"github.com/google/uuid"
-	jlexer "github.com/mailru/easyjson/jlexer"
 )
 
 // TrackRequest is the JSON track payload parsed without reflection on the hot path.
-//
-//easyjson:skip
 type TrackRequest struct {
-	CampaignID uuid.UUID       `json:"campaign_id"`
-	UserID     string          `json:"user_id"`
-	Type       string          `json:"type"`
-	ClickID    string          `json:"click_id"`
-	Payload    json.RawMessage `json:"payload"`
+	CampaignID uuid.UUID
+	UserID     string
+	Type       string
+	ClickID    string
+	Payload    []byte
 }
 
-// UnmarshalEasyJSON parses track JSON with zero-copy string fields where safe.
-func (v *TrackRequest) UnmarshalEasyJSON(in *jlexer.Lexer) {
-	if in.IsNull() {
-		in.Skip()
-		return
-	}
-	in.Delim('{')
-	for !in.IsDelim('}') {
-		key := in.UnsafeFieldName(false)
-		in.WantColon()
-		if in.IsNull() {
-			in.Skip()
-			in.WantComma()
-			continue
-		}
-		switch key {
-		case "campaign_id":
-			if data := in.UnsafeBytes(); in.Ok() {
-				_ = v.CampaignID.UnmarshalText(data)
-			}
-		case "user_id":
-			v.UserID = in.UnsafeString()
-		case "type":
-			v.Type = in.UnsafeString()
-		case "click_id":
-			v.ClickID = in.UnsafeString()
-		case "payload":
-			v.Payload = in.Raw()
-		default:
-			in.SkipRecursive()
-		}
-		in.WantComma()
-	}
-	in.Delim('}')
+// Reset clears fields before reuse; Payload is nil'd to drop input-buffer references.
+func (v *TrackRequest) Reset() {
+	v.CampaignID = uuid.Nil
+	v.UserID = ""
+	v.Type = ""
+	v.ClickID = ""
+	v.Payload = nil
 }
 
-// UnmarshalJSON delegates to the easyjson parser for allocation-free decoding.
+// UnmarshalJSON decodes track JSON for encoding/json compatibility on cold paths.
 func (v *TrackRequest) UnmarshalJSON(data []byte) error {
-	r := jlexer.Lexer{Data: data}
-	v.UnmarshalEasyJSON(&r)
-	return r.Error()
+	return ParseTrackRequestJSON(v, data)
+}
+
+// appendJSONString appends a JSON-escaped string to dst.
+func appendJSONString(dst []byte, s []byte) []byte {
+	dst = append(dst, '"')
+	for _, b := range s {
+		switch b {
+		case '"':
+			dst = append(dst, '\\', '"')
+		case '\\':
+			dst = append(dst, '\\', '\\')
+		case '\n':
+			dst = append(dst, '\\', 'n')
+		case '\r':
+			dst = append(dst, '\\', 'r')
+		case '\t':
+			dst = append(dst, '\\', 't')
+		default:
+			dst = append(dst, b)
+		}
+	}
+	dst = append(dst, '"')
+	return dst
+}
+
+// marshalExtra serializes parallel extra key/value slices to JSON without reflection.
+func marshalExtra(dst []byte, keys, values [][]byte) []byte {
+	dst = dst[:0]
+	dst = append(dst, '{')
+	for i, key := range keys {
+		if i > 0 {
+			dst = append(dst, ',')
+		}
+		dst = appendJSONString(dst, key)
+		dst = append(dst, ':')
+		if i < len(values) {
+			dst = appendJSONString(dst, values[i])
+		} else {
+			dst = append(dst, '"', '"')
+		}
+	}
+	dst = append(dst, '}')
+	return dst
 }

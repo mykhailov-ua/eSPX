@@ -78,7 +78,7 @@ func (pm *PartitionManager) createPartition(ctx context.Context, date time.Time)
 }
 
 // dropPartitions removes partitions outside retention and pre-create windows to control disk growth.
-func (pm *PartitionManager) dropPartitions(ctx context.Context, now time.Time, olderThan time.Time) error {
+func (partitionManager *PartitionManager) dropPartitions(ctx context.Context, now time.Time, olderThan time.Time) error {
 	query := `
 		SELECT child.relname
 		FROM pg_inherits
@@ -87,7 +87,7 @@ func (pm *PartitionManager) dropPartitions(ctx context.Context, now time.Time, o
 		WHERE parent.relname = 'events';
 	`
 
-	rows, err := pm.pool.Query(ctx, query)
+	rows, err := partitionManager.pool.Query(ctx, query)
 	if err != nil {
 		return err
 	}
@@ -97,7 +97,7 @@ func (pm *PartitionManager) dropPartitions(ctx context.Context, now time.Time, o
 	prefix := "events_p"
 
 	thresholdStr := olderThan.Format("2006_01_02")
-	futureThresholdStr := now.AddDate(0, 0, pm.preCreate).Format("2006_01_02")
+	futureThresholdStr := now.AddDate(0, 0, partitionManager.preCreate).Format("2006_01_02")
 
 	for rows.Next() {
 		var partitionName string
@@ -117,7 +117,7 @@ func (pm *PartitionManager) dropPartitions(ctx context.Context, now time.Time, o
 		slog.Info("dropping partition", "partition", p)
 		safeTableName := pgx.Identifier{p}.Sanitize()
 		dropQuery := fmt.Sprintf("DROP TABLE IF EXISTS %s;", safeTableName)
-		if _, err := pm.pool.Exec(ctx, dropQuery); err != nil {
+		if _, err := partitionManager.pool.Exec(ctx, dropQuery); err != nil {
 			slog.Error("failed to drop partition", "partition", p, "error", err)
 		}
 	}

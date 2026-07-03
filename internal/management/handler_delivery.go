@@ -2,14 +2,14 @@ package management
 
 import (
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"time"
 
 	"espx/internal/ads/db"
+	"espx/pkg/cold"
 	"espx/pkg/httpresponse"
+
 	"github.com/google/uuid"
 )
 
@@ -32,8 +32,7 @@ func (h *Handler) registerDeliveryRoutes(mux *http.ServeMux) {
 
 // createCampaignTemplate handles POST /admin/campaign-templates for saving reusable campaign presets.
 func (h *Handler) createCampaignTemplate(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 65536)
-	var req struct {
+	req, err := cold.DecodeRequest[struct {
 		CustomerID       uuid.UUID  `json:"customer_id"`
 		Name             string     `json:"name"`
 		BudgetLimitMicro *int64     `json:"budget_limit_micro"`
@@ -47,8 +46,8 @@ func (h *Handler) createCampaignTemplate(w http.ResponseWriter, r *http.Request)
 		TargetCountries  []string   `json:"target_countries"`
 		BrandID          *uuid.UUID `json:"brand_id,omitempty"`
 		DaypartHours     []int16    `json:"daypart_hours"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.CustomerID == uuid.Nil || req.Name == "" {
+	}](w, r, cold.DefaultMaxBody)
+	if err != nil || req.CustomerID == uuid.Nil || req.Name == "" {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
@@ -113,8 +112,7 @@ func (h *Handler) listCampaignTemplates(w http.ResponseWriter, r *http.Request) 
 		writeServiceError(w, err)
 		return
 	}
-	w.Header().Set("X-Total-Count", strconv.FormatInt(total, 10))
-	httpresponse.JSON(w, http.StatusOK, items)
+	cold.WritePaginatedJSON(w, items, total)
 }
 
 // createCampaignFromTemplate handles POST /admin/campaign-templates/{id}/instantiate for launching from a preset.
@@ -124,15 +122,21 @@ func (h *Handler) createCampaignFromTemplate(w http.ResponseWriter, r *http.Requ
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid template id")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 65536)
-	body, _ := io.ReadAll(r.Body)
+	body, err := cold.ReadLimitedBody(w, r, cold.DefaultMaxBody)
+	if err != nil {
+		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
+		return
+	}
 	var req struct {
 		CustomerID       uuid.UUID `json:"customer_id"`
 		Name             string    `json:"name"`
 		BudgetLimitMicro *int64    `json:"budget_limit_micro"`
 		BudgetLimit      *float64  `json:"budget_limit"`
 	}
-	_ = json.Unmarshal(body, &req)
+	if err := json.Unmarshal(body, &req); err != nil {
+		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
+		return
+	}
 	if req.CustomerID == uuid.Nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "customer_id is required")
 		return
@@ -169,10 +173,12 @@ func (h *Handler) saveCampaignAsTemplate(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
-	var req struct {
+	req, err := cold.DecodeRequest[struct {
 		Name string `json:"name"`
+	}](w, r, cold.DefaultMaxBody)
+	if err != nil {
+		slog.Warn("failed to decode save campaign as template request", "error", err)
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
 	id, err := h.svc.SaveCampaignAsTemplate(r.Context(), campaignID, req.Name)
 	if err != nil {
 		writeServiceError(w, err)
@@ -192,10 +198,12 @@ func (h *Handler) pauseCampaign(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusForbidden, "FORBIDDEN", "forbidden")
 		return
 	}
-	var req struct {
+	req, err := cold.DecodeRequest[struct {
 		Reason string `json:"reason"`
+	}](w, r, cold.DefaultMaxBody)
+	if err != nil {
+		slog.Warn("failed to decode pause campaign request", "error", err)
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
 	if err := h.svc.PauseCampaign(r.Context(), campaignID, req.Reason); err != nil {
 		writeServiceError(w, err, slog.String("campaign_id", campaignID.String()))
 		return
@@ -214,10 +222,12 @@ func (h *Handler) resumeCampaign(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusForbidden, "FORBIDDEN", "forbidden")
 		return
 	}
-	var req struct {
+	req, err := cold.DecodeRequest[struct {
 		Reason string `json:"reason"`
+	}](w, r, cold.DefaultMaxBody)
+	if err != nil {
+		slog.Warn("failed to decode resume campaign request", "error", err)
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
 	if err := h.svc.ResumeCampaign(r.Context(), campaignID, req.Reason); err != nil {
 		writeServiceError(w, err, slog.String("campaign_id", campaignID.String()))
 		return
@@ -236,12 +246,12 @@ func (h *Handler) updateCampaignSchedule(w http.ResponseWriter, r *http.Request)
 		httpresponse.Error(w, http.StatusForbidden, "FORBIDDEN", "forbidden")
 		return
 	}
-	var req struct {
+	req, err := cold.DecodeRequest[struct {
 		StartAt      *time.Time `json:"start_at"`
 		EndAt        *time.Time `json:"end_at"`
 		DaypartHours []int16    `json:"daypart_hours"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	}](w, r, cold.DefaultMaxBody)
+	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
@@ -263,13 +273,13 @@ func (h *Handler) createBrandCreative(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusForbidden, "FORBIDDEN", "forbidden")
 		return
 	}
-	var req struct {
+	req, err := cold.DecodeRequest[struct {
 		Name       string `json:"name"`
 		LandingURL string `json:"landing_url"`
 		Weight     int32  `json:"weight"`
 		Status     string `json:"status"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" || req.LandingURL == "" {
+	}](w, r, cold.DefaultMaxBody)
+	if err != nil || req.Name == "" || req.LandingURL == "" {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
@@ -319,13 +329,13 @@ func (h *Handler) updateBrandCreative(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusForbidden, "FORBIDDEN", "forbidden")
 		return
 	}
-	var req struct {
+	req, err := cold.DecodeRequest[struct {
 		Name       string `json:"name"`
 		LandingURL string `json:"landing_url"`
 		Weight     int32  `json:"weight"`
 		Status     string `json:"status"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	}](w, r, cold.DefaultMaxBody)
+	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}

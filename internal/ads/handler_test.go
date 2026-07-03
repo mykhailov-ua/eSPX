@@ -1,11 +1,8 @@
 package ads
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"net"
-	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -66,84 +63,6 @@ func (m *mockRegistry) GetCampaign(id uuid.UUID) (*domain.Campaign, bool) {
 func (m *mockRegistry) Sync(ctx context.Context) (int, error)                 { return 0, nil }
 func (m *mockRegistry) StartSync(ctx context.Context, interval time.Duration) {}
 func (m *mockRegistry) Wait(ctx context.Context) error                        { return nil }
-
-// io.ReadCloser stub returning fixed body bytes for handler benchmarks.
-type mockBody struct {
-	*bytes.Reader
-}
-
-func (m mockBody) Close() error { return nil }
-
-// Tracks JSON track handler cost as legacy ingest baseline.
-func BenchmarkTrackHandlerJSON(b *testing.B) {
-	cfg := &config.Config{
-		MaxRequestBodySize: 1024 * 1024,
-	}
-	registry := &mockRegistry{}
-	sharder := NewJumpHashSharder(1)
-	handler := NewRouter(cfg, registry, nil, nil, nil, sharder, "fraud-stream", nil)
-
-	payload := map[string]interface{}{
-		"campaign_id": uuid.New(),
-		"type":        "click",
-		"click_id":    "test-click",
-		"payload":     map[string]string{"foo": "bar"},
-	}
-	body, _ := json.Marshal(payload)
-
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		req := httptest.NewRequest("POST", "/track", nil)
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		reader := bytes.NewReader(body)
-		req.Body = mockBody{Reader: reader}
-
-		for pb.Next() {
-			reader.Reset(body)
-			w.Body.Reset()
-			w.Code = 0
-
-			handler.ServeHTTP(w, req)
-		}
-	})
-}
-
-// Tracks protobuf track handler cost for ingest migration gates.
-func BenchmarkTrackHandlerProto(b *testing.B) {
-	cfg := &config.Config{
-		MaxRequestBodySize: 1024 * 1024,
-	}
-	registry := &mockRegistry{}
-	sharder := NewJumpHashSharder(1)
-	handler := NewRouter(cfg, registry, nil, nil, nil, sharder, "fraud-stream", nil)
-
-	pbPayload := &pb.AdEvent{
-		CampaignId: []byte(uuid.NewString()),
-		EventType:  []byte("click"),
-		Metadata: &pb.EventMetadata{
-			ClickId: []byte("test-click"),
-		},
-	}
-	body, _ := proto.Marshal(pbPayload)
-
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		req := httptest.NewRequest("POST", "/track", nil)
-		req.Header.Set("Content-Type", "application/x-protobuf")
-		w := httptest.NewRecorder()
-		reader := bytes.NewReader(body)
-		req.Body = mockBody{Reader: reader}
-
-		for pb.Next() {
-			reader.Reset(body)
-			w.Body.Reset()
-			w.Code = 0
-
-			handler.ServeHTTP(w, req)
-		}
-	})
-}
 
 var staticRemoteAddr = &net.TCPAddr{IP: net.IPv4(1, 1, 1, 1), Port: 1234}
 

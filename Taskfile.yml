@@ -13,29 +13,27 @@ tasks:
   gen:
     desc: Run sqlc, templ, and protoc code generation
     cmds:
-      - echo "Running sqlc generate..."
-      - sqlc generate
-      - echo "Running templ generate..."
-      - templ generate
-      - echo "Running protobuf/gRPC generate via buf..."
-      - go run github.com/bufbuild/buf/cmd/buf@latest generate
+      - bash scripts/gen.sh --all
 
   docker-up:
     desc: Start infrastructure containers (PostgreSQL, sharded Redis, ClickHouse) in detached mode
     cmds:
-      - echo "Starting database infrastructure..."
-      - docker compose up -d db redis-0 redis-1 redis-2 redis-3 redis-4 redis-5 clickhouse
+      - bash scripts/dev-stack.sh infra
 
   docker-down:
     desc: Stop and remove all infrastructure containers
     cmds:
-      - echo "Stopping infrastructure..."
-      - docker compose down
+      - bash scripts/dev-stack.sh down
 
   check-deps:
     desc: Run dependency healthcheck script to verify all databases and migrations are functional
     cmds:
-      - bash ./scripts/check-deps.sh
+      - bash scripts/check-deps.sh
+
+  dev-preflight:
+    desc: check-deps then smoke-local HTTP/redis health
+    cmds:
+      - bash scripts/dev-preflight.sh
 
   test-full:
     desc: Run all unit and integration tests with the Go race detector enabled
@@ -45,14 +43,7 @@ tasks:
 
   perf-gate:
     desc: Run performance gate analysis locally against main branch
+    env:
+      BASELINE_WORKTREE: ../baseline-local
     cmds:
-      - echo "Running local performance-gate simulation..."
-      - go test -run=^$ -bench=BenchmarkAdsPacketHandler -benchmem -count=10 ./internal/ads > pr_bench.txt
-      - git worktree prune || true
-      - rm -rf ../baseline-local || true
-      - git worktree add --detach ../baseline-local main
-      - cd ../baseline-local && go test -run=^$ -bench=BenchmarkAdsPacketHandler -benchmem -count=10 ./internal/ads > ../ad-event-processor/baseline_bench.txt
-      - git worktree prune || true
-      - rm -rf ../baseline-local || true
-      - go run scripts/perf_gate.go baseline_bench.txt pr_bench.txt > gate_report.txt
-      - cat gate_report.txt
+      - bash scripts/perf-gate-run.sh

@@ -1,11 +1,8 @@
 package ads
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -30,25 +27,36 @@ import (
 
 const adsContainerStopTimeout = 10 * time.Second
 
+const (
+	adsChaosRedisFastTimeout = 200 * time.Millisecond
+	adsChaosRedisBreakerFail = 3
+	adsChaosRedisBreakerHalf = 2
+	adsChaosRedisBreakerOpen = 300 * time.Millisecond
+)
+
 // adsChaosInfra holds live Postgres and Redis for ads chaos tests.
 type adsChaosInfra struct {
 	Pool           *pgxpool.Pool
 	Redis          redis.UniversalClient
+	RedisBreaker   *database.RedisBreaker
 	Queries        db.Querier
 	PGContainer    *postgres.PostgresContainer
 	RedisContainer testcontainers.Container
 }
 
-// adsIngestStack wires tracker HTTP and a stream consumer against chaos infra.
+// adsIngestStack wires gnet tracker handler and a stream consumer against chaos infra.
 type adsIngestStack struct {
-	Srv        *httptest.Server
-	Consumer   *StreamConsumer
-	Registry   *CampaignRegistry
-	CampaignID uuid.UUID
-	Stream     string
-	ctx        context.Context
-	Cancel     context.CancelFunc
-	cfg        *config.Config
+	Handler       *AdsPacketHandler
+	Consumer      *StreamConsumer
+	Registry      *CampaignRegistry
+	UnifiedFilter *UnifiedFilter
+	CampaignID    uuid.UUID
+	Stream        string
+	ctx           context.Context
+	Cancel        context.CancelFunc
+	probeCancel   context.CancelFunc
+	redisMetrics  bool
+	cfg           *config.Config
 }
 
 // setupAdsChaosInfra boots Postgres and Redis with ads migrations applied.
@@ -81,19 +89,16 @@ func setupAdsChaosInfra(t *testing.T) (*adsChaosInfra, func()) {
 	endpoint, err := redisContainer.Endpoint(ctx, "")
 	require.NoError(t, err)
 
-	rdb := redis.NewUniversalClient(&redis.UniversalOptions{Addrs: []string{endpoint}})
-	require.NoError(t, rdb.Ping(ctx).Err())
-
 	infra := &adsChaosInfra{
 		Pool:           pool,
-		Redis:          rdb,
 		Queries:        db.New(pool),
 		PGContainer:    pgContainer,
 		RedisContainer: redisContainer,
 	}
+	infra.Redis = infra.dialRedisClient(t, endpoint)
 
 	cleanup := func() {
-		_ = rdb.Close()
+		_ = infra.Redis.Close()
 		pool.Close()
 		_ = redisContainer.Terminate(ctx)
 		_ = pgContainer.Terminate(ctx)
@@ -154,13 +159,38 @@ func waitAdsRedisReady(t *testing.T, rdb redis.UniversalClient) {
 	}, 30*time.Second, 200*time.Millisecond)
 }
 
+func (infra *adsChaosInfra) dialRedisClient(t *testing.T, endpoint string) redis.UniversalClient {
+	t.Helper()
+	if infra.RedisBreaker == nil {
+		infra.RedisBreaker = database.NewRedisBreaker(
+			adsChaosRedisBreakerFail,
+			adsChaosRedisBreakerHalf,
+			adsChaosRedisBreakerOpen,
+		)
+	}
+	client := redis.NewClient(&redis.Options{
+		Addr:         endpoint,
+		ReadTimeout:  adsChaosRedisFastTimeout,
+		WriteTimeout: adsChaosRedisFastTimeout,
+	})
+	client.AddHook(database.NewRedisCircuitBreakerHook(infra.RedisBreaker, chaosRedisShardLabel))
+	require.NoError(t, client.Ping(context.Background()).Err())
+	return client
+}
+
 func (infra *adsChaosInfra) refreshRedisClient(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
 	_ = infra.Redis.Close()
+	// Fresh breaker after container recovery (matches tracker process restart semantics).
+	infra.RedisBreaker = database.NewRedisBreaker(
+		adsChaosRedisBreakerFail,
+		adsChaosRedisBreakerHalf,
+		adsChaosRedisBreakerOpen,
+	)
 	endpoint, err := infra.RedisContainer.Endpoint(ctx, "")
 	require.NoError(t, err)
-	infra.Redis = redis.NewUniversalClient(&redis.UniversalOptions{Addrs: []string{endpoint}})
+	infra.Redis = infra.dialRedisClient(t, endpoint)
 	waitAdsRedisReady(t, infra.Redis)
 }
 
@@ -212,6 +242,26 @@ func seedChaosCampaign(t *testing.T, infra *adsChaosInfra, registry *CampaignReg
 }
 
 func startAdsIngestStack(t *testing.T, infra *adsChaosInfra, stream string) *adsIngestStack {
+	return startAdsIngestStackOpts(t, infra, stream, adsIngestStackOpts{filterTimeoutMs: 2000})
+}
+
+func startAdsIngestStackWithFilterTimeout(t *testing.T, infra *adsChaosInfra, stream string, filterTimeoutMs int) *adsIngestStack {
+	return startAdsIngestStackOpts(t, infra, stream, adsIngestStackOpts{filterTimeoutMs: filterTimeoutMs})
+}
+
+func startAdsIngestStackWithRedisMetrics(t *testing.T, infra *adsChaosInfra, stream string) *adsIngestStack {
+	return startAdsIngestStackOpts(t, infra, stream, adsIngestStackOpts{
+		filterTimeoutMs: 2000,
+		redisMetrics:    true,
+	})
+}
+
+type adsIngestStackOpts struct {
+	filterTimeoutMs int
+	redisMetrics    bool
+}
+
+func startAdsIngestStackOpts(t *testing.T, infra *adsChaosInfra, stream string, opts adsIngestStackOpts) *adsIngestStack {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -221,12 +271,14 @@ func startAdsIngestStack(t *testing.T, infra *adsChaosInfra, stream string) *ads
 		StatsFlushMs:       100,
 		MaxWorkers:         2,
 		WriteTimeoutMs:     2000,
-		FilterTimeoutMs:    2000,
+		FilterTimeoutMs:    opts.filterTimeoutMs,
 		MaxRequestBodySize: 1024 * 1024,
 		StreamMaxLen:       100000,
 	}
 
 	registry := newChaosRegistry(t, infra.Queries)
+	sharder := NewJumpHashSharder(1)
+	registry.SetBudgetWarmer(NewBudgetCacheWarmer([]redis.UniversalClient{infra.Redis}, sharder))
 	campaignID := seedChaosCampaign(t, infra, registry)
 
 	store := NewPostgresStore(infra.Queries, 1*time.Second)
@@ -253,28 +305,50 @@ func startAdsIngestStack(t *testing.T, infra *adsChaosInfra, stream string) *ads
 		3, 5*time.Minute, 1*time.Second)
 	consumer.Start(ctx)
 
-	sharder := NewJumpHashSharder(1)
-	router := NewRouter(cfg, registry, filterEngine, infra.Pool, []redis.UniversalClient{infra.Redis}, sharder, cfg.FraudStreamName, nil)
-	srv := httptest.NewServer(router)
+	handler := NewAdsPacketHandler(cfg, registry, filterEngine, infra.Pool, []redis.UniversalClient{infra.Redis}, sharder, cfg.FraudStreamName, nil)
 
-	return &adsIngestStack{
-		Srv:        srv,
-		Consumer:   consumer,
-		Registry:   registry,
-		CampaignID: campaignID,
-		Stream:     stream,
-		ctx:        ctx,
-		Cancel:     cancel,
-		cfg:        cfg,
+	stack := &adsIngestStack{
+		Handler:       handler,
+		Consumer:      consumer,
+		Registry:      registry,
+		UnifiedFilter: unifiedFilter,
+		CampaignID:    campaignID,
+		Stream:        stream,
+		ctx:           ctx,
+		Cancel:        cancel,
+		redisMetrics:  opts.redisMetrics,
+		cfg:           cfg,
 	}
+	if opts.redisMetrics {
+		stack.startRedisHealthProbe(t)
+	} else {
+		handler.SetHealthProbeState(true, true)
+	}
+	return stack
+}
+
+func (s *adsIngestStack) startRedisHealthProbe(t *testing.T) {
+	t.Helper()
+	if s.probeCancel != nil {
+		s.probeCancel()
+	}
+	probeCtx, cancel := context.WithCancel(s.ctx)
+	s.probeCancel = cancel
+	exportHealthProbeMetrics(true, []int32{1})
+	s.Handler.StartHealthProbe(probeCtx)
 }
 
 func (s *adsIngestStack) Close(t *testing.T) {
 	t.Helper()
+	if s.probeCancel != nil {
+		s.probeCancel()
+	}
+	if s.Handler != nil {
+		_ = s.Handler.Stop(context.Background())
+	}
 	s.Consumer.Close()
 	_ = s.Consumer.Wait(context.Background())
 	s.Cancel()
-	s.Srv.Close()
 }
 
 func (s *adsIngestStack) restartConsumer(t *testing.T, infra *adsChaosInfra) {
@@ -291,22 +365,27 @@ func (s *adsIngestStack) restartConsumer(t *testing.T, infra *adsChaosInfra) {
 	s.Consumer.Start(s.ctx)
 }
 
-func postChaosClick(t *testing.T, srvURL string, campaignID uuid.UUID) int {
+func postChaosClick(t *testing.T, h *AdsPacketHandler, campaignID uuid.UUID) int {
+	return postChaosTrack(t, h, campaignID, "click", "chaos-user-1", uuid.NewString())
+}
+
+func postChaosImpression(t *testing.T, h *AdsPacketHandler, campaignID uuid.UUID, userID string) int {
+	return postChaosTrack(t, h, campaignID, "impression", userID, uuid.NewString())
+}
+
+func postChaosTrack(t *testing.T, h *AdsPacketHandler, campaignID uuid.UUID, evtType, userID, clickID string) int {
 	t.Helper()
 	payload := map[string]any{
 		"campaign_id": campaignID,
-		"type":        "click",
-		"click_id":    uuid.NewString(),
+		"type":        evtType,
+		"click_id":    clickID,
+		"user_id":     userID,
 		"payload":     map[string]string{"chaos": "1"},
 	}
 	body, err := json.Marshal(payload)
 	require.NoError(t, err)
-	resp, err := http.Post(srvURL+"/track", "application/json", bytes.NewBuffer(body))
-	if err != nil {
-		return 0
-	}
-	defer resp.Body.Close()
-	return resp.StatusCode
+	status, _ := PostTrackGnetJSON(h, body)
+	return status
 }
 
 func countChaosCampaignEvents(t *testing.T, pool *pgxpool.Pool, campaignID uuid.UUID) int64 {

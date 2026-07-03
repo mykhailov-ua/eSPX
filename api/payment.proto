@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+package payment;
+
+option go_package = "espx/internal/payment/pb;pb";
+
+import "google/protobuf/timestamp.proto";
+
+service PaymentService {
+  // Internal callers only; idempotency_key prevents duplicate checkout sessions on client retry.
+  rpc CreatePaymentIntent(CreatePaymentIntentRequest) returns (CreatePaymentIntentResponse);
+
+  // Post-checkout status polling without listing full customer history.
+  rpc GetPaymentIntent(GetPaymentIntentRequest) returns (PaymentIntent);
+
+  // Support and billing review; paginated to avoid unbounded scans.
+  rpc ListPaymentIntents(ListPaymentIntentsRequest) returns (ListPaymentIntentsResponse);
+}
+
+message CreatePaymentIntentRequest {
+  string customer_id = 1;       // UUID, references ads.customers (no FK)
+  int64 amount_micro = 2;       // > 0, 10^6 scale (matches ledger)
+  string currency = 3;          // ISO 4217, default "USD"
+  string idempotency_key = 4;   // required, client-supplied (HTMX: Idempotency-Key header)
+  map<string, string> metadata = 5;
+}
+
+message CreatePaymentIntentResponse {
+  string intent_id = 1;
+  PaymentIntentStatus status = 2;
+  string checkout_url = 3;      // empty until Stripe connected
+  string provider_ref = 4;      // pi_xxx / cs_xxx when set
+}
+
+message GetPaymentIntentRequest {
+  string intent_id = 1;
+}
+
+message ListPaymentIntentsRequest {
+  string customer_id = 1;
+  int32 limit = 2;
+  int32 offset = 3;
+}
+
+message ListPaymentIntentsResponse {
+  repeated PaymentIntent intents = 1;
+  int64 total = 2;
+}
+
+message PaymentIntent {
+  string id = 1;
+  string customer_id = 2;
+  int64 amount_micro = 3;
+  string currency = 4;
+  PaymentIntentStatus status = 5;
+  string provider = 6;
+  string provider_ref = 7;
+  string idempotency_key = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp updated_at = 10;
+}
+
+enum PaymentIntentStatus {
+  PAYMENT_INTENT_STATUS_UNSPECIFIED = 0;
+  PAYMENT_INTENT_STATUS_CREATED = 1;
+  PAYMENT_INTENT_STATUS_PENDING_PROVIDER = 2;
+  PAYMENT_INTENT_STATUS_PROCESSING = 3;
+  PAYMENT_INTENT_STATUS_SUCCEEDED = 4;
+  PAYMENT_INTENT_STATUS_FAILED = 5;
+  PAYMENT_INTENT_STATUS_CANCELLED = 6;
+  PAYMENT_INTENT_STATUS_REFUNDED = 7;
+  PAYMENT_INTENT_STATUS_SETTLEMENT_FAILED = 8;
+}

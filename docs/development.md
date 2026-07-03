@@ -1,304 +1,667 @@
 # Development Guide
 
-Requirements, tasks, and service definitions for the `eSPX` ingestion pipeline.
+Setup, tooling, and operational procedures for the eSPX codebase.
 
 ## Requirements
 
 - Go 1.25+
 - Docker and Docker Compose
-- `buf` CLI
+- `buf` CLI (or `make proto` which invokes buf via `go run`)
+- `lefthook` (optional, for git hooks)
+
+---
+
+## Quick Start
+
+```bash
+cp .env.example .env
+# Optional: deploy/geoip/GeoLite2-Country.mmdb for production geo
+bash scripts/dev-stack.sh build
+bash scripts/dev-stack.sh full
+bash scripts/dev-preflight.sh
+```
+
+Full stack adds `tracker-1..3`, `nginx`, `prometheus`, `grafana`, `alertmanager`, sentinels, replicas.
+
+`dev-stack.sh` profiles:
+
+| Command | Services started |
+| :--- | :--- |
+| `bash scripts/dev-stack.sh infra` | db, redis-0…5, clickhouse |
+| `bash scripts/dev-stack.sh full` | infra + processor, tracker-0, auth, management, payment |
+| `bash scripts/dev-stack.sh sentinel` | redis-0, replica, sentinel-0…2 |
+| `bash scripts/dev-stack.sh status` | `docker compose ps` |
+| `bash scripts/dev-stack.sh down` | tear down compose stack |
+
+Pre-deploy topology check:
+
+```bash
+sh scripts/verify-redis-topology.sh .env
+```
+
+---
+
+## Code Generation
+
+| Target | Command | Output |
+| :--- | :--- | :--- |
+| `make proto` | `scripts/gen.sh --proto` | `internal/*/pb/*` (vtproto) |
+| `make gen` | `scripts/gen.sh` (sqlc) | `internal/*/db/*` |
+| `task gen` | `scripts/gen.sh --all` | sqlc + templ (if installed) + buf |
+
+Protobuf sources live in `api/` (flat layout). sqlc pinned to **v1.28.0** (Go 1.25-compatible).
+
+---
+
+## Scripts (`scripts/`)
+
+Flat directory; invoke with `bash scripts/<name>.sh` (no subfolders).
+
+### Local dev and compose
+
+| Script | Purpose |
+| :--- | :--- |
+| `dev-stack.sh` | Compose lifecycle: `infra`, `full`, `sentinel`, `down`, `status`, `build` |
+| `dev-preflight.sh` | `check-deps.sh` then `smoke-local.sh` |
+| `check-deps.sh` | Preflight: Postgres, six Redis shards, ClickHouse ports/migrations |
+| `smoke-local.sh` | Tracker/processor `/health`, edge `/metrics/edge`, 4× Redis PING/AOF; SKIP when stack down |
+| `gen.sh` | Codegen: default sqlc; flags `--proto`, `--templ`, `--all` |
+
+### Performance and CI
+
+| Script | Purpose |
+| :--- | :--- |
+| `perf-gate-run.sh` | PR perf gate: worktree baseline + `perf-gate-bench.sh` + `perf_gate.go` |
+| `perf-gate-bench.sh` | Hot-path benchmarks for PR gate (`internal/ads`) |
+| `perf_gate.go` | Zero-alloc check + benchstat; `--cpu-only` for nightly |
+| `perf-baseline-gate.sh` | Nightly benchstat vs cached baseline (seeds on miss) |
+| `run-bench.sh` | Shared `go test -bench` runner (`<regex> <pkg...>`) |
+| `nightly-bench-job.sh` | Nightly: `redis` or `broker` bench + gate + baseline update |
+| `escape-nightly-job.sh` | Escape analysis; second arg enables regression gate |
+| `stabilize-cpu.sh` | CPU performance governor (perf CI) |
+| `edge-nic-tune.sh` | Ingress NIC RX ring max + IRQ/RSS spread |
+| `edge-sysctl.sh` | Ingress sysctl install/verify (`deploy/edge/99-espx-edge.conf`) |
+| `edge-baseline.sh` | Minimal Prometheus SLA snapshot for edge baseline |
+| `install-benchstat.sh` | Ensures `benchstat` on PATH |
+
+### Chaos and failover
+
+| Script | Purpose |
+| :--- | :--- |
+| `test-chaos.sh` | testcontainers chaos suite; requires ≥24 `chaos_proof` lines |
+| `test-sentinel-failover.sh` | Sentinel promote/failover against compose stack |
+| `sentinel-chaos-env.sh` | CI: copy `.env.example` with sentinel test password |
+
+### Redis operations
+
+| Script | Purpose |
+| :--- | :--- |
+| `verify-redis-topology.sh` | `REDIS_ADDRS` count vs `REDIS_SHARD_COUNT` (default 4) |
+| `redis-reconcile-post-deploy.sh` | Read-only drift check: `config:*`, `blacklist:manual` on all shards |
+| `redis-migrate-campaign.sh` | Move campaign keys between shards (StaticSlot) |
+| `campaign_shard.go` | `go run ./scripts/campaign_shard.go <uuid> [N]` — shard index |
+
+### Production
+
+| Script | Purpose |
+| :--- | :--- |
+| `log-evacuate` | S3 upload of `.log.zst.ready` segments (`Dockerfile.log-evacuator`) |
+
+Workflow wiring: [.github/CI_PERF.md](../.github/CI_PERF.md).
 
 ---
 
 ## Make Targets
 
-| Target | Command | Purpose |
-| :--- | :--- | :--- |
-| `make fmt` | `go fmt ./...` | Format code. |
-| `make proto` | `buf generate` | Compile Protobuf schemas. |
-| `make test` | `go test -v ./...` | Run tests. |
-| `make build` | `docker build ...` | Build Docker image. |
+| Target | Purpose |
+| :--- | :--- |
+| `make fmt` | `go fmt ./...` |
+| `make gen` | `scripts/gen.sh` (sqlc v1.28.0) |
+| `make proto` | `scripts/gen.sh --proto` (buf → vtproto) |
+| `make lint` | gen + fmt + golangci-lint |
+| `make test-unit` | `go test -short ./internal/...` |
+| `make test-int` | `go test ./tests/...` |
+| `make test-alloc-gate` | zero-alloc + fraud SLA in `./internal/ads/`; `BenchmarkAuction` 0 allocs in `./internal/rtb/` |
+| `make test-chaos` | `scripts/test-chaos.sh` (Docker, ≥24 `chaos_proof` lines) |
+| `make test-sentinel-chaos` | `scripts/test-sentinel-failover.sh` |
+| `make test` | test-unit + test-int |
+| `make test-full` | `go test ./... -count=1 -timeout 30m` (matches CI `full-test`) |
+| `make build` | `docker build -t ad-event-processor:latest .` |
 
 ---
 
-## Git Hooks
+## Taskfile (optional)
 
-Git hook execution is managed via **Lefthook**.
+Requires [Task](https://taskfile.dev). Overlaps with `make` where noted.
 
-- **Pre-commit**: Runs linter:
-  ```bash
-  make lint
-  ```
-- **Pre-push**: Runs test suite:
-  ```bash
-  make test
-  ```
+| Task | Purpose |
+| :--- | :--- |
+| `task gen` | `scripts/gen.sh --all` (sqlc + templ if installed + buf) |
+| `task docker-up` | `scripts/dev-stack.sh infra` |
+| `task docker-down` | `scripts/dev-stack.sh down` |
+| `task check-deps` | `scripts/check-deps.sh` |
+| `task dev-preflight` | `scripts/dev-preflight.sh` |
+| `task perf-gate` | `scripts/perf-gate-run.sh` vs `main` (worktree `../baseline-local`) |
+| `task test-full` | `go test -race ./...` (not the same as `make test-full`) |
 
-Install hooks:
+---
+
+## Git Hooks (Lefthook)
+
 ```bash
 lefthook install
 ```
+
+- **pre-commit:** `make lint`
+- **pre-push:** `make test`
 
 ---
 
 ## Ports and Services
 
-| Service | Port | Description |
+| Service | Port | Binary |
 | :--- | :--- | :--- |
-| **Nginx** | 8180 | Load Balancer |
-| **Tracker** | 8181-8184 | Ingestion instances (`cmd/tracker.go`) |
-| **Processor** | 8186 | Stream processor (`cmd/processor.go`) |
-| **Management** | 8188 | Management service (`cmd/management.go`) |
-| **Auth Server** | 51051 | gRPC Auth service (`cmd/auth.go`) |
-| **Redis Shards** | 6479-6484 | Redis instances (0-5) |
-| **PostgreSQL** | 5440 | Postgres database |
-| **ClickHouse** | 9100, 8223 | ClickHouse database |
-| **Prometheus** | 9190 | Telemetry scraper |
-| **Alertmanager** | 9093 | Alert routing |
-| **Telegram Proxy** | 8222 | Telegram webhook (`cmd/telegram.go`) |
-| **Grafana** | 3100 | Visualization dashboard |
+| Nginx | 8180 | — |
+| Tracker | 8181–8184 | `cmd/tracker` |
+| Payment HTTP (webhooks, HTMX demo) | 8187 | `cmd/payment` |
+| Processor | 8186 | `cmd/processor` |
+| Management REST | 8188 | `cmd/management` |
+| Auth gRPC | 51051 | `cmd/auth` |
+| Auth metrics | 9091 | `cmd/auth` |
+| Payment gRPC | 51052 | `cmd/payment` |
+| Settlement gRPC | 51053 | `cmd/management` (sidecar) |
+| Tracker metrics | 9090 (sidecar); `/metrics` also on :8181–8184 (gnet) | `cmd/tracker` |
+| Redis shards | 6479–6482 | `redis-0` … `redis-3` |
+| Redis Sentinel | 26379–26381 | `sentinel-0` … `sentinel-2` |
+| PostgreSQL | 5430 | `db` |
+| ClickHouse native / HTTP | 9000 / 8123 | `clickhouse` |
+| Prometheus | 9190 | — |
+| Alertmanager | 9093 | — |
+| Telegram proxy | 8222 | `cmd/telegram` |
+| Grafana | 3100 | — |
+
+Host networking (`NET_MODE=host`) is default for app services. Stateful stores publish ports from the `database` bridge network.
+
+### Not in compose
+
+| Binary | Purpose |
+| :--- | :--- |
+| `cmd/broker` | mmap log broker |
+| `cmd/log-shipper` | Tails tracker logs to broker |
+| `cmd/dlq` | DLQ archive / requeue / restore |
+| `cmd/admin` | Cobra dev CLI (users, seed, budget reset) |
+
+Broker HA stack: `deploy/broker-ha/docker-compose.yml` (optional). HAProxy exposes `:9092` (leader-only produce via `/leaderz`) and `:9093` (any healthy node for fetch). Produce clients should use `-redis-url` or target `:9092`. Override binary: `ESPX_BROKER_BIN=/path/to/espx-broker docker compose up`.
 
 ---
 
-## CLI Tools
+## Environment Variables (selected)
 
-### DLQ Utility (`cmd/dlq.go`)
+Full template: `.env.example`. Required at startup: `SERVER_PORT`, `DB_DSN`, `REDIS_ADDRS`, `TOKEN_SYMMETRIC_KEY`.
 
-Manages the Redis Dead Letter Queue (DLQ).
+### Redis
 
-*   **Archive events to disk**:
-    ```bash
-    go run cmd/dlq.go -action=archive -stream=ad:events:dlq -dest=dlq_archive.bin -batch=1000
-    ```
-    Extracts events from Redis DLQ, serializes them as length-prefixed `AdDLQEvent` Protobuf segments, writes to disk, and acknowledges the entries in Redis.
-*   **Restore events from disk**:
-    ```bash
-    go run cmd/dlq.go -action=restore -dest=dlq_archive.bin -stream=ad:events -batch=1000 -rate=200
-    ```
-    Deserializes events from disk and writes them to the Redis ingestion stream (`ad:events`). The optional `-rate` parameter defines a rate limit (events/second) to prevent overwhelming the target stream; default is `0` (unlimited).
-*   **Requeue directly**:
-    ```bash
-    go run cmd/dlq.go -action=requeue -stream=ad:events:dlq -dest=ad:events -batch=1000 -rate=500
-    ```
-    Moves events from the Redis DLQ to the active ingestion queue. An optional rate limit can be set via `-rate` (events/second) to control the flow.
-
----
-
-## Performance Gate Setup
-
-Pull requests are validated on target runners to ensure latency and memory budgets are met.
-
-### Gate Thresholds
-
-- **Heap Allocations**: `0 allocs/op`.
-- **Memory Consumption**: `0 B/op`.
-- **Latency Regression**: `<= 12.0%` (p < 0.05).
-
-### Local Benchmarking
-
-Run hot-path microbenchmarks to track execution latencies and allocation behavior:
 ```bash
-# Run all hot path benchmarks
-go test -bench=BenchmarkHotPath -benchmem ./internal/ads/...
-
-# Run audit log serialization benchmarks
-go test -bench=BenchmarkHandler_auditLog -benchmem ./internal/ads/...
+REDIS_ADDRS=127.0.0.1:6479,...,127.0.0.1:6482   # production: exactly 4
+# Optional Sentinel for Go services:
+# REDIS_SENTINEL_ADDRS=127.0.0.1:26379,127.0.0.1:26380,127.0.0.1:26381
+# REDIS_MASTER_NAMES=espx-shard-0,...,espx-shard-3
+REDIS_BREAKER_FAIL_THRESHOLD=150
+REDIS_BREAKER_OPEN_TIMEOUT_MS=5000
 ```
 
-Key hot path benchmarks available:
-- `BenchmarkHotPath_monotonicNano`: Measures monotonic time syscall bypass.
-- `BenchmarkHotPath_latencyRingRecord`: Tracks `LatencyRing` lock-free ring recording.
-- `BenchmarkHotPath_filterEngineCheck_noTimeout`: Measures CPU overhead of filter engine evaluations.
-- `BenchmarkHandler_auditLog_impression_sampled`: Tracks Protobuf serialization and priority log writing under sampling rules.
+### Payment
 
-Compare baseline and branch benchmarks locally:
 ```bash
-go run scripts/perf_gate.go baseline_bench.txt pr_bench.txt
+PAYMENT_SERVER_PORT=51052
+PAYMENT_WEBHOOK_PORT=8187
+SETTLEMENT_SERVER_PORT=51053
+PAYMENT_INTERNAL_TOKEN=...      # management to payment gRPC
+SETTLEMENT_INTERNAL_TOKEN=...   # payment outbox to settlement gRPC
+STRIPE_SECRET_KEY=              # empty = mock provider
+STRIPE_WEBHOOK_SECRET=          # required for live webhooks
 ```
 
-Verify `0 B/op` benchmarks and allocation/escape behavior locally:
+Stripe checkout API is not wired (`provider_stripe.go` returns `ErrProviderNotConfigured` even with secret key). Mock provider works for local settlement flow testing.
+
+### Lifecycle
+
 ```bash
-go test -bench=. -benchmem ./...
+SHUTDOWN_TIMEOUT_MS=15000   # SIGTERM drain budget (all services)
+DRAIN_TIMEOUT_MS=10000      # tracker connection drain
+WAIT_TIMEOUT_MS=5000        # gnet shutdown wait
 ```
 
-### Compiler Optimization Analysis
+### Filtering
 
-Verify escape analysis results and compiler inlining decisions for hot path structures:
 ```bash
-# Analyze stack allocation vs heap escape behavior
-go build -gcflags="-m -m" ./internal/ads/... 2>&1 | grep -E "escapes to heap|escapes"
-
-# Inspect compiler inlining decisions for low-complexity functions
-go build -gcflags="-m" ./internal/ads/... 2>&1 | grep -i "inline"
+TTC_MIN_MS=300
+TTC_FAIL_CLOSED=false           # set true in prod after bypass rate review
+RATE_LIMIT_PER_MIN=100
+DUPLICATE_TTL_SEC=45
+FILTER_TIMEOUT_MS=5000
+CLICK_AMOUNT=0.1                # dollars to micro-units internally
+IMPRESSION_AMOUNT=0.01
 ```
 
 ---
 
-## Delivery Management API Endpoints
+## Admin CLI (`cmd/admin`)
 
-The admin panel and management system expose endpoints for campaign lifecycle, template, and creative management:
-
-### Campaign Templates
-- `POST /admin/campaign-templates`: Creates a reusable preset configurations bundle (daily budgets, timezone, frequency caps, targeting countries, and dayparts).
-- `GET /admin/campaign-templates`: Returns paginated lists of campaign presets for a specific customer tenant.
-- `POST /admin/campaign-templates/{id}/instantiate`: Launches a live campaign from a preset template with overrides, guarded by a client-provided idempotency key.
-- `POST /admin/campaigns/{id}/save-as-template`: Snapshots an active campaign configuration back into the templates repository.
-
-### Campaign Delivery & Scheduling
-- `POST /admin/campaigns/{id}/pause`: Operator-initiated command to pause campaign delivery.
-- `POST /admin/campaigns/{id}/resume`: Operator-initiated command to reactivate campaign delivery.
-- `POST /admin/campaigns/{id}/schedule`: Modifies active start/end date-time boundaries and daypart hours.
-
-### Brand Creative Routing
-- `POST /admin/brands/{id}/creatives`: Adds a weighted creative landing URL variant for user routing.
-- `GET /admin/brands/{id}/creatives`: Returns creative landing URL variants configured for a brand.
-- `PUT /admin/brands/{brand_id}/creatives/{id}`: Updates a creative's weights or URL values.
-- `DELETE /admin/brands/{brand_id}/creatives/{id}`: Deletes a creative variant.
+```bash
+go run cmd/admin/main.go user create --email=... --password=...
+go run cmd/admin/main.go db seed          # 100 customers, 1000 campaigns
+go run cmd/admin/main.go budget reset --campaign-id=...
+```
 
 ---
 
-## Operations and Infrastructure
+## DLQ Utility (`cmd/dlq`)
 
-### Specialized Containers
+```bash
+# Archive DLQ to disk
+go run cmd/dlq/main.go -action=archive -stream=ad:events:dlq -dest=dlq_archive.bin -batch=1000
 
-#### Dockerfile.log-evacuator
-The production image built via `Dockerfile` uses a statically linked, debian-distroless base lacking a shell, package manager, and diagnostic tools. Out-of-process log evacuation requires OS-level utility bins (`rsync`, `openssh-client`, `bash`, `coreutils`). `Dockerfile.log-evacuator` packages these dependencies into a separate, isolated Alpine container to decouple file transport from the ingestion services.
+# Restore to ingestion stream (rate-limited)
+go run cmd/dlq/main.go -action=restore -dest=dlq_archive.bin -stream=ad:events -batch=1000 -rate=200
 
-### Log Evacuation Procedures
-- **Hetzner Storage Box Setup**: Generate a passphrase-less Ed25519 SSH key (`~/.ssh/storagebox_id`), register the public key in Hetzner Robot Console, and set `STORAGE_BOX_SSH_KEY_PATH=/root/.ssh/storagebox_id` in `.env`.
-- **Cron Evacuation Trigger**: Copy `deploy/cron/log-evacuate.cron` to `/etc/cron.d/log-evacuate` (chmod `0644`). It re-runs every 5 minutes logging execution status to `/var/log/espx-evacuate.log`.
-- **Claim Renaming Details**: Active log files are written directly as raw `.log` files. Once rotated, a dedicated background compressor worker (`StartCompressorWorker`) asynchronously compresses rotated segments with `zstd` and encrypts them with `AES-GCM` using the 12-byte incrementing nonce. The output is named `.log.zst.ready` and the original raw file is deleted. The evacuator script claims these ready files by renaming them to `*.log.zst.evacuating` and uploads them via `rsync`. Local source files are deleted upon successful transfer.
-- **Recovering Locked Segments**: If a crash halts upload, manually rename stuck `.evacuating` files back to `.ready` to trigger a retry.
-- **Log Retention Policy**: There is no automatic retention on the Hetzner Storage Box. Manually execute purges via SSH or schedule periodic cleanups for segments older than the desired threshold.
+# Requeue DLQ to main stream
+go run cmd/dlq/main.go -action=requeue -stream=ad:events:dlq -dest=ad:events -batch=1000 -rate=500
+```
 
-### TTC fail-open vs fail-closed
+---
 
-Time-to-click (TTC) is enforced in `unified_filter.lua` on the click path: Lua reads `imp_ts:{user}:{campaign}` set by a prior impression.
+## Management API (selected endpoints)
 
-| Mode | Env | Behaviour |
+### Campaign templates
+- `POST /admin/campaign-templates`
+- `GET /admin/campaign-templates`
+- `POST /admin/campaign-templates/{id}/instantiate` (idempotency key)
+- `POST /admin/campaigns/{id}/save-as-template`
+
+### Delivery
+- `POST /admin/campaigns/{id}/pause|resume|schedule`
+
+### Brand creatives
+- `POST|GET /admin/brands/{id}/creatives`
+- `PUT|DELETE /admin/brands/{brand_id}/creatives/{id}`
+
+### Payment
+- `POST /admin/customers/{id}/payment-intent` (requires `PAYMENT_INTERNAL_TOKEN`)
+- `POST /admin/customers/{id}/topup` (direct ledger credit, bypasses payment service)
+
+---
+
+## CI (GitHub Actions)
+
+| Workflow | When | What |
 | :--- | :--- | :--- |
-| **Fail-open** (default) | `TTC_FAIL_CLOSED=false` | Click without `imp_ts` is accepted; `ad_ttc_bypass_total` increments (return code 10). |
-| **Fail-closed** (prod) | `TTC_FAIL_CLOSED=true` | Click without `imp_ts` -> fraud (`missing_imp_ts`). Enable only after business sign-off. |
+| `ci.yml` | push/PR `main` | lint, alloc gate, short tests, docker build |
+| `ci.yml` → `full-test` | push/PR `main` (parallel) | `go test ./... -count=1 -timeout 30m` |
+| `perf-gate.yml` | path-filtered PR/push | `perf-gate-run.sh` vs base branch |
+| `perf-nightly.yml` | Mon 03:00 UTC, manual | escape + redis/broker regression + chaos |
+| `sentinel-chaos.yml` | push/PR `main` | Sentinel failover script |
 
-**Observability:** `ad_ttc_bypass_total`, alert `TTCBypassRateHigh` (>1% of `/track`). Before enabling fail-closed, watch bypass rate during Redis incidents.
+Set repository variable `PERF_RUNNER_LABEL` (e.g. `self-hosted`) for stable benchmarks. Details: [.github/CI_PERF.md](../.github/CI_PERF.md).
 
-**Geo filter:** `ad_filter_geo_duration_seconds` (sampled 1/128) for p99 MaxMind latency; alert `FilterGeoLatencyHigh` (>10us p99). Schedule/daypart stays in Go (`ScheduleFilter`) - MaxMind cannot run in Redis.
+---
 
-### Redis Recovery Verification
-- **AOF Load Status**: Connect to the shard and run `redis-cli INFO persistence | grep aof_enabled`. Confirm output is `aof_enabled:1`.
-- **Stream Verification**: Query lengths via `redis-cli XLEN ad:events:stream` and verify active consumer groups using `redis-cli XINFO GROUPS ad:events:stream`.
-- **Budget Counters**: Verify daily budget key presence with `redis-cli KEYS "budget:campaign:*"`.
-- **DLQ Integrity**: Confirm DLQ stream depth using `redis-cli XLEN ad:events:dlq`.
-- **Budget Reconciliation**: Realignment is initiated by running the management reconciliation worker or CLI tool, monitored via `ad_redis_reconciliation_duration_seconds`.
+## Performance Gate
 
-### Redis Restart Runbook
+CI validates hot-path benchmarks on PRs touching `internal/ads/**`, `internal/config/**`, `internal/database/redis*.go`, `deploy/nginx/lua/**`, or `api/events.proto`. Thresholds:
 
-**Problem:** after `SCRIPT FLUSH`, Redis restart, or shard failover the in-memory Lua script cache is empty. Running trackers keep a cached EVALSHA digest and set `ad_redis_lua_script_loaded=1` only at startup - the gauge can stay stale while Redis has no script. Hot path falls back to full `EVAL` (see `ad_redis_lua_noscript_total`). Volatile `budget:campaign:*` keys are restored from AOF on a normal restart, but are absent after `FLUSHDB`, volume loss, or TTL expiry (24h).
+- Heap allocations: 0 allocs/op on gated benchmarks (CPU-only exempt list below)
+- Memory: 0 B/op
+- Latency regression: ≤12% (p < 0.05)
 
-**Related alerts:** `RedisLuaNoScriptFallback`, `RedisLuaScriptNotLoaded`, `BudgetCacheMissPG`, `BudgetCacheMissRatioHigh`.
+`ci.yml` also runs a fast alloc gate (`make test-alloc-gate`): `ZeroAlloc`, fraud scoring zero-alloc, and 500µs fraud SLA unit tests in `./internal/ads/`.
 
-#### Restart order (planned maintenance)
+```bash
+bash scripts/perf-gate-run.sh   # or: task perf-gate
+make test-alloc-gate
+```
 
-1. Restart Redis shards (`redis-0` ... `redis-5`) and wait until `redis-cli PING` succeeds on every port (`6479`-`6484`).
-2. Verify AOF replay: `redis-cli INFO persistence | grep aof_load`.
-3. **Rolling restart trackers** (`tracker-0` ... `tracker-3`) one instance at a time. Each startup runs `PreloadScripts` (SCRIPT LOAD per shard) and `WarmFromRegistry` (SET NX for missing budget keys).
-4. Confirm recovery:
-   - `ad_redis_lua_script_loaded{shard}` == 1 on all shards
+Gated benchmarks (via `scripts/perf-gate-bench.sh`):
+
+- Handler: `BenchmarkAdsPacketHandlerProto`, `Proto_NoExtra`, `Proto_ExtraBytes`
+- Error paths: `BenchmarkHotPath_AdsPacketHandlerProto_reject404`, `_infra503` (infra: CPU-only)
+- Micro: `BenchmarkHotPath_*` (timers, filter engine, latency ring, counters)
+- Parse/routing: `BenchmarkTrackRequest_ParseJSON`, `BenchmarkCompositeRouting_Protobuf`
+
+Excluded from gate: legacy `BenchmarkAdsPacketHandlerJSON`, `Proto_ExtraRepeated` (allocating repeated-field parse).
+
+CPU-only exempt (alloc allowed, still benchstat CPU regression): `filterEngineCheck_withDeadline`, `AdsPacketHandlerProto_infra503`.
+
+Nightly (`perf-nightly.yml`, Monday 03:00 UTC): escape heap-line regression, Redis/broker benchstat regression (`--cpu-only`), chaos suite. Baselines in Actions cache; see [.github/CI_PERF.md](../.github/CI_PERF.md).
+
+PR also runs **`full-test`** job: `go test ./... -count=1` (no `-short`). Local: `make test-full`.
+
+Perf runner: set repo variable `PERF_RUNNER_LABEL` (e.g. `self-hosted`) for `perf_gate` and nightly bench jobs.
+
+Unit zero-alloc tests (in `test-alloc-gate`): `TestParseTrackRequestJSON_ZeroAlloc`, `TestAdEvent_UnmarshalVT_ZeroAlloc`, `TestComputeCompositeHashUUID_ZeroAlloc`, `TestFilterEngine_Check_zeroAlloc_fraudScoring`.
+
+Escape analysis (nightly artifact or local):
+
+```bash
+bash scripts/escape-nightly-job.sh /tmp/espx-escape.txt
+```
+
+IDE settings (format on save, Go tools, debug env) live in Cursor user config (`~/.config/Cursor/User/settings.json` on Linux), not `.vscode/` in the repo. Use `make lint`, `task`, and lefthook for repeatable workflows.
+
+---
+
+## Post-deploy Redis Reconciliation
+
+Run after rolling deploys that touch management outbox, Sentinel failover, or shard alignment fixes. Goal: confirm global keys are identical on all N shards and campaign-local keys sit on the shard `StaticSlotSharder` expects.
+
+**When to run:**
+
+- After deploy changing outbox handlers, `redis_global.go`, or sharder alignment
+- After Sentinel failover or manual `redis-migrate-campaign.sh`
+- Before closing a production change window
+
+**Automated check:**
+
+```bash
+bash scripts/redis-reconcile-post-deploy.sh .env
+```
+
+Checks on every shard in `REDIS_ADDRS`:
+
+| Key | Expectation |
+| :--- | :--- |
+| `config:version` | Same integer on all shards |
+| `config:values` | Same `HLEN` on all shards |
+| `blacklist:manual` | Same `SCARD` on all shards |
+
+Exit code 1 prints drift details. Fix path:
+
+1. Trigger settings sync: update any system setting in management UI or restart management (outbox cold sync on start).
+2. For blacklist drift: re-apply block from management or replay outbox `UPDATE_BLACKLIST` rows.
+3. For campaign budget drift: use campaign migration below.
+
+**Campaign budget migration:**
+
+Budget and pacing keys are shard-local. Tracker and outbox must agree on `StaticSlotSharder` (N=4).
+
+```bash
+# 1. Pause campaign in management
+# 2. Migrate keys (auto-detects source shard from campaign UUID)
+bash scripts/redis-migrate-campaign.sh <campaign_uuid> <source_shard> <target_shard>
+
+# 3. Verify on target
+redis-cli -h <target_host> -p <port> -a "$REDIS_PASSWORD" GET budget:campaign:<uuid>
+
+# 4. Resume campaign; watch ad_budget_cache_miss_pg_total
+```
+
+Keys copied: `budget:campaign:{id}`, `campaign:settings:{id}`, `budget:daily_spent:campaign:{id}:*`.
+
+Shard index helper:
+
+```bash
+go run ./scripts/campaign_shard.go <campaign_uuid> 4
+```
+
+**Alerts tied to this runbook:**
+
+| Alert | Metric | Action |
+| :--- | :--- | :--- |
+| `ManagementOutboxLagHigh` | `ad_management_outbox_oldest_pending_seconds > 30` | Check management logs, Redis connectivity from outbox worker |
+| `TrackerHealthDegraded` | `ad_tracker_health_degraded == 1` | `curl tracker:8181/health` — body `DEGRADED redis=0:0,...` |
+| `TrackerRedisShardUnhealthy` | `ad_tracker_redis_shard_healthy{shard="X"} == 0` | Shard X down or Sentinel not promoted |
+
+**Manual deep audit (optional):**
+
+```bash
+redis-cli -a "$REDIS_PASSWORD" -h host0 HGETALL config:values | sort > /tmp/s0.txt
+redis-cli -a "$REDIS_PASSWORD" -h host5 HGETALL config:values | sort > /tmp/s5.txt
+diff /tmp/s0.txt /tmp/s5.txt
+```
+
+For active campaigns, sample from Postgres:
+
+```sql
+SELECT id FROM campaigns WHERE status = 'ACTIVE' LIMIT 20;
+```
+
+For each id, `GET budget:campaign:{id}` only on shard from `go run ./scripts/campaign_shard.go {id}`.
+
+---
+
+## Redis Operations
+
+### Topology verification
+
+```bash
+sh scripts/verify-redis-topology.sh .env
+# Override count: REDIS_SHARD_COUNT=3 sh scripts/verify-redis-topology.sh .env
+```
+
+### Health checks
+
+```bash
+redis-cli -p 6479 -a "$REDIS_PASSWORD" PING
+redis-cli -p 6479 INFO persistence | grep aof_enabled    # expect aof_enabled:1
+redis-cli -p 6479 XLEN ad:events:stream
+redis-cli -p 6479 XINFO GROUPS ad:events:stream
+redis-cli -p 6479 XLEN ad:events:dlq
+curl -s localhost:8181/health   # OK or DEGRADED redis=0:1,1:0,...
+```
+
+Tracker `/health` probes all shards every 2s in background. Status 503 when any shard unhealthy.
+
+### TTC modes
+
+| Mode | Env | Behavior |
+| :--- | :--- | :--- |
+| Fail-open (default) | `TTC_FAIL_CLOSED=false` | Click without `imp_ts` accepted; return code 10; `ad_ttc_bypass_total` increments |
+| Fail-closed | `TTC_FAIL_CLOSED=true` | Click without `imp_ts` rejects as fraud (`missing_imp_ts`) |
+
+Watch `ad_ttc_bypass_total` before enabling fail-closed. Alert `TTCBypassRateHigh` fires at >1% of `/track`.
+
+Geo filter latency: `ad_filter_geo_duration_seconds` (sampled 1/128). Schedule/daypart stays in Go (`ScheduleFilter`).
+
+### Sentinel failover testing
+
+```bash
+# Unit
+go test ./internal/config/ -run Redis -count=1
+go test ./internal/database/ -run ShardUniversal -count=1
+
+# Stack (optional)
+bash scripts/dev-stack.sh sentinel
+# Enable REDIS_SENTINEL_ADDRS in .env, restart tracker
+
+# Scripted chaos
+bash scripts/sentinel-chaos-env.sh   # CI only; local: use your .env
+bash scripts/test-sentinel-failover.sh
+
+# Manual chaos
+docker stop redis-2
+# Watch ad_redis_breaker_state{shard="2"} and /health on :8181
+docker start redis-2
+```
+
+Breaker open timeout defaults to 5s (`REDIS_BREAKER_OPEN_TIMEOUT_MS`). Sentinel `down-after-milliseconds` is 5s; `failover-timeout` 10s. Expect breaker half-open within ~10-15s of clean failover.
+
+---
+
+## Redis Restart Runbook
+
+**Trigger:** `SCRIPT FLUSH`, Redis restart, shard failover, volume loss, or TTL expiry on `budget:campaign:*` (24h).
+
+**Symptoms:** `ad_redis_lua_noscript_total` >0, `ad_redis_lua_script_loaded` stale, `ad_budget_cache_miss_pg_total` >0.
+
+### Planned maintenance order
+
+1. Restart Redis shards; verify `PING` and AOF replay (`INFO persistence`).
+2. Rolling restart trackers one at a time (30s drain between). Each runs `PreloadScripts` + `WarmFromRegistry`.
+3. Verify:
+   - `ad_redis_lua_script_loaded{shard}` == 1
    - `rate(ad_redis_lua_noscript_total[5m])` == 0
    - `rate(ad_budget_cache_miss_pg_total[5m])` == 0 under load
 
 ```bash
-# Example (docker compose, host network)
 for t in tracker-0 tracker-1 tracker-2 tracker-3; do
   docker compose restart "$t"
-  sleep 30   # drain via nginx upstream before next instance
+  sleep 30
 done
 ```
 
-#### Recovery without tracker restart (emergency)
-
-Use when rolling restart is not immediately possible. Restores Lua on Redis; budget keys repopulate via registry sync (SET NX, existing keys untouched).
+### Emergency recovery (no tracker restart)
 
 **1. Manual SCRIPT LOAD on every shard**
 
-Script body is embedded in the tracker binary (`internal/ads/unified_filter.lua`). SHA is deterministic - same body yields the same digest the tracker already caches.
-
 ```bash
-export REDIS_PASSWORD='...'   # from .env
-LUA_FILE=internal/ads/unified_filter.lua
-
-for port in 6479 6480 6481 6482 6483 6484; do
+LUA_FILE=internal/ads/unified-filter.lua
+for port in 6479 6480 6481 6482; do
   sha=$(redis-cli -p "$port" -a "$REDIS_PASSWORD" --no-auth-warning SCRIPT LOAD "$(cat "$LUA_FILE")")
-  echo "shard port=$port sha=$sha"
   redis-cli -p "$port" -a "$REDIS_PASSWORD" --no-auth-warning SCRIPT EXISTS "$sha"
 done
 ```
 
-**2. Trigger budget cache warm**
-
-Any valid campaign UUID on `campaigns:update` debounces a full registry `Sync` -> `warmBudgetCache` (SET NX). Or wait for `REGISTRY_SYNC_INTERVAL_MS` (default 60s).
+**2. Trigger budget warm**
 
 ```bash
-# Pick any active campaign UUID from management UI or Postgres
 redis-cli -p 6479 -a "$REDIS_PASSWORD" --no-auth-warning \
   PUBLISH campaigns:update "00000000-0000-0000-0000-000000000001"
 ```
 
-Watch `ad_budget_cache_warm_total` and `ad_budget_cache_miss_total` in Grafana.
+Or wait for `REGISTRY_SYNC_INTERVAL_MS` (default 60s).
 
 **3. Verify**
 
 ```bash
-curl -s localhost:8181/metrics | grep -E 'ad_redis_lua_noscript_total|ad_redis_lua_script_loaded|ad_budget_cache_miss'
+curl -s localhost:8181/metrics | grep -E 'ad_redis_lua_noscript|ad_redis_lua_script_loaded|ad_budget_cache_miss'
 ```
 
-`ad_redis_lua_script_loaded` updates only after tracker `PreloadScripts` - manual SCRIPT LOAD stops NOSCRIPT fallbacks but may not clear that gauge. Prefer rolling restart when the `RedisLuaScriptNotLoaded` alert is firing.
+Manual SCRIPT LOAD stops NOSCRIPT fallbacks but may not update `ad_redis_lua_script_loaded` gauge (set only at tracker startup). Prefer rolling restart when `RedisLuaScriptNotLoaded` alert fires.
 
-#### On-call decision tree
+### On-call decision tree
 
-| Alert | Immediate action | Proper fix |
+| Alert | Immediate | Proper fix |
 | :--- | :--- | :--- |
-| `RedisLuaNoScriptFallback` | Manual SCRIPT LOAD on affected shard(s) | Rolling restart all trackers |
-| `RedisLuaScriptNotLoaded` | Rolling restart trackers (failed startup preload) | Fix Redis connectivity, redeploy |
-| `BudgetCacheMissPG` | PUBLISH `campaigns:update` or wait for sync tick | Rolling restart if keys broadly missing |
+| `RedisLuaNoScriptFallback` | Manual SCRIPT LOAD | Rolling restart trackers |
+| `RedisLuaScriptNotLoaded` | Rolling restart trackers | Fix Redis connectivity |
+| `BudgetCacheMissPG` | PUBLISH `campaigns:update` | Rolling restart if keys broadly missing |
 
-**Never** run `SCRIPT FLUSH` or `FLUSHDB` in production without a maintenance window and this runbook.
+Do not run `SCRIPT FLUSH` or `FLUSHDB` in production without a maintenance window.
 
-## P2-10 Multi-shard operability runbook
+---
 
-Shard mapping: client-side (tracker + warmer + mgmt). tracker uses `StaticSlotSharder` (O(1) 1024 slots, fixed N in prod). See `internal/ads/sharding.go` and `sharding_test.go:TestSharderRebalanceImpact` for Static vs JumpHash remap stats (~100% keys move on N change for static vs ~1/N for jump).
+## Multi-Shard Operability
 
-### Shard down / failover (blast radius)
-- Symptom: `ad_redis_breaker_state{shard="X"} == 1` (open), or `/health` on :8181 reports `DEGRADED redis=...X:0`, or per-shard health on :9090/metrics? no, use /health body.
-- Effect: campaigns hashing to that shard get 503 + Retry-After:1 from infra/breaker (see handler filter + breaker hook). Other shards unaffected (key property of client sharding).
-- Mitigation (immediate):
-  1. Confirm which campaigns affected: use mgmt API or query PG for active, compute shard = StaticSlot( crc32(camp.ID) & 1023 ) % N ; or from logs.
-  2. If transient (net/restart): wait breaker half-open (default 5s). Budget keys are in that redis only.
-  3. If permanent loss: fail over the campaigns by changing effective shard count? No - for static, to move load: update infra LB or deploy with temp override? Current: no dynamic reshard in hot path.
-- Long term: budget key migration (below).
+### Shard down (blast radius)
 
-### Budget key migration between shards (rebalance or failover recovery)
-Budget keys live only on their hashed shard: `budget:campaign:UUID` , `budget:daily_spent:...` , fcap etc. Lua operates on single shard.
-To move a campaign from shard S to T (e.g. after adding node or bad shard):
-1. Pause delivery for campaign (set status PAUSED in mgmt, or use emergency breaker).
-2. On source shard S: DUMP or redis-cli --rdb extract the keys for the camp (or use MIGRATE / DUMP+RESTORE).
-   Example: redis-cli -h shardS --eval - <<'LUA' 0 "budget:campaign:$ID" "budget:daily*"
-   -- custom dump script or use redis-migrate-tool / app script.
-3. On target T: RESTORE the keys with TTLs preserved. For daily_spent keys (short TTL) can warm via registry instead.
-4. Verify: from tracker pod, `redis-cli -h target GET "budget:campaign:$ID"` returns the remaining.
-5. Update registry? No - sharding is pure hash(id) % N , changing N or slots requires all clients agree (trackers + any mgmt workers using sharder).
-   To change N live: blue/green deploy trackers with new StaticSlot(N'), simultaneously migrate all keys for affected camps, then cut traffic. High risk.
-   Prefer JumpHashSharder if frequent rebalance expected (see comparison in sharding.go).
-6. Resume campaign. Monitor `ad_budget_cache_miss_pg_total` and Lua p99 during transition.
-7. For daily budgets: they can be re-warmed from PG via registry sync + warmer after keys present on new shard.
+- Symptom: `ad_redis_breaker_state{shard="X"} == 1`, or `/health` shows `DEGRADED`
+- Effect: campaigns on shard X get 503 + `Retry-After: 1`. Other shards unaffected.
+- Sentinel path: set `REDIS_SENTINEL_ADDRS`; Go services reconnect after promotion (~10–15s).
+- Without Sentinel: wait for breaker half-open (5s) on transient failure; permanent loss requires key migration (below).
 
-### Health per shard
-- Main port /health (gnet): returns "OK redis=0:1,1:1,..." or "DEGRADED ...". status 200/503.
-- Background probe every 2s populates atomics (no ping on /health path).
-- Sidecar :9090/health always 200 for scraper.
-- Update k8s readiness if needed to drain on partial shard loss (outside this repo).
+### Budget key migration
 
-### When to prefer Jump vs Static
-Run `go test ./internal/ads/ -run TestSharderRebalanceImpact -v` after changes. Static wins on fixed cluster + DOD (no branches, no float, fits L1). Jump for autoscaling shards.
+Budget keys are shard-local: `budget:campaign:{id}`, `budget:daily_spent:*`, fcap keys. Lua never crosses shards.
 
-See also: prometheus alert WorkerPoolReject, breaker alerts, per-shard in /health body.
+To move a campaign from shard S to T:
+
+1. Pause campaign in management.
+2. DUMP/RESTORE keys from S to T (preserve TTLs).
+3. Verify: `redis-cli -h target GET budget:campaign:{id}`.
+4. Resume campaign. Monitor `ad_budget_cache_miss_pg_total`.
+
+Changing N (shard count) requires all clients (tracker, management, processor, Nginx Lua) to agree on new N simultaneously, plus full key migration. Use blue/green deploy. For frequent resize, evaluate `JumpHashSharder` (`go test ./internal/ads/ -run TestSharderRebalanceImpact -v`).
+
+### StaticSlot vs JumpHash
+
+| | StaticSlot | JumpHash |
+| :--- | :--- | :--- |
+| Remap on N change | ~100% | ~1/N |
+| Hot-path cost | Lowest | Higher (float loop) |
+| Production default | Yes | Tests / analysis only |
+
+### Fixed N=6 policy
+
+`ENV=production` enforces `len(REDIS_ADDRS) == 4`. Scale ingestion horizontally (more tracker replicas), not Redis shards, without migration plan.
+
+---
+
+## Log Evacuation
+
+Production image is distroless Go binary (`cmd/log-evacuator`). Uploads rotated segments to S3 with checkpoint persistence.
+
+- Set `LOG_EVACUATOR_S3_BUCKET`, `LOG_EVACUATOR_S3_REGION` (or `AWS_REGION`), and AWS credentials in `.env`
+- Optional: `LOG_EVACUATOR_S3_PREFIX`, `LOG_EVACUATOR_S3_ENDPOINT` (MinIO/localstack), `LOG_EVACUATOR_CHECKPOINT_PATH`
+- Cron: `deploy/cron/log-evacuate.cron` (every 5min) or run as a long-lived service via compose profile `tools`
+- Flow: tracker `pkg/logger` writes raw `.log`, async zstd + AES-GCM → `.log.zst.ready`; evacuator renames to `.log.zst.evacuating`, uploads to S3 with SHA-256 metadata + MD5 ETag verification, checkpoints, deletes local. Broker mmap segments (`pkg/broker/log`) are a separate uncompressed path.
+- Stuck uploads: `.evacuating` files are retried on startup; failed uploads roll back to `.ready`
+
+Profile `tools` in compose starts `log-evacuator`.
+
+---
+
+## Testing
+
+```bash
+make test-unit          # fast, -short
+make test-int           # integration tests in tests/
+make test-alloc-gate    # hot-path zero-alloc + fraud SLA (CI)
+make test-full          # full suite, no -short (~CI full-test)
+make test-chaos         # scripts/test-chaos.sh (Docker)
+make test-sentinel-chaos
+task test-full          # optional: race detector on ./... (not CI-equivalent)
+bash scripts/dev-preflight.sh   # after compose up
+```
+
+Redis-related tests:
+- `internal/database/redis_shards_test.go` — direct vs Sentinel options
+- `internal/config/redis_test.go` — production 6-shard enforcement
+- `internal/ads/sharding_test.go` — StaticSlot vs JumpHash remap stats
+- `internal/ads/unified_lua_test.go` — EVALSHA latency profile
+- `internal/management/redis_global_test.go` — config replication
+- `internal/ads/settings_test.go` — shard failover reads
+
+---
+
+## Verification Matrix
+
+| Area | Command | Expectation |
+| :--- | :--- | :--- |
+| Sharder divergence | `go test ./internal/ads/ -run TestSharderStaticVsJumpHashDivergence` | PASS, log ~84% mismatch |
+| Management integration | `go test ./internal/management/...` | PASS |
+| Tenant isolation | `go test ./internal/management/... -run Isolation` | 403 |
+| Redis outage auth | `go test ./internal/management/... -run MeRedisOutage` | 401 fail-closed |
+| Outbox chaos | `go test ./internal/management/ -run Chaos` | PASS |
+| Hot path perf | `task perf-gate` or `scripts/perf-gate-run.sh` | perf_gate CI |
+| Payment | `go test ./internal/payment/...` | PASS |
+| Config replication | `go test ./internal/management/ -run 'TestSyncGlobal\|TestBlockIP_Multiple'` | PASS |
+| Settings failover | `go test ./internal/ads/ -run TestSettingsWatcher` | PASS |
+| Redis shards | `go test ./internal/database/ -run ShardUniversal` | PASS |
+
+Full suite (slow): `make test-full` or `go test ./... -count=1`
+
+---
+
+## Edge hardening (planned)
+
+Native XDP/eBPF (optional) + OpenResty Lua fixes for `/track` ingress. Not implemented yet.
+
+| Document | Contents |
+| :--- | :--- |
+| [edge-hardening-plan.md](edge-hardening-plan.md) | **Final plan** — SLA boundaries, Lua bottlenecks, phases 0–5, verification |
+| [edge-hardening-steps.md](edge-hardening-steps.md) | **Step-by-step guide (Russian)** — exact templates, code blocks, commands |
+| [edge-xdp-design.md](edge-xdp-design.md) | XDP/NIC rings, BPF maps, Phase 4 detail |
+
+**Phase 0 (ops):** `edge-nic-tune.sh`, `edge-sysctl.sh`, optional `edge-baseline.sh` (minimal snapshot; 24h soak deferred).
+
+**SLA:** Tracker `ad_http_request_duration_seconds` p95 < 50 ms, p99 < 80 ms (`.cursorrules`); edge changes must not regress nominal-path metrics.
+
+**Rollback:** revert nginx Lua/conf; detach XDP if deployed.
+
+---
+
+## Known Gaps
+
+- Stripe checkout not implemented; mock provider only for local dev.
+- Migration `00022_campaign_delivery_features.sql` may lack goose markers; verify applied manually if templates/creatives tables missing.
+- `broker`, `log-shipper`, `dlq`, `admin` are buildable but outside default compose.

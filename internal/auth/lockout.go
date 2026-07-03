@@ -9,6 +9,7 @@ import (
 
 // Limiter abstracts fixed-window rate checks so auth can swap Redis for another backend in tests.
 type Limiter interface {
+	// Allow gates auxiliary rate checks where login lockout semantics do not apply.
 	Allow(ctx context.Context, key string, limit int, window time.Duration) (bool, error)
 }
 

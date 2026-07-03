@@ -109,6 +109,23 @@ func (m *mockRedisClient) EvalSha(ctx context.Context, sha1 string, keys []strin
 	return staticCmd
 }
 
+func (m *mockRedisClient) Process(ctx context.Context, cmd redis.Cmder) error {
+	if c, ok := cmd.(*redis.Cmd); ok {
+		c.SetVal(int64(0))
+	}
+	return nil
+}
+
+func setProcessLuaInt64(cmd redis.Cmder, v int64) {
+	if c, ok := cmd.(*redis.Cmd); ok {
+		c.SetVal(v)
+	}
+}
+
+func setProcessLuaErr(cmd redis.Cmder, err error) {
+	cmd.SetErr(err)
+}
+
 func (m *mockRedisClient) ScriptLoad(ctx context.Context, script string) *redis.StringCmd {
 	staticStringCmd.SetVal("d3b07384d113edec49eaa6238ad5ff00")
 	return staticStringCmd
@@ -135,7 +152,7 @@ type slowFilter struct {
 
 func (f *slowFilter) Check(ctx context.Context, evt *domain.Event) error {
 	delay := f.delay
-	if rem, ok := filterDeadlineRemaining(ctx); ok && rem < delay {
+	if rem, ok := filterDeadlineRemainingEvt(evt, ctx); ok && rem < delay {
 		delay = rem
 	}
 	if delay <= 0 {
@@ -145,7 +162,7 @@ func (f *slowFilter) Check(ctx context.Context, evt *domain.Event) error {
 	defer timer.Stop()
 	select {
 	case <-timer.C:
-		if filterDeadlineExceeded(ctx) {
+		if filterDeadlineExceededEvt(evt, ctx) {
 			return context.DeadlineExceeded
 		}
 		return nil
@@ -171,6 +188,10 @@ type deadlineProbeFilter struct {
 }
 
 func (f *deadlineProbeFilter) Check(ctx context.Context, evt *domain.Event) error {
+	if evt != nil && evt.FilterDeadlineMono > 0 {
+		*f.seen = true
+		return nil
+	}
 	_, ok := filterDeadlineMonoFromContext(ctx)
 	*f.seen = ok
 	return nil

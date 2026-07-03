@@ -1,28 +1,26 @@
 package auth
 
 import (
-	"espx/internal/auth/pb"
-)
-
-import (
 	"context"
 	"errors"
+	"espx/internal/auth/db"
+	"espx/internal/auth/pb"
+	"espx/internal/config"
+	"espx/pkg/cold"
 	"net"
 	"strings"
 	"time"
 
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/peer"
-
-	"espx/internal/auth/db"
-	"espx/internal/config"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// adminAPIKeyMetadata names the gRPC metadata key that gates operator-only provisioning RPCs.
 const adminAPIKeyMetadata = "x-admin-api-key"
 
 // Handler is the gRPC boundary so edge and management services share one auth implementation.
@@ -123,27 +121,15 @@ func (h *Handler) requireAuthUser(ctx context.Context) (db.User, error) {
 	if len(values) == 0 {
 		return db.User{}, status.Error(codes.Unauthenticated, "authorization header is not provided")
 	}
-	header := values[0]
-	if len(header) < 7 || !strings.EqualFold(header[:7], "bearer ") {
+	accessToken, ok := parseBearerToken(values[0])
+	if !ok {
 		return db.User{}, status.Error(codes.Unauthenticated, "invalid authorization header format")
 	}
-	accessToken := strings.TrimSpace(header[7:])
 	user, err := h.service.VerifyToken(ctx, accessToken)
 	if err != nil {
 		return db.User{}, mapError(err)
 	}
 	return user, nil
-}
-
-// userToPB omits password hashes and internal flags from outward-facing responses.
-func userToPB(user db.User) *pb.User {
-	return &pb.User{
-		Id:         uuid.UUID(user.ID.Bytes).String(),
-		Email:      user.Email,
-		Role:       user.Role,
-		CustomerId: uuid.UUID(user.CustomerID.Bytes).String(),
-		CreatedAt:  timestamppb.New(user.CreatedAt.Time),
-	}
 }
 
 // Register is admin-gated because self-registration is disabled in this deployment.
@@ -242,7 +228,7 @@ func (h *Handler) CreateAPIKey(ctx context.Context, req *pb.CreateAPIKeyRequest)
 		expiresAt = &t
 	}
 
-	userID := uuid.UUID(user.ID.Bytes)
+	userID := uuidFromPg(user.ID)
 	id, rawKey, err := h.service.CreateAPIKey(ctx, userID, req.Name, expiresAt)
 	if err != nil {
 		return nil, mapError(err)
@@ -266,24 +252,12 @@ func (h *Handler) ListAPIKeys(ctx context.Context, _ *pb.ListAPIKeysRequest) (*p
 		return nil, err
 	}
 
-	rows, err := h.service.ListUserAPIKeys(ctx, uuid.UUID(user.ID.Bytes))
+	rows, err := h.service.ListUserAPIKeys(ctx, uuidFromPg(user.ID))
 	if err != nil {
 		return nil, mapError(err)
 	}
 
-	keys := make([]*pb.APIKey, 0, len(rows))
-	for _, row := range rows {
-		key := &pb.APIKey{
-			Id:        uuid.UUID(row.ID.Bytes).String(),
-			Name:      row.Name,
-			CreatedAt: timestamppb.New(row.CreatedAt.Time),
-		}
-		if row.ExpiresAt.Valid {
-			key.ExpiresAt = timestamppb.New(row.ExpiresAt.Time)
-		}
-		keys = append(keys, key)
-	}
-	return &pb.ListAPIKeysResponse{Keys: keys}, nil
+	return &pb.ListAPIKeysResponse{Keys: cold.MapSlice(rows, apiKeyRowToPB)}, nil
 }
 
 // ChangePassword ties credential rotation to the authenticated principal, not email alone.
@@ -295,7 +269,7 @@ func (h *Handler) ChangePassword(ctx context.Context, req *pb.ChangePasswordRequ
 
 	clientIP := h.extractClientIP(ctx)
 	userAgent := h.extractUserAgent(ctx)
-	err = h.service.ChangePassword(ctx, uuid.UUID(user.ID.Bytes), req.OldPassword, req.NewPassword, clientIP, userAgent)
+	err = h.service.ChangePassword(ctx, uuidFromPg(user.ID), req.OldPassword, req.NewPassword, clientIP, userAgent)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -309,7 +283,7 @@ func (h *Handler) RequestEmailVerification(ctx context.Context, _ *pb.RequestEma
 		return nil, err
 	}
 
-	token, err := h.service.RequestEmailVerification(ctx, uuid.UUID(user.ID.Bytes))
+	token, err := h.service.RequestEmailVerification(ctx, uuidFromPg(user.ID))
 	if err != nil {
 		return nil, mapError(err)
 	}

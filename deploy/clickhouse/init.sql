@@ -64,6 +64,8 @@ CREATE TABLE IF NOT EXISTS fraud_events (
     user_agent String,
     payload String,
     fraud_reason String,
+    fraud_score UInt32 DEFAULT 0,
+    ghost_event UInt8 DEFAULT 0,
     created_at DateTime64(3, 'UTC')
 ) ENGINE = ReplacingMergeTree(created_at)
 PARTITION BY toYYYYMM(created_at)
