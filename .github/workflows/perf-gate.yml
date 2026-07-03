@@ -45,7 +45,7 @@ jobs:
       PERF_GATE_STRICT: ${{ vars.PERF_RUNNER_LABEL != '' && 'true' || 'false' }}
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
