@@ -66,7 +66,7 @@ func (t *TelegramProvider) Send(ctx context.Context, recipient, title, body stri
 	}
 
 	// 1. Build interactive buttons
-	notificationID, _ := ctx.Value("notification_id").(string)
+	notificationID, _ := NotificationIDFromContext(ctx)
 	ipRegex := regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`)
 	var inlineKeyboard [][]map[string]interface{}
 
@@ -114,8 +114,11 @@ func (t *TelegramProvider) Send(ctx context.Context, recipient, title, body stri
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, readErr := io.ReadAll(resp.Body)
 		t.breaker.RecordFailure()
+		if readErr != nil {
+			return fmt.Errorf("telegram api returned status %d: read body: %w", resp.StatusCode, readErr)
+		}
 		return fmt.Errorf("telegram api returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 

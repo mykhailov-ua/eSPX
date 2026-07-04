@@ -2,10 +2,10 @@ package management
 
 import (
 	"context"
-	"espx/internal/ads/sharding"
 	"testing"
 	"time"
 
+	"espx/internal/ads"
 	"espx/internal/config"
 	"espx/internal/database"
 
@@ -30,7 +30,7 @@ func TestManagementService_CancelCampaign(t *testing.T) {
 	cfg.Lifecycle.WaitTimeoutMs = 500
 	cfg.CampaignUpdateChannel = "test:campaign:updates"
 
-	sharder := sharding.NewJumpHashSharder(1)
+	sharder := ads.NewJumpHashSharder(1)
 	svc := NewService(pool, []redis.UniversalClient{rdb}, sharder, cfg)
 
 	t.Cleanup(func() {
@@ -78,7 +78,7 @@ func TestManagementService_Idempotency(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Lifecycle.WaitTimeoutMs = 500
 
-	svc := NewService(pool, []redis.UniversalClient{rdb}, sharding.NewJumpHashSharder(1), cfg)
+	svc := NewService(pool, []redis.UniversalClient{rdb}, ads.NewJumpHashSharder(1), cfg)
 
 	t.Cleanup(func() {
 		svc.Close()

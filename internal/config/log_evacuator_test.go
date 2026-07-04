@@ -2,7 +2,6 @@ package config
 
 import "testing"
 
-// Guards LoadLogEvacuator requires bucket and region env vars.
 func TestLoadLogEvacuator_requiresBucketAndRegion(t *testing.T) {
 	t.Setenv("LOG_EVACUATOR_S3_BUCKET", "")
 	t.Setenv("LOG_EVACUATOR_S3_REGION", "")
@@ -13,7 +12,6 @@ func TestLoadLogEvacuator_requiresBucketAndRegion(t *testing.T) {
 	}
 }
 
-// Guards LoadLogEvacuator applies defaults for log directory and scan interval.
 func TestLoadLogEvacuator_defaults(t *testing.T) {
 	t.Setenv("LOG_EVACUATOR_S3_BUCKET", "audit-bucket")
 	t.Setenv("LOG_EVACUATOR_S3_REGION", "eu-west-1")
@@ -35,7 +33,6 @@ func TestLoadLogEvacuator_defaults(t *testing.T) {
 	}
 }
 
-// Guards AWS_REGION is used when LOG_EVACUATOR_S3_REGION is unset.
 func TestLoadLogEvacuator_awsRegionFallback(t *testing.T) {
 	t.Setenv("LOG_EVACUATOR_S3_BUCKET", "audit-bucket")
 	t.Setenv("LOG_EVACUATOR_S3_REGION", "")

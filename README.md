@@ -4,7 +4,7 @@ Real-time ad event ingestion, budget enforcement, and settlement pipeline. Go se
 
 ## System Overview
 
-Request flow: Nginx (:8180) load-balances `/track` to tracker replicas (:8181-8184). Each tracker executes one Redis round trip per accepted event on the campaign's shard (:6479-6482). Accepted events land on per-shard `ad:events:stream`. Processor (:8186) consumes streams into Postgres and ClickHouse. Management (:8188), Auth gRPC (:51051), Payment gRPC (:51052), Settlement gRPC (:51053), Billing gRPC (:51054), and Notifier gRPC (:8085) handle control plane, billing, and notifications.
+Request flow: Nginx (:8180) load-balances `/track` to tracker replicas (:8181-8184). Processor (:8186) drains streams to Postgres and ClickHouse. Management (:8188, settlement gRPC :51053) runs admin API and Redis propagation workers. Auth (:51051), Payment (:51052/:8187), Billing (:51054), and Notifier (:8085) are separate gRPC services. IVT detector runs as an off-path batch job.
 
 **Hot path:** `POST /track` on gnet trackers. One Redis round trip per accepted event via `unified-filter.lua` (budget, pacing, dedup, rate limit, fcap, stream enqueue). Go filters run before Lua for geo, schedule, fraud, and emergency breaker checks that cannot execute in Redis.
 
@@ -16,12 +16,14 @@ Request flow: Nginx (:8180) load-balances `/track` to tracker replicas (:8181-81
 | :--- | :--- | :--- |
 | `tracker` | 8181-8184 | gnet ingestion, Lua filter, registry sync, budget warmer |
 | `processor` | 8186 | Per-shard stream consumers to Postgres + ClickHouse; budget sync |
-| `management` | 8188, 51053 | Admin REST, outbox to Redis propagation, settlement gRPC |
+| `management` | 8188, 51053 | Admin REST, settlement gRPC, outbox to Redis, recon/pacing workers |
 | `auth` | 51051 | gRPC: Argon2id, PASETO, sessions, API keys |
 | `payment` | 51052, 8187 | Payment intents gRPC, Stripe webhooks, settlement outbox |
 | `billing` | 51054 | Invoice generation gRPC; management HTMX proxy when configured |
 | `notifier` | 8085 | Async notifications gRPC (Telegram, Slack, SMTP, SMS) |
+| `ivt-detector` | — | ClickHouse IVT scan → fraud blacklist via management API |
 | `telegram` | 8222 | Alertmanager to Telegram proxy |
+| `log-evacuator` | — | Rotated tracker log segments → S3 (compose profile `tools`) |
 | `broker` | — | mmap log broker (not in compose; optional log evacuation) |
 | `dlq`, `admin` | — | Operator CLIs |
 
@@ -76,7 +78,7 @@ Single atomic script per event: MGET budget state, TTC check, pacing, fcap, rate
 | Monotonic time | `go:linkname` nanotime | Filter deadlines immune to NTP jumps; no heap escape | Internal runtime dependency; breaks if Go renames symbol |
 | Telemetry | LatencyRing + sampling | Prometheus observations off gnet event loop | Lossy under overload; fraud ring drops at 4096 capacity |
 | Global config | Replicate to all shards | Shard-local reads on hot path; no cross-shard fetch | Write amplification on config change (4x HSET) |
-| Payment | Separate service + schema | Money state isolated from ingestion; advisory locks on amount | Cross-service gRPC for settlement; circular compose dependency |
+| Payment | Separate service + schema | Money state isolated from ingestion; advisory locks on amount | Cross-service gRPC to management for ledger credit |
 | Money source of truth | Postgres `balance_ledger` | ACID, audit trail, reconciliation | Redis budget is a cache; drift corrected by sync worker + recon |
 
 ## Money Flow

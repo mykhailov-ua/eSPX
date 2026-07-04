@@ -27,7 +27,6 @@ func NewSettlementHandler(service *Service, cfg *config.Config) *SettlementHandl
 }
 
 func (h *SettlementHandler) ApplyPaymentCredit(ctx context.Context, req *pb.ApplyPaymentCreditRequest) (*pb.ApplyPaymentCreditResponse, error) {
-	// Authenticate internal caller
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "missing metadata")

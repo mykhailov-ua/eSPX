@@ -92,7 +92,7 @@ func TestIsNetworkOrSystemError(t *testing.T) {
 	assert.False(t, IsNetworkOrSystemError(errors.New("ERR syntax error")))
 
 	assert.True(t, IsNetworkOrSystemError(context.DeadlineExceeded))
-	assert.True(t, IsNetworkOrSystemError(context.Canceled))
+	assert.False(t, IsNetworkOrSystemError(context.Canceled))
 	assert.True(t, IsNetworkOrSystemError(errors.New("connection refused")))
 	assert.True(t, IsNetworkOrSystemError(errors.New("broken pipe")))
 	assert.True(t, IsNetworkOrSystemError(errors.New("client is closed")))
@@ -101,7 +101,22 @@ func TestIsNetworkOrSystemError(t *testing.T) {
 	assert.True(t, IsNetworkOrSystemError(netErr))
 }
 
-// TestRedisBreaker_ConcurrentStress guards concurrent Allow and Record calls never corrupt breaker state.
+// TestRedisBreaker_CanceledDoesNotTrip guards caller cancellation does not count as a transport failure.
+func TestRedisBreaker_CanceledDoesNotTrip(t *testing.T) {
+	b := NewRedisBreaker(1, 2, 50*time.Millisecond)
+	hook := NewRedisCircuitBreakerHook(b)
+
+	next := func(ctx context.Context, cmd redis.Cmder) error {
+		return context.Canceled
+	}
+	processHook := hook.ProcessHook(next)
+
+	cmd := redis.NewStatusCmd(context.Background(), "PING")
+	err := processHook(context.Background(), cmd)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, CircuitClosed, b.State())
+}
+
 func TestRedisBreaker_ConcurrentStress(t *testing.T) {
 	b := NewRedisBreaker(100, 2, 10*time.Millisecond)
 

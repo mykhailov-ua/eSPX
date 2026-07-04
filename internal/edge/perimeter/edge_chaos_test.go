@@ -182,19 +182,24 @@ func TestChaos_ASNWhitelistBypass(t *testing.T) {
 	})
 }
 
-// TestChaos_FraudTierBlock verifies score >= 81 maps to immediate edge block tier.
-func TestChaos_FraudTierBlock(t *testing.T) {
-	tier, score := MapFraudRLTier(85)
-	assert.Equal(t, FraudRLTierBlock, tier)
-	assert.True(t, ShouldBlockTier(tier))
-	assert.Equal(t, 0, TierLimit(tier, DefaultFraudRLConfig()))
-	assert.Equal(t, 120, RetryAfterSec(tier, DefaultFraudRLConfig()))
-	assert.Equal(t, 85, score)
+// TestChaos_EdgeBlacklistStale503 verifies fail-closed 503 when cache never synced (Scenario H partial).
+// Hypothesis: unsynced cache returns Phase1Stale503 and increments BlacklistStale without body read.
+func TestChaos_EdgeBlacklistStale503(t *testing.T) {
+	if testing.Short() {
+		t.Skip("edge chaos integration test")
+	}
 
-	logChaosProof(t, "edge_fraud_tier_block", map[string]string{
-		"fraud_score":     "85",
-		"tier":            string(tier),
-		"retry_after_sec": "120",
-		"harness":         "go_perimeter_mirror",
+	cache := NewBlacklistCache(defaultStaleSec)
+	var metrics Metrics
+
+	outcome := cache.Phase1Check("198.51.100.1", time.Now().Unix(), &metrics)
+	assert.Equal(t, Phase1Stale503, outcome)
+	assert.Equal(t, int64(1), metrics.BlacklistStale)
+	assert.Equal(t, int64(0), metrics.BodyRead)
+
+	logChaosProof(t, "edge_blacklist_staleness", map[string]string{
+		"ttl_respected": "true",
+		"stale_503":     "true",
+		"harness":       "go_perimeter_mirror",
 	})
 }

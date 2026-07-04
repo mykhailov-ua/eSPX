@@ -6,7 +6,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// Guards VAT and sales tax rates apply to subtotals with basis-point rounding.
 func TestTaxCalculator_Compute(t *testing.T) {
 	calc := NewTaxCalculator()
 
@@ -63,7 +62,6 @@ func TestTaxCalculator_Compute(t *testing.T) {
 	}
 }
 
-// Guards default profile inference for EU and US customers.
 func TestTaxCalculator_DefaultProfile(t *testing.T) {
 	calc := NewTaxCalculator()
 

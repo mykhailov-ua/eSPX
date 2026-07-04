@@ -34,3 +34,13 @@ func TestRetryAfterSec_tiers(t *testing.T) {
 	assert.Equal(t, 60, RetryAfterSec(FraudRLTierIVT, cfg))
 	assert.Equal(t, 120, RetryAfterSec(FraudRLTierBlock, cfg))
 }
+
+// Guards score >= 81 maps to immediate edge block tier.
+func TestFraudTierBlock_score81(t *testing.T) {
+	tier, score := MapFraudRLTier(85)
+	assert.Equal(t, FraudRLTierBlock, tier)
+	assert.True(t, ShouldBlockTier(tier))
+	assert.Equal(t, 0, TierLimit(tier, DefaultFraudRLConfig()))
+	assert.Equal(t, 120, RetryAfterSec(tier, DefaultFraudRLConfig()))
+	assert.Equal(t, 85, score)
+}

@@ -8,8 +8,8 @@ import (
 	"log/slog"
 	"time"
 
+	"espx/internal/ads"
 	"espx/internal/ads/db"
-	"espx/internal/ads/repo"
 	"espx/pkg/cold"
 
 	"github.com/google/uuid"
@@ -43,7 +43,7 @@ func (s *Service) CreateCampaign(ctx context.Context, spec CampaignCreateSpec) (
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("idempotency lookup failed: %w", err)
 		}
-		cust, err := q.GetCustomerForUpdate(ctx, repo.ToUUID(spec.CustomerID))
+		cust, err := q.GetCustomerForUpdate(ctx, ads.ToUUID(spec.CustomerID))
 		if err != nil {
 			return fmt.Errorf("customer not found: %w", err)
 		}
@@ -54,35 +54,35 @@ func (s *Service) CreateCampaign(ctx context.Context, spec CampaignCreateSpec) (
 		var brandIDParam pgtype.UUID
 		brandFcapKey := "fcap:c:" + campaignID.String()
 		if spec.BrandID != nil {
-			brand, err := q.GetBrand(ctx, repo.ToUUID(*spec.BrandID))
+			brand, err := q.GetBrand(ctx, ads.ToUUID(*spec.BrandID))
 			if err != nil {
 				return fmt.Errorf("brand not found: %w", err)
 			}
 			if uuid.UUID(brand.CustomerID.Bytes) != spec.CustomerID {
 				return fmt.Errorf("brand belongs to another customer")
 			}
-			brandIDParam = repo.ToUUID(*spec.BrandID)
+			brandIDParam = ads.ToUUID(*spec.BrandID)
 			brandFcapKey = "fcap:b:" + spec.BrandID.String()
 		}
 
 		var templateIDParam pgtype.UUID
 		if spec.TemplateID != nil {
-			templateIDParam = repo.ToUUID(*spec.TemplateID)
+			templateIDParam = ads.ToUUID(*spec.TemplateID)
 		}
 
 		if _, err = q.UpdateCustomerBalanceManagement(ctx, db.UpdateCustomerBalanceManagementParams{
-			ID:      repo.ToUUID(spec.CustomerID),
+			ID:      ads.ToUUID(spec.CustomerID),
 			Balance: -spec.BudgetLimit,
 		}); err != nil {
 			return err
 		}
 
 		_, err = q.CreateCampaign(ctx, db.CreateCampaignParams{
-			ID:              repo.ToUUID(campaignID),
+			ID:              ads.ToUUID(campaignID),
 			Name:            spec.Name,
 			BudgetLimit:     spec.BudgetLimit,
 			Status:          initialStatus,
-			CustomerID:      repo.ToUUID(spec.CustomerID),
+			CustomerID:      ads.ToUUID(spec.CustomerID),
 			PacingMode:      spec.PacingMode,
 			DailyBudget:     spec.DailyBudget,
 			Timezone:        spec.Timezone,
@@ -101,8 +101,8 @@ func (s *Service) CreateCampaign(ctx context.Context, spec CampaignCreateSpec) (
 		}
 
 		_, err = q.CreateLedgerEntry(ctx, db.CreateLedgerEntryParams{
-			CustomerID:      repo.ToUUID(spec.CustomerID),
-			CampaignID:      repo.ToUUID(campaignID),
+			CustomerID:      ads.ToUUID(spec.CustomerID),
+			CampaignID:      ads.ToUUID(campaignID),
 			Amount:          spec.BudgetLimit,
 			Type:            db.LedgerTypeFREEZE,
 			IdempotencyHash: pgtype.Text{String: spec.IdempotencyKey, Valid: true},
@@ -113,7 +113,7 @@ func (s *Service) CreateCampaign(ctx context.Context, spec CampaignCreateSpec) (
 		}
 
 		err = q.CreateStatusHistory(ctx, db.CreateStatusHistoryParams{
-			CampaignID: repo.ToUUID(campaignID),
+			CampaignID: ads.ToUUID(campaignID),
 			NewStatus:  initialStatus,
 			Reason:     pgtype.Text{String: "Campaign creation", Valid: true},
 		})
@@ -155,7 +155,7 @@ func (s *Service) emitCampaignLifecycleOutbox(ctx context.Context, q db.Querier,
 func (s *Service) PauseCampaign(ctx context.Context, campaignID uuid.UUID, reason string) error {
 	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
-		camp, err := q.GetCampaignForUpdate(ctx, repo.ToUUID(campaignID))
+		camp, err := q.GetCampaignForUpdate(ctx, ads.ToUUID(campaignID))
 		if err != nil {
 			return fmt.Errorf("campaign not found: %w", err)
 		}
@@ -166,12 +166,12 @@ func (s *Service) PauseCampaign(ctx context.Context, campaignID uuid.UUID, reaso
 			return fmt.Errorf("campaign cannot be paused in status %s", camp.Status)
 		}
 
-		_, err = q.PauseCampaign(ctx, repo.ToUUID(campaignID))
+		_, err = q.PauseCampaign(ctx, ads.ToUUID(campaignID))
 		if err != nil {
 			return err
 		}
 		err = q.CreateStatusHistory(ctx, db.CreateStatusHistoryParams{
-			CampaignID: repo.ToUUID(campaignID),
+			CampaignID: ads.ToUUID(campaignID),
 			OldStatus:  db.NullCampaignStatusType{CampaignStatusType: camp.Status, Valid: true},
 			NewStatus:  db.CampaignStatusTypePAUSED,
 			Reason:     pgtype.Text{String: reason, Valid: reason != ""},
@@ -196,7 +196,7 @@ func (s *Service) PauseCampaign(ctx context.Context, campaignID uuid.UUID, reaso
 func (s *Service) ResumeCampaign(ctx context.Context, campaignID uuid.UUID, reason string) error {
 	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
-		camp, err := q.GetCampaignForUpdate(ctx, repo.ToUUID(campaignID))
+		camp, err := q.GetCampaignForUpdate(ctx, ads.ToUUID(campaignID))
 		if err != nil {
 			return fmt.Errorf("campaign not found: %w", err)
 		}
@@ -216,12 +216,12 @@ func (s *Service) ResumeCampaign(ctx context.Context, campaignID uuid.UUID, reas
 			return fmt.Errorf("campaign is outside scheduled delivery window")
 		}
 
-		_, err = q.ResumeCampaign(ctx, repo.ToUUID(campaignID))
+		_, err = q.ResumeCampaign(ctx, ads.ToUUID(campaignID))
 		if err != nil {
 			return err
 		}
 		err = q.CreateStatusHistory(ctx, db.CreateStatusHistoryParams{
-			CampaignID: repo.ToUUID(campaignID),
+			CampaignID: ads.ToUUID(campaignID),
 			OldStatus:  db.NullCampaignStatusType{CampaignStatusType: camp.Status, Valid: true},
 			NewStatus:  db.CampaignStatusTypeACTIVE,
 			Reason:     pgtype.Text{String: reason, Valid: reason != ""},
@@ -253,12 +253,12 @@ func (s *Service) UpdateCampaignSchedule(ctx context.Context, campaignID uuid.UU
 
 	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
-		locked, err := q.GetCampaignForUpdate(ctx, repo.ToUUID(campaignID))
+		locked, err := q.GetCampaignForUpdate(ctx, ads.ToUUID(campaignID))
 		if err != nil {
 			return err
 		}
 		_, err = q.UpdateCampaignSchedule(ctx, db.UpdateCampaignScheduleParams{
-			ID:           repo.ToUUID(campaignID),
+			ID:           ads.ToUUID(campaignID),
 			StartAt:      toTimestamptz(startAt),
 			EndAt:        toTimestamptz(endAt),
 			DaypartHours: daypartOrEmpty(daypartHours),
@@ -300,14 +300,14 @@ func (s *Service) UpdateCampaignSchedule(ctx context.Context, campaignID uuid.UU
 // transitionCampaignStatus updates status, records history, and emits the matching lifecycle outbox event.
 func (s *Service) transitionCampaignStatus(ctx context.Context, q db.Querier, campaignID uuid.UUID, old, new db.CampaignStatusType, reason string, budget int64) error {
 	_, err := q.UpdateCampaignStatus(ctx, db.UpdateCampaignStatusParams{
-		ID:     repo.ToUUID(campaignID),
+		ID:     ads.ToUUID(campaignID),
 		Status: new,
 	})
 	if err != nil {
 		return err
 	}
 	err = q.CreateStatusHistory(ctx, db.CreateStatusHistoryParams{
-		CampaignID: repo.ToUUID(campaignID),
+		CampaignID: ads.ToUUID(campaignID),
 		OldStatus:  db.NullCampaignStatusType{CampaignStatusType: old, Valid: true},
 		NewStatus:  new,
 		Reason:     pgtype.Text{String: reason, Valid: true},
@@ -330,12 +330,12 @@ func (s *Service) CreateCampaignTemplate(ctx context.Context, customerID uuid.UU
 
 	var brandParam pgtype.UUID
 	if brandID != nil {
-		brandParam = repo.ToUUID(*brandID)
+		brandParam = ads.ToUUID(*brandID)
 	}
 
 	_, err = db.New(s.GetPool()).CreateCampaignTemplate(ctx, db.CreateCampaignTemplateParams{
-		ID:              repo.ToUUID(templateID),
-		CustomerID:      repo.ToUUID(customerID),
+		ID:              ads.ToUUID(templateID),
+		CustomerID:      ads.ToUUID(customerID),
 		Name:            name,
 		BudgetLimit:     budgetLimit,
 		PacingMode:      pacing,
@@ -353,7 +353,7 @@ func (s *Service) CreateCampaignTemplate(ctx context.Context, customerID uuid.UU
 // ListCampaignTemplates returns paginated templates for a customer's campaign library.
 func (s *Service) ListCampaignTemplates(ctx context.Context, customerID uuid.UUID, limit, offset int32) ([]CampaignTemplateDTO, int64, error) {
 	q := db.New(s.GetPool())
-	cid := repo.ToUUID(customerID)
+	cid := ads.ToUUID(customerID)
 	listParams := db.ListCampaignTemplatesParams{
 		CustomerID: cid,
 		Limit:      limit,
@@ -368,7 +368,7 @@ func (s *Service) ListCampaignTemplates(ctx context.Context, customerID uuid.UUI
 
 // CreateCampaignFromTemplate instantiates a live campaign from a stored template with optional overrides.
 func (s *Service) CreateCampaignFromTemplate(ctx context.Context, templateID uuid.UUID, customerID uuid.UUID, name string, budgetLimit *int64, idempotencyKey string) (uuid.UUID, error) {
-	tmpl, err := db.New(s.GetPool()).GetCampaignTemplate(ctx, repo.ToUUID(templateID))
+	tmpl, err := db.New(s.GetPool()).GetCampaignTemplate(ctx, ads.ToUUID(templateID))
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("template not found: %w", err)
 	}
@@ -459,12 +459,12 @@ func (s *Service) UpsertBrandCreative(ctx context.Context, brandID uuid.UUID, na
 
 	err = pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
-		if _, err := q.GetBrand(ctx, repo.ToUUID(brandID)); err != nil {
+		if _, err := q.GetBrand(ctx, ads.ToUUID(brandID)); err != nil {
 			return fmt.Errorf("brand not found: %w", err)
 		}
 		_, err := q.CreateBrandCreative(ctx, db.CreateBrandCreativeParams{
-			ID:         repo.ToUUID(creativeID),
-			BrandID:    repo.ToUUID(brandID),
+			ID:         ads.ToUUID(creativeID),
+			BrandID:    ads.ToUUID(brandID),
 			Name:       name,
 			LandingUrl: landingURL,
 			Weight:     weight,
@@ -480,7 +480,7 @@ func (s *Service) UpsertBrandCreative(ctx context.Context, brandID uuid.UUID, na
 
 // ListBrandCreatives returns active and paused creatives for a brand.
 func (s *Service) ListBrandCreatives(ctx context.Context, brandID uuid.UUID) ([]BrandCreativeDTO, error) {
-	rows, err := db.New(s.GetPool()).ListBrandCreatives(ctx, repo.ToUUID(brandID))
+	rows, err := db.New(s.GetPool()).ListBrandCreatives(ctx, ads.ToUUID(brandID))
 	if err != nil {
 		return nil, err
 	}
@@ -491,12 +491,12 @@ func (s *Service) ListBrandCreatives(ctx context.Context, brandID uuid.UUID) ([]
 func (s *Service) UpdateBrandCreative(ctx context.Context, creativeID uuid.UUID, name, landingURL string, weight int32, status string) error {
 	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
-		existing, err := q.GetBrandCreative(ctx, repo.ToUUID(creativeID))
+		existing, err := q.GetBrandCreative(ctx, ads.ToUUID(creativeID))
 		if err != nil {
 			return fmt.Errorf("creative not found: %w", err)
 		}
 		_, err = q.UpdateBrandCreative(ctx, db.UpdateBrandCreativeParams{
-			ID:         repo.ToUUID(creativeID),
+			ID:         ads.ToUUID(creativeID),
 			Name:       name,
 			LandingUrl: landingURL,
 			Weight:     weight,
@@ -513,11 +513,11 @@ func (s *Service) UpdateBrandCreative(ctx context.Context, creativeID uuid.UUID,
 func (s *Service) DeleteBrandCreative(ctx context.Context, creativeID uuid.UUID) error {
 	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
-		existing, err := q.GetBrandCreative(ctx, repo.ToUUID(creativeID))
+		existing, err := q.GetBrandCreative(ctx, ads.ToUUID(creativeID))
 		if err != nil {
 			return fmt.Errorf("creative not found: %w", err)
 		}
-		if err := q.DeleteBrandCreative(ctx, repo.ToUUID(creativeID)); err != nil {
+		if err := q.DeleteBrandCreative(ctx, ads.ToUUID(creativeID)); err != nil {
 			return err
 		}
 		return s.emitBrandCreativesOutbox(ctx, q, uuid.UUID(existing.BrandID.Bytes))

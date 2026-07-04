@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"espx/internal/ads"
 	"espx/internal/ads/db"
-	"espx/internal/ads/sharding"
 	"espx/internal/config"
 	"espx/internal/database"
 
@@ -33,7 +33,7 @@ func TestOutboxPerformanceMetrics(t *testing.T) {
 	cfg := &config.Config{
 		CampaignUpdateChannel: "campaigns:update-test",
 	}
-	svc := NewService(pool, []redis.UniversalClient{rdb}, sharding.NewJumpHashSharder(1), cfg)
+	svc := NewService(pool, []redis.UniversalClient{rdb}, ads.NewJumpHashSharder(1), cfg)
 	svc.Close()
 
 	ctx := context.Background()
@@ -172,7 +172,7 @@ func BenchmarkProcessOutbox(b *testing.B) {
 	cfg := &config.Config{
 		CampaignUpdateChannel: "campaigns:update-bench",
 	}
-	svc := NewService(pool, []redis.UniversalClient{rdb}, sharding.NewJumpHashSharder(1), cfg)
+	svc := NewService(pool, []redis.UniversalClient{rdb}, ads.NewJumpHashSharder(1), cfg)
 	defer svc.Close()
 
 	worker := NewOutboxWorker(svc)

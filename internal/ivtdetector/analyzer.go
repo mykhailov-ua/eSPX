@@ -17,12 +17,12 @@ type SuspiciousIP struct {
 
 // AnalyzerConfig tunes ClickHouse window and detection thresholds.
 type AnalyzerConfig struct {
-	Window          time.Duration
-	MinClicks       uint64
-	MinImpressions  uint64
-	ClickToImpRatio float64
-	MinIPsPerUA     uint64
-	MinEventsPerIP  uint64
+	Window           time.Duration
+	MinClicks        uint64
+	MinImpressions   uint64
+	ClickToImpRatio  float64
+	MinIPsPerUA      uint64
+	MinEventsPerIP   uint64
 }
 
 // DefaultAnalyzerConfig returns production-oriented thresholds for IVT clustering.
@@ -80,7 +80,7 @@ SELECT
     coalesce(i.imp_count, toUInt64(0)) AS imp_count
 FROM (
     SELECT ip_address, count() AS click_count
-    FROM ad_event_processor.clicks
+    FROM clicks
     WHERE created_at >= now() - toIntervalSecond(?)
       AND ip_address != ''
     GROUP BY ip_address
@@ -88,7 +88,7 @@ FROM (
 ) AS c
 LEFT JOIN (
     SELECT ip_address, count() AS imp_count
-    FROM ad_event_processor.impressions
+    FROM impressions
     WHERE created_at >= now() - toIntervalSecond(?)
       AND ip_address != ''
     GROUP BY ip_address
@@ -150,13 +150,13 @@ FROM (
         uniqExact(ip_address) AS ip_count
     FROM (
         SELECT ip_address, user_agent
-        FROM ad_event_processor.impressions
+        FROM impressions
         WHERE created_at >= now() - toIntervalSecond(?)
           AND ip_address != ''
           AND user_agent != ''
         UNION ALL
         SELECT ip_address, user_agent
-        FROM ad_event_processor.clicks
+        FROM clicks
         WHERE created_at >= now() - toIntervalSecond(?)
           AND ip_address != ''
           AND user_agent != ''

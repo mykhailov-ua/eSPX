@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 
+	"espx/internal/ads"
 	"espx/internal/ads/db"
-	"espx/internal/ads/sharding"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -34,7 +34,7 @@ type SlotMigrationDTO struct {
 
 // GetSlotMigrations returns migration progress for a map version.
 func (s *Service) GetSlotMigrations(ctx context.Context, version int32) ([]SlotMigrationDTO, error) {
-	repo := sharding.NewSlotMigrationRepo(s.GetPool())
+	repo := ads.NewSlotMigrationRepo(s.GetPool())
 	rows, err := repo.ListByVersion(ctx, version)
 	if err != nil {
 		return nil, err
@@ -48,8 +48,8 @@ func (s *Service) GetSlotMigrations(ctx context.Context, version int32) ([]SlotM
 
 // EnsureSlotMigrationJobs registers pending jobs for MIGRATING slots in a draft version.
 func (s *Service) EnsureSlotMigrationJobs(ctx context.Context, draftVersion int32) error {
-	mapRepo := sharding.NewSlotMapRepo(s.GetPool())
-	migRepo := sharding.NewSlotMigrationRepo(s.GetPool())
+	mapRepo := ads.NewSlotMapRepo(s.GetPool())
+	migRepo := ads.NewSlotMigrationRepo(s.GetPool())
 
 	active, err := mapRepo.GetActiveVersion(ctx)
 	if err != nil {
@@ -92,7 +92,7 @@ func (s *Service) CopySlotMigrationData(ctx context.Context, version int32, slot
 	if len(s.rdbs) == 0 {
 		return fmt.Errorf("no redis shards configured")
 	}
-	migRepo := sharding.NewSlotMigrationRepo(s.GetPool())
+	migRepo := ads.NewSlotMigrationRepo(s.GetPool())
 	job, err := migRepo.Get(ctx, version, slot)
 	if err != nil {
 		return err
@@ -111,7 +111,7 @@ func (s *Service) CopySlotMigrationData(ctx context.Context, version int32, slot
 	if err != nil {
 		return err
 	}
-	slotCampaigns := sharding.FilterCampaignIDsBySlot(campaignIDs, slot)
+	slotCampaigns := ads.FilterCampaignIDsBySlot(campaignIDs, slot)
 	total := int32(len(slotCampaigns))
 
 	if err := migRepo.UpdateProgress(ctx, version, slot, total, job.CampaignsCopied,
@@ -121,7 +121,7 @@ func (s *Service) CopySlotMigrationData(ctx context.Context, version int32, slot
 
 	src := s.rdbs[job.SourceShard]
 	dst := s.rdbs[job.TargetShard]
-	migrator := &sharding.CampaignKeyMigrator{}
+	migrator := &ads.CampaignKeyMigrator{}
 	var copied int32
 	for _, id := range slotCampaigns {
 		if _, err := migrator.MigrateCampaignKeys(ctx, src, dst, id); err != nil {
@@ -146,7 +146,7 @@ func (s *Service) CopyAllMigratingSlots(ctx context.Context, draftVersion int32)
 	if err := s.EnsureSlotMigrationJobs(ctx, draftVersion); err != nil {
 		return err
 	}
-	mapRepo := sharding.NewSlotMapRepo(s.GetPool())
+	mapRepo := ads.NewSlotMapRepo(s.GetPool())
 	migrating, err := mapRepo.ListMigratingSlots(ctx, draftVersion)
 	if err != nil {
 		return err
@@ -162,8 +162,8 @@ func (s *Service) CopyAllMigratingSlots(ctx context.Context, draftVersion int32)
 
 // ActivateSlotMapVersionWithMigration validates copy completion, cutovers MIGRATING slots, activates, and starts drain.
 func (s *Service) ActivateSlotMapVersionWithMigration(ctx context.Context, adminID uuid.UUID, version int32) error {
-	mapRepo := sharding.NewSlotMapRepo(s.GetPool())
-	migRepo := sharding.NewSlotMigrationRepo(s.GetPool())
+	mapRepo := ads.NewSlotMapRepo(s.GetPool())
+	migRepo := ads.NewSlotMigrationRepo(s.GetPool())
 
 	migrating, err := mapRepo.ListMigratingSlots(ctx, version)
 	if err != nil {
@@ -196,7 +196,7 @@ func (s *Service) ActivateSlotMapVersionWithMigration(ctx context.Context, admin
 		return err
 	}
 	if meta.ActiveVersion == version {
-		return sharding.ErrSlotMapAlreadyActive
+		return ads.ErrSlotMapAlreadyActive
 	}
 	if meta.ActiveVersion > version {
 		return fmt.Errorf("slot map version %d is older than active %d", version, meta.ActiveVersion)
@@ -206,10 +206,10 @@ func (s *Service) ActivateSlotMapVersionWithMigration(ctx context.Context, admin
 		return err
 	}
 	if count == 0 {
-		return sharding.ErrSlotMapVersionNotFound
+		return ads.ErrSlotMapVersionNotFound
 	}
-	if count != sharding.SlotCount {
-		return sharding.ErrSlotMapIncomplete
+	if count != ads.SlotCount {
+		return ads.ErrSlotMapIncomplete
 	}
 
 	for _, row := range migrating {
@@ -252,12 +252,12 @@ func (s *Service) DrainMigratingSlots(ctx context.Context, version int32) error 
 	if len(s.rdbs) == 0 {
 		return fmt.Errorf("no redis shards configured")
 	}
-	migRepo := sharding.NewSlotMigrationRepo(s.GetPool())
+	migRepo := ads.NewSlotMigrationRepo(s.GetPool())
 	jobs, err := migRepo.ListDraining(ctx)
 	if err != nil {
 		return err
 	}
-	mapRepo := sharding.NewSlotMapRepo(s.GetPool())
+	mapRepo := ads.NewSlotMapRepo(s.GetPool())
 	active, err := mapRepo.GetActiveVersion(ctx)
 	if err != nil {
 		return err
@@ -270,7 +270,7 @@ func (s *Service) DrainMigratingSlots(ctx context.Context, version int32) error 
 	if err != nil {
 		return err
 	}
-	migrator := &sharding.CampaignKeyMigrator{}
+	migrator := &ads.CampaignKeyMigrator{}
 
 	for _, job := range jobs {
 		if job.Version != active {
@@ -280,7 +280,7 @@ func (s *Service) DrainMigratingSlots(ctx context.Context, version int32) error 
 			continue
 		}
 		src := s.rdbs[job.SourceShard]
-		slotCampaigns := sharding.FilterCampaignIDsBySlot(campaignIDs, job.Slot)
+		slotCampaigns := ads.FilterCampaignIDsBySlot(campaignIDs, job.Slot)
 		for _, id := range slotCampaigns {
 			if _, err := migrator.DrainCampaignKeys(ctx, src, id); err != nil {
 				_ = migRepo.UpdateState(ctx, job.Version, job.Slot,
@@ -320,8 +320,8 @@ func (s *Service) RollbackSlotMapVersion(ctx context.Context, adminID uuid.UUID,
 	if err != nil {
 		return err
 	}
-	if count != sharding.SlotCount {
-		return sharding.ErrSlotMapIncomplete
+	if count != ads.SlotCount {
+		return ads.ErrSlotMapIncomplete
 	}
 	if err := q.SetSlotMapActiveVersion(ctx, previousVersion); err != nil {
 		return err

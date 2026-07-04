@@ -7,16 +7,17 @@ Five layers. All application services use host networking in compose; stateful s
 1. **Ingress** (Nginx :8180): `/admin/*` to management, `/track/*` to tracker upstream. OpenResty Lua: per-campaign rate limit, edge blacklist, shard pick (CRC32). Optional XDP/eBPF L4 filter on the public NIC (see Ingress section below).
 2. **Ingestion** (tracker x4, :8181-8184): gnet, PinnedWorkerPool, `processTrack()` shared core.
 3. **Edge state** (Redis x4, :6479-6482, plus replicas and Sentinel x3): client-sharded; Lua atomicity per shard.
-4. **Application**: Processor (:8186); Management (:8188, :51053); Auth (:51051), Payment (:51052, :8187), Billing (:51054), Notifier (:8085) gRPC.
+4. **Application**: Processor (:8186); Management (:8188, settlement gRPC :51053); Auth (:51051), Payment (:51052, :8187), Billing (:51054), Notifier (:8085) gRPC; IVT detector (batch).
 5. **Persistence**: Postgres 16 and ClickHouse 24 for ads, auth, payment, billing, and notifier schemas.
 
 ### Control plane
 
-- **Management** (`cmd/management`): REST admin API, HTMX cookie auth gateway, background workers (outbox, drain, schedule, pacing, recon, credit scoring). Settlement gRPC on `SETTLEMENT_SERVER_PORT` (default 51053).
+- **Management** (`cmd/management`): REST admin API, settlement gRPC (`SETTLEMENT_SERVER_PORT`, default 51053), HTMX cookie auth gateway, background workers (outbox, drain, schedule, pacing, recon, credit scoring).
 - **Auth** (`cmd/auth`): gRPC for registration, login, PASETO tokens, API keys, email verification. Redis on shard 0 only (lockout, revocation).
 - **Payment** (`cmd/payment`): gRPC intents, Stripe webhook HTTP, settlement outbox worker. Separate `payment` schema in Postgres.
 - **Billing** (`cmd/billing`): gRPC invoice generation from `balance_ledger` aggregates; `billing` schema (invoices, tax profiles). Management proxies HTMX billing UI when `BILLING_INTERNAL_TOKEN` is set.
-- **Notifier** (`cmd/notifier`): gRPC notification enqueue + background worker (Telegram, Slack, SMTP, SMS). `notifier` schema; optional — no management coupling yet.
+- **Notifier** (`cmd/notifier`): gRPC notification enqueue + background worker (Telegram, Slack, SMTP, SMS). `notifier` schema; starts when `NotifierConfigured()` is true.
+- **IVT detector** (`cmd/ivt-detector`): ClickHouse batch scan → fraud blacklist via management HTTP API.
 
 ### Ingestion plane
 
@@ -309,7 +310,7 @@ Separate concern from ingestion. Money truth is Postgres `balance_ledger`.
 
 Management initiates intents via `PaymentClient` when `PAYMENT_INTERNAL_TOKEN` is set (`POST /admin/customers/{id}/payment-intent`).
 
-**Why separate service:** Payment PCI scope, schema isolation, and failure containment. Trade-off: gRPC hop for settlement; compose has circular `depends_on` between payment and management.
+**Why separate payment service:** PCI scope, schema isolation, and failure containment. Trade-off: gRPC hop to management for ledger credit; payment `depends_on` management for settlement gRPC.
 
 ---
 
@@ -370,7 +371,7 @@ Protobuf definitions in `api/` (buf generate to vtproto):
 | `events.proto` | `ads.v1` | Tracker, processor, DLQ (`AdEvent`, `AdStreamEvent`, `TrackResponse`, `AdDLQEvent`) |
 | `auth.proto` | `auth` | `cmd/auth` gRPC; management auth gateway client |
 | `payment.proto` | `payment` | `cmd/payment` gRPC; management `PaymentClient` |
-| `settlement.proto` | `settlement` | Management settlement gRPC server; payment outbox client |
+| `settlement.proto` | `settlement` | Management settlement gRPC; payment outbox client |
 | `billing.proto` | `billing` | `cmd/billing` gRPC; management `BillingClient` |
 | `notifier.proto` | `notifier` | `cmd/notifier` gRPC |
 
@@ -406,7 +407,8 @@ Prometheus (`deploy/monitoring/prometheus.yml`) scrapes:
 | `auth` | :9091 (`AUTH_METRICS_PORT`) | `/metrics` |
 | `payment` | :8187 (`PAYMENT_WEBHOOK_PORT`) | `/metrics` on webhook mux |
 | `billing` | :51054 (`BILLING_SERVER_PORT`) | gRPC only (no HTTP metrics yet) |
-| `notifier` | :8085 (`NOTIFIER_PORT`) | gRPC only (no HTTP metrics yet) |
+| `management` | :8188 (`MANAGEMENT_PORT`), :51053 (`SETTLEMENT_SERVER_PORT`) | `/metrics` on admin port; settlement gRPC only |
+| `notifier` | :8085 (`NOTIFIER_PORT`) | gRPC only |
 
 Rule file: `deploy/monitoring/prometheus.rules.yml`. Grafana provisioning under `deploy/monitoring/grafana/`.
 

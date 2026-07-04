@@ -18,16 +18,16 @@ import (
 )
 
 const (
-	sentinelChaosShards            = 4
-	sentinelBudgetPreRemaining     = int64(900_000)
-	sentinelBudgetPreSyncDelta     = int64(5_000)
-	sentinelChaosMarkerKey         = "sentinel:chaos:marker"
-	sentinelChaosBudgetPreRemKey   = "sentinel:chaos:budget:pre_remaining"
-	sentinelChaosBudgetPreSyncKey  = "sentinel:chaos:budget:pre_sync"
+	sentinelChaosShards          = 4
+	sentinelBudgetPreRemaining   = int64(900_000)
+	sentinelBudgetPreSyncDelta   = int64(5_000)
+	sentinelChaosMarkerKey       = "sentinel:chaos:marker"
+	sentinelChaosBudgetPreRemKey = "sentinel:chaos:budget:pre_remaining"
+	sentinelChaosBudgetPreSyncKey = "sentinel:chaos:budget:pre_sync"
 	sentinelChaosBudgetCampaignKey = "sentinel:chaos:budget:campaign_id"
-	sentinelChaosLoadShard0ErrKey  = "sentinel:chaos:load:shard0:errors"
-	sentinelChaosLoadShard0OKKey   = "sentinel:chaos:load:shard0:ok"
-	sentinelChaosLoadOtherOKKey    = "sentinel:chaos:load:other:ok"
+	sentinelChaosLoadShard0ErrKey = "sentinel:chaos:load:shard0:errors"
+	sentinelChaosLoadShard0OKKey  = "sentinel:chaos:load:shard0:ok"
+	sentinelChaosLoadOtherOKKey   = "sentinel:chaos:load:other:ok"
 )
 
 func logSentinelChaosProof(t *testing.T, fault string, kv map[string]string) {
@@ -113,7 +113,7 @@ func TestSentinelFailoverLoadWorker(t *testing.T) {
 	if err := clients[0].Set(seedCtx, sentinelChaosMarkerKey, "ok", 0).Err(); err != nil {
 		t.Fatalf("seed marker: %v", err)
 	}
-	_ = clients[1].Del(seedCtx, sentinelChaosLoadShard0ErrKey, sentinelChaosLoadShard0OKKey, sentinelChaosLoadOtherOKKey)
+	_ = clients[1].Del(seedCtx, sentinelChaosLoadShard0ErrKey, sentinelChaosLoadShard0OKKey, sentinelChaosLoadOtherOKKey) // best-effort cleanup
 
 	var (
 		shard0Errors atomic.Int64
@@ -276,7 +276,7 @@ func TestSentinelActiveFailoverVerify(t *testing.T) {
 		t.Fatalf("GET sync after failover: %v", err)
 	}
 
-	// CHAOS.md §3.1 on promoted master: remaining unchanged; sync delta preserved (±0 debits on hot path).
+	// Budget keys on promoted master: remaining unchanged; sync delta preserved (no debits on hot path during failover).
 	if postRemaining != preRemaining {
 		t.Fatalf("budget remaining after failover: got %d want %d (pre-failover)", postRemaining, preRemaining)
 	}

@@ -2,6 +2,11 @@ package auth
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -169,4 +174,42 @@ func countActiveSessions(t *testing.T, pool *pgxpool.Pool, userID uuid.UUID) int
 	).Scan(&n)
 	require.NoError(t, err)
 	return n
+}
+
+// applyAuthMigrations runs goose up SQL from internal/auth/migrations against pool.
+func applyAuthMigrations(t testing.TB, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	_, filename, _, _ := runtime.Caller(0)
+	migrationsDir := filepath.Join(filepath.Dir(filename), "migrations")
+
+	entries, err := os.ReadDir(migrationsDir)
+	if err != nil {
+		t.Fatalf("failed to read migrations dir %s: %s", migrationsDir, err)
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name() < entries[j].Name()
+	})
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			continue
+		}
+		sqlBytes, err := os.ReadFile(filepath.Join(migrationsDir, entry.Name()))
+		if err != nil {
+			t.Fatalf("failed to read migration %s: %s", entry.Name(), err)
+		}
+
+		sql := string(sqlBytes)
+		parts := strings.Split(sql, "-- +goose Down")
+		upPart := parts[0]
+		upPart = strings.ReplaceAll(upPart, "-- +goose Up", "")
+		upPart = strings.ReplaceAll(upPart, "-- +goose StatementBegin", "")
+		upPart = strings.ReplaceAll(upPart, "-- +goose StatementEnd", "")
+
+		if _, err := pool.Exec(ctx, upPart); err != nil {
+			t.Fatalf("failed to apply migration %s: %s", entry.Name(), err)
+		}
+	}
 }

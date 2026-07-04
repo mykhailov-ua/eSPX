@@ -2,8 +2,6 @@ package payment
 
 import (
 	"context"
-	"espx/internal/ads/repo"
-	"espx/internal/ads/sharding"
 	"fmt"
 	"net"
 	"path/filepath"
@@ -12,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"espx/internal/ads"
 	ads_db "espx/internal/ads/db"
 	"espx/internal/config"
 	"espx/internal/management"
@@ -38,7 +37,7 @@ type paymentChaosInfra struct {
 	PGContainer    *postgres.PostgresContainer
 	RedisContainer testcontainers.Container
 	Cfg            *config.Config
-	MgmtService    *management.Service
+	MgmtSvc        *management.Service
 	SettlementLis  net.Listener
 	SettlementGRPC *grpc.Server
 }
@@ -96,14 +95,15 @@ func setupPaymentChaosInfra(t *testing.T) (*paymentChaosInfra, func()) {
 		MaxRetries:              3,
 	}
 
-	sharder := sharding.NewJumpHashSharder(1)
-	mgmtService := management.NewService(pool, []redis.UniversalClient{rdb}, sharder, cfg)
-	settleHandler := management.NewSettlementHandler(mgmtService, cfg)
+	rdbs := []redis.UniversalClient{rdb}
+	mgmtSvc := management.NewService(pool, rdbs, ads.NewStaticSlotSharder(len(rdbs)), cfg)
+	settleHandler := management.NewSettlementHandler(mgmtSvc, cfg)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	_, portStr, err := net.SplitHostPort(lis.Addr().String())
 	require.NoError(t, err)
+	cfg.SettlementServerHost = "127.0.0.1"
 	cfg.SettlementServerPort = portStr
 
 	grpcServer := grpc.NewServer()
@@ -116,14 +116,13 @@ func setupPaymentChaosInfra(t *testing.T) (*paymentChaosInfra, func()) {
 		PGContainer:    pgContainer,
 		RedisContainer: redisContainer,
 		Cfg:            cfg,
-		MgmtService:    mgmtService,
+		MgmtSvc:        mgmtSvc,
 		SettlementLis:  lis,
 		SettlementGRPC: grpcServer,
 	}
 
 	cleanup := func() {
 		grpcServer.Stop()
-		mgmtService.Close()
 		_ = rdb.Close()
 		pool.Close()
 		_ = redisContainer.Terminate(ctx)
@@ -155,7 +154,7 @@ func (infra *paymentChaosInfra) refreshPGPool(t *testing.T) {
 	pool, err := pgxpool.New(ctx, connStr)
 	require.NoError(t, err)
 	infra.Pool = pool
-	infra.MgmtService.SetPool(pool)
+	infra.MgmtSvc.SetPool(pool)
 	require.Eventually(t, func() bool {
 		return pool.Ping(ctx) == nil
 	}, 30*time.Second, 200*time.Millisecond)
@@ -172,7 +171,7 @@ func (infra *paymentChaosInfra) restartSettlementGRPC(t *testing.T) {
 	require.NoError(t, err)
 	infra.SettlementLis = lis
 
-	settleHandler := management.NewSettlementHandler(infra.MgmtService, infra.Cfg)
+	settleHandler := management.NewSettlementHandler(infra.MgmtSvc, infra.Cfg)
 	grpcServer := grpc.NewServer()
 	mgmt_pb.RegisterSettlementServiceServer(grpcServer, settleHandler)
 	go func() { _ = grpcServer.Serve(lis) }()
@@ -199,7 +198,7 @@ func seedCustomer(t *testing.T, pool *pgxpool.Pool, customerID uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()
 	_, err := ads_db.New(pool).CreateCustomer(ctx, ads_db.CreateCustomerParams{
-		ID:       repo.ToUUID(customerID),
+		ID:       ads.ToUUID(customerID),
 		Name:     "chaos customer",
 		Balance:  0,
 		Currency: "USD",
@@ -241,7 +240,7 @@ func seedSucceededIntentWithOutbox(t *testing.T, infra *paymentChaosInfra, custo
 func customerBalance(t *testing.T, pool *pgxpool.Pool, customerID uuid.UUID) int64 {
 	t.Helper()
 	ctx := context.Background()
-	cust, err := ads_db.New(pool).GetCustomerForUpdate(ctx, repo.ToUUID(customerID))
+	cust, err := ads_db.New(pool).GetCustomerForUpdate(ctx, ads.ToUUID(customerID))
 	require.NoError(t, err)
 	return cust.Balance
 }
@@ -252,7 +251,7 @@ func ledgerCountForIntent(t *testing.T, pool *pgxpool.Pool, intentID uuid.UUID) 
 	var n int
 	err := pool.QueryRow(context.Background(), `
 		SELECT COUNT(*) FROM balance_ledger
-		WHERE payment_intent_id = $1 AND type = 'PAYMENT_TOPUP'`, repo.ToUUID(intentID)).Scan(&n)
+		WHERE payment_intent_id = $1 AND type = 'PAYMENT_TOPUP'`, ads.ToUUID(intentID)).Scan(&n)
 	require.NoError(t, err)
 	return n
 }

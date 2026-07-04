@@ -14,7 +14,7 @@ type contextKey string
 // DeduplicationTokenKey carries a broker idempotency token through ingest so duplicate clicks are rejected once.
 const DeduplicationTokenKey contextKey = "dedup_token"
 
-// Event is the pooled ingest record so handlers reuse byte buffers instead of allocating per request.
+// Event is the pooled ingest record on the ads hot path.
 type Event struct {
 	ClickID      string
 	CampaignID   uuid.UUID
@@ -32,16 +32,13 @@ type Event struct {
 	ShadowEvent  bool
 	CreatedAt    time.Time
 	StringBuffer []byte
-	// HotScratch is ads-internal ingest state (fraud accumulator pool pointer); nil before pool return.
-	HotScratch any
+	// Scratch is an opaque ads-internal slot (fraud accumulator pointer); 0 when unset.
+	Scratch uintptr
 	// FilterDeadlineMono is a monotonic-ns filter budget set by FilterEngine.Check; 0 means unset.
 	FilterDeadlineMono int64
-	// IngestGeoResolved marks whether GeoHash/GeoCountry were computed for this request.
-	IngestGeoResolved bool
-	// GeoHash is the crc32 IEEE country shard used by RTB geo indexing.
-	GeoHash uint32
-	// GeoCountry is the cached ISO country code from the first GeoIP lookup on this event.
-	GeoCountry string
+	IngestGeoResolved  bool
+	GeoHash            uint32
+	GeoCountry         string
 	// ClickIDBuf is a pre-allocated buffer to format generated click IDs without heap allocation.
 	ClickIDBuf [36]byte
 }
@@ -67,7 +64,7 @@ func (event *Event) Reset() {
 	event.GhostEvent = false
 	event.ShadowEvent = false
 	event.CreatedAt = time.Time{}
-	event.HotScratch = nil
+	event.Scratch = 0
 	event.FilterDeadlineMono = 0
 	event.IngestGeoResolved = false
 	event.GeoHash = 0

@@ -42,7 +42,6 @@ type mockRevocationRedis struct {
 	exists map[string]int64
 }
 
-// Pipelined simulates batched EXISTS checks without a live Redis instance.
 func (m *mockRevocationRedis) Pipelined(ctx context.Context, fn func(redis.Pipeliner) error) ([]redis.Cmder, error) {
 	p := &mockRevocationPipeliner{exists: m.exists, ctx: ctx}
 	if err := fn(p); err != nil {
@@ -58,7 +57,6 @@ type mockRevocationPipeliner struct {
 	cmds   []redis.Cmder
 }
 
-// Exists returns canned revocation state for pipeline-based revocation tests.
 func (p *mockRevocationPipeliner) Exists(ctx context.Context, keys ...string) *redis.IntCmd {
 	cmd := redis.NewIntCmd(ctx)
 	if len(keys) > 0 {
@@ -76,7 +74,6 @@ func TestRevokeUserAccess(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// Set records revocation keys in memory for block and unblock regression tests.
 func (m *mockRevocationRedis) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd {
 	if m.exists == nil {
 		m.exists = map[string]int64{}
@@ -87,7 +84,6 @@ func (m *mockRevocationRedis) Set(ctx context.Context, key string, value interfa
 	return cmd
 }
 
-// Del clears revocation keys in memory so unblock paths can be exercised offline.
 func (m *mockRevocationRedis) Del(ctx context.Context, keys ...string) *redis.IntCmd {
 	for _, key := range keys {
 		delete(m.exists, key)

@@ -6,3 +6,4 @@ vendor/
 .vscode/
 campaigns_replica.json
 campaigns_replica.json.tmp
+GUIDE_*.md

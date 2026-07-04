@@ -17,7 +17,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// mockRepo stubs persistence for unit tests of auth service flows.
 type mockRepo struct {
 	db.Querier
 	user             db.User
@@ -29,17 +28,14 @@ type mockRepo struct {
 	createSessionErr error
 }
 
-// GetUserByEmail returns the configured user or error for login tests.
 func (m *mockRepo) GetUserByEmail(ctx context.Context, email string) (db.User, error) {
 	return m.user, m.err
 }
 
-// GetUserByID returns the configured user or error for token verification tests.
 func (m *mockRepo) GetUserByID(ctx context.Context, id pgtype.UUID) (db.User, error) {
 	return m.getUserByID, m.getUserByIDErr
 }
 
-// CreateUser returns a synthetic user row or a configured creation error.
 func (m *mockRepo) CreateUser(ctx context.Context, arg db.CreateUserParams) (db.CreateUserRow, error) {
 	if m.createUserErr != nil {
 		return db.CreateUserRow{}, m.createUserErr
@@ -47,7 +43,6 @@ func (m *mockRepo) CreateUser(ctx context.Context, arg db.CreateUserParams) (db.
 	return db.CreateUserRow{ID: pgtype.UUID{Bytes: uuid.New(), Valid: true}}, nil
 }
 
-// CreateSession returns a synthetic session or a configured creation error.
 func (m *mockRepo) CreateSession(ctx context.Context, arg db.CreateSessionParams) (db.Session, error) {
 	if m.createSessionErr != nil {
 		return db.Session{}, m.createSessionErr
@@ -55,92 +50,74 @@ func (m *mockRepo) CreateSession(ctx context.Context, arg db.CreateSessionParams
 	return m.session, m.err
 }
 
-// GetSessionByRefreshTokenForUpdate returns the configured session for refresh rotation tests.
 func (m *mockRepo) GetSessionByRefreshTokenForUpdate(ctx context.Context, refreshToken string) (db.Session, error) {
 	return m.session, m.err
 }
 
-// BlockSession applies the configured error for session blocking tests.
 func (m *mockRepo) BlockSession(ctx context.Context, id pgtype.UUID) error {
 	return m.err
 }
 
-// BlockSessionByRefreshToken applies the configured error for revoke tests.
 func (m *mockRepo) BlockSessionByRefreshToken(ctx context.Context, refreshToken string) error {
 	return m.err
 }
 
-// DeleteExpiredOrBlockedSessions returns a fixed cleanup count for worker tests.
 func (m *mockRepo) DeleteExpiredOrBlockedSessions(ctx context.Context) (int64, error) {
 	return 5, m.err
 }
 
-// GetSessionByRefreshToken returns the configured session for revoke tests.
 func (m *mockRepo) GetSessionByRefreshToken(ctx context.Context, refreshToken string) (db.Session, error) {
 	return m.session, m.err
 }
 
-// BlockUser applies the configured error for lockout regression tests.
 func (m *mockRepo) BlockUser(ctx context.Context, email string) error {
 	return m.err
 }
 
-// UnblockUser applies the configured error for unblock tests.
 func (m *mockRepo) UnblockUser(ctx context.Context, email string) error {
 	return m.err
 }
 
-// UpdatePassword applies the configured error for password change tests.
 func (m *mockRepo) UpdatePassword(ctx context.Context, arg db.UpdatePasswordParams) error {
 	return m.err
 }
 
-// ExecTx runs the callback against this mock without a real transaction.
 func (m *mockRepo) ExecTx(ctx context.Context, fn func(db.Querier) error) error {
 	return fn(m)
 }
 
-// CreatePasswordHistoryEntry applies the configured error for password history tests.
 func (m *mockRepo) CreatePasswordHistoryEntry(ctx context.Context, arg db.CreatePasswordHistoryEntryParams) error {
 	return m.err
 }
 
-// GetPasswordHistory returns the configured history or error for reuse checks.
 func (m *mockRepo) GetPasswordHistory(ctx context.Context, arg db.GetPasswordHistoryParams) ([]string, error) {
 	return nil, m.err
 }
 
-// SetEmailVerified applies the configured error for email verification tests.
 func (m *mockRepo) SetEmailVerified(ctx context.Context, id pgtype.UUID) error { return m.err }
 
-// CreateAuthAuditLog applies the configured error for audit tests.
 func (m *mockRepo) CreateAuthAuditLog(ctx context.Context, arg db.CreateAuthAuditLogParams) (db.CreateAuthAuditLogRow, error) {
 	return db.CreateAuthAuditLogRow{}, m.err
 }
 
-// ListAuthAuditLogsByUser returns the configured audit rows or error.
 func (m *mockRepo) ListAuthAuditLogsByUser(ctx context.Context, arg db.ListAuthAuditLogsByUserParams) ([]db.AuthAuditLog, error) {
 	return nil, m.err
 }
 
-// CreateAPIKey returns a synthetic API key row for key creation tests.
 func (m *mockRepo) CreateAPIKey(ctx context.Context, arg db.CreateAPIKeyParams) (db.CreateAPIKeyRow, error) {
 	return db.CreateAPIKeyRow{ID: pgtype.UUID{Bytes: uuid.New(), Valid: true}}, nil
 }
 
-// mockTokenMaker stubs token issuance and verification for service unit tests.
 type mockTokenMaker struct {
 	Maker
 	createErr error
 	verifyErr error
 }
 
-// CreateToken returns a fixed token or a configured creation error.
 func (m *mockTokenMaker) CreateToken(userID uuid.UUID, sessionID uuid.UUID, role string, customerID uuid.UUID, duration time.Duration) (string, error) {
 	return "token", m.createErr
 }
 
-// VerifyToken returns a synthetic payload or a configured verification error.
 func (m *mockTokenMaker) VerifyToken(t string) (*Payload, error) {
 	return &Payload{UserID: uuid.New()}, m.verifyErr
 }

@@ -72,7 +72,7 @@ func buildACKPacket(t *testing.T, src, dst net.IP, dport uint16) []byte {
 func buildPSHACKPacket(t *testing.T, src, dst net.IP, dport uint16) []byte {
 	t.Helper()
 	pkt := buildACKPacket(t, src, dst, dport)
-	pkt[len(pkt)-7] = 0x18 // PSH+ACK — established connection flood
+	pkt[len(pkt)-7] = 0x18 // PSH+ACK - established connection flood
 	return pkt
 }
 

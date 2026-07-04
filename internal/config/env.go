@@ -4,7 +4,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -14,15 +13,6 @@ import (
 // ExpectedRedisShardCount is the fixed production topology for StaticSlotSharder client sharding.
 const ExpectedRedisShardCount = 4
 
-// Secret wraps sensitive strings so structured logs never emit credentials in plain text.
-type Secret string
-
-// LogValue redacts secret fields when config values are logged through slog.
-func (s Secret) LogValue() slog.Value {
-	return slog.StringValue("**********")
-}
-
-// Config is the shared environment-backed settings object every service reads at startup.
 type Config struct {
 	ServerPort                 string
 	ProcessorPort              string
@@ -94,6 +84,7 @@ type Config struct {
 	PaymentMetricsPort         string
 	PaymentWebhookPort         string
 	SettlementServerPort       string
+	SettlementServerHost       string
 	PaymentInternalToken       Secret
 	SettlementInternalToken    Secret
 	StripeSecretKey            Secret
@@ -191,28 +182,23 @@ type Config struct {
 		SMTPSender              string
 	}
 
+	IVT struct {
+		Enabled            bool
+		ScanIntervalMs     int
+		OutboxPendingLimit int64
+		WindowSec          int
+		MinClicks          uint64
+		MinImpressions     uint64
+		ClickToImpRatio    float64
+		MinIPsPerUA        uint64
+	}
+
 	Billing struct {
 		Port       string
 		ServerHost string
 	}
 
 	BillingInternalToken Secret
-}
-
-// trimCommaList splits comma-separated env values and drops empty tokens so trailing commas do not create phantom shards.
-func trimCommaList(raw string) []string {
-	if raw == "" {
-		return nil
-	}
-	parts := strings.Split(raw, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
 }
 
 // BrokerEnabled reports whether the processor should run the broker ingest bridge.
@@ -237,60 +223,7 @@ func (c *Config) ResolveRedisMasterNames() []string {
 	return names
 }
 
-// getEnvBool reads boolean env vars with safe parsing so mis-typed values fall back instead of crashing.
-func getEnvBool(key string, fallback bool) bool {
-	if value, ok := os.LookupEnv(key); ok {
-		switch strings.ToLower(value) {
-		case "1", "true", "yes", "on":
-			return true
-		case "0", "false", "no", "off":
-			return false
-		}
-	}
-	return fallback
-}
-
-// getEnvInt reads integer env vars with safe parsing so missing keys use service defaults.
-func getEnvInt(key string, fallback int) int {
-	if value, ok := os.LookupEnv(key); ok {
-		if intVal, err := strconv.Atoi(value); err == nil {
-			return intVal
-		}
-	}
-	return fallback
-}
-
-// getEnvFloat reads float env vars with safe parsing for tuning knobs like CTR thresholds.
-func getEnvFloat(key string, fallback float64) float64 {
-	if value, ok := os.LookupEnv(key); ok {
-		if floatVal, err := strconv.ParseFloat(value, 64); err == nil {
-			return floatVal
-		}
-	}
-	return fallback
-}
-
-// getEnvMicro converts dollar env values to micro-units so billing code stays integer-only.
-func getEnvMicro(key string, fallback int64) int64 {
-	if value, ok := os.LookupEnv(key); ok {
-		if floatVal, err := strconv.ParseFloat(value, 64); err == nil {
-			return int64(floatVal * 1_000_000)
-		}
-	}
-	return fallback
-}
-
-// getEnvInt64 reads int64 env vars for limits and counters that exceed 32-bit range.
-func getEnvInt64(key string, fallback int64) int64 {
-	if value, ok := os.LookupEnv(key); ok {
-		if intVal, err := strconv.ParseInt(value, 10, 64); err == nil {
-			return intVal
-		}
-	}
-	return fallback
-}
-
-// Load builds a validated Config from the process environment so every binary shares one tuning surface.
+// Load builds a validated Config from the process environment.
 func Load() (*Config, error) {
 	cfg := &Config{
 		ServerPort:                  os.Getenv("SERVER_PORT"),
@@ -374,6 +307,7 @@ func Load() (*Config, error) {
 		PaymentMetricsPort:          os.Getenv("PAYMENT_METRICS_PORT"),
 		PaymentWebhookPort:          os.Getenv("PAYMENT_WEBHOOK_PORT"),
 		SettlementServerPort:        os.Getenv("SETTLEMENT_SERVER_PORT"),
+		SettlementServerHost:        os.Getenv("SETTLEMENT_SERVER_HOST"),
 		PaymentInternalToken:        Secret(os.Getenv("PAYMENT_INTERNAL_TOKEN")),
 		SettlementInternalToken:     Secret(os.Getenv("SETTLEMENT_INTERNAL_TOKEN")),
 		StripeSecretKey:             Secret(os.Getenv("STRIPE_SECRET_KEY")),
@@ -457,6 +391,15 @@ func Load() (*Config, error) {
 	cfg.Notifier.SMTPUsername = os.Getenv("SMTP_USERNAME")
 	cfg.Notifier.SMTPPassword = Secret(os.Getenv("SMTP_PASSWORD"))
 	cfg.Notifier.SMTPSender = os.Getenv("SMTP_SENDER")
+
+	cfg.IVT.Enabled = getEnvBool("IVT_DETECTOR_ENABLED", true)
+	cfg.IVT.ScanIntervalMs = getEnvInt("IVT_DETECTOR_SCAN_INTERVAL_MS", 300000)
+	cfg.IVT.OutboxPendingLimit = getEnvInt64("IVT_DETECTOR_OUTBOX_PENDING_LIMIT", 500)
+	cfg.IVT.WindowSec = getEnvInt("IVT_DETECTOR_WINDOW_SEC", 3600)
+	cfg.IVT.MinClicks = uint64(getEnvInt64("IVT_DETECTOR_MIN_CLICKS", 10))
+	cfg.IVT.MinImpressions = uint64(getEnvInt64("IVT_DETECTOR_MIN_IMPRESSIONS", 1))
+	cfg.IVT.ClickToImpRatio = getEnvFloat("IVT_DETECTOR_CLICK_TO_IMP_RATIO", 5.0)
+	cfg.IVT.MinIPsPerUA = uint64(getEnvInt64("IVT_DETECTOR_MIN_IPS_PER_UA", 8))
 
 	cfg.Billing.Port = os.Getenv("BILLING_SERVER_PORT")
 	if cfg.Billing.Port == "" {
@@ -549,8 +492,10 @@ func Load() (*Config, error) {
 		cfg.PaymentWebhookPort = "8187"
 	}
 	if cfg.SettlementServerPort == "" {
-		// Settlement gRPC lives on management; payment outbox dials this port after webhook success.
 		cfg.SettlementServerPort = "51053"
+	}
+	if cfg.SettlementServerHost == "" {
+		cfg.SettlementServerHost = "127.0.0.1"
 	}
 	if cfg.Env == "" {
 		cfg.Env = "development"
@@ -569,12 +514,22 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-// LifecycleShutdownTimeout returns SHUTDOWN_TIMEOUT_MS for binaries that do not load the full Config.
-func LifecycleShutdownTimeout() time.Duration {
-	return time.Duration(getEnvInt("SHUTDOWN_TIMEOUT_MS", 15000)) * time.Millisecond
+// NotifierConfigured reports whether at least one delivery channel has credentials in config.
+func (c *Config) NotifierConfigured() bool {
+	if c == nil {
+		return false
+	}
+	return c.Notifier.TelegramBotToken != "" ||
+		c.Notifier.TelegramChatID != "" ||
+		c.Notifier.SlackWebhookURL != "" ||
+		c.Notifier.SMTPHost != "" ||
+		c.Notifier.SMTPSender != ""
 }
 
-// LifecycleWaitTimeout returns WAIT_TIMEOUT_MS for binaries that do not load the full Config.
-func LifecycleWaitTimeout() time.Duration {
-	return time.Duration(getEnvInt("WAIT_TIMEOUT_MS", 5000)) * time.Millisecond
+// IVTDetectorEnabled reports whether the management-hosted IVT scan loop should run.
+func (c *Config) IVTDetectorEnabled() bool {
+	if c == nil || !c.IVT.Enabled {
+		return false
+	}
+	return string(c.CHDSN) != ""
 }

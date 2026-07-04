@@ -88,8 +88,11 @@ func (s *SMSProvider) Send(ctx context.Context, recipient, title, body string) e
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, readErr := io.ReadAll(resp.Body)
 		s.breaker.RecordFailure()
+		if readErr != nil {
+			return fmt.Errorf("sms api returned status %d: read body: %w", resp.StatusCode, readErr)
+		}
 		return fmt.Errorf("sms api returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 

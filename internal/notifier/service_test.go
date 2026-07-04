@@ -396,8 +396,10 @@ func TestService_processPending_deduplication(t *testing.T) {
 	assert.Contains(t, mockProv.Sent[0].Body, "Alert details for node 0")
 	assert.Contains(t, mockProv.Sent[0].Body, "Alert details for node 1")
 
-	// Emit chaos proof for deduplication
-	fmt.Printf("chaos_proof fault=notifier_deduplication size=5 success=true\n")
+	logChaosProof(t, "notifier_deduplication", map[string]string{
+		"size":    "5",
+		"success": "true",
+	})
 }
 
 // Guards multi-channel fallback path (Slack -> Telegram -> SMS -> SMTP).
@@ -457,8 +459,11 @@ func TestService_processPending_fallback(t *testing.T) {
 	assert.Equal(t, pb.NotificationStatus_NOTIFICATION_STATUS_SENT, getResp.Notification.Status)
 	assert.Equal(t, pb.Provider_PROVIDER_TELEGRAM, getResp.Notification.Provider)
 
-	// Emit chaos proof for fallback
-	fmt.Printf("chaos_proof fault=notifier_fallback primary=SLACK fallback=TELEGRAM success=true\n")
+	logChaosProof(t, "notifier_fallback", map[string]string{
+		"primary":  "SLACK",
+		"fallback": "TELEGRAM",
+		"success":  "true",
+	})
 }
 
 type mockRoundTripper func(req *http.Request) (*http.Response, error)
@@ -469,7 +474,7 @@ func (m mockRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 
 // Guards JSON formatting and correct structure of Telegram/Slack interactive buttons.
 func TestProviders_interactiveButtons(t *testing.T) {
-	ctx := context.WithValue(context.Background(), "notification_id", "test-notification-uuid-123")
+	ctx := context.WithValue(context.Background(), NotificationIDContextKey, "test-notification-uuid-123")
 
 	// 1. Telegram test
 	var capturedTelegram []byte
@@ -529,5 +534,5 @@ func TestProviders_interactiveButtons(t *testing.T) {
 	assert.Len(t, blocks, 2) // Section and Actions block
 
 	// Emit chaos proof for interactive buttons
-	fmt.Printf("chaos_proof fault=notifier_interactive_buttons success=true\n")
+	logChaosProof(t, "notifier_interactive_buttons", map[string]string{"success": "true"})
 }

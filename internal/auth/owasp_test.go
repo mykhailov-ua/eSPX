@@ -20,7 +20,6 @@ import (
 	"google.golang.org/grpc/peer"
 )
 
-// mockRedisClient stubs Redis for auth tests that need lockout, revocation, or verification behavior.
 type mockRedisClient struct {
 	redis.UniversalClient
 	evalFunc      func(script string, keys []string, args ...interface{}) (interface{}, error)
@@ -31,7 +30,6 @@ type mockRedisClient struct {
 	pipelinedFunc func(ctx context.Context, fn func(redis.Pipeliner) error) ([]redis.Cmder, error)
 }
 
-// Eval runs a Lua script through the test hook when configured.
 func (m *mockRedisClient) Eval(ctx context.Context, script string, keys []string, args ...interface{}) *redis.Cmd {
 	if m.evalFunc != nil {
 		res, err := m.evalFunc(script, keys, args...)
@@ -43,7 +41,6 @@ func (m *mockRedisClient) Eval(ctx context.Context, script string, keys []string
 	return redis.NewCmd(ctx)
 }
 
-// Get reads a key through the test hook when configured.
 func (m *mockRedisClient) Get(ctx context.Context, key string) *redis.StringCmd {
 	if m.getFunc != nil {
 		return m.getFunc(key)
@@ -53,7 +50,6 @@ func (m *mockRedisClient) Get(ctx context.Context, key string) *redis.StringCmd 
 	return cmd
 }
 
-// Set writes a key through the test hook when configured.
 func (m *mockRedisClient) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd {
 	if m.setFunc != nil {
 		return m.setFunc(key, value, expiration)
@@ -62,7 +58,6 @@ func (m *mockRedisClient) Set(ctx context.Context, key string, value interface{}
 	return cmd
 }
 
-// SetNX sets a key only when missing through the test hook when configured.
 func (m *mockRedisClient) SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.BoolCmd {
 	if m.setNXFunc != nil {
 		return m.setNXFunc(key, value, expiration)
@@ -72,7 +67,6 @@ func (m *mockRedisClient) SetNX(ctx context.Context, key string, value interface
 	return cmd
 }
 
-// Del removes keys through the test hook when configured.
 func (m *mockRedisClient) Del(ctx context.Context, keys ...string) *redis.IntCmd {
 	if m.delFunc != nil {
 		return m.delFunc(keys...)
@@ -81,38 +75,32 @@ func (m *mockRedisClient) Del(ctx context.Context, keys ...string) *redis.IntCmd
 	return cmd
 }
 
-// mockPipeliner stubs pipeline commands used by rate limiting helpers in tests.
 type mockPipeliner struct {
 	redis.Pipeliner
 	incrCmd *redis.IntCmd
 }
 
-// Incr returns a canned increment result for pipeline-based limiter tests.
 func (m *mockPipeliner) Incr(ctx context.Context, key string) *redis.IntCmd {
 	m.incrCmd.SetVal(1)
 	return m.incrCmd
 }
 
-// ExpireNX returns a successful expiry command for pipeline-based limiter tests.
 func (m *mockPipeliner) ExpireNX(ctx context.Context, key string, expiration time.Duration) *redis.BoolCmd {
 	cmd := redis.NewBoolCmd(ctx)
 	cmd.SetVal(true)
 	return cmd
 }
 
-// Exec completes the stub pipeline without side effects.
 func (m *mockPipeliner) Exec(ctx context.Context) ([]redis.Cmder, error) {
 	return nil, nil
 }
 
-// Pipeline returns a stub pipeliner for lockout and rate limit tests.
 func (m *mockRedisClient) Pipeline() redis.Pipeliner {
 	return &mockPipeliner{
 		incrCmd: redis.NewIntCmd(context.Background()),
 	}
 }
 
-// Pipelined runs a callback through the test hook when configured.
 func (m *mockRedisClient) Pipelined(ctx context.Context, fn func(redis.Pipeliner) error) ([]redis.Cmder, error) {
 	if m.pipelinedFunc != nil {
 		return m.pipelinedFunc(ctx, fn)
@@ -161,7 +149,6 @@ func (m *owaspMockRepo) BlockUser(ctx context.Context, email string) error {
 	return nil
 }
 
-// ExecTx runs the callback against this mock without a real transaction.
 func (m *owaspMockRepo) ExecTx(ctx context.Context, fn func(db.Querier) error) error {
 	return fn(m)
 }
@@ -182,7 +169,6 @@ func (m *owaspMockRepo) ListAuthAuditLogsByUser(ctx context.Context, arg db.List
 	return nil, nil
 }
 
-// CreateAPIKey returns a synthetic API key row for OWASP tests that touch key creation paths.
 func (m *owaspMockRepo) CreateAPIKey(ctx context.Context, arg db.CreateAPIKeyParams) (db.CreateAPIKeyRow, error) {
 	return db.CreateAPIKeyRow{ID: pgtype.UUID{Bytes: uuid.New(), Valid: true}}, nil
 }

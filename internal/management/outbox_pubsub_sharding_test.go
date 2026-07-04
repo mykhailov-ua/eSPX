@@ -3,11 +3,10 @@ package management
 import (
 	"context"
 	"encoding/json"
-	"espx/internal/ads/repo"
-	"espx/internal/ads/sharding"
 	"testing"
 	"time"
 
+	"espx/internal/ads"
 	"espx/internal/config"
 	"espx/internal/database"
 
@@ -22,7 +21,7 @@ const testPubSubShards = 3
 // campaignIDForShard returns a UUID that StaticSlotSharder maps to wantShard.
 func campaignIDForShard(t *testing.T, numShards, wantShard int) uuid.UUID {
 	t.Helper()
-	sharder := sharding.NewStaticSlotSharder(numShards)
+	sharder := ads.NewStaticSlotSharder(numShards)
 	for range 20_000 {
 		id := uuid.New()
 		if sharder.GetShard(id) == wantShard {
@@ -111,12 +110,12 @@ func TestOutboxScheduleUpdate_PubSubOnShardZero(t *testing.T) {
 
 	shards := newDedicatedRedisShards(t, testPubSubShards)
 	campaignID := campaignIDForShard(t, testPubSubShards, 2)
-	require.Equal(t, 2, sharding.NewStaticSlotSharder(testPubSubShards).GetShard(campaignID))
+	require.Equal(t, 2, ads.NewStaticSlotSharder(testPubSubShards).GetShard(campaignID))
 
 	channel := "test:schedule:pubsub"
 	svc := &Service{
 		rdbs:    shards,
-		sharder: sharding.NewStaticSlotSharder(testPubSubShards),
+		sharder: ads.NewStaticSlotSharder(testPubSubShards),
 		cfg:     &config.Config{CampaignUpdateChannel: channel},
 	}
 
@@ -162,7 +161,7 @@ func TestOutboxCreateCampaign_BudgetOnCampaignShard(t *testing.T) {
 	_, err := pool.Exec(ctx, `
 		INSERT INTO campaigns (id, name, budget_limit, current_spend, status, customer_id, pacing_mode, timezone, freq_window)
 		VALUES ($1, 'shard test', 100000000, 0, 'ACTIVE', $2, 'ASAP', 'UTC', 86400)
-	`, repo.ToUUID(campaignID), repo.ToUUID(customerID))
+	`, ads.ToUUID(campaignID), ads.ToUUID(customerID))
 	require.NoError(t, err)
 
 	sub0 := shards[0].Subscribe(ctx, channel)

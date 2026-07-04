@@ -11,10 +11,10 @@ import (
 
 // DetectorConfig tunes scan cadence and management outbox backpressure.
 type DetectorConfig struct {
-	ScanInterval       time.Duration
-	OutboxPendingLimit int64
-	ManagementTimeout  time.Duration
-	Analyzer           AnalyzerConfig
+	ScanInterval         time.Duration
+	OutboxPendingLimit   int64
+	ManagementTimeout    time.Duration
+	Analyzer             AnalyzerConfig
 }
 
 // DefaultDetectorConfig returns scan and backpressure defaults for production.
@@ -39,7 +39,7 @@ type RunResult struct {
 type Detector struct {
 	analyzer   suspiciousFinder
 	idem       *IdempotencyStore
-	management blacklistBlocker
+	management BlacklistBlocker
 	pool       *pgxpool.Pool
 	cfg        DetectorConfig
 }
@@ -48,7 +48,7 @@ type Detector struct {
 func NewDetector(
 	analyzer suspiciousFinder,
 	idem *IdempotencyStore,
-	management blacklistBlocker,
+	management BlacklistBlocker,
 	pool *pgxpool.Pool,
 	cfg DetectorConfig,
 ) *Detector {

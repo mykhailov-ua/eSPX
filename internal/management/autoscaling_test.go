@@ -5,10 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"espx/internal/ads"
 	"espx/internal/ads/db"
-	"espx/internal/ads/repo"
-	"espx/internal/ads/sharding"
-	adssync "espx/internal/ads/sync"
 	"espx/internal/config"
 	"espx/internal/database"
 
@@ -38,7 +36,7 @@ func TestSmartBudgetAutoscaling(t *testing.T) {
 	}
 	cfg.Lifecycle.WaitTimeoutMs = 500
 
-	sharder := sharding.NewJumpHashSharder(1)
+	sharder := ads.NewJumpHashSharder(1)
 	svc := NewService(pool, []redis.UniversalClient{rdb}, sharder, cfg)
 
 	t.Cleanup(func() {
@@ -61,13 +59,13 @@ func TestSmartBudgetAutoscaling(t *testing.T) {
 
 	_, err = pool.Exec(ctx,
 		"INSERT INTO campaign_stats (campaign_id, date, impressions_count, clicks_count, conversions_count) VALUES ($1, CURRENT_DATE, 1000, 2, 0)",
-		repo.ToUUID(campaignA),
+		ads.ToUUID(campaignA),
 	)
 	require.NoError(t, err)
 
 	_, err = pool.Exec(ctx,
 		"INSERT INTO campaign_stats (campaign_id, date, impressions_count, clicks_count, conversions_count) VALUES ($1, CURRENT_DATE, 500, 15, 0)",
-		repo.ToUUID(campaignB),
+		ads.ToUUID(campaignB),
 	)
 	require.NoError(t, err)
 
@@ -77,9 +75,9 @@ func TestSmartBudgetAutoscaling(t *testing.T) {
 	require.NoError(t, err)
 
 	queries := db.New(pool)
-	campaignRepo := repo.NewCampaignRepo(queries)
-	customerRepo := repo.NewCustomerRepo(queries)
-	syncWorker := adssync.NewSyncWorker(rdb, campaignRepo, customerRepo, 100*time.Millisecond)
+	campaignRepo := ads.NewCampaignRepo(queries)
+	customerRepo := ads.NewCustomerRepo(queries)
+	syncWorker := ads.NewSyncWorker(rdb, campaignRepo, customerRepo, 100*time.Millisecond)
 
 	err = rdb.Set(ctx, "budget:campaign:"+campaignA.String(), 100000000, 0).Err()
 	require.NoError(t, err)
@@ -89,21 +87,21 @@ func TestSmartBudgetAutoscaling(t *testing.T) {
 	_, err = pool.Exec(ctx, "DELETE FROM outbox_events")
 	require.NoError(t, err)
 
-	err = svc.AutoscaleBudgets(ctx, []*adssync.SyncWorker{syncWorker})
+	err = svc.AutoscaleBudgets(ctx, []*ads.SyncWorker{syncWorker})
 	require.NoError(t, err)
 
 	var spendA string
-	err = pool.QueryRow(ctx, "SELECT current_spend::TEXT FROM campaigns WHERE id = $1", repo.ToUUID(campaignA)).Scan(&spendA)
+	err = pool.QueryRow(ctx, "SELECT current_spend::TEXT FROM campaigns WHERE id = $1", ads.ToUUID(campaignA)).Scan(&spendA)
 	require.NoError(t, err)
 	assert.Equal(t, "5000000", spendA)
 
 	var limitA string
-	err = pool.QueryRow(ctx, "SELECT budget_limit::TEXT FROM campaigns WHERE id = $1", repo.ToUUID(campaignA)).Scan(&limitA)
+	err = pool.QueryRow(ctx, "SELECT budget_limit::TEXT FROM campaigns WHERE id = $1", ads.ToUUID(campaignA)).Scan(&limitA)
 	require.NoError(t, err)
 	assert.Equal(t, "90000000", limitA)
 
 	var limitB string
-	err = pool.QueryRow(ctx, "SELECT budget_limit::TEXT FROM campaigns WHERE id = $1", repo.ToUUID(campaignB)).Scan(&limitB)
+	err = pool.QueryRow(ctx, "SELECT budget_limit::TEXT FROM campaigns WHERE id = $1", ads.ToUUID(campaignB)).Scan(&limitB)
 	require.NoError(t, err)
 	assert.Equal(t, "110000000", limitB)
 

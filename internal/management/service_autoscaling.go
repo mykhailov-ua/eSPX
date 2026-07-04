@@ -6,15 +6,15 @@ import (
 	"fmt"
 	"log/slog"
 
+	"espx/internal/ads"
 	"espx/internal/ads/db"
-	adssync "espx/internal/ads/sync"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
 // AutoscaleBudgets shifts budget from low-CTR campaigns to high-CTR siblings under the same customer.
-func (s *Service) AutoscaleBudgets(ctx context.Context, syncWorkers []*adssync.SyncWorker) error {
+func (s *Service) AutoscaleBudgets(ctx context.Context, syncWorkers []*ads.SyncWorker) error {
 	opCtx, cancel := workerContext(ctx, workerBatchTimeout)
 	defer cancel()
 

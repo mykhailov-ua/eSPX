@@ -2,13 +2,14 @@ package database
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"sync"
 )
 
 // dbExecutor is the minimal SQL surface PartitionManager needs so tests can mock partition DDL.
@@ -78,7 +79,7 @@ func (pm *PartitionManager) createPartition(ctx context.Context, date time.Time)
 }
 
 // dropPartitions removes partitions outside retention and pre-create windows to control disk growth.
-func (partitionManager *PartitionManager) dropPartitions(ctx context.Context, now time.Time, olderThan time.Time) error {
+func (pm *PartitionManager) dropPartitions(ctx context.Context, now time.Time, olderThan time.Time) error {
 	query := `
 		SELECT child.relname
 		FROM pg_inherits
@@ -87,7 +88,7 @@ func (partitionManager *PartitionManager) dropPartitions(ctx context.Context, no
 		WHERE parent.relname = 'events';
 	`
 
-	rows, err := partitionManager.pool.Query(ctx, query)
+	rows, err := pm.pool.Query(ctx, query)
 	if err != nil {
 		return err
 	}
@@ -97,7 +98,7 @@ func (partitionManager *PartitionManager) dropPartitions(ctx context.Context, no
 	prefix := "events_p"
 
 	thresholdStr := olderThan.Format("2006_01_02")
-	futureThresholdStr := now.AddDate(0, 0, partitionManager.preCreate).Format("2006_01_02")
+	futureThresholdStr := now.AddDate(0, 0, pm.preCreate).Format("2006_01_02")
 
 	for rows.Next() {
 		var partitionName string
@@ -112,17 +113,22 @@ func (partitionManager *PartitionManager) dropPartitions(ctx context.Context, no
 			}
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
 
+	var dropErr error
 	for _, p := range partitionsToDrop {
 		slog.Info("dropping partition", "partition", p)
 		safeTableName := pgx.Identifier{p}.Sanitize()
 		dropQuery := fmt.Sprintf("DROP TABLE IF EXISTS %s;", safeTableName)
-		if _, err := partitionManager.pool.Exec(ctx, dropQuery); err != nil {
+		if _, err := pm.pool.Exec(ctx, dropQuery); err != nil {
 			slog.Error("failed to drop partition", "partition", p, "error", err)
+			dropErr = errors.Join(dropErr, fmt.Errorf("drop %s: %w", p, err))
 		}
 	}
 
-	return nil
+	return dropErr
 }
 
 // truncateDefault clears the catch-all partition so stray rows do not block creation of dated child tables.
@@ -134,7 +140,7 @@ func (pm *PartitionManager) truncateDefault(ctx context.Context) error {
 	}
 
 	if count > 0 {
-		slog.Error("CRITICAL: events_default partition contains data! Missing future partitions or clock drift detected", "count", count)
+		slog.Error("events_default partition contains data; missing future partitions or clock drift", "count", count)
 	}
 
 	_, err = pm.pool.Exec(ctx, "TRUNCATE TABLE events_default")

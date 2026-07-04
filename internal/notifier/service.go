@@ -210,7 +210,7 @@ func (service *Service) ProcessPending(ctx context.Context, batchSize int32) (in
 				sendErr = fmt.Errorf("provider %s not configured", currentProvider)
 			} else {
 				// Inject the notification ID into context for interactive buttons
-				pCtx := context.WithValue(ctx, "notification_id", leadID)
+				pCtx := context.WithValue(ctx, NotificationIDContextKey, leadID)
 				sendErr = provider.Send(pCtx, currentRecipient, lead.Title.String, finalBody)
 				if sendErr == nil {
 					sentProvider = currentProvider
@@ -264,14 +264,13 @@ func (service *Service) ProcessPending(ctx context.Context, batchSize int32) (in
 				RetryCount:   pgtype.Int4{Int32: lead.RetryCount, Valid: true},
 				ErrorMessage: pgtype.Text{Valid: false},
 			}); updateErr != nil {
-				slog.Error("failed to update lead notification status to SENT", "error", updateErr, "notification_id", leadID)
+				return 0, fmt.Errorf("update lead notification status to SENT: %w", updateErr)
 			}
 
 			// Update all other deduplicated notifications in this group directly to SENT as well
 			if isAggregated {
 				for i := 1; i < len(items); i++ {
 					subItem := items[i]
-					subItemID := uuid.UUID(subItem.ID.Bytes).String()
 					if _, updateErr := qtx.UpdateNotificationStatus(ctx, db.UpdateNotificationStatusParams{
 						ID:           subItem.ID,
 						Status:       db.NotifierNotificationStatusSENT,
@@ -279,7 +278,7 @@ func (service *Service) ProcessPending(ctx context.Context, batchSize int32) (in
 						RetryCount:   pgtype.Int4{Int32: subItem.RetryCount, Valid: true},
 						ErrorMessage: pgtype.Text{String: fmt.Sprintf("Deduplicated and aggregated into %s", leadID), Valid: true},
 					}); updateErr != nil {
-						slog.Error("failed to update sub notification status to SENT", "error", updateErr, "notification_id", subItemID)
+						return 0, fmt.Errorf("update sub notification status to SENT: %w", updateErr)
 					}
 				}
 			}
@@ -301,7 +300,7 @@ func (service *Service) ProcessPending(ctx context.Context, batchSize int32) (in
 				RetryCount:   pgtype.Int4{Int32: nextRetryCount, Valid: true},
 				ErrorMessage: pgtype.Text{String: sendErr.Error(), Valid: true},
 			}); updateErr != nil {
-				slog.Error("failed to update lead notification status after failure", "error", updateErr, "notification_id", leadID)
+				return 0, fmt.Errorf("update lead notification status after failure: %w", updateErr)
 			}
 
 			// Do NOT update subItems in this group if lead failed. They will remain PENDING and be retried

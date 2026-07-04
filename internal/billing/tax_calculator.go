@@ -26,12 +26,10 @@ type TaxProfile struct {
 // TaxCalculator applies VAT or sales tax based on customer metadata.
 type TaxCalculator struct{}
 
-// NewTaxCalculator returns a stateless tax resolver for invoice generation.
 func NewTaxCalculator() *TaxCalculator {
 	return &TaxCalculator{}
 }
 
-// ProfileFromDB maps a stored tax profile row into the domain type.
 func ProfileFromDB(row db.BillingCustomerTaxProfile) TaxProfile {
 	return TaxProfile{
 		CountryCode: strings.ToUpper(strings.TrimSpace(row.CountryCode)),
@@ -135,7 +133,6 @@ func isEUCountry(code string) bool {
 	}
 }
 
-// MapSchemeToDB converts domain tax scheme to sqlc enum.
 func MapSchemeToDB(scheme TaxScheme) db.BillingTaxScheme {
 	switch scheme {
 	case TaxSchemeVAT:
@@ -147,7 +144,6 @@ func MapSchemeToDB(scheme TaxScheme) db.BillingTaxScheme {
 	}
 }
 
-// MapSchemeFromDB converts sqlc enum to domain tax scheme.
 func MapSchemeFromDB(scheme db.BillingTaxScheme) TaxScheme {
 	switch scheme {
 	case db.BillingTaxSchemeVAT:

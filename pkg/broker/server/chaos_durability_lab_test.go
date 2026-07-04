@@ -273,7 +273,7 @@ func TestChaos_RedisOutage_CoordinationRecovers(t *testing.T) {
 func TestChaos_RedisSentinelFailover_ProduceContinues(t *testing.T) {
 	skipChaosLab(t)
 	if os.Getenv("BROKER_CHAOS_SENTINEL") != "1" {
-		t.Skip("requires BROKER_CHAOS_SENTINEL=1 and deploy/broker sentinel stack")
+		t.Skip("requires BROKER_CHAOS_SENTINEL=1 and deploy/broker-lab sentinel stack")
 	}
 
 	master := os.Getenv("BROKER_REDIS_SENTINEL_MASTER")
@@ -284,7 +284,7 @@ func TestChaos_RedisSentinelFailover_ProduceContinues(t *testing.T) {
 
 	redisURL := os.Getenv("BROKER_REDIS_URL")
 	if redisURL == "" {
-		redisURL = "redis://127.0.0.1:6379/0"
+		redisURL = "redis://127.0.0.1:6380/0"
 	}
 
 	dir, err := os.MkdirTemp("", "chaos-sentinel-*")

@@ -3,9 +3,10 @@ package management
 import (
 	"context"
 	"encoding/json"
-	"espx/internal/ads/sharding"
 	"net/http"
 	"time"
+
+	"espx/internal/ads"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -37,7 +38,7 @@ func RegisterOpsRoutes(mux *http.ServeMux, pool *pgxpool.Pool, rdbs []redis.Univ
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
 
-		repo := sharding.NewSlotMapRepo(pool)
+		repo := ads.NewSlotMapRepo(pool)
 		active, err := repo.GetActiveVersion(ctx)
 		if err != nil {
 			http.Error(w, "slot map meta unavailable", http.StatusServiceUnavailable)
@@ -48,13 +49,13 @@ func RegisterOpsRoutes(mux *http.ServeMux, pool *pgxpool.Pool, rdbs []redis.Univ
 			http.Error(w, "slot map unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		slots, err := sharding.SlotMapShardTable(rows)
+		slots, err := ads.SlotMapShardTable(rows)
 		if err != nil {
 			http.Error(w, "slot map incomplete", http.StatusServiceUnavailable)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(sharding.OpsSlotMapResponse{
+		_ = json.NewEncoder(w).Encode(ads.OpsSlotMapResponse{
 			Version:       active,
 			ActiveVersion: active,
 			Slots:         slots,

@@ -1,4 +1,3 @@
-// Package notifier enqueues outbound alerts in Postgres and delivers them asynchronously via Telegram, Slack, or SMTP.
 package notifier
 
 import (

@@ -4,13 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"espx/internal/ads/catalog"
-	"espx/internal/ads/filter"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"espx/internal/ads"
 	"espx/internal/config"
 	"espx/internal/database"
 	"espx/internal/domain"
@@ -47,7 +46,7 @@ func TestEmergencyCircuitBreaker(t *testing.T) {
 
 	ctx := context.Background()
 
-	sw := catalog.NewSettingsWatcher([]redis.UniversalClient{rdb}, cfg)
+	sw := ads.NewSettingsWatcher([]redis.UniversalClient{rdb}, cfg)
 	assert.False(t, sw.Get().EmergencyBreaker)
 
 	reqBody := map[string]any{
@@ -93,7 +92,7 @@ func TestEmergencyCircuitBreaker(t *testing.T) {
 
 	cancelWatcher()
 
-	breakerFilter := filter.NewEmergencyBreakerFilter(sw)
+	breakerFilter := ads.NewEmergencyBreakerFilter(sw)
 	testEvt := &domain.Event{
 		CampaignID: uuid.New(),
 		Type:       "click",
@@ -103,7 +102,7 @@ func TestEmergencyCircuitBreaker(t *testing.T) {
 	}
 
 	err = breakerFilter.Check(ctx, testEvt)
-	assert.ErrorIs(t, err, filter.ErrEmergencyBreakerActive)
+	assert.ErrorIs(t, err, ads.ErrEmergencyBreakerActive)
 
 	reqBodyOff := map[string]any{
 		"active": false,

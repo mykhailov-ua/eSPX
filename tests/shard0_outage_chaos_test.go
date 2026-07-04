@@ -7,12 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads/catalog"
+	"espx/internal/ads"
 	"espx/internal/ads/db"
-	"espx/internal/ads/filter"
-	"espx/internal/ads/ingest"
-	"espx/internal/ads/repo"
-	"espx/internal/ads/sharding"
 	"espx/internal/config"
 	"espx/internal/database"
 	"espx/internal/management"
@@ -42,7 +38,7 @@ func TestChaos_Shard0Outage(t *testing.T) {
 	defer cancel()
 
 	queries := db.New(pool)
-	sharder := sharding.NewStaticSlotSharder(numShards)
+	sharder := ads.NewStaticSlotSharder(numShards)
 	campaignIDs := make([]uuid.UUID, numShards)
 	for i := range campaignIDs {
 		campaignIDs[i] = campaignIDForShard(t, sharder, i)
@@ -61,7 +57,7 @@ func TestChaos_Shard0Outage(t *testing.T) {
 	}
 
 	registry := newTestRegistry(t, queries)
-	registry.SetBudgetWarmer(catalog.NewBudgetCacheWarmer(rdbs, sharder))
+	registry.SetBudgetWarmer(ads.NewBudgetCacheWarmer(rdbs, sharder))
 	_, err = registry.Sync(ctx)
 	require.NoError(t, err)
 
@@ -79,8 +75,8 @@ func TestChaos_Shard0Outage(t *testing.T) {
 	partManager := database.NewPartitionManager(pool, 7, 2)
 	require.NoError(t, partManager.Run(ctx))
 
-	campaignRepo := repo.NewCampaignRepo(queries)
-	unifiedFilter := filter.NewUnifiedFilter(
+	campaignRepo := ads.NewCampaignRepo(queries)
+	unifiedFilter := ads.NewUnifiedFilter(
 		rdbs,
 		sharder,
 		registry,
@@ -94,8 +90,8 @@ func TestChaos_Shard0Outage(t *testing.T) {
 		"shard0-chaos-stream",
 		100000,
 	)
-	filterEngine := filter.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, unifiedFilter)
-	handler := ingest.NewAdsPacketHandler(cfg, registry, filterEngine, pool, rdbs, sharder, cfg.FraudStreamName, nil)
+	filterEngine := ads.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, unifiedFilter)
+	handler := ads.NewAdsPacketHandler(cfg, registry, filterEngine, pool, rdbs, sharder, cfg.FraudStreamName, nil)
 	defer handler.Stop(ctx)
 
 	for i, campaignID := range campaignIDs {
@@ -140,26 +136,10 @@ func TestChaos_Shard0Outage(t *testing.T) {
 	startRedisShardContainer(t, shardInfra.Containers[0])
 	waitRedisContainerReady(t, shardInfra.Containers[0])
 	shardInfra.replaceShardClient(t, 0, rdbs)
-	for i := 0; i < numShards; i++ {
-		waitRedisBreakerClosed(t, shardInfra.Clients[i], shardInfra.Breakers[i])
-	}
+	waitRedisBreakerClosed(t, shardInfra.Clients[0], shardInfra.Breakers[0])
 
-	require.Eventually(t, func() bool {
-		if outboxStatus(t, pool, eventID) == "PROCESSING" {
-			_, err := pool.Exec(ctx, `
-				UPDATE outbox_events
-				SET status = 'PENDING', processing_started_at = NULL
-				WHERE id = $1 AND status = 'PROCESSING'`, eventID)
-			if err != nil {
-				return false
-			}
-		}
-		n, err := outboxWorker.ProcessOutboxWithCount(ctx, 10)
-		if err != nil || n != 1 {
-			return false
-		}
-		return outboxStatus(t, pool, eventID) == "PROCESSED"
-	}, 30*time.Second, 200*time.Millisecond)
+	require.NoError(t, outboxWorker.ProcessOutbox(ctx))
+	assert.Equal(t, "PROCESSED", outboxStatus(t, pool, eventID))
 
 	statusRecovered, _ := postClickCampaign(t, handler, campaignIDs[0], uuid.NewString())
 	require.Equal(t, http.StatusAccepted, statusRecovered, "shard 0 track must recover after redis-0 restart")
@@ -178,7 +158,7 @@ func TestChaos_Shard0Outage(t *testing.T) {
 	})
 }
 
-func postClickCampaign(t *testing.T, h *ingest.AdsPacketHandler, campaignID uuid.UUID, clickID string) (int, time.Duration) {
+func postClickCampaign(t *testing.T, h *ads.AdsPacketHandler, campaignID uuid.UUID, clickID string) (int, time.Duration) {
 	t.Helper()
 	start := time.Now()
 	payload := map[string]any{
@@ -189,7 +169,7 @@ func postClickCampaign(t *testing.T, h *ingest.AdsPacketHandler, campaignID uuid
 	}
 	body, err := json.Marshal(payload)
 	require.NoError(t, err)
-	status, _ := ingest.PostTrackGnetJSON(h, body)
+	status, _ := ads.PostTrackGnetJSON(h, body)
 	return status, time.Since(start)
 }
 

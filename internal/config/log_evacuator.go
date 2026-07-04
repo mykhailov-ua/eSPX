@@ -45,10 +45,3 @@ func LoadLogEvacuator() (LogEvacuator, error) {
 
 	return cfg, nil
 }
-
-func envOrDefault(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return fallback
-}

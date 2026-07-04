@@ -18,12 +18,11 @@ type RedisLimiter struct {
 	rdb *redis.Client
 }
 
-// NewRedisLimiter provides a swappable backend for simple rate checks in tests and auxiliary paths.
 func NewRedisLimiter(rdb *redis.Client) Limiter {
 	return &RedisLimiter{rdb: rdb}
 }
 
-// Allow throttles generic keys without the login-specific lockout semantics.
+// Allow throttles generic keys; unlike LockoutLimiter it does not block accounts in Postgres.
 func (l *RedisLimiter) Allow(ctx context.Context, key string, limit int, window time.Duration) (bool, error) {
 	pipe := l.rdb.Pipeline()
 	incr := pipe.Incr(ctx, key)

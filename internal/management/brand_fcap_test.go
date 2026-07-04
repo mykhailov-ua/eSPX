@@ -10,10 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads/catalog"
+	"espx/internal/ads"
 	"espx/internal/ads/db"
-	"espx/internal/ads/filter"
-	"espx/internal/ads/sharding"
 	"espx/internal/config"
 	"espx/internal/database"
 	"espx/internal/domain"
@@ -175,13 +173,13 @@ func TestBrandFrequencyCapping(t *testing.T) {
 	assert.Equal(t, expectedFcapKey, brandFcapKeyB)
 
 	queries := db.New(pool)
-	registry := catalog.NewRegistry(queries)
+	registry := ads.NewRegistry(queries)
 	registry.SetReplicaPath(filepath.Join(t.TempDir(), "campaigns_replica.json"))
 	_, err = registry.Sync(ctx)
 	require.NoError(t, err)
 
-	sharder := sharding.NewJumpHashSharder(1)
-	filter := filter.NewUnifiedFilter(
+	sharder := ads.NewJumpHashSharder(1)
+	filter := ads.NewUnifiedFilter(
 		[]redis.UniversalClient{rdb},
 		sharder,
 		registry,
@@ -230,5 +228,5 @@ func TestBrandFrequencyCapping(t *testing.T) {
 	assert.NoError(t, err)
 
 	err = filter.Check(ctx, evtUser1ASecond)
-	assert.ErrorIs(t, err, filter.ErrFreqLimitExceeded)
+	assert.ErrorIs(t, err, ads.ErrFreqLimitExceeded)
 }

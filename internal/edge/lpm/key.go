@@ -3,7 +3,7 @@ package lpm
 
 import "encoding/binary"
 
-// IPv4Key matches struct ipv4_lpm_key in deploy/edge/xdp/bpf/edge_filter.c.
+// IPv4Key matches struct ipv4_lpm_key in deploy/edge-xdp/bpf/edge_filter.c.
 // Addr is stored in BPF wire layout (network-order bytes in little-endian u32).
 type IPv4Key struct {
 	PrefixLen uint32

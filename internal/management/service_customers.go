@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"espx/internal/ads"
 	"espx/internal/ads/db"
-	"espx/internal/ads/repo"
 	"espx/pkg/cold"
 
 	"github.com/google/uuid"
@@ -109,7 +109,7 @@ func (s *Service) ListCustomers(ctx context.Context, limit, offset int32) ([]Cus
 // GetCustomerDTO loads one customer with aggregated stats for detail views.
 func (s *Service) GetCustomerDTO(ctx context.Context, id uuid.UUID) (CustomerDTO, error) {
 	q := db.New(s.GetPool())
-	r, err := q.GetCustomerByID(ctx, repo.ToUUID(id))
+	r, err := q.GetCustomerByID(ctx, ads.ToUUID(id))
 	if err != nil {
 		return CustomerDTO{}, err
 	}
@@ -139,7 +139,7 @@ func (s *Service) GetCustomerDTO(ctx context.Context, id uuid.UUID) (CustomerDTO
 // ListCustomerLedger returns paginated ledger entries for a customer's billing history.
 func (s *Service) ListCustomerLedger(ctx context.Context, customerID uuid.UUID, limit, offset int32) ([]LedgerDTO, int64, error) {
 	q := db.New(s.GetPool())
-	tid := repo.ToUUID(customerID)
+	tid := ads.ToUUID(customerID)
 	listParams := db.ListCustomerLedgerParams{
 		CustomerID: tid,
 		Limit:      limit,

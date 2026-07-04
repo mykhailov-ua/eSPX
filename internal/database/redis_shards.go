@@ -59,11 +59,22 @@ func connectRedisShard(ctx context.Context, cfg *config.Config, shardIdx int, ma
 
 	var pingErr error
 	for attempt := 0; attempt < redisConnectRetries; attempt++ {
+		select {
+		case <-ctx.Done():
+			_ = rdb.Close()
+			return nil, fmt.Errorf("redis shard %d (%s): %w", shardIdx, dialLabel, ctx.Err())
+		default:
+		}
 		if pingErr = rdb.Ping(ctx).Err(); pingErr == nil {
 			break
 		}
 		slog.Warn("waiting for redis...", "shard", shardIdx, "target", dialLabel, "error", pingErr)
-		time.Sleep(time.Second)
+		select {
+		case <-ctx.Done():
+			_ = rdb.Close()
+			return nil, fmt.Errorf("redis shard %d (%s): %w", shardIdx, dialLabel, ctx.Err())
+		case <-time.After(time.Second):
+		}
 	}
 	if pingErr != nil {
 		_ = rdb.Close()

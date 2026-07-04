@@ -2,9 +2,10 @@ package management
 
 import (
 	"context"
-	"espx/internal/ads/sharding"
 	"log/slog"
 	"time"
+
+	"espx/internal/ads"
 )
 
 // SlotMigrationOrchestrator copies MIGRATING slot data and drains old keys after cutover (Phase 2.3).
@@ -37,7 +38,7 @@ func (o *SlotMigrationOrchestrator) Start(ctx context.Context) {
 }
 
 func (o *SlotMigrationOrchestrator) tick(ctx context.Context) {
-	migRepo := sharding.NewSlotMigrationRepo(o.svc.GetPool())
+	migRepo := ads.NewSlotMigrationRepo(o.svc.GetPool())
 	draft, err := migRepo.GetMaxDraftVersionWithMigrating(ctx)
 	if err != nil {
 		slog.Error("slot migration: draft version lookup failed", "error", err)
@@ -49,7 +50,7 @@ func (o *SlotMigrationOrchestrator) tick(ctx context.Context) {
 		}
 	}
 
-	mapRepo := sharding.NewSlotMapRepo(o.svc.GetPool())
+	mapRepo := ads.NewSlotMapRepo(o.svc.GetPool())
 	active, err := mapRepo.GetActiveVersion(ctx)
 	if err != nil {
 		slog.Error("slot migration: active version lookup failed", "error", err)

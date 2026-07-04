@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"espx/internal/ads"
 	"espx/internal/ads/pb"
-	"espx/internal/ads/repo"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	rediscontainer "github.com/testcontainers/testcontainers-go/modules/redis"
@@ -74,7 +74,7 @@ func TestRequeueDLQ_RateLimiting(t *testing.T) {
 		err = rdb.XAdd(ctx, &redis.XAddArgs{
 			Stream: dlqStream,
 			Values: map[string]interface{}{
-				"d": repo.UnsafeString(data),
+				"d": ads.UnsafeString(data),
 			},
 		}).Err()
 		if err != nil {
@@ -118,7 +118,7 @@ func TestRequeueDLQ_RateLimiting(t *testing.T) {
 		rdb.XAdd(ctx, &redis.XAddArgs{
 			Stream: dlqStream,
 			Values: map[string]interface{}{
-				"d": repo.UnsafeString(data),
+				"d": ads.UnsafeString(data),
 			},
 		})
 	}

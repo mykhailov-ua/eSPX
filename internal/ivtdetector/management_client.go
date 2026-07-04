@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// blacklistBlocker enqueues fraud blacklist entries via management.
-type blacklistBlocker interface {
+// BlacklistBlocker enqueues fraud blacklist entries via management HTTP or in-process service.
+type BlacklistBlocker interface {
 	BlockIP(ctx context.Context, ip string) error
 }
 
@@ -78,6 +78,9 @@ func (client *ManagementClient) BlockIP(ctx context.Context, ip string) error {
 		return nil
 	}
 
-	payload, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	payload, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if readErr != nil {
+		return fmt.Errorf("%w: status=%d read body: %v", ErrManagementUnavailable, resp.StatusCode, readErr)
+	}
 	return fmt.Errorf("%w: status=%d body=%s", ErrManagementUnavailable, resp.StatusCode, strings.TrimSpace(string(payload)))
 }

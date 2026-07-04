@@ -1,4 +1,4 @@
-// Command management runs the admin API gateway, background workers, and settlement gRPC sidecar.
+// Command management runs the admin API gateway and background control-plane workers.
 package main
 
 import (
@@ -11,20 +11,19 @@ import (
 	"syscall"
 	"time"
 
+	"espx/internal/ads"
 	"espx/internal/ads/db"
-	"espx/internal/ads/repo"
-	"espx/internal/ads/sharding"
-	adssync "espx/internal/ads/sync"
 	"espx/internal/auth"
-	"espx/internal/auth/pb"
+	auth_pb "espx/internal/auth/pb"
 	"espx/internal/config"
 	"espx/internal/database"
 	"espx/internal/management"
-	pb_settle "espx/internal/management/pb"
+	mgmt_pb "espx/internal/management/pb"
 
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/reflection"
 )
 
 // main hosts the management HTTP API separately because admin RBAC and background workers must not share tracker resources.
@@ -57,7 +56,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	sharder := sharding.NewStaticSlotSharder(len(rdbs))
+	sharder := ads.NewStaticSlotSharder(len(rdbs))
 
 	authTarget := "127.0.0.1:" + cfg.AuthServerPort
 	if host := os.Getenv("AUTH_SERVER_HOST"); host != "" {
@@ -71,7 +70,7 @@ func main() {
 	}
 	defer authConn.Close()
 
-	authClient := pb.NewAuthServiceClient(authConn)
+	authClient := auth_pb.NewAuthServiceClient(authConn)
 	tokenMaker, err := auth.NewPasetoMaker(string(cfg.TokenSymmetricKey))
 	if err != nil {
 		slog.Error("failed to create token maker", "error", err)
@@ -84,11 +83,11 @@ func main() {
 	svc := management.NewService(pool, rdbs, sharder, cfg)
 
 	queries := db.New(pool)
-	campaignRepo := repo.NewCampaignRepo(queries)
-	customerRepo := repo.NewCustomerRepo(queries)
-	var syncWorkers []*adssync.SyncWorker
+	campaignRepo := ads.NewCampaignRepo(queries)
+	customerRepo := ads.NewCustomerRepo(queries)
+	var syncWorkers []*ads.SyncWorker
 	for _, rdb := range rdbs {
-		sw := adssync.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond)
+		sw := ads.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond)
 		syncWorkers = append(syncWorkers, sw)
 		svc.StartBackgroundWorker(func() {
 			sw.Start(ctx)
@@ -156,25 +155,28 @@ func main() {
 		IdleTimeout:       time.Duration(cfg.HttpIdleTimeoutMs) * time.Millisecond,
 	}
 
-	settleLis, err := net.Listen("tcp", ":"+cfg.SettlementServerPort)
-	if err != nil {
-		slog.Error("failed to listen on settlement port", "error", err)
-		os.Exit(1)
-	}
-	settleServer := grpc.NewServer()
-	settleHandler := management.NewSettlementHandler(svc, cfg)
-	pb_settle.RegisterSettlementServiceServer(settleServer, settleHandler)
-
-	go func() {
-		slog.Info("starting settlement gRPC server", "port", cfg.SettlementServerPort)
-		if err := settleServer.Serve(settleLis); err != nil {
-			slog.Error("settlement gRPC server failed", "error", err)
-		}
-	}()
-
 	go func() {
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("management server failed", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	settleLis, err := net.Listen("tcp", ":"+cfg.SettlementServerPort)
+	if err != nil {
+		slog.Error("failed to listen on settlement port", "port", cfg.SettlementServerPort, "error", err)
+		os.Exit(1)
+	}
+	settleHandler := management.NewSettlementHandler(svc, cfg)
+	settleGRPC := grpc.NewServer()
+	mgmt_pb.RegisterSettlementServiceServer(settleGRPC, settleHandler)
+	if cfg.Env != "production" {
+		reflection.Register(settleGRPC)
+	}
+	go func() {
+		slog.Info("starting settlement gRPC server", "port", cfg.SettlementServerPort)
+		if err := settleGRPC.Serve(settleLis); err != nil {
+			slog.Error("settlement gRPC server failed", "error", err)
 			os.Exit(1)
 		}
 	}()
@@ -195,16 +197,15 @@ func main() {
 
 	settleStopped := make(chan struct{})
 	go func() {
-		settleServer.GracefulStop()
+		settleGRPC.GracefulStop()
 		close(settleStopped)
 	}()
-
 	select {
 	case <-settleStopped:
 		slog.Info("settlement gRPC server stopped cleanly")
-	case <-time.After(5 * time.Second):
+	case <-shutdownCtx.Done():
 		slog.Warn("settlement gRPC graceful shutdown timed out, force stopping")
-		settleServer.Stop()
+		settleGRPC.Stop()
 	}
 
 	svc.Close()

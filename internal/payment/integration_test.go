@@ -2,8 +2,6 @@ package payment
 
 import (
 	"context"
-	"espx/internal/ads/repo"
-	"espx/internal/ads/sharding"
 	"fmt"
 	"net"
 	"os"
@@ -14,10 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"espx/internal/ads"
 	ads_db "espx/internal/ads/db"
 	"espx/internal/config"
 	"espx/internal/management"
-	mgmt_pb "espx/internal/management/pb"
+	"espx/internal/management/pb"
 	"espx/internal/payment/db"
 
 	"github.com/google/uuid"
@@ -164,7 +163,7 @@ func TestPaymentService_Integration(t *testing.T) {
 	customerID := uuid.New()
 	qAds := ads_db.New(pool)
 	_, err := qAds.CreateCustomer(ctx, ads_db.CreateCustomerParams{
-		ID:       repo.ToUUID(customerID),
+		ID:       ads.ToUUID(customerID),
 		Name:     "Test Payment Customer",
 		Balance:  0,
 		Currency: "USD",
@@ -217,20 +216,19 @@ func TestPaymentService_Integration(t *testing.T) {
 	require.Len(t, outboxEvents, 1)
 	assert.Equal(t, "SETTLE_BALANCE", outboxEvents[0].EventType)
 
-	sharder := sharding.NewJumpHashSharder(1)
-	mgmtService := management.NewService(pool, []redis.UniversalClient{rdb}, sharder, cfg)
-	defer mgmtService.Close()
-
-	settleHandler := management.NewSettlementHandler(mgmtService, cfg)
+	rdbs := []redis.UniversalClient{rdb}
+	mgmtSvc := management.NewService(pool, rdbs, ads.NewStaticSlotSharder(len(rdbs)), cfg)
+	settleHandler := management.NewSettlementHandler(mgmtSvc, cfg)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	_, portStr, err := net.SplitHostPort(lis.Addr().String())
 	require.NoError(t, err)
+	cfg.SettlementServerHost = "127.0.0.1"
 	cfg.SettlementServerPort = portStr
 
 	grpcServer := grpc.NewServer()
-	mgmt_pb.RegisterSettlementServiceServer(grpcServer, settleHandler)
+	pb.RegisterSettlementServiceServer(grpcServer, settleHandler)
 	go func() {
 		_ = grpcServer.Serve(lis)
 	}()
@@ -247,12 +245,12 @@ func TestPaymentService_Integration(t *testing.T) {
 		return err == nil && len(events) == 0
 	}, 5*time.Second, 100*time.Millisecond)
 
-	customer, err := qAds.GetCustomerForUpdate(ctx, repo.ToUUID(customerID))
+	customer, err := qAds.GetCustomerForUpdate(ctx, ads.ToUUID(customerID))
 	require.NoError(t, err)
 	assert.Equal(t, amountMicro, customer.Balance)
 
 	ledgerRows, err := qAds.ListCustomerLedger(ctx, ads_db.ListCustomerLedgerParams{
-		CustomerID: repo.ToUUID(customerID),
+		CustomerID: ads.ToUUID(customerID),
 		Limit:      10,
 		Offset:     0,
 	})
@@ -261,5 +259,5 @@ func TestPaymentService_Integration(t *testing.T) {
 	assert.Equal(t, amountMicro, ledgerRows[0].Amount)
 	assert.Equal(t, ads_db.LedgerType("PAYMENT_TOPUP"), ledgerRows[0].Type)
 	assert.Equal(t, "payment:"+uuid.UUID(intent.ID.Bytes).String(), ledgerRows[0].IdempotencyHash.String)
-	assert.Equal(t, repo.ToUUID(uuid.UUID(intent.ID.Bytes)), ledgerRows[0].PaymentIntentID)
+	assert.Equal(t, ads.ToUUID(uuid.UUID(intent.ID.Bytes)), ledgerRows[0].PaymentIntentID)
 }

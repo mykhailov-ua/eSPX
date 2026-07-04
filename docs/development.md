@@ -28,7 +28,7 @@ Full stack adds `tracker-1..3`, `nginx`, `prometheus`, `grafana`, `alertmanager`
 | Command | Services started |
 | :--- | :--- |
 | `bash scripts/dev-stack.sh infra` | db, redis-0…5, clickhouse |
-| `bash scripts/dev-stack.sh full` | infra + processor, tracker-0, auth, management, payment, billing, notifier |
+| `bash scripts/dev-stack.sh full` | infra + processor, tracker-0, auth, management, payment, billing |
 | `bash scripts/dev-stack.sh sentinel` | redis-0, replica, sentinel-0…2 |
 | `bash scripts/dev-stack.sh status` | `docker compose ps` |
 | `bash scripts/dev-stack.sh down` | tear down compose stack |
@@ -171,7 +171,7 @@ lefthook install
 | Payment gRPC | 51052 | `cmd/payment` |
 | Settlement gRPC | 51053 | `cmd/management` (sidecar) |
 | Billing gRPC | 51054 | `cmd/billing` |
-| Notifier gRPC | 8085 | `cmd/notifier` |
+| Notifier gRPC | 8085 | `cmd/management` (when notifier channels configured) |
 | Tracker metrics | 9090 (sidecar); `/metrics` also on :8181–8184 (gnet) | `cmd/tracker` |
 | Redis shards | 6479–6482 | `redis-0` … `redis-3` |
 | Redis Sentinel | 26379–26381 | `sentinel-0` … `sentinel-2` |
@@ -193,7 +193,7 @@ Host networking (`NET_MODE=host`) is default for app services. Stateful stores p
 | `cmd/dlq` | DLQ archive / requeue / restore |
 | `cmd/admin` | Cobra dev CLI (users, seed, budget reset) |
 
-`billing` and `notifier` are in the default `dev-stack.sh full` profile but optional for minimal ingest-only stacks.
+`billing` is in the default `dev-stack.sh full` profile but optional for minimal ingest-only stacks. Notifier gRPC starts inside management when channel credentials are set.
 
 Broker HA lab: `deploy/broker/` (optional). `docker compose -f deploy/broker/docker-compose.yml up -d`. HAProxy exposes `:9092` (leader-only produce via `/leaderz`) and `:9093` (any healthy node for fetch). Sentinel overlay and chaos drills: see `deploy/broker/README.md` and `scripts/broker-chaos-lab.sh`. Override binary: `ESPX_BROKER_BIN=/path/to/espx-broker`.
 

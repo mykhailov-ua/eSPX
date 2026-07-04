@@ -18,16 +18,29 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
-	cfg, err := config.LoadIVTDetector()
+	cfg, err := config.Load()
 	if err != nil {
-		slog.Error("failed to load ivt detector config", "error", err)
+		slog.Error("failed to load config", "error", err)
 		os.Exit(1)
+	}
+	if !cfg.IVTDetectorEnabled() {
+		slog.Error("ivt detector requires IVT_DETECTOR_ENABLED=true and CH_DSN")
+		os.Exit(1)
+	}
+	if string(cfg.AdminAPIKey) == "" {
+		slog.Error("ADMIN_API_KEY is required for management blacklist enqueue")
+		os.Exit(1)
+	}
+
+	managementURL := cfg.ManagementURL
+	if managementURL == "" {
+		managementURL = "http://127.0.0.1:" + cfg.ManagementPort
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := database.Connect(ctx, string(cfg.DBDSN), cfg.DBMaxConns, cfg.DBMinConns)
+	pool, err := database.Connect(ctx, string(cfg.DBDSN), cfg.DBTrackerMaxConns, cfg.DBMinConns)
 	if err != nil {
 		slog.Error("failed to connect to postgres", "error", err)
 		os.Exit(1)
@@ -42,33 +55,31 @@ func main() {
 	defer func() { _ = chConn.Close() }()
 
 	analyzerCfg := ivtdetector.AnalyzerConfig{
-		Window:          time.Duration(cfg.WindowSec) * time.Second,
-		MinClicks:       cfg.MinClicks,
-		MinImpressions:  cfg.MinImpressions,
-		ClickToImpRatio: cfg.ClickToImpRatio,
-		MinIPsPerUA:     cfg.MinIPsPerUA,
-		MinEventsPerIP:  cfg.MinClicks,
+		Window:          time.Duration(cfg.IVT.WindowSec) * time.Second,
+		MinClicks:       cfg.IVT.MinClicks,
+		MinImpressions:  cfg.IVT.MinImpressions,
+		ClickToImpRatio: cfg.IVT.ClickToImpRatio,
+		MinIPsPerUA:     cfg.IVT.MinIPsPerUA,
+		MinEventsPerIP:  cfg.IVT.MinClicks,
 	}
 	detectorCfg := ivtdetector.DetectorConfig{
-		ScanInterval:       time.Duration(cfg.ScanIntervalMs) * time.Millisecond,
-		OutboxPendingLimit: cfg.OutboxPendingLimit,
-		ManagementTimeout:  time.Duration(cfg.ManagementTimeoutMs) * time.Millisecond,
+		ScanInterval:       time.Duration(cfg.IVT.ScanIntervalMs) * time.Millisecond,
+		OutboxPendingLimit: cfg.IVT.OutboxPendingLimit,
 		Analyzer:           analyzerCfg,
 	}
 
 	detector := ivtdetector.NewDetector(
 		ivtdetector.NewAnalyzer(chConn, analyzerCfg),
 		ivtdetector.NewIdempotencyStore(pool),
-		ivtdetector.NewManagementClient(cfg.ManagementURL, string(cfg.AdminAPIKey), detectorCfg.ManagementTimeout),
+		ivtdetector.NewManagementClient(managementURL, string(cfg.AdminAPIKey), 10*time.Second),
 		pool,
 		detectorCfg,
 	)
 
 	slog.Info("starting ivt detector",
-		"management_url", cfg.ManagementURL,
-		"scan_interval_ms", cfg.ScanIntervalMs,
-		"window_sec", cfg.WindowSec,
-		"outbox_pending_limit", cfg.OutboxPendingLimit,
+		"management_url", managementURL,
+		"scan_interval_ms", cfg.IVT.ScanIntervalMs,
+		"window_sec", cfg.IVT.WindowSec,
 	)
 
 	if err := detector.RunLoop(ctx); err != nil && err != context.Canceled {

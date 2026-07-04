@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"time"
 
+	"espx/internal/ads"
 	"espx/internal/ads/db"
-	"espx/internal/ads/sharding"
 
 	"github.com/google/uuid"
 )
@@ -30,7 +30,7 @@ type SlotMapVersionDTO struct {
 
 // GetSlotMap returns the active or requested slot map version.
 func (s *Service) GetSlotMap(ctx context.Context, version *int32, includeSlots bool) (SlotMapVersionDTO, error) {
-	repo := sharding.NewSlotMapRepo(s.GetPool())
+	repo := ads.NewSlotMapRepo(s.GetPool())
 	active, err := repo.GetActiveVersion(ctx)
 	if err != nil {
 		return SlotMapVersionDTO{}, err
@@ -67,12 +67,12 @@ func (s *Service) GetSlotMap(ctx context.Context, version *int32, includeSlots b
 }
 
 // CreateSlotMapVersion clones base (or active) into max(version)+1 with overrides; audit in same tx.
-func (s *Service) CreateSlotMapVersion(ctx context.Context, adminID uuid.UUID, baseVersion *int32, overrides []sharding.SlotOverride) (int32, error) {
+func (s *Service) CreateSlotMapVersion(ctx context.Context, adminID uuid.UUID, baseVersion *int32, overrides []ads.SlotOverride) (int32, error) {
 	base := int32(0)
 	if baseVersion != nil {
 		base = *baseVersion
 	} else {
-		active, err := sharding.NewSlotMapRepo(s.GetPool()).GetActiveVersion(ctx)
+		active, err := ads.NewSlotMapRepo(s.GetPool()).GetActiveVersion(ctx)
 		if err != nil {
 			return 0, err
 		}
@@ -80,7 +80,7 @@ func (s *Service) CreateSlotMapVersion(ctx context.Context, adminID uuid.UUID, b
 	}
 
 	for _, o := range overrides {
-		if o.Slot < 0 || o.Slot > sharding.SlotMask || o.ShardID < 0 {
+		if o.Slot < 0 || o.Slot > ads.SlotMask || o.ShardID < 0 {
 			return 0, fmt.Errorf("invalid slot override: slot=%d shard=%d", o.Slot, o.ShardID)
 		}
 	}
@@ -101,10 +101,10 @@ func (s *Service) CreateSlotMapVersion(ctx context.Context, adminID uuid.UUID, b
 		return 0, err
 	}
 	if baseCount == 0 {
-		return 0, sharding.ErrSlotMapVersionNotFound
+		return 0, ads.ErrSlotMapVersionNotFound
 	}
-	if baseCount != sharding.SlotCount {
-		return 0, sharding.ErrSlotMapIncomplete
+	if baseCount != ads.SlotCount {
+		return 0, ads.ErrSlotMapIncomplete
 	}
 
 	maxVersion, err := q.GetMaxSlotMapVersion(ctx)
@@ -137,8 +137,8 @@ func (s *Service) CreateSlotMapVersion(ctx context.Context, adminID uuid.UUID, b
 	if err != nil {
 		return 0, err
 	}
-	if newCount != sharding.SlotCount {
-		return 0, sharding.ErrSlotMapIncomplete
+	if newCount != ads.SlotCount {
+		return 0, ads.ErrSlotMapIncomplete
 	}
 
 	s.AuditLog(ctx, q, adminID, "SLOT_MAP_VERSION_CREATED", "redis_slot_map", nil, map[string]any{
@@ -156,7 +156,7 @@ func (s *Service) CreateSlotMapVersion(ctx context.Context, adminID uuid.UUID, b
 // MarkSlotMapMigrating marks slots MIGRATING on a draft version with audit log in the same tx.
 func (s *Service) MarkSlotMapMigrating(ctx context.Context, adminID uuid.UUID, version int32, slots []int16, targetShard int16) error {
 	if targetShard < 0 {
-		return sharding.ErrSlotMapInvalidShard
+		return ads.ErrSlotMapInvalidShard
 	}
 
 	tx, err := s.GetPool().Begin(ctx)
@@ -171,12 +171,12 @@ func (s *Service) MarkSlotMapMigrating(ctx context.Context, adminID uuid.UUID, v
 		return err
 	}
 	if versionCount == 0 {
-		return sharding.ErrSlotMapVersionNotFound
+		return ads.ErrSlotMapVersionNotFound
 	}
 
 	for _, slot := range slots {
-		if slot < 0 || slot > sharding.SlotMask {
-			return sharding.ErrSlotMapInvalidSlot
+		if slot < 0 || slot > ads.SlotMask {
+			return ads.ErrSlotMapInvalidSlot
 		}
 		if _, err := q.LockSlotMapEntry(ctx, db.LockSlotMapEntryParams{
 			Version: version,
@@ -210,8 +210,8 @@ func (s *Service) ActivateSlotMapVersion(ctx context.Context, adminID uuid.UUID,
 }
 
 func (s *Service) afterSlotMapActivated(ctx context.Context, version int32) {
-	if ss, ok := s.sharder.(*sharding.StaticSlotSharder); ok {
-		if _, err := sharding.LoadActiveSlotMap(ctx, s.GetPool(), ss, len(s.rdbs)); err != nil {
+	if ss, ok := s.sharder.(*ads.StaticSlotSharder); ok {
+		if _, err := ads.LoadActiveSlotMap(ctx, s.GetPool(), ss, len(s.rdbs)); err != nil {
 			slog.Warn("management slot map reload after activate failed", "error", err)
 		}
 	}
@@ -222,7 +222,7 @@ func (s *Service) afterSlotMapActivated(ctx context.Context, version int32) {
 	if timeout <= 0 {
 		timeout = 3 * time.Second
 	}
-	if err := sharding.PublishSlotMapReload(
+	if err := ads.PublishSlotMapReload(
 		s.cfg.Broker.URL,
 		s.cfg.Broker.RedisURL,
 		s.cfg.SlotMapReloadTopic,

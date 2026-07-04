@@ -1,15 +1,3 @@
-// Package database provides a lock-free Redis circuit breaker implemented with
-// sync/atomic operations. Unlike the mutex-based ads.CircuitBreaker, this breaker
-// uses CAS (CompareAndSwap) for state transitions to avoid lock contention on the
-// critical Redis command path.
-//
-// The breaker is installed as a redis.UniversalClient hook via RedisCircuitBreakerHook.
-// The hook intercepts ProcessHook and ProcessPipelineHook; transport errors
-// (network, EOF, connection refused) increment the failure counter while
-// redis.Nil and business-logic errors are treated as successes.
-//
-// IsNetworkOrSystemError classifies errors by type (net.Error, context.Canceled)
-// and by string-pattern matching for error types not wrapped in a net.Error.
 package database
 
 import (
@@ -46,10 +34,9 @@ func (s CircuitState) String() string {
 	}
 }
 
-// RedisBreaker is a lock-free circuit breaker for Redis clients. All fields are
-// accessed exclusively via sync/atomic; no mutex is held during Allow, RecordSuccess,
-// or RecordFailure. State transitions from Open -> HalfOpen use CompareAndSwap to
-// prevent multiple goroutines from entering HalfOpen simultaneously.
+// RedisBreaker is a lock-free circuit breaker for Redis clients. State transitions use CAS
+// to avoid mutex contention on the hot command path. database.RedisBreaker is shard-scoped;
+// ads.CircuitBreaker is per-worker for stream consumers.
 type RedisBreaker struct {
 	state            int32
 	failures         int64
@@ -73,9 +60,8 @@ func (b *RedisBreaker) State() CircuitState {
 	return CircuitState(atomic.LoadInt32(&b.state))
 }
 
-// Allow returns true if the breaker permits a Redis operation. In the Open state,
-// it tests whether openTimeout has elapsed and if so performs a CAS to transition
-// to HalfOpen, returning true only for the single goroutine that wins the CAS.
+// Allow returns true if the breaker permits a Redis operation. Open -> HalfOpen uses CAS
+// so only one goroutine probes recovery after openTimeout.
 func (b *RedisBreaker) Allow() bool {
 	state := atomic.LoadInt32(&b.state)
 	if state == int32(CircuitClosed) {
@@ -143,6 +129,9 @@ func (b *RedisBreaker) trip() {
 	}
 }
 
+// IsNetworkOrSystemError classifies errors that indicate an unhealthy Redis transport.
+// redis.Nil and business logic errors are successes. context.Canceled is ignored so
+// shutdown or caller cancellation does not trip the breaker.
 func IsNetworkOrSystemError(err error) bool {
 	if err == nil {
 		return false
@@ -150,7 +139,10 @@ func IsNetworkOrSystemError(err error) bool {
 	if errors.Is(err, redis.Nil) {
 		return false
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
 	var netErr net.Error

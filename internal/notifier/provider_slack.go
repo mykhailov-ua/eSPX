@@ -60,7 +60,7 @@ func (s *SlackProvider) Send(ctx context.Context, recipient, title, body string)
 	payload := map[string]interface{}{}
 
 	// Build interactive blocks
-	notificationID, _ := ctx.Value("notification_id").(string)
+	notificationID, _ := NotificationIDFromContext(ctx)
 	ipRegex := regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`)
 
 	var buttons []map[string]interface{}
@@ -125,8 +125,11 @@ func (s *SlackProvider) Send(ctx context.Context, recipient, title, body string)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, readErr := io.ReadAll(resp.Body)
 		s.breaker.RecordFailure()
+		if readErr != nil {
+			return fmt.Errorf("slack webhook returned status %d: read body: %w", resp.StatusCode, readErr)
+		}
 		return fmt.Errorf("slack webhook returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 

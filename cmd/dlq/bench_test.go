@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"espx/internal/ads"
 	"espx/internal/ads/pb"
-	"espx/internal/ads/repo"
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 )
@@ -26,7 +26,7 @@ func TestDLQBackupMetrics(t *testing.T) {
 		cid := uuid.New()
 		events[i] = &pb.AdDLQEvent{
 			OriginalEvent: &pb.AdStreamEvent{
-				ClickId:       repo.UnsafeBytes(fmt.Sprintf("click_%d_%s", i, uuid.New().String())),
+				ClickId:       ads.UnsafeBytes(fmt.Sprintf("click_%d_%s", i, uuid.New().String())),
 				CampaignId:    cid[:],
 				EventType:     []byte("click"),
 				Payload:       []byte(`{"geo":"US","device":"mobile","ad_position":"top","network":"search"}`),
@@ -35,7 +35,7 @@ func TestDLQBackupMetrics(t *testing.T) {
 				CreatedAtUnix: time.Now().Unix() - int64(i),
 			},
 			Error:        []byte("database connection timeout during click processing"),
-			OriginalId:   repo.UnsafeBytes(fmt.Sprintf("msg_%d", i)),
+			OriginalId:   ads.UnsafeBytes(fmt.Sprintf("msg_%d", i)),
 			FailedAtUnix: time.Now().Unix(),
 			WorkerId:     []byte("worker_node_03_tuf"),
 			RetryCount:   int32(i % 5),
@@ -62,20 +62,20 @@ func TestDLQBackupMetrics(t *testing.T) {
 	for _, ev := range events {
 		campUUID, _ := uuid.FromBytes(ev.OriginalEvent.CampaignId)
 		record := map[string]interface{}{
-			"id":             repo.UnsafeString(ev.OriginalId),
+			"id":             ads.UnsafeString(ev.OriginalId),
 			"format":         "protobuf_dlq",
-			"error":          repo.UnsafeString(ev.Error),
-			"original_id":    repo.UnsafeString(ev.OriginalId),
+			"error":          ads.UnsafeString(ev.Error),
+			"original_id":    ads.UnsafeString(ev.OriginalId),
 			"failed_at_unix": ev.FailedAtUnix,
-			"worker_id":      repo.UnsafeString(ev.WorkerId),
+			"worker_id":      ads.UnsafeString(ev.WorkerId),
 			"retry_count":    ev.RetryCount,
 			"original_event": map[string]interface{}{
-				"click_id":        repo.UnsafeString(ev.OriginalEvent.ClickId),
+				"click_id":        ads.UnsafeString(ev.OriginalEvent.ClickId),
 				"campaign_id":     campUUID.String(),
-				"event_type":      repo.UnsafeString(ev.OriginalEvent.EventType),
-				"payload":         repo.UnsafeString(ev.OriginalEvent.Payload),
-				"ip":              repo.UnsafeString(ev.OriginalEvent.Ip),
-				"ua":              repo.UnsafeString(ev.OriginalEvent.Ua),
+				"event_type":      ads.UnsafeString(ev.OriginalEvent.EventType),
+				"payload":         ads.UnsafeString(ev.OriginalEvent.Payload),
+				"ip":              ads.UnsafeString(ev.OriginalEvent.Ip),
+				"ua":              ads.UnsafeString(ev.OriginalEvent.Ua),
 				"created_at_unix": ev.OriginalEvent.CreatedAtUnix,
 			},
 		}

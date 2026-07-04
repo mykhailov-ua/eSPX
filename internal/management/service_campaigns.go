@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"espx/internal/ads"
 	"espx/internal/ads/db"
-	"espx/internal/ads/repo"
 	"espx/pkg/cold"
 
 	"github.com/google/uuid"
@@ -111,7 +111,7 @@ func (s *Service) ListCampaigns(ctx context.Context, customerID uuid.UUID, statu
 
 	var cid pgtype.UUID
 	if customerID != uuid.Nil {
-		cid = repo.ToUUID(customerID)
+		cid = ads.ToUUID(customerID)
 	}
 
 	var st pgtype.Text
@@ -140,7 +140,7 @@ func (s *Service) ListCampaigns(ctx context.Context, customerID uuid.UUID, statu
 // GetCampaignDTO loads a single campaign for detail views and access checks.
 func (s *Service) GetCampaignDTO(ctx context.Context, id uuid.UUID) (CampaignDTO, error) {
 	q := db.New(s.GetPool())
-	c, err := q.GetCampaignFull(ctx, repo.ToUUID(id))
+	c, err := q.GetCampaignFull(ctx, ads.ToUUID(id))
 	if err != nil {
 		return CampaignDTO{}, err
 	}
@@ -150,7 +150,7 @@ func (s *Service) GetCampaignDTO(ctx context.Context, id uuid.UUID) (CampaignDTO
 // ListStatusHistory returns paginated status transitions for a campaign audit trail.
 func (s *Service) ListStatusHistory(ctx context.Context, campaignID uuid.UUID, limit, offset int32) ([]StatusHistoryDTO, int64, error) {
 	q := db.New(s.GetPool())
-	cid := repo.ToUUID(campaignID)
+	cid := ads.ToUUID(campaignID)
 
 	listParams := db.ListStatusHistoryParams{
 		CampaignID: cid,
@@ -180,13 +180,13 @@ func (s *Service) UpdateCampaignPacing(ctx context.Context, campaignID uuid.UUID
 	err := pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 
-		camp, err := q.GetCampaignForUpdate(ctx, repo.ToUUID(campaignID))
+		camp, err := q.GetCampaignForUpdate(ctx, ads.ToUUID(campaignID))
 		if err != nil {
 			return fmt.Errorf("campaign not found: %w", err)
 		}
 
 		updatedCamp, err = q.UpdateCampaignPacing(ctx, db.UpdateCampaignPacingParams{
-			ID:         repo.ToUUID(campaignID),
+			ID:         ads.ToUUID(campaignID),
 			PacingMode: pacing,
 		})
 		if err != nil {

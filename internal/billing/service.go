@@ -24,7 +24,6 @@ type Service struct {
 	tax     *TaxCalculator
 }
 
-// NewService binds Postgres for billing cold-path operations.
 func NewService(pool *pgxpool.Pool) *Service {
 	return &Service{
 		pool:    pool,
@@ -163,7 +162,6 @@ func (service *Service) resolveTaxProfile(ctx context.Context, q *db.Queries, cu
 	return service.tax.DefaultProfile("US", currency)
 }
 
-// GetInvoice returns a stored invoice by id.
 func (service *Service) GetInvoice(ctx context.Context, invoiceID uuid.UUID) (*pb.Invoice, error) {
 	invoice, err := service.queries.GetInvoice(ctx, pgtype.UUID{Bytes: invoiceID, Valid: true})
 	if err != nil {
@@ -175,7 +173,6 @@ func (service *Service) GetInvoice(ctx context.Context, invoiceID uuid.UUID) (*p
 	return service.invoiceToProto(ctx, invoice)
 }
 
-// ListInvoices returns paginated invoice history for a customer.
 func (service *Service) ListInvoices(ctx context.Context, customerID uuid.UUID, limit, offset int32) ([]*pb.Invoice, int64, error) {
 	if limit <= 0 {
 		limit = 20

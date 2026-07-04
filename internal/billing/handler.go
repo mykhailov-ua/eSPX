@@ -22,7 +22,6 @@ type Handler struct {
 	cfg     *config.Config
 }
 
-// NewHandler wires the billing service into the generated gRPC server interface.
 func NewHandler(service *Service, cfg *config.Config) *Handler {
 	return &Handler{service: service, cfg: cfg}
 }

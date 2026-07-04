@@ -92,7 +92,9 @@ func (evac *Evacuator) Run(ctx context.Context) error {
 			}
 			if event.Has(fsnotify.Create) || event.Has(fsnotify.Rename) || event.Has(fsnotify.Write) {
 				if strings.HasSuffix(event.Name, readySuffix) {
-					_ = evac.processReadyFile(ctx, event.Name)
+					if err := evac.processReadyFile(ctx, event.Name); err != nil {
+						slog.Warn("process ready segment failed", "path", event.Name, "error", err)
+					}
 				}
 			}
 		case err, ok := <-evac.watcher.Errors:
@@ -101,7 +103,9 @@ func (evac *Evacuator) Run(ctx context.Context) error {
 			}
 			slog.Warn("fsnotify error", "error", err)
 		case <-scanTicker.C:
-			_ = evac.scanReadySegments(ctx)
+			if err := evac.scanReadySegments(ctx); err != nil {
+				slog.Warn("ready segment scan failed", "error", err)
+			}
 		}
 	}
 }

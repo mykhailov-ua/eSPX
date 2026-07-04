@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"espx/internal/ads"
 	"espx/internal/ads/db"
-	"espx/internal/ads/repo"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -190,7 +190,7 @@ func (w *OutboxWorker) campaignRemainingBudget(ctx context.Context, campaignID u
 	err := w.svc.GetPool().QueryRow(ctx, `
 		SELECT budget_limit, current_spend
 		FROM campaigns
-		WHERE id = $1`, repo.ToUUID(campaignID)).Scan(&limit, &spend)
+		WHERE id = $1`, ads.ToUUID(campaignID)).Scan(&limit, &spend)
 	if err != nil {
 		return 0, err
 	}

@@ -205,7 +205,7 @@ func (outboxWorker *OutboxWorker) ensureSettlementClient() error {
 	if outboxWorker.client != nil {
 		return nil
 	}
-	target := "127.0.0.1:" + outboxWorker.cfg.SettlementServerPort
+	target := outboxWorker.cfg.SettlementServerHost + ":" + outboxWorker.cfg.SettlementServerPort
 	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return fmt.Errorf("gRPC client not connected to %s: %w", target, err)

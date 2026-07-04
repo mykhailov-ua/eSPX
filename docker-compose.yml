@@ -326,7 +326,7 @@ services:
         max-file: "3"
 
 
-  # Control plane: REST admin API, outbox workers, pacing/schedule/recon background jobs.
+  # Control plane: REST admin API, settlement gRPC, outbox workers, pacing/schedule/recon background jobs.
   management:
     build:
       context: .
@@ -337,6 +337,7 @@ services:
       - .env
     environment:
       - MANAGEMENT_PORT=8188
+      - SETTLEMENT_SERVER_PORT=51053
       - AUTH_SERVER_PORT=51051
       - AUTH_SERVER_HOST=127.0.0.1
       - BILLING_SERVER_HOST=127.0.0.1
@@ -348,7 +349,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1G
+          memory: 768M
     restart: always
     depends_on:
       auth:
@@ -357,6 +358,67 @@ services:
         condition: service_healthy
       redis-0:
         condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+
+  # Control plane: async notification delivery (Telegram, Slack, SMTP, SMS).
+  notifier:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/notifier"]
+    network_mode: "${NET_MODE:-host}"
+    env_file:
+      - .env
+    environment:
+      - NOTIFIER_PORT=8085
+      - DB_DSN=${DB_DSN}
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+
+  # Off-path IVT botnet detection: ClickHouse analytics → fraud blacklist via management API.
+  ivt-detector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/ivt-detector"]
+    network_mode: "${NET_MODE:-host}"
+    env_file:
+      - .env
+    environment:
+      - IVT_DETECTOR_ENABLED=true
+      - CH_DSN=${CH_DSN}
+      - DB_DSN=${DB_DSN}
+      - MANAGEMENT_URL=http://127.0.0.1:8188
+      - ADMIN_API_KEY=${ADMIN_API_KEY}
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      management:
+        condition: service_started
     logging:
       driver: "json-file"
       options:
@@ -407,33 +469,6 @@ services:
       - .env
     environment:
       - BILLING_SERVER_PORT=51054
-      - DB_DSN=${DB_DSN}
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-    restart: always
-    depends_on:
-      db:
-        condition: service_healthy
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "100m"
-        max-file: "3"
-
-
-  # Control plane: async notification delivery (Telegram, Slack, SMTP, SMS).
-  notifier:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    entrypoint: ["/notifier"]
-    network_mode: "${NET_MODE:-host}"
-    env_file:
-      - .env
-    environment:
-      - NOTIFIER_PORT=8085
       - DB_DSN=${DB_DSN}
     deploy:
       resources:
