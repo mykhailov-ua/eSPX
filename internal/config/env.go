@@ -88,9 +88,10 @@ type Config struct {
 	SettlementServerHost       string
 	PaymentInternalToken       Secret
 	SettlementInternalToken    Secret
-	StripeSecretKey            Secret
-	StripeWebhookSecret        Secret
-	Management                 struct {
+	StripeSecretKey                 Secret
+	StripeWebhookSecret             Secret
+	PaymentFinancialReconIntervalMs int
+	Management                      struct {
 		RetentionDays               int
 		CancellationFeePercent      float64
 		ReconIntervalMs             int
@@ -115,6 +116,7 @@ type Config struct {
 	AutoscaleLowCTRThreshold    float64
 	AutoscaleMinRemainingBudget int64
 	AutoscaleShiftAmount        int64
+	AutoscaleIntervalMs         int
 
 	PacingToleranceMargin float64
 
@@ -202,6 +204,7 @@ type Config struct {
 		ClaimStaleSec           int
 		GroupParallelism        int
 		RateLimitPerMinute      int
+		TelegramRateLimitPerMinute int
 	}
 
 	IVT struct {
@@ -329,6 +332,7 @@ func Load() (*Config, error) {
 		AutoscaleLowCTRThreshold:    getEnvFloat("AUTOSCALE_LOW_CTR_THRESHOLD", 0.005),
 		AutoscaleMinRemainingBudget: getEnvMicro("AUTOSCALE_MIN_REMAINING_BUDGET", 20.0),
 		AutoscaleShiftAmount:        getEnvMicro("AUTOSCALE_SHIFT_AMOUNT", 10.0),
+		AutoscaleIntervalMs:         getEnvInt("AUTOSCALE_INTERVAL_MS", 0),
 		PacingToleranceMargin:       getEnvFloat("PACING_TOLERANCE_MARGIN", 0.15),
 		CreditScoringMinAgeDays:     getEnvFloat("CREDIT_SCORING_MIN_AGE_DAYS", 7.0),
 		CreditScoringMatureAgeDays:  getEnvFloat("CREDIT_SCORING_MATURE_AGE_DAYS", 30.0),
@@ -345,6 +349,7 @@ func Load() (*Config, error) {
 		SettlementInternalToken:     Secret(os.Getenv("SETTLEMENT_INTERNAL_TOKEN")),
 		StripeSecretKey:             Secret(os.Getenv("STRIPE_SECRET_KEY")),
 		StripeWebhookSecret:         Secret(os.Getenv("STRIPE_WEBHOOK_SECRET")),
+		PaymentFinancialReconIntervalMs: getEnvInt("PAYMENT_FINANCIAL_RECON_INTERVAL_MS", 0),
 	}
 
 	cfg.Logger.Dir = os.Getenv("LOGGER_DIR")
@@ -444,6 +449,7 @@ func Load() (*Config, error) {
 	cfg.Notifier.ClaimStaleSec = getEnvInt("NOTIFIER_CLAIM_STALE_SEC", 300)
 	cfg.Notifier.GroupParallelism = getEnvInt("NOTIFIER_GROUP_PARALLELISM", 2)
 	cfg.Notifier.RateLimitPerMinute = getEnvInt("NOTIFIER_RATE_LIMIT_PER_MINUTE", 60)
+	cfg.Notifier.TelegramRateLimitPerMinute = getEnvInt("NOTIFIER_TELEGRAM_RATE_LIMIT", 20)
 
 	cfg.IVT.Enabled = getEnvBool("IVT_DETECTOR_ENABLED", true)
 	cfg.IVT.ScanIntervalMs = getEnvInt("IVT_DETECTOR_SCAN_INTERVAL_MS", 300000)

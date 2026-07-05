@@ -1,6 +1,10 @@
 package notifier
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"time"
+)
 
 var (
 	ErrRecipientRequired     = errors.New("recipient is required")
@@ -12,3 +16,13 @@ var (
 	ErrRateLimited           = errors.New("recipient rate limit exceeded")
 	ErrBatchEmpty            = errors.New("batch must contain at least one notification")
 )
+
+// ProviderRateLimitedError signals an upstream provider asked us to slow down (e.g. Telegram 429).
+type ProviderRateLimitedError struct {
+	Provider   string
+	RetryAfter time.Duration
+}
+
+func (err *ProviderRateLimitedError) Error() string {
+	return fmt.Sprintf("%s rate limited, retry after %s", err.Provider, err.RetryAfter)
+}

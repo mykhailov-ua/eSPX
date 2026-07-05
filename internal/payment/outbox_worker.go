@@ -37,7 +37,14 @@ type OutboxWorker struct {
 	client   pb.SettlementServiceClient
 	conn     *grpc.ClientConn
 
+	settlementAlerter *SettlementFailedAlerter
+
 	wg sync.WaitGroup
+}
+
+// SetSettlementFailedAlerter wires ops notifications for terminal settlement failures.
+func (outboxWorker *OutboxWorker) SetSettlementFailedAlerter(alerter *SettlementFailedAlerter) {
+	outboxWorker.settlementAlerter = alerter
 }
 
 // NewOutboxWorker decouples ledger credit from webhook commit latency via async settlement delivery.
@@ -280,6 +287,12 @@ func (outboxWorker *OutboxWorker) markOutboxEventRetryable(ctx context.Context, 
 		isFatal = true
 	}
 
+	maxAttempts := int32(outboxWorker.cfg.MaxRetries)
+	if maxAttempts <= 0 {
+		maxAttempts = 5
+	}
+	permanent := isFatal || outboxEvent.Attempts+1 >= maxAttempts
+
 	innerErr := pgx.BeginFunc(ctx, outboxWorker.pool, func(tx pgx.Tx) error {
 		txQueries := db.New(tx)
 		if isFatal {
@@ -292,19 +305,17 @@ func (outboxWorker *OutboxWorker) markOutboxEventRetryable(ctx context.Context, 
 			}
 
 			var payload SettleBalancePayload
-			if err := json.Unmarshal(outboxEvent.Payload, &payload); err == nil {
-				intentUUID, _ := uuid.Parse(payload.PaymentIntentID)
-				_, _ = txQueries.UpdatePaymentIntentStatus(ctx, db.UpdatePaymentIntentStatusParams{
-					ID:          pgtype.UUID{Bytes: intentUUID, Valid: true},
-					Status:      db.PaymentPaymentIntentStatusSETTLEMENTFAILED,
-					ProviderRef: pgtype.Text{String: payload.ProviderRef, Valid: true},
-				})
+			if outboxEvent.EventType == "SETTLE_BALANCE" {
+				if err := json.Unmarshal(outboxEvent.Payload, &payload); err == nil {
+					intentUUID, _ := uuid.Parse(payload.PaymentIntentID)
+					_, _ = txQueries.UpdatePaymentIntentStatus(ctx, db.UpdatePaymentIntentStatusParams{
+						ID:          pgtype.UUID{Bytes: intentUUID, Valid: true},
+						Status:      db.PaymentPaymentIntentStatusSETTLEMENTFAILED,
+						ProviderRef: pgtype.Text{String: payload.ProviderRef, Valid: true},
+					})
+				}
 			}
 		} else {
-			maxAttempts := int32(outboxWorker.cfg.MaxRetries)
-			if maxAttempts <= 0 {
-				maxAttempts = 5
-			}
 			if err := txQueries.MarkOutboxEventFailed(ctx, db.MarkOutboxEventFailedParams{
 				ID:        outboxEvent.ID,
 				Attempts:  maxAttempts,
@@ -317,15 +328,31 @@ func (outboxWorker *OutboxWorker) markOutboxEventRetryable(ctx context.Context, 
 	})
 	if innerErr != nil {
 		slog.Error("failed to update outbox outboxEventent failure status", "id", outboxEvent.ID, "error", innerErr)
+		return
+	}
+	if permanent && outboxWorker.settlementAlerter != nil {
+		outboxWorker.settlementAlerter.AlertPermanentFailure(outboxEvent, cause)
 	}
 }
 
-// handleOutboxEvent forwards one row to management; ledger idempotency key proutboxEventents double credit on retry.
+// handleOutboxEvent forwards one row to management; ledger idempotency key prevents double credit on retry.
 func (outboxWorker *OutboxWorker) handleOutboxEvent(ctx context.Context, outboxEvent db.PaymentPaymentOutbox) error {
-	if outboxEvent.EventType != "SETTLE_BALANCE" {
+	switch outboxEvent.EventType {
+	case "SETTLE_BALANCE":
+		return outboxWorker.handleSettleBalance(ctx, outboxEvent)
+	case OutboxEventReverseBalance:
+		return outboxWorker.handleReverseBalance(ctx, outboxEvent)
+	case OutboxEventApplyChargeback:
+		return outboxWorker.handleApplyChargeback(ctx, outboxEvent)
+	case OutboxEventReverseChargeback:
+		return outboxWorker.handleReverseChargeback(ctx, outboxEvent)
+	default:
 		slog.Warn("skipping unrecognized payment outbox outboxEventent type", "type", outboxEvent.EventType)
 		return nil
 	}
+}
+
+func (outboxWorker *OutboxWorker) handleSettleBalance(ctx context.Context, outboxEvent db.PaymentPaymentOutbox) error {
 
 	var payload SettleBalancePayload
 	if err := json.Unmarshal(outboxEvent.Payload, &payload); err != nil {
@@ -351,5 +378,87 @@ func (outboxWorker *OutboxWorker) handleOutboxEvent(ctx context.Context, outboxE
 		return fmt.Errorf("management SettlementService call failed: %w", err)
 	}
 
+	return nil
+}
+
+func (outboxWorker *OutboxWorker) handleReverseBalance(ctx context.Context, outboxEvent db.PaymentPaymentOutbox) error {
+	var payload ReverseBalancePayload
+	if err := json.Unmarshal(outboxEvent.Payload, &payload); err != nil {
+		return fmt.Errorf("failed to unmarshal reverse balance payload: %w", err)
+	}
+
+	client := outboxWorker.getSettlementClient()
+	if client == nil {
+		return fmt.Errorf("settlement client not connected")
+	}
+
+	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-internal-token", string(outboxWorker.cfg.SettlementInternalToken))
+
+	_, err := client.ApplyPaymentRefund(grpcCtx, &pb.ApplyPaymentRefundRequest{
+		CustomerId:           payload.CustomerID,
+		AmountMicro:          payload.AmountMicro,
+		LedgerIdempotencyKey: payload.LedgerIdempotencyKey,
+		PaymentIntentId:      payload.PaymentIntentID,
+		Provider:             payload.Provider,
+		ProviderRefundId:     payload.ProviderRefundID,
+	})
+	if err != nil {
+		return fmt.Errorf("management SettlementService refund call failed: %w", err)
+	}
+
+	return nil
+}
+
+func (outboxWorker *OutboxWorker) handleApplyChargeback(ctx context.Context, outboxEvent db.PaymentPaymentOutbox) error {
+	var payload ApplyChargebackPayload
+	if err := json.Unmarshal(outboxEvent.Payload, &payload); err != nil {
+		return fmt.Errorf("failed to unmarshal apply chargeback payload: %w", err)
+	}
+
+	client := outboxWorker.getSettlementClient()
+	if client == nil {
+		return fmt.Errorf("settlement client not connected")
+	}
+
+	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-internal-token", string(outboxWorker.cfg.SettlementInternalToken))
+
+	_, err := client.ApplyPaymentChargeback(grpcCtx, &pb.ApplyPaymentChargebackRequest{
+		CustomerId:           payload.CustomerID,
+		AmountMicro:          payload.AmountMicro,
+		LedgerIdempotencyKey: payload.LedgerIdempotencyKey,
+		PaymentIntentId:      payload.PaymentIntentID,
+		Provider:             payload.Provider,
+		ProviderDisputeId:    payload.ProviderDisputeID,
+	})
+	if err != nil {
+		return fmt.Errorf("management SettlementService chargeback call failed: %w", err)
+	}
+	return nil
+}
+
+func (outboxWorker *OutboxWorker) handleReverseChargeback(ctx context.Context, outboxEvent db.PaymentPaymentOutbox) error {
+	var payload ReverseChargebackPayload
+	if err := json.Unmarshal(outboxEvent.Payload, &payload); err != nil {
+		return fmt.Errorf("failed to unmarshal reverse chargeback payload: %w", err)
+	}
+
+	client := outboxWorker.getSettlementClient()
+	if client == nil {
+		return fmt.Errorf("settlement client not connected")
+	}
+
+	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-internal-token", string(outboxWorker.cfg.SettlementInternalToken))
+
+	_, err := client.ApplyPaymentChargebackReversal(grpcCtx, &pb.ApplyPaymentChargebackReversalRequest{
+		CustomerId:           payload.CustomerID,
+		AmountMicro:          payload.AmountMicro,
+		LedgerIdempotencyKey: payload.LedgerIdempotencyKey,
+		PaymentIntentId:      payload.PaymentIntentID,
+		Provider:             payload.Provider,
+		ProviderDisputeId:    payload.ProviderDisputeID,
+	})
+	if err != nil {
+		return fmt.Errorf("management SettlementService chargeback reversal call failed: %w", err)
+	}
 	return nil
 }

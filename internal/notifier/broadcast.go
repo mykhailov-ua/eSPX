@@ -2,6 +2,7 @@ package notifier
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -130,9 +131,21 @@ func (service *Service) sendViaProvider(
 		recipient = primaryRecipient
 	}
 
+	providerName := string(target)
+	if service.deliveryRateLimiter != nil && !service.deliveryRateLimiter.Allow(providerName, recipient) {
+		recordDelivery(providerName, false, 0)
+		return ErrRateLimited
+	}
+
 	start := time.Now()
 	err := provider.Send(ctx, recipient, title, body)
-	recordDelivery(string(target), err == nil, time.Since(start).Seconds())
+	if err != nil {
+		var rateErr *ProviderRateLimitedError
+		if errors.As(err, &rateErr) {
+			service.deliveryRateLimiter.Backoff(rateErr.Provider, recipient, rateErr.RetryAfter)
+		}
+	}
+	recordDelivery(providerName, err == nil, time.Since(start).Seconds())
 	return err
 }
 
@@ -147,7 +160,7 @@ func (service *Service) deliverFallback(
 
 	for {
 		pbProvider := MapDBProviderToPB(currentProvider)
-		provider, exists := service.providers[pbProvider]
+		_, exists := service.providers[pbProvider]
 		if !exists {
 			sendErr := fmt.Errorf("provider %s not configured", currentProvider)
 			nextProvider, fallbackFound := nextConfiguredFallback(service.providers, currentProvider)
@@ -166,9 +179,7 @@ func (service *Service) deliverFallback(
 		}
 
 		pCtx := context.WithValue(ctx, NotificationIDContextKey, leadID)
-		start := time.Now()
-		sendErr := provider.Send(pCtx, currentRecipient, title, body)
-		recordDelivery(string(currentProvider), sendErr == nil, time.Since(start).Seconds())
+		sendErr := service.sendViaProvider(pCtx, currentProvider, currentProvider, currentRecipient, title, body)
 		if sendErr == nil {
 			return currentProvider, nil
 		}

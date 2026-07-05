@@ -70,6 +70,8 @@ func mapStatusToPB(s db.PaymentPaymentIntentStatus) pb.PaymentIntentStatus {
 		return pb.PaymentIntentStatus_PAYMENT_INTENT_STATUS_REFUNDED
 	case db.PaymentPaymentIntentStatusSETTLEMENTFAILED:
 		return pb.PaymentIntentStatus_PAYMENT_INTENT_STATUS_SETTLEMENT_FAILED
+	case db.PaymentPaymentIntentStatusDISPUTED:
+		return pb.PaymentIntentStatus_PAYMENT_INTENT_STATUS_DISPUTED
 	default:
 		return pb.PaymentIntentStatus_PAYMENT_INTENT_STATUS_UNSPECIFIED
 	}

@@ -53,6 +53,7 @@ func (w *ReconWorker) Start(ctx context.Context) {
 			}
 		case <-drainCheckTicker.C:
 			w.svc.CheckStuckDrainJobs(ctx)
+			reconSvc.AlertStaleUnresolvedDiscrepancies(ctx)
 		}
 	}
 }

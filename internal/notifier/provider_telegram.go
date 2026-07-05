@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -119,6 +120,11 @@ func (t *TelegramProvider) Send(ctx context.Context, recipient, title, body stri
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, readErr := io.ReadAll(resp.Body)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			retryAfter := parseTelegramRetryAfter(resp, respBody)
+			slog.Warn("telegram api rate limited", "retry_after", retryAfter)
+			return &ProviderRateLimitedError{Provider: "TELEGRAM", RetryAfter: retryAfter}
+		}
 		t.breaker.RecordFailure()
 		if readErr != nil {
 			return fmt.Errorf("telegram api returned status %d: read body: %w", resp.StatusCode, readErr)
@@ -128,4 +134,23 @@ func (t *TelegramProvider) Send(ctx context.Context, recipient, title, body stri
 
 	t.breaker.RecordSuccess()
 	return nil
+}
+
+func parseTelegramRetryAfter(resp *http.Response, body []byte) time.Duration {
+	if resp != nil {
+		if header := resp.Header.Get("Retry-After"); header != "" {
+			if sec, err := strconv.Atoi(header); err == nil && sec > 0 {
+				return time.Duration(sec) * time.Second
+			}
+		}
+	}
+	var apiResp struct {
+		Parameters struct {
+			RetryAfter int `json:"retry_after"`
+		} `json:"parameters"`
+	}
+	if len(body) > 0 && json.Unmarshal(body, &apiResp) == nil && apiResp.Parameters.RetryAfter > 0 {
+		return time.Duration(apiResp.Parameters.RetryAfter) * time.Second
+	}
+	return 30 * time.Second
 }

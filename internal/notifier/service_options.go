@@ -8,18 +8,20 @@ import (
 
 // ServiceOptions tunes queue delivery, deduplication, and rate limiting.
 type ServiceOptions struct {
-	DedupCooldownSec   int64
-	ClaimStaleSec      int64
-	GroupParallelism   int
-	RateLimitPerMinute int
+	DedupCooldownSec           int64
+	ClaimStaleSec              int64
+	GroupParallelism           int
+	RateLimitPerMinute         int
+	TelegramRateLimitPerMinute int
 }
 
 func defaultServiceOptions() ServiceOptions {
 	return ServiceOptions{
-		DedupCooldownSec:   300,
-		ClaimStaleSec:      300,
-		GroupParallelism:   2,
-		RateLimitPerMinute: 60,
+		DedupCooldownSec:           300,
+		ClaimStaleSec:              300,
+		GroupParallelism:           2,
+		RateLimitPerMinute:         60,
+		TelegramRateLimitPerMinute: 20,
 	}
 }
 
@@ -51,9 +53,10 @@ func ServiceOptionsFromConfig(cfg *config.Config) ServiceOptions {
 	}
 	n := cfg.Notifier
 	return ServiceOptions{
-		DedupCooldownSec:   int64(n.DedupCooldownSec),
-		ClaimStaleSec:      int64(n.ClaimStaleSec),
-		GroupParallelism:   n.GroupParallelism,
-		RateLimitPerMinute: n.RateLimitPerMinute,
+		DedupCooldownSec:           int64(n.DedupCooldownSec),
+		ClaimStaleSec:              int64(n.ClaimStaleSec),
+		GroupParallelism:           n.GroupParallelism,
+		RateLimitPerMinute:         n.RateLimitPerMinute,
+		TelegramRateLimitPerMinute: n.TelegramRateLimitPerMinute,
 	}
 }

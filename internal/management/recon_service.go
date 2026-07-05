@@ -109,6 +109,18 @@ func (reconService *ReconService) ReconcileWindow(ctx context.Context, start, en
 			return err
 		}
 
+		chunkMicro := reconService.autoAdjustChunkMicro()
+		if abs(delta) > chunkMicro {
+			slog.Warn("recon discrepancy exceeds auto-adjust chunk, leaving unresolved",
+				"run_id", run.ID,
+				"campaign_id", campID,
+				"delta", delta,
+				"chunk_micro", chunkMicro,
+			)
+			totalDelta += delta
+			continue
+		}
+
 		adjType := "RECONCILIATION_ADJUST"
 		_, err = reconService.mgmt.GetPool().Exec(opCtx, `
 			INSERT INTO balance_ledger (customer_id, campaign_id, amount, type, created_at)
@@ -170,6 +182,56 @@ func (reconService *ReconService) ReconcileWindow(ctx context.Context, start, en
 		)
 	}
 	return nil
+}
+
+func (reconService *ReconService) autoAdjustChunkMicro() int64 {
+	if reconService.mgmt.cfg != nil && reconService.mgmt.cfg.QuotaChunkSize > 0 {
+		return reconService.mgmt.cfg.QuotaChunkSize
+	}
+	return 5_000_000
+}
+
+// AlertStaleUnresolvedDiscrepancies notifies ops for discrepancies left unadjusted longer than one hour.
+func (reconService *ReconService) AlertStaleUnresolvedDiscrepancies(ctx context.Context) {
+	if reconService.mgmt.alerter == nil {
+		return
+	}
+	pool := reconService.mgmt.GetPool()
+	if pool == nil {
+		return
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT d.run_id,
+		       COUNT(*)::int,
+		       COALESCE(SUM(ABS(d.delta)), 0)::bigint,
+		       MIN(d.created_at) AS oldest,
+		       r.period_start,
+		       r.period_end
+		FROM recon_discrepancies d
+		JOIN recon_runs r ON r.id = d.run_id
+		WHERE d.redis_adjusted = false
+		  AND d.created_at < NOW() - INTERVAL '1 hour'
+		GROUP BY d.run_id, r.period_start, r.period_end`)
+	if err != nil {
+		slog.Error("failed to query stale unresolved recon discrepancies", "error", err)
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var runID int64
+		var unresolved int
+		var totalDelta int64
+		var oldest time.Time
+		var periodStart, periodEnd time.Time
+		if err := rows.Scan(&runID, &unresolved, &totalDelta, &oldest, &periodStart, &periodEnd); err != nil {
+			slog.Error("failed to scan stale recon discrepancy row", "error", err)
+			continue
+		}
+		period := periodStart.Format(time.RFC3339) + "-" + periodEnd.Format(time.RFC3339)
+		reconService.mgmt.alerter.AlertReconDiscrepancyUnresolved(runID, unresolved, totalDelta, period, oldest)
+	}
 }
 
 // adjustRedisBudgetAtomically applies a recon delta in Redis without leaving stale zero or negative budget keys.

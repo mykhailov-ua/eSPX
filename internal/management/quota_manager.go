@@ -94,20 +94,43 @@ func (qm *QuotaManager) pollRefills(ctx context.Context) {
 }
 
 func (qm *QuotaManager) refillCampaign(ctx context.Context, campaignID uuid.UUID, shardIdx int, rdb redis.UniversalClient) error {
-	idempotencyKey := uuid.New().String()
+	lockKey := fmt.Sprintf("budget:refill_lock:%s", campaignID)
+	claimed, err := rdb.GetDel(ctx, lockKey).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil
+		}
+		return fmt.Errorf("claim budget:refill_lock: %w", err)
+	}
+	if claimed == "" {
+		return nil
+	}
 
+	requeue := func() {
+		_ = rdb.Set(ctx, lockKey, "1", 10*time.Second).Err()
+		_ = rdb.SAdd(ctx, "budget:refill_needed", campaignID.String()).Err()
+	}
+
+	idempotencyKey := uuid.New().String()
 	res, err := qm.quotaRepo.ReserveChunk(ctx, qm.svc.sharder, campaignID, qm.chunkSize, idempotencyKey)
 	if err != nil {
 		if errors.Is(err, ads.ErrQuotaBudgetExceeded) {
-			lockKey := fmt.Sprintf("budget:refill_lock:%s", campaignID)
-			_ = rdb.Del(ctx, lockKey).Err()
-			slog.Warn("campaign budget exceeded during refill, deleted lock", "campaign_id", campaignID)
+			slog.Warn("campaign budget exceeded during refill", "campaign_id", campaignID)
 			return nil
 		}
+		requeue()
 		return fmt.Errorf("failed to reserve chunk in Postgres: %w", err)
 	}
 
 	if res.AlreadyApplied {
+		return nil
+	}
+
+	shadow := qm.svc.cfg != nil && qm.svc.cfg.QuotaMode == "shadow"
+	if shadow {
+		slog.Info("shadow quota refill reserved in Postgres only",
+			"campaign_id", campaignID, "shard", shardIdx, "chunk_size", qm.chunkSize,
+			"reserved_amount", res.ReservedAmount)
 		return nil
 	}
 
@@ -118,12 +141,8 @@ func (qm *QuotaManager) refillCampaign(ctx context.Context, campaignID uuid.UUID
 		if rollbackErr := qm.quotaRepo.ReleaseChunk(ctx, qm.svc.sharder, campaignID, qm.chunkSize); rollbackErr != nil {
 			slog.Error("failed to rollback Postgres reservation", "campaign_id", campaignID, "error", rollbackErr)
 		}
+		requeue()
 		return fmt.Errorf("failed to increment budget:quota in Redis: %w", err)
-	}
-
-	lockKey := fmt.Sprintf("budget:refill_lock:%s", campaignID)
-	if err := rdb.Del(ctx, lockKey).Err(); err != nil {
-		slog.Error("failed to delete budget:refill_lock in Redis", "campaign_id", campaignID, "error", err)
 	}
 
 	slog.Info("successfully refilled campaign quota", "campaign_id", campaignID, "shard", shardIdx, "chunk_size", qm.chunkSize)
@@ -157,7 +176,15 @@ func (qm *QuotaManager) warmActiveCampaignQuotas(ctx context.Context) {
 			continue
 		}
 
+		shadow := qm.svc.cfg != nil && qm.svc.cfg.QuotaMode == "shadow"
 		if exists == 0 {
+			if shadow {
+				pgQuota, qerr := qm.quotaRepo.GetQuota(ctx, qm.svc.sharder, campaignID)
+				if qerr == nil && pgQuota.ReservedAmount > 0 {
+					continue
+				}
+			}
+
 			locked, err := rdb.SetNX(ctx, lockKey, "1", 10*time.Second).Result()
 			if err != nil || !locked {
 				continue
@@ -169,7 +196,7 @@ func (qm *QuotaManager) warmActiveCampaignQuotas(ctx context.Context) {
 				continue
 			}
 
-			slog.Info("initializing quota for campaign", "campaign_id", campaignID)
+			slog.Info("initializing quota for campaign", "campaign_id", campaignID, "shadow", shadow)
 			idempotencyKey := fmt.Sprintf("init-quota-%s", campaignID)
 			res, err := qm.quotaRepo.ReserveChunk(ctx, qm.svc.sharder, campaignID, qm.chunkSize, idempotencyKey)
 			if err != nil {
@@ -185,10 +212,18 @@ func (qm *QuotaManager) warmActiveCampaignQuotas(ctx context.Context) {
 				// Proceed with chunkSize
 			}
 
+			if shadow {
+				_ = rdb.Del(ctx, lockKey).Err()
+				slog.Info("shadow quota warm reserved in Postgres only",
+					"campaign_id", campaignID, "shard", shardIdx, "chunk_size", actualChunk)
+				continue
+			}
+
 			_, err = rdb.IncrBy(ctx, quotaKey, actualChunk).Result()
 			if err != nil {
 				slog.Error("failed to set initial budget:quota in Redis, rolling back Postgres", "campaign_id", campaignID, "error", err)
 				_ = qm.quotaRepo.ReleaseChunk(ctx, qm.svc.sharder, campaignID, actualChunk)
+				_ = rdb.Del(ctx, lockKey).Err()
 				continue
 			}
 

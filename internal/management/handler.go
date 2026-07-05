@@ -77,6 +77,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	h.registerDeliveryRoutes(mux)
 	h.registerFraudRoutes(mux)
 	h.registerSlotMapRoutes(mux)
+	h.registerOpsRoutes(mux)
 }
 
 // limit wraps handlers with a per-client IP token bucket.

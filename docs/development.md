@@ -230,13 +230,28 @@ SETTLEMENT_SERVER_PORT=51053
 PAYMENT_DB_DSN=postgres://...@127.0.0.1:5431/espx_payment?sslmode=disable  # separate db-payment container
 PAYMENT_INTERNAL_TOKEN=...      # management to payment gRPC
 SETTLEMENT_INTERNAL_TOKEN=...   # payment outbox to settlement gRPC
-STRIPE_SECRET_KEY=              # empty = mock provider
-STRIPE_WEBHOOK_SECRET=          # required for live webhooks
+STRIPE_SECRET_KEY=              # unset = MockProvider; set = StripeProvider stub (checkout still mock)
+STRIPE_WEBHOOK_SECRET=          # required for live webhook signature verification (M4.3)
 ```
 
 Payment schema is auto-applied on `cmd/payment` startup (embedded goose migrations). With compose, `db-payment` on `PAYMENT_DB_PORT` (default 5431) holds only the `payment` schema. Omit `PAYMENT_DB_DSN` to fall back to `DB_DSN` (single-DB dev).
 
-Stripe checkout API is not wired (`provider_stripe.go` returns `ErrProviderNotConfigured` even with secret key). Mock provider works for local settlement flow testing.
+#### Stripe policy (mock-only)
+
+Checkout remains **mock-only** until **M4.6** (HTMX checkout + live session URL) or explicit live Definition-of-Done verification. Do not treat `STRIPE_SECRET_KEY` as enabling production payments today.
+
+| Mode | `STRIPE_SECRET_KEY` | Checkout behavior |
+|------|---------------------|-------------------|
+| Mock (default) | unset | `MockProvider` — deterministic `pi_mock_*` refs and `checkout.stripe.dev` URLs |
+| Stripe stub | set | `StripeProvider` selected, but `createStripeCheckoutSession` in `internal/payment/provider_stripe.go` still returns `ErrProviderNotConfigured` |
+
+`NewProvider` (`internal/payment/provider.go`) picks mock vs Stripe at startup. `NewStripeProvider` delegates checkout to `createStripeCheckoutSession` — the single `stripe-go` integration point (M4.3). Boot logs `checkout_api=pending_stripe_go` when a secret key is present.
+
+**Local dev:** leave `STRIPE_SECRET_KEY` empty and use `MockProvider` for end-to-end settlement, refund, and recon chaos tests. Webhook handlers accept mock `provider_ref` values without Stripe network calls.
+
+**Live path (not implemented):** M4.3 wires `stripe-go` in `createStripeCheckoutSession` and live webhooks in `internal/payment/http_webhook.go`; M4.6 replaces the HTMX placeholder checkout URL in `internal/payment/http_htmx.go`. PCI scope stays minimal — no PAN storage in local databases.
+
+See [MILESTONE.md](./MILESTONE.md) M4.3 / M4.6.
 
 ### Billing
 
@@ -722,7 +737,7 @@ Native XDP/eBPF (optional) + OpenResty Lua fixes for `/track` ingress. Not fully
 
 ## Known Gaps
 
-- Stripe checkout not implemented; mock provider only for local dev.
+- **Stripe checkout mock-only** — `createStripeCheckoutSession` (`internal/payment/provider_stripe.go`) returns `ErrProviderNotConfigured` even with `STRIPE_SECRET_KEY` set; use unset key + `MockProvider` for local dev until M4.6 or live DoD sign-off. See [Payment → Stripe policy](#stripe-policy-mock-only).
 - Migration `00022_campaign_delivery_features.sql` may lack goose markers; verify applied manually if templates/creatives tables missing.
 - `broker`, `log-shipper`, `dlq`, `admin` are buildable but outside default compose.
 - Billing and notifier schemas are not auto-applied with ads migrations; run their goose Up SQL when enabling those services.

@@ -98,9 +98,22 @@ func main() {
 	svc.StartReconWorker(reconInterval)
 	slog.Info("started recon worker", "interval", reconInterval)
 
+	if cfg.QuotaMode == "shadow" || cfg.QuotaMode == "live" {
+		svc.StartBackgroundWorker(func() {
+			management.NewQuotaManager(svc).Start(ctx)
+		})
+		slog.Info("started quota manager", "mode", cfg.QuotaMode, "chunk_size", cfg.QuotaChunkSize, "refill_threshold_pct", cfg.QuotaRefillThresholdPct)
+	}
+
 	pacingInterval := time.Duration(cfg.Management.PacingIntervalMs) * time.Millisecond
 	svc.StartPacingController(syncWorkers, pacingInterval)
 	slog.Info("started pacing controller", "interval", pacingInterval)
+
+	if cfg.AutoscaleIntervalMs > 0 {
+		autoscaleInterval := time.Duration(cfg.AutoscaleIntervalMs) * time.Millisecond
+		svc.StartAutoscaleBudgetWorker(syncWorkers, autoscaleInterval)
+		slog.Info("started autoscale budget worker", "interval", autoscaleInterval)
+	}
 
 	svc.StartAuditCleaner(management.Days(cfg.Management.RetentionDays))
 	slog.Info("started audit cleaner", "retention_days", cfg.Management.RetentionDays)
@@ -204,7 +217,7 @@ func main() {
 		os.Exit(1)
 	}
 	settleHandler := management.NewSettlementHandler(svc, cfg)
-	settleGRPC := grpc.NewServer()
+	settleGRPC := grpc.NewServer(grpc.UnaryInterceptor(management.SettlementGRPCMetricsInterceptor()))
 	mgmt_pb.RegisterSettlementServiceServer(settleGRPC, settleHandler)
 	if cfg.Env != "production" {
 		reflection.Register(settleGRPC)

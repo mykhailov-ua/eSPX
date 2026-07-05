@@ -87,6 +87,9 @@ func TestSmartBudgetAutoscaling(t *testing.T) {
 	_, err = pool.Exec(ctx, "DELETE FROM outbox_events")
 	require.NoError(t, err)
 
+	var balanceBefore int64
+	require.NoError(t, pool.QueryRow(ctx, `SELECT balance FROM customers WHERE id = $1`, ads.ToUUID(customerID)).Scan(&balanceBefore))
+
 	err = svc.AutoscaleBudgets(ctx, []*ads.SyncWorker{syncWorker})
 	require.NoError(t, err)
 
@@ -113,4 +116,18 @@ func TestSmartBudgetAutoscaling(t *testing.T) {
 	val, err := rdb.Get(ctx, "budget:sync:campaign:"+campaignA.String()).Result()
 	assert.Equal(t, redis.Nil, err)
 	assert.Empty(t, val)
+
+	var autoscaleFreeze, autoscaleRelease int
+	require.NoError(t, pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM balance_ledger
+		WHERE type = 'FREEZE' AND idempotency_hash LIKE 'autoscale-transfer:%'`).Scan(&autoscaleFreeze))
+	require.NoError(t, pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM balance_ledger
+		WHERE type = 'RELEASE' AND idempotency_hash LIKE 'autoscale-transfer:%'`).Scan(&autoscaleRelease))
+	assert.Equal(t, 1, autoscaleFreeze)
+	assert.Equal(t, 1, autoscaleRelease)
+
+	var balanceAfter int64
+	require.NoError(t, pool.QueryRow(ctx, `SELECT balance FROM customers WHERE id = $1`, ads.ToUUID(customerID)).Scan(&balanceAfter))
+	assert.Equal(t, balanceBefore, balanceAfter)
 }

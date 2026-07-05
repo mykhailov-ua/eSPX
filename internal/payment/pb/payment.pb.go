@@ -34,6 +34,7 @@ const (
 	PaymentIntentStatus_PAYMENT_INTENT_STATUS_CANCELLED         PaymentIntentStatus = 6
 	PaymentIntentStatus_PAYMENT_INTENT_STATUS_REFUNDED          PaymentIntentStatus = 7
 	PaymentIntentStatus_PAYMENT_INTENT_STATUS_SETTLEMENT_FAILED PaymentIntentStatus = 8
+	PaymentIntentStatus_PAYMENT_INTENT_STATUS_DISPUTED          PaymentIntentStatus = 9
 )
 
 // Enum value maps for PaymentIntentStatus.
@@ -48,6 +49,7 @@ var (
 		6: "PAYMENT_INTENT_STATUS_CANCELLED",
 		7: "PAYMENT_INTENT_STATUS_REFUNDED",
 		8: "PAYMENT_INTENT_STATUS_SETTLEMENT_FAILED",
+		9: "PAYMENT_INTENT_STATUS_DISPUTED",
 	}
 	PaymentIntentStatus_value = map[string]int32{
 		"PAYMENT_INTENT_STATUS_UNSPECIFIED":       0,
@@ -59,6 +61,7 @@ var (
 		"PAYMENT_INTENT_STATUS_CANCELLED":         6,
 		"PAYMENT_INTENT_STATUS_REFUNDED":          7,
 		"PAYMENT_INTENT_STATUS_SETTLEMENT_FAILED": 8,
+		"PAYMENT_INTENT_STATUS_DISPUTED":          9,
 	}
 )
 
@@ -549,7 +552,7 @@ const file_payment_proto_rawDesc = "" +
 	"created_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
 	"updated_at\x18\n" +
-	" \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt*\xee\x02\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt*\x92\x03\n" +
 	"\x13PaymentIntentStatus\x12%\n" +
 	"!PAYMENT_INTENT_STATUS_UNSPECIFIED\x10\x00\x12!\n" +
 	"\x1dPAYMENT_INTENT_STATUS_CREATED\x10\x01\x12*\n" +
@@ -559,7 +562,8 @@ const file_payment_proto_rawDesc = "" +
 	"\x1cPAYMENT_INTENT_STATUS_FAILED\x10\x05\x12#\n" +
 	"\x1fPAYMENT_INTENT_STATUS_CANCELLED\x10\x06\x12\"\n" +
 	"\x1ePAYMENT_INTENT_STATUS_REFUNDED\x10\a\x12+\n" +
-	"'PAYMENT_INTENT_STATUS_SETTLEMENT_FAILED\x10\b2\x9f\x02\n" +
+	"'PAYMENT_INTENT_STATUS_SETTLEMENT_FAILED\x10\b\x12\"\n" +
+	"\x1ePAYMENT_INTENT_STATUS_DISPUTED\x10\t2\x9f\x02\n" +
 	"\x0ePaymentService\x12`\n" +
 	"\x13CreatePaymentIntent\x12#.payment.CreatePaymentIntentRequest\x1a$.payment.CreatePaymentIntentResponse\x12L\n" +
 	"\x10GetPaymentIntent\x12 .payment.GetPaymentIntentRequest\x1a\x16.payment.PaymentIntent\x12]\n" +

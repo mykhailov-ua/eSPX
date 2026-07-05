@@ -37,7 +37,8 @@ func (p *StripeProvider) CreateCheckout(ctx context.Context, amountMicro int64, 
 	return createStripeCheckoutSession(p.secretKey, amountMicro, currency, metadata, idempotencyKey)
 }
 
-// createStripeCheckoutSession is the single stripe-go integration point so checkout wiring stays isolated.
+// createStripeCheckoutSession is the single stripe-go integration point (M4.3).
+// Mock-only until M4.6 HTMX checkout or live DoD verification — see docs/development.md#stripe-policy-mock-only.
 func createStripeCheckoutSession(secretKey string, amountMicro int64, currency string, metadata map[string]string, idempotencyKey string) (providerRef string, checkoutURL string, err error) {
 	_ = secretKey
 	_ = amountMicro

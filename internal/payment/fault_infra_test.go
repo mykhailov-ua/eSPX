@@ -236,6 +236,108 @@ func seedSucceededIntentWithOutbox(t *testing.T, infra *paymentChaosInfra, custo
 	}
 }
 
+// seedSettledIntent completes top-up settlement so refund chaos tests start from credited balance.
+func seedSettledIntent(t *testing.T, infra *paymentChaosInfra, customerID uuid.UUID, amountMicro int64, idempotencyKey string) seededPayment {
+	t.Helper()
+	seed := seedSucceededIntentWithOutbox(t, infra, customerID, amountMicro, idempotencyKey)
+	worker := newOutboxWorkerForChaos(infra)
+	n, err := worker.ProcessOutbox(context.Background(), 10)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+	require.Equal(t, "PROCESSED", paymentOutboxStatus(t, infra.Pool, seed.OutboxID))
+	assertPaymentChaosInvariants(t, infra.Pool, seed, seed.AmountMicro, 1)
+	return seed
+}
+
+// processRefundWebhook simulates a Stripe refund.created webhook for chaos and integration tests.
+func processRefundWebhook(t *testing.T, pool *pgxpool.Pool, svc *Service, eventID string, providerRef string, refundID string, refundAmountMicro int64) int64 {
+	t.Helper()
+	stripeCents, err := MicroToStripeAmount(refundAmountMicro)
+	require.NoError(t, err)
+	payload := fmt.Sprintf(`{"id":"%s","type":"refund.created","data":{"object":{"id":"%s","amount":%d,"payment_intent":"%s","status":"succeeded"}}}`,
+		eventID, refundID, stripeCents, providerRef)
+	err = svc.ProcessStripeRefundWebhook(context.Background(), eventID, "refund.created", []byte(payload), refundID, providerRef, refundAmountMicro, "succeeded")
+	require.NoError(t, err)
+
+	var outboxID int64
+	require.NoError(t, pool.QueryRow(context.Background(), `
+		SELECT id FROM payment.payment_outbox
+		WHERE event_type = $1 AND status = 'PENDING'
+		ORDER BY created_at DESC LIMIT 1`, OutboxEventReverseBalance).Scan(&outboxID))
+	return outboxID
+}
+
+// ledgerRefundCountForIntent counts PAYMENT_REFUND rows tied to one intent.
+func ledgerRefundCountForIntent(t *testing.T, pool *pgxpool.Pool, intentID uuid.UUID) int {
+	t.Helper()
+	var n int
+	err := pool.QueryRow(context.Background(), `
+		SELECT COUNT(*) FROM balance_ledger
+		WHERE payment_intent_id = $1 AND type = 'PAYMENT_REFUND'`, ads.ToUUID(intentID)).Scan(&n)
+	require.NoError(t, err)
+	return n
+}
+
+// assertPaymentRefundInvariants checks balance and refund ledger rows after a payback scenario.
+func assertPaymentRefundInvariants(t *testing.T, pool *pgxpool.Pool, seed seededPayment, wantBalance int64, wantRefundRows int) {
+	t.Helper()
+	require.Equal(t, wantBalance, customerBalance(t, pool, seed.CustomerID))
+	require.Equal(t, wantRefundRows, ledgerRefundCountForIntent(t, pool, seed.IntentID))
+}
+
+// processDisputeWebhook simulates Stripe charge.dispute.* webhooks for chaos tests.
+func processDisputeWebhook(t *testing.T, pool *pgxpool.Pool, svc *Service, eventID, eventType, providerRef, disputeID string, amountMicro int64, stripeStatus string) {
+	t.Helper()
+	stripeCents, err := MicroToStripeAmount(amountMicro)
+	require.NoError(t, err)
+	payload := fmt.Sprintf(`{"id":"%s","type":"%s","data":{"object":{"id":"%s","amount":%d,"payment_intent":"%s","status":"%s"}}}`,
+		eventID, eventType, disputeID, stripeCents, providerRef, stripeStatus)
+	err = svc.ProcessStripeDisputeWebhook(context.Background(), eventID, eventType, []byte(payload), disputeID, providerRef, amountMicro, stripeStatus)
+	require.NoError(t, err)
+}
+
+// latestOutboxIDByType returns the newest pending outbox row id for one event type.
+func latestOutboxIDByType(t *testing.T, pool *pgxpool.Pool, eventType string) int64 {
+	t.Helper()
+	var outboxID int64
+	err := pool.QueryRow(context.Background(), `
+		SELECT id FROM payment.payment_outbox
+		WHERE event_type = $1 AND status = 'PENDING'
+		ORDER BY created_at DESC LIMIT 1`, eventType).Scan(&outboxID)
+	require.NoError(t, err)
+	return outboxID
+}
+
+// ledgerChargebackCountForIntent counts PAYMENT_CHARGEBACK rows for one intent.
+func ledgerChargebackCountForIntent(t *testing.T, pool *pgxpool.Pool, intentID uuid.UUID) int {
+	t.Helper()
+	var n int
+	err := pool.QueryRow(context.Background(), `
+		SELECT COUNT(*) FROM balance_ledger
+		WHERE payment_intent_id = $1 AND type = 'PAYMENT_CHARGEBACK'`, ads.ToUUID(intentID)).Scan(&n)
+	require.NoError(t, err)
+	return n
+}
+
+// ledgerChargebackReversalCountForIntent counts PAYMENT_CHARGEBACK_REVERSAL rows for one intent.
+func ledgerChargebackReversalCountForIntent(t *testing.T, pool *pgxpool.Pool, intentID uuid.UUID) int {
+	t.Helper()
+	var n int
+	err := pool.QueryRow(context.Background(), `
+		SELECT COUNT(*) FROM balance_ledger
+		WHERE payment_intent_id = $1 AND type = 'PAYMENT_CHARGEBACK_REVERSAL'`, ads.ToUUID(intentID)).Scan(&n)
+	require.NoError(t, err)
+	return n
+}
+
+// assertPaymentChargebackInvariants checks balance and chargeback ledger rows.
+func assertPaymentChargebackInvariants(t *testing.T, pool *pgxpool.Pool, seed seededPayment, wantBalance int64, wantChargebackRows, wantReversalRows int) {
+	t.Helper()
+	require.Equal(t, wantBalance, customerBalance(t, pool, seed.CustomerID))
+	require.Equal(t, wantChargebackRows, ledgerChargebackCountForIntent(t, pool, seed.IntentID))
+	require.Equal(t, wantReversalRows, ledgerChargebackReversalCountForIntent(t, pool, seed.IntentID))
+}
+
 // customerBalance reads the ads customer row balance used as the money invariant baseline.
 func customerBalance(t *testing.T, pool *pgxpool.Pool, customerID uuid.UUID) int64 {
 	t.Helper()

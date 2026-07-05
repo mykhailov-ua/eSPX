@@ -7,6 +7,15 @@ option go_package = "espx/internal/management/pb;pb";
 service SettlementService {
   // Called from payment outbox; ledger idempotency makes retries safe after transient gRPC failures.
   rpc ApplyPaymentCredit(ApplyPaymentCreditRequest) returns (ApplyPaymentCreditResponse);
+
+  // Called from payment outbox on Stripe refund webhooks; debits balance idempotently by refund id.
+  rpc ApplyPaymentRefund(ApplyPaymentRefundRequest) returns (ApplyPaymentRefundResponse);
+
+  // Called from payment outbox when Stripe withdraws disputed funds from the platform account.
+  rpc ApplyPaymentChargeback(ApplyPaymentChargebackRequest) returns (ApplyPaymentChargebackResponse);
+
+  // Called from payment outbox when Stripe reinstates funds after a won dispute.
+  rpc ApplyPaymentChargebackReversal(ApplyPaymentChargebackReversalRequest) returns (ApplyPaymentChargebackReversalResponse);
 }
 
 message ApplyPaymentCreditRequest {
@@ -20,5 +29,47 @@ message ApplyPaymentCreditRequest {
 
 message ApplyPaymentCreditResponse {
   bool applied = 1;       // false = duplicate idempotency hit (still success)
+  int64 ledger_entry_id = 2;
+}
+
+message ApplyPaymentRefundRequest {
+  string customer_id = 1;
+  int64 amount_micro = 2;              // positive debit magnitude
+  string ledger_idempotency_key = 3;   // e.g. "refund:re_01H..."
+  string payment_intent_id = 4;
+  string provider = 5;
+  string provider_refund_id = 6;
+}
+
+message ApplyPaymentRefundResponse {
+  bool applied = 1;
+  int64 ledger_entry_id = 2;
+}
+
+message ApplyPaymentChargebackRequest {
+  string customer_id = 1;
+  int64 amount_micro = 2;
+  string ledger_idempotency_key = 3;   // e.g. "chargeback:withdrawn:dp_01H..."
+  string payment_intent_id = 4;
+  string provider = 5;
+  string provider_dispute_id = 6;
+}
+
+message ApplyPaymentChargebackResponse {
+  bool applied = 1;
+  int64 ledger_entry_id = 2;
+}
+
+message ApplyPaymentChargebackReversalRequest {
+  string customer_id = 1;
+  int64 amount_micro = 2;
+  string ledger_idempotency_key = 3;   // e.g. "chargeback:reinstated:dp_01H..."
+  string payment_intent_id = 4;
+  string provider = 5;
+  string provider_dispute_id = 6;
+}
+
+message ApplyPaymentChargebackReversalResponse {
+  bool applied = 1;
   int64 ledger_entry_id = 2;
 }

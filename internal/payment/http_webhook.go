@@ -52,14 +52,16 @@ func (h *WebhookHandler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("OK"))
 }
 
-// stripeEvent is a minimal Stripe webhook envelope; only fields needed for intent correlation are decoded.
+// stripeEvent is a minimal Stripe webhook envelope; only fields needed for intent/refund correlation are decoded.
 type stripeEvent struct {
 	ID   string `json:"id"`
 	Type string `json:"type"`
 	Data struct {
 		Object struct {
-			ID     string `json:"id"`
-			Amount int64  `json:"amount"`
+			ID            string `json:"id"`
+			Amount        int64  `json:"amount"`
+			PaymentIntent string `json:"payment_intent"`
+			Status        string `json:"status"`
 		} `json:"object"`
 	} `json:"data"`
 }
@@ -106,6 +108,16 @@ func (webhookHandler *WebhookHandler) handleStripeWebhook(w http.ResponseWriter,
 		return
 	}
 
+	switch event.Type {
+	case "refund.created", "refund.updated", "refund.failed":
+		webhookHandler.handleStripeRefundEvent(w, r, event, body)
+		return
+	case "charge.dispute.created", "charge.dispute.updated", "charge.dispute.closed",
+		"charge.dispute.funds_withdrawn", "charge.dispute.funds_reinstated":
+		webhookHandler.handleStripeDisputeEvent(w, r, event, body)
+		return
+	}
+
 	providerRef := event.Data.Object.ID
 	if providerRef == "" {
 		slog.Warn("stripe event missing provider ref object id")
@@ -118,6 +130,66 @@ func (webhookHandler *WebhookHandler) handleStripeWebhook(w http.ResponseWriter,
 	err = webhookHandler.service.ProcessStripeWebhook(r.Context(), event.ID, event.Type, body, providerRef, amountMicro, string(body))
 	if err != nil {
 		slog.Error("failed to process stripe webhook", "event_id", event.ID, "error", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("OK"))
+}
+
+// handleStripeRefundEvent routes Stripe refund lifecycle events to the refund settlement path.
+func (webhookHandler *WebhookHandler) handleStripeRefundEvent(w http.ResponseWriter, r *http.Request, event stripeEvent, body []byte) {
+	providerRefundID := event.Data.Object.ID
+	if providerRefundID == "" {
+		slog.Warn("stripe refund event missing refund id")
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+
+	paymentIntentRef := event.Data.Object.PaymentIntent
+	if paymentIntentRef == "" {
+		slog.Warn("stripe refund event missing payment_intent", "event_id", event.ID)
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+
+	refundAmountMicro := StripeAmountToMicro(event.Data.Object.Amount)
+	refundStatus := event.Data.Object.Status
+	if event.Type == "refund.failed" {
+		refundStatus = "failed"
+	}
+
+	err := webhookHandler.service.ProcessStripeRefundWebhook(
+		r.Context(), event.ID, event.Type, body, providerRefundID, paymentIntentRef, refundAmountMicro, refundStatus,
+	)
+	if err != nil {
+		slog.Error("failed to process stripe refund webhook", "event_id", event.ID, "error", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("OK"))
+}
+
+// handleStripeDisputeEvent routes Stripe dispute lifecycle events to the chargeback settlement path.
+func (webhookHandler *WebhookHandler) handleStripeDisputeEvent(w http.ResponseWriter, r *http.Request, event stripeEvent, body []byte) {
+	providerDisputeID := event.Data.Object.ID
+	if providerDisputeID == "" {
+		slog.Warn("stripe dispute event missing dispute id")
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+
+	paymentIntentRef := event.Data.Object.PaymentIntent
+	disputeAmountMicro := StripeAmountToMicro(event.Data.Object.Amount)
+
+	err := webhookHandler.service.ProcessStripeDisputeWebhook(
+		r.Context(), event.ID, event.Type, body, providerDisputeID, paymentIntentRef, disputeAmountMicro, event.Data.Object.Status,
+	)
+	if err != nil {
+		slog.Error("failed to process stripe dispute webhook", "event_id", event.ID, "error", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}

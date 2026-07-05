@@ -157,6 +157,414 @@ func (x *ApplyPaymentCreditResponse) GetLedgerEntryId() int64 {
 	return 0
 }
 
+type ApplyPaymentRefundRequest struct {
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	CustomerId           string                 `protobuf:"bytes,1,opt,name=customer_id,json=customerId,proto3" json:"customer_id,omitempty"`
+	AmountMicro          int64                  `protobuf:"varint,2,opt,name=amount_micro,json=amountMicro,proto3" json:"amount_micro,omitempty"`                             // positive debit magnitude
+	LedgerIdempotencyKey string                 `protobuf:"bytes,3,opt,name=ledger_idempotency_key,json=ledgerIdempotencyKey,proto3" json:"ledger_idempotency_key,omitempty"` // e.g. "refund:re_01H..."
+	PaymentIntentId      string                 `protobuf:"bytes,4,opt,name=payment_intent_id,json=paymentIntentId,proto3" json:"payment_intent_id,omitempty"`
+	Provider             string                 `protobuf:"bytes,5,opt,name=provider,proto3" json:"provider,omitempty"`
+	ProviderRefundId     string                 `protobuf:"bytes,6,opt,name=provider_refund_id,json=providerRefundId,proto3" json:"provider_refund_id,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *ApplyPaymentRefundRequest) Reset() {
+	*x = ApplyPaymentRefundRequest{}
+	mi := &file_settlement_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApplyPaymentRefundRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApplyPaymentRefundRequest) ProtoMessage() {}
+
+func (x *ApplyPaymentRefundRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_settlement_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApplyPaymentRefundRequest.ProtoReflect.Descriptor instead.
+func (*ApplyPaymentRefundRequest) Descriptor() ([]byte, []int) {
+	return file_settlement_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *ApplyPaymentRefundRequest) GetCustomerId() string {
+	if x != nil {
+		return x.CustomerId
+	}
+	return ""
+}
+
+func (x *ApplyPaymentRefundRequest) GetAmountMicro() int64 {
+	if x != nil {
+		return x.AmountMicro
+	}
+	return 0
+}
+
+func (x *ApplyPaymentRefundRequest) GetLedgerIdempotencyKey() string {
+	if x != nil {
+		return x.LedgerIdempotencyKey
+	}
+	return ""
+}
+
+func (x *ApplyPaymentRefundRequest) GetPaymentIntentId() string {
+	if x != nil {
+		return x.PaymentIntentId
+	}
+	return ""
+}
+
+func (x *ApplyPaymentRefundRequest) GetProvider() string {
+	if x != nil {
+		return x.Provider
+	}
+	return ""
+}
+
+func (x *ApplyPaymentRefundRequest) GetProviderRefundId() string {
+	if x != nil {
+		return x.ProviderRefundId
+	}
+	return ""
+}
+
+type ApplyPaymentRefundResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Applied       bool                   `protobuf:"varint,1,opt,name=applied,proto3" json:"applied,omitempty"`
+	LedgerEntryId int64                  `protobuf:"varint,2,opt,name=ledger_entry_id,json=ledgerEntryId,proto3" json:"ledger_entry_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApplyPaymentRefundResponse) Reset() {
+	*x = ApplyPaymentRefundResponse{}
+	mi := &file_settlement_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApplyPaymentRefundResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApplyPaymentRefundResponse) ProtoMessage() {}
+
+func (x *ApplyPaymentRefundResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_settlement_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApplyPaymentRefundResponse.ProtoReflect.Descriptor instead.
+func (*ApplyPaymentRefundResponse) Descriptor() ([]byte, []int) {
+	return file_settlement_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *ApplyPaymentRefundResponse) GetApplied() bool {
+	if x != nil {
+		return x.Applied
+	}
+	return false
+}
+
+func (x *ApplyPaymentRefundResponse) GetLedgerEntryId() int64 {
+	if x != nil {
+		return x.LedgerEntryId
+	}
+	return 0
+}
+
+type ApplyPaymentChargebackRequest struct {
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	CustomerId           string                 `protobuf:"bytes,1,opt,name=customer_id,json=customerId,proto3" json:"customer_id,omitempty"`
+	AmountMicro          int64                  `protobuf:"varint,2,opt,name=amount_micro,json=amountMicro,proto3" json:"amount_micro,omitempty"`
+	LedgerIdempotencyKey string                 `protobuf:"bytes,3,opt,name=ledger_idempotency_key,json=ledgerIdempotencyKey,proto3" json:"ledger_idempotency_key,omitempty"` // e.g. "chargeback:withdrawn:dp_01H..."
+	PaymentIntentId      string                 `protobuf:"bytes,4,opt,name=payment_intent_id,json=paymentIntentId,proto3" json:"payment_intent_id,omitempty"`
+	Provider             string                 `protobuf:"bytes,5,opt,name=provider,proto3" json:"provider,omitempty"`
+	ProviderDisputeId    string                 `protobuf:"bytes,6,opt,name=provider_dispute_id,json=providerDisputeId,proto3" json:"provider_dispute_id,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *ApplyPaymentChargebackRequest) Reset() {
+	*x = ApplyPaymentChargebackRequest{}
+	mi := &file_settlement_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApplyPaymentChargebackRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApplyPaymentChargebackRequest) ProtoMessage() {}
+
+func (x *ApplyPaymentChargebackRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_settlement_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApplyPaymentChargebackRequest.ProtoReflect.Descriptor instead.
+func (*ApplyPaymentChargebackRequest) Descriptor() ([]byte, []int) {
+	return file_settlement_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *ApplyPaymentChargebackRequest) GetCustomerId() string {
+	if x != nil {
+		return x.CustomerId
+	}
+	return ""
+}
+
+func (x *ApplyPaymentChargebackRequest) GetAmountMicro() int64 {
+	if x != nil {
+		return x.AmountMicro
+	}
+	return 0
+}
+
+func (x *ApplyPaymentChargebackRequest) GetLedgerIdempotencyKey() string {
+	if x != nil {
+		return x.LedgerIdempotencyKey
+	}
+	return ""
+}
+
+func (x *ApplyPaymentChargebackRequest) GetPaymentIntentId() string {
+	if x != nil {
+		return x.PaymentIntentId
+	}
+	return ""
+}
+
+func (x *ApplyPaymentChargebackRequest) GetProvider() string {
+	if x != nil {
+		return x.Provider
+	}
+	return ""
+}
+
+func (x *ApplyPaymentChargebackRequest) GetProviderDisputeId() string {
+	if x != nil {
+		return x.ProviderDisputeId
+	}
+	return ""
+}
+
+type ApplyPaymentChargebackResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Applied       bool                   `protobuf:"varint,1,opt,name=applied,proto3" json:"applied,omitempty"`
+	LedgerEntryId int64                  `protobuf:"varint,2,opt,name=ledger_entry_id,json=ledgerEntryId,proto3" json:"ledger_entry_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApplyPaymentChargebackResponse) Reset() {
+	*x = ApplyPaymentChargebackResponse{}
+	mi := &file_settlement_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApplyPaymentChargebackResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApplyPaymentChargebackResponse) ProtoMessage() {}
+
+func (x *ApplyPaymentChargebackResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_settlement_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApplyPaymentChargebackResponse.ProtoReflect.Descriptor instead.
+func (*ApplyPaymentChargebackResponse) Descriptor() ([]byte, []int) {
+	return file_settlement_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *ApplyPaymentChargebackResponse) GetApplied() bool {
+	if x != nil {
+		return x.Applied
+	}
+	return false
+}
+
+func (x *ApplyPaymentChargebackResponse) GetLedgerEntryId() int64 {
+	if x != nil {
+		return x.LedgerEntryId
+	}
+	return 0
+}
+
+type ApplyPaymentChargebackReversalRequest struct {
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	CustomerId           string                 `protobuf:"bytes,1,opt,name=customer_id,json=customerId,proto3" json:"customer_id,omitempty"`
+	AmountMicro          int64                  `protobuf:"varint,2,opt,name=amount_micro,json=amountMicro,proto3" json:"amount_micro,omitempty"`
+	LedgerIdempotencyKey string                 `protobuf:"bytes,3,opt,name=ledger_idempotency_key,json=ledgerIdempotencyKey,proto3" json:"ledger_idempotency_key,omitempty"` // e.g. "chargeback:reinstated:dp_01H..."
+	PaymentIntentId      string                 `protobuf:"bytes,4,opt,name=payment_intent_id,json=paymentIntentId,proto3" json:"payment_intent_id,omitempty"`
+	Provider             string                 `protobuf:"bytes,5,opt,name=provider,proto3" json:"provider,omitempty"`
+	ProviderDisputeId    string                 `protobuf:"bytes,6,opt,name=provider_dispute_id,json=providerDisputeId,proto3" json:"provider_dispute_id,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *ApplyPaymentChargebackReversalRequest) Reset() {
+	*x = ApplyPaymentChargebackReversalRequest{}
+	mi := &file_settlement_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApplyPaymentChargebackReversalRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApplyPaymentChargebackReversalRequest) ProtoMessage() {}
+
+func (x *ApplyPaymentChargebackReversalRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_settlement_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApplyPaymentChargebackReversalRequest.ProtoReflect.Descriptor instead.
+func (*ApplyPaymentChargebackReversalRequest) Descriptor() ([]byte, []int) {
+	return file_settlement_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ApplyPaymentChargebackReversalRequest) GetCustomerId() string {
+	if x != nil {
+		return x.CustomerId
+	}
+	return ""
+}
+
+func (x *ApplyPaymentChargebackReversalRequest) GetAmountMicro() int64 {
+	if x != nil {
+		return x.AmountMicro
+	}
+	return 0
+}
+
+func (x *ApplyPaymentChargebackReversalRequest) GetLedgerIdempotencyKey() string {
+	if x != nil {
+		return x.LedgerIdempotencyKey
+	}
+	return ""
+}
+
+func (x *ApplyPaymentChargebackReversalRequest) GetPaymentIntentId() string {
+	if x != nil {
+		return x.PaymentIntentId
+	}
+	return ""
+}
+
+func (x *ApplyPaymentChargebackReversalRequest) GetProvider() string {
+	if x != nil {
+		return x.Provider
+	}
+	return ""
+}
+
+func (x *ApplyPaymentChargebackReversalRequest) GetProviderDisputeId() string {
+	if x != nil {
+		return x.ProviderDisputeId
+	}
+	return ""
+}
+
+type ApplyPaymentChargebackReversalResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Applied       bool                   `protobuf:"varint,1,opt,name=applied,proto3" json:"applied,omitempty"`
+	LedgerEntryId int64                  `protobuf:"varint,2,opt,name=ledger_entry_id,json=ledgerEntryId,proto3" json:"ledger_entry_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApplyPaymentChargebackReversalResponse) Reset() {
+	*x = ApplyPaymentChargebackReversalResponse{}
+	mi := &file_settlement_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApplyPaymentChargebackReversalResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApplyPaymentChargebackReversalResponse) ProtoMessage() {}
+
+func (x *ApplyPaymentChargebackReversalResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_settlement_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApplyPaymentChargebackReversalResponse.ProtoReflect.Descriptor instead.
+func (*ApplyPaymentChargebackReversalResponse) Descriptor() ([]byte, []int) {
+	return file_settlement_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ApplyPaymentChargebackReversalResponse) GetApplied() bool {
+	if x != nil {
+		return x.Applied
+	}
+	return false
+}
+
+func (x *ApplyPaymentChargebackReversalResponse) GetLedgerEntryId() int64 {
+	if x != nil {
+		return x.LedgerEntryId
+	}
+	return 0
+}
+
 var File_settlement_proto protoreflect.FileDescriptor
 
 const file_settlement_proto_rawDesc = "" +
@@ -173,9 +581,45 @@ const file_settlement_proto_rawDesc = "" +
 	"\fprovider_ref\x18\x06 \x01(\tR\vproviderRef\"^\n" +
 	"\x1aApplyPaymentCreditResponse\x12\x18\n" +
 	"\aapplied\x18\x01 \x01(\bR\aapplied\x12&\n" +
-	"\x0fledger_entry_id\x18\x02 \x01(\x03R\rledgerEntryId2x\n" +
+	"\x0fledger_entry_id\x18\x02 \x01(\x03R\rledgerEntryId\"\x8b\x02\n" +
+	"\x19ApplyPaymentRefundRequest\x12\x1f\n" +
+	"\vcustomer_id\x18\x01 \x01(\tR\n" +
+	"customerId\x12!\n" +
+	"\famount_micro\x18\x02 \x01(\x03R\vamountMicro\x124\n" +
+	"\x16ledger_idempotency_key\x18\x03 \x01(\tR\x14ledgerIdempotencyKey\x12*\n" +
+	"\x11payment_intent_id\x18\x04 \x01(\tR\x0fpaymentIntentId\x12\x1a\n" +
+	"\bprovider\x18\x05 \x01(\tR\bprovider\x12,\n" +
+	"\x12provider_refund_id\x18\x06 \x01(\tR\x10providerRefundId\"^\n" +
+	"\x1aApplyPaymentRefundResponse\x12\x18\n" +
+	"\aapplied\x18\x01 \x01(\bR\aapplied\x12&\n" +
+	"\x0fledger_entry_id\x18\x02 \x01(\x03R\rledgerEntryId\"\x91\x02\n" +
+	"\x1dApplyPaymentChargebackRequest\x12\x1f\n" +
+	"\vcustomer_id\x18\x01 \x01(\tR\n" +
+	"customerId\x12!\n" +
+	"\famount_micro\x18\x02 \x01(\x03R\vamountMicro\x124\n" +
+	"\x16ledger_idempotency_key\x18\x03 \x01(\tR\x14ledgerIdempotencyKey\x12*\n" +
+	"\x11payment_intent_id\x18\x04 \x01(\tR\x0fpaymentIntentId\x12\x1a\n" +
+	"\bprovider\x18\x05 \x01(\tR\bprovider\x12.\n" +
+	"\x13provider_dispute_id\x18\x06 \x01(\tR\x11providerDisputeId\"b\n" +
+	"\x1eApplyPaymentChargebackResponse\x12\x18\n" +
+	"\aapplied\x18\x01 \x01(\bR\aapplied\x12&\n" +
+	"\x0fledger_entry_id\x18\x02 \x01(\x03R\rledgerEntryId\"\x99\x02\n" +
+	"%ApplyPaymentChargebackReversalRequest\x12\x1f\n" +
+	"\vcustomer_id\x18\x01 \x01(\tR\n" +
+	"customerId\x12!\n" +
+	"\famount_micro\x18\x02 \x01(\x03R\vamountMicro\x124\n" +
+	"\x16ledger_idempotency_key\x18\x03 \x01(\tR\x14ledgerIdempotencyKey\x12*\n" +
+	"\x11payment_intent_id\x18\x04 \x01(\tR\x0fpaymentIntentId\x12\x1a\n" +
+	"\bprovider\x18\x05 \x01(\tR\bprovider\x12.\n" +
+	"\x13provider_dispute_id\x18\x06 \x01(\tR\x11providerDisputeId\"j\n" +
+	"&ApplyPaymentChargebackReversalResponse\x12\x18\n" +
+	"\aapplied\x18\x01 \x01(\bR\aapplied\x12&\n" +
+	"\x0fledger_entry_id\x18\x02 \x01(\x03R\rledgerEntryId2\xd8\x03\n" +
 	"\x11SettlementService\x12c\n" +
-	"\x12ApplyPaymentCredit\x12%.settlement.ApplyPaymentCreditRequest\x1a&.settlement.ApplyPaymentCreditResponseB Z\x1eespx/internal/management/pb;pbb\x06proto3"
+	"\x12ApplyPaymentCredit\x12%.settlement.ApplyPaymentCreditRequest\x1a&.settlement.ApplyPaymentCreditResponse\x12c\n" +
+	"\x12ApplyPaymentRefund\x12%.settlement.ApplyPaymentRefundRequest\x1a&.settlement.ApplyPaymentRefundResponse\x12o\n" +
+	"\x16ApplyPaymentChargeback\x12).settlement.ApplyPaymentChargebackRequest\x1a*.settlement.ApplyPaymentChargebackResponse\x12\x87\x01\n" +
+	"\x1eApplyPaymentChargebackReversal\x121.settlement.ApplyPaymentChargebackReversalRequest\x1a2.settlement.ApplyPaymentChargebackReversalResponseB Z\x1eespx/internal/management/pb;pbb\x06proto3"
 
 var (
 	file_settlement_proto_rawDescOnce sync.Once
@@ -189,16 +633,28 @@ func file_settlement_proto_rawDescGZIP() []byte {
 	return file_settlement_proto_rawDescData
 }
 
-var file_settlement_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_settlement_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_settlement_proto_goTypes = []any{
-	(*ApplyPaymentCreditRequest)(nil),  // 0: settlement.ApplyPaymentCreditRequest
-	(*ApplyPaymentCreditResponse)(nil), // 1: settlement.ApplyPaymentCreditResponse
+	(*ApplyPaymentCreditRequest)(nil),              // 0: settlement.ApplyPaymentCreditRequest
+	(*ApplyPaymentCreditResponse)(nil),             // 1: settlement.ApplyPaymentCreditResponse
+	(*ApplyPaymentRefundRequest)(nil),              // 2: settlement.ApplyPaymentRefundRequest
+	(*ApplyPaymentRefundResponse)(nil),             // 3: settlement.ApplyPaymentRefundResponse
+	(*ApplyPaymentChargebackRequest)(nil),          // 4: settlement.ApplyPaymentChargebackRequest
+	(*ApplyPaymentChargebackResponse)(nil),         // 5: settlement.ApplyPaymentChargebackResponse
+	(*ApplyPaymentChargebackReversalRequest)(nil),  // 6: settlement.ApplyPaymentChargebackReversalRequest
+	(*ApplyPaymentChargebackReversalResponse)(nil), // 7: settlement.ApplyPaymentChargebackReversalResponse
 }
 var file_settlement_proto_depIdxs = []int32{
 	0, // 0: settlement.SettlementService.ApplyPaymentCredit:input_type -> settlement.ApplyPaymentCreditRequest
-	1, // 1: settlement.SettlementService.ApplyPaymentCredit:output_type -> settlement.ApplyPaymentCreditResponse
-	1, // [1:2] is the sub-list for method output_type
-	0, // [0:1] is the sub-list for method input_type
+	2, // 1: settlement.SettlementService.ApplyPaymentRefund:input_type -> settlement.ApplyPaymentRefundRequest
+	4, // 2: settlement.SettlementService.ApplyPaymentChargeback:input_type -> settlement.ApplyPaymentChargebackRequest
+	6, // 3: settlement.SettlementService.ApplyPaymentChargebackReversal:input_type -> settlement.ApplyPaymentChargebackReversalRequest
+	1, // 4: settlement.SettlementService.ApplyPaymentCredit:output_type -> settlement.ApplyPaymentCreditResponse
+	3, // 5: settlement.SettlementService.ApplyPaymentRefund:output_type -> settlement.ApplyPaymentRefundResponse
+	5, // 6: settlement.SettlementService.ApplyPaymentChargeback:output_type -> settlement.ApplyPaymentChargebackResponse
+	7, // 7: settlement.SettlementService.ApplyPaymentChargebackReversal:output_type -> settlement.ApplyPaymentChargebackReversalResponse
+	4, // [4:8] is the sub-list for method output_type
+	0, // [0:4] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
@@ -215,7 +671,7 @@ func file_settlement_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_settlement_proto_rawDesc), len(file_settlement_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

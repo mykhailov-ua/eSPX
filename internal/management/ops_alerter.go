@@ -123,6 +123,20 @@ func (a *OpsAlerter) AlertReconDiscrepancy(runID int64, discrepancies int, total
 	a.sendAsync(key, title, body, true)
 }
 
+// AlertReconDiscrepancyUnresolved notifies operators when discrepancies remain unadjusted for over one hour.
+func (a *OpsAlerter) AlertReconDiscrepancyUnresolved(runID int64, unresolved int, totalDelta int64, period string, oldest time.Time) {
+	if a == nil || unresolved <= 0 {
+		return
+	}
+	key := fmt.Sprintf("recon:unresolved:%d", runID)
+	title := "eSPX: unreconciled budget drift"
+	body := fmt.Sprintf(
+		"<b>Unresolved recon discrepancy</b>\nPeriod: %s\nRun #%d\nUnresolved campaigns: %d\nTotal |delta| (micro): %d\nOldest since: %s",
+		period, runID, unresolved, totalDelta, oldest.UTC().Format(time.RFC3339),
+	)
+	a.sendAsync(key, title, body, true)
+}
+
 // AlertRedisShardUnhealthy notifies operators when a Redis shard fails health checks.
 func (a *OpsAlerter) AlertRedisShardUnhealthy(shardIdx int, err error) {
 	if a == nil {

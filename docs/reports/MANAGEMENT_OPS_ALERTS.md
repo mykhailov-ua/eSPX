@@ -51,7 +51,8 @@ flowchart LR
 
 | Event | Source | Dedup key | Default cooldown |
 | :--- | :--- | :--- | :--- |
-| Recon discrepancy | `ReconService.ReconcileWindow` after `discrepancies > 0` | `recon:run:{id}` | 300s |
+| Recon discrepancy (auto-adjusted) | `ReconService.ReconcileWindow` after `discrepancies > 0` | `recon:run:{id}` | 300s |
+| Recon unresolved >1h | `ReconService.AlertStaleUnresolvedDiscrepancies` (recon worker every 60s) | `recon:unresolved:{id}` | 300s |
 | Redis shard unhealthy | `ReconWorker.ReconcileQuotas` on ping failure | `redis:shard:{idx}` | 300s |
 | Drain stuck | `CheckStuckDrainJobs` (recon worker every 60s + slot orchestrator tick) | `drain:{ver}:{slot}:{state}` | 300s |
 | Slot map migration started | `MarkSlotMapMigrating` after successful commit | `migration:mark:{ver}:{shard}:{slots}` | 300s |
@@ -111,4 +112,3 @@ Covers provider resolution, cooldown dedup, and disabled-by-default client const
 ## Out of scope (future backlog items)
 
 - Quota drift alerts (`QUOTA DRIFT DETECTED` log today, no notifier call)
-- Per-shard health dashboard (`/admin/ops/shards`, guide item #9)

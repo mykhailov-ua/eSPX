@@ -45,6 +45,21 @@ SELECT * FROM balance_ledger
 WHERE payment_intent_id = $1 AND type = 'PAYMENT_TOPUP'
 FOR UPDATE;
 
+-- name: SumPaymentRefundAmountForIntent :one
+SELECT COALESCE(SUM(ABS(amount)), 0)::bigint AS total_refunded_micro
+FROM balance_ledger
+WHERE payment_intent_id = $1 AND type = 'PAYMENT_REFUND';
+
+-- name: SumPaymentChargebackAmountForIntent :one
+SELECT COALESCE(SUM(ABS(amount)), 0)::bigint AS total_chargeback_micro
+FROM balance_ledger
+WHERE payment_intent_id = $1 AND type = 'PAYMENT_CHARGEBACK';
+
+-- name: SumPaymentChargebackReversalAmountForIntent :one
+SELECT COALESCE(SUM(amount), 0)::bigint AS total_reversal_micro
+FROM balance_ledger
+WHERE payment_intent_id = $1 AND type = 'PAYMENT_CHARGEBACK_REVERSAL';
+
 -- name: CreateStatusHistory :exec
 INSERT INTO campaign_status_history (campaign_id, old_status, new_status, reason)
 VALUES ($1, $2, $3, $4);
@@ -160,9 +175,17 @@ VALUES ($1, $2)
 RETURNING *;
 
 -- name: GetPendingOutboxEventsForUpdate :many
+-- Priority lane 0: safety-critical propagation (blacklist, pause, cancel) before bulk pacing/sync.
 SELECT * FROM outbox_events
 WHERE status = 'PENDING'
-ORDER BY created_at ASC
+ORDER BY
+  CASE event_type
+    WHEN 'UPDATE_BLACKLIST' THEN 0
+    WHEN 'PAUSE_CAMPAIGN' THEN 0
+    WHEN 'CANCEL_CAMPAIGN' THEN 0
+    ELSE 1
+  END,
+  created_at ASC
 LIMIT $1
 FOR UPDATE SKIP LOCKED;
 

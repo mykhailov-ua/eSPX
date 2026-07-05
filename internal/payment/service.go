@@ -158,10 +158,14 @@ func isValidTransition(oldStatus, newStatus db.PaymentPaymentIntentStatus) bool 
 		return newStatus != db.PaymentPaymentIntentStatusCREATED &&
 			newStatus != db.PaymentPaymentIntentStatusPENDINGPROVIDER
 	case db.PaymentPaymentIntentStatusSUCCEEDED:
-		return newStatus == db.PaymentPaymentIntentStatusREFUNDED
+		return newStatus == db.PaymentPaymentIntentStatusREFUNDED ||
+			newStatus == db.PaymentPaymentIntentStatusDISPUTED
+	case db.PaymentPaymentIntentStatusREFUNDED:
+		return newStatus == db.PaymentPaymentIntentStatusDISPUTED
+	case db.PaymentPaymentIntentStatusDISPUTED:
+		return newStatus == db.PaymentPaymentIntentStatusSUCCEEDED
 	case db.PaymentPaymentIntentStatusFAILED,
 		db.PaymentPaymentIntentStatusCANCELLED,
-		db.PaymentPaymentIntentStatusREFUNDED,
 		db.PaymentPaymentIntentStatusSETTLEMENTFAILED:
 		return false
 	default:
@@ -293,6 +297,163 @@ func (service *Service) ProcessStripeWebhook(ctx context.Context, eventID string
 			if err != nil {
 				return err
 			}
+		}
+
+		return updateStripeWebhookStatus(ctx, txQueries, eventID, db.PaymentWebhookEventStatusPROCESSED, "")
+	})
+	if err == nil {
+		WebhookEventsTotal.WithLabelValues("processed").Inc()
+	}
+	return err
+}
+
+// ProcessStripeRefundWebhook records a Stripe refund and enqueues REVERSE_BALANCE when funds are returned.
+func (service *Service) ProcessStripeRefundWebhook(ctx context.Context, eventID string, eventType string, payload []byte, providerRefundID string, paymentIntentRef string, refundAmountMicro int64, refundStatus string) error {
+	h := sha256.New()
+	h.Write(payload)
+	payloadHash := h.Sum(nil)
+
+	var redacted map[string]any
+	_ = json.Unmarshal(payload, &redacted)
+	delete(redacted, "client_secret")
+	delete(redacted, "customer_details")
+	redactedBytes, _ := json.Marshal(redacted)
+
+	err := pgx.BeginFunc(ctx, service.pool, func(tx pgx.Tx) error {
+		txQueries := db.New(tx)
+
+		_, err := txQueries.GetWebhookEvent(ctx, db.GetWebhookEventParams{
+			Provider:        "stripe",
+			ProviderEventID: eventID,
+		})
+		if err == nil {
+			slog.Info("refund webhook event already processed", "event_id", eventID)
+			WebhookEventsTotal.WithLabelValues("duplicate").Inc()
+			return nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+
+		_, err = txQueries.CreateWebhookEvent(ctx, db.CreateWebhookEventParams{
+			Provider:        "stripe",
+			ProviderEventID: eventID,
+			EventType:       eventType,
+			PayloadHash:     payloadHash,
+			PayloadRedacted: redactedBytes,
+			Status:          db.PaymentWebhookEventStatusRECEIVED,
+			ErrorMessage:    pgtype.Text{},
+		})
+		if err != nil {
+			if cold.IsUniqueViolation(err) {
+				slog.Info("refund webhook event deduplicated by unique constraint", "event_id", eventID)
+				WebhookEventsTotal.WithLabelValues("duplicate").Inc()
+				return nil
+			}
+			return err
+		}
+
+		if refundStatus == "failed" {
+			_, lookupErr := txQueries.GetPaymentRefundByProviderRefundID(ctx, db.GetPaymentRefundByProviderRefundIDParams{
+				Provider:         "stripe",
+				ProviderRefundID: providerRefundID,
+			})
+			if lookupErr == nil {
+				return txQueries.UpdatePaymentRefundStatus(ctx, db.UpdatePaymentRefundStatusParams{
+					Provider:         "stripe",
+					ProviderRefundID: providerRefundID,
+					Status:           db.PaymentRefundStatusFAILED,
+				})
+			}
+			if !errors.Is(lookupErr, pgx.ErrNoRows) {
+				return lookupErr
+			}
+			return updateStripeWebhookStatus(ctx, txQueries, eventID, db.PaymentWebhookEventStatusPROCESSED, "refund failed before settlement")
+		}
+
+		if refundStatus != "succeeded" {
+			return updateStripeWebhookStatus(ctx, txQueries, eventID, db.PaymentWebhookEventStatusPROCESSED, "refund not yet succeeded")
+		}
+
+		if refundAmountMicro <= 0 {
+			return updateStripeWebhookStatus(ctx, txQueries, eventID, db.PaymentWebhookEventStatusIGNORED, "zero or negative refund amount")
+		}
+
+		var intent db.PaymentPaymentIntent
+		err = tx.QueryRow(ctx, `
+			SELECT id, customer_id, amount_micro, currency, status, provider, provider_ref, idempotency_key, metadata, refunded_amount_micro, created_at, updated_at
+			FROM payment.payment_intents
+			WHERE provider = 'stripe' AND provider_ref = $1
+			FOR UPDATE`, paymentIntentRef).Scan(
+			&intent.ID, &intent.CustomerID, &intent.AmountMicro, &intent.Currency, &intent.Status, &intent.Provider, &intent.ProviderRef, &intent.IdempotencyKey, &intent.Metadata, &intent.RefundedAmountMicro, &intent.CreatedAt, &intent.UpdatedAt,
+		)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				slog.Warn("received stripe refund for unknown payment_intent", "payment_intent", paymentIntentRef)
+				return updateStripeWebhookStatus(ctx, txQueries, eventID, db.PaymentWebhookEventStatusIGNORED, "unknown payment_intent")
+			}
+			return err
+		}
+
+		if intent.Status != db.PaymentPaymentIntentStatusSUCCEEDED && intent.Status != db.PaymentPaymentIntentStatusREFUNDED {
+			slog.Warn("refund webhook for non-settled intent", "intent_id", uuid.UUID(intent.ID.Bytes), "status", intent.Status)
+			return updateStripeWebhookStatus(ctx, txQueries, eventID, db.PaymentWebhookEventStatusIGNORED,
+				fmt.Sprintf("intent status %s not refundable", intent.Status))
+		}
+
+		if intent.RefundedAmountMicro+refundAmountMicro > intent.AmountMicro {
+			slog.Warn("refund would exceed intent amount", "intent_id", uuid.UUID(intent.ID.Bytes),
+				"refunded", intent.RefundedAmountMicro, "delta", refundAmountMicro, "intent_amount", intent.AmountMicro)
+			return updateStripeWebhookStatus(ctx, txQueries, eventID, db.PaymentWebhookEventStatusIGNORED, "refund exceeds intent amount")
+		}
+
+		existingRefund, err := txQueries.GetPaymentRefundByProviderRefundID(ctx, db.GetPaymentRefundByProviderRefundIDParams{
+			Provider:         "stripe",
+			ProviderRefundID: providerRefundID,
+		})
+		if err == nil {
+			if existingRefund.Status == db.PaymentRefundStatusSUCCEEDED {
+				return updateStripeWebhookStatus(ctx, txQueries, eventID, db.PaymentWebhookEventStatusPROCESSED, "")
+			}
+			return updateStripeWebhookStatus(ctx, txQueries, eventID, db.PaymentWebhookEventStatusIGNORED, "duplicate refund in non-success state")
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+
+		refundID, _ := uuid.NewV7()
+		_, err = txQueries.CreatePaymentRefund(ctx, db.CreatePaymentRefundParams{
+			ID:               pgtype.UUID{Bytes: refundID, Valid: true},
+			PaymentIntentID:  intent.ID,
+			Provider:         "stripe",
+			ProviderRefundID: providerRefundID,
+			AmountMicro:      refundAmountMicro,
+			Status:           db.PaymentRefundStatusSUCCEEDED,
+		})
+		if err != nil {
+			if cold.IsUniqueViolation(err) {
+				return updateStripeWebhookStatus(ctx, txQueries, eventID, db.PaymentWebhookEventStatusPROCESSED, "")
+			}
+			return err
+		}
+
+		_, err = txQueries.ApplyIntentRefundAmount(ctx, db.ApplyIntentRefundAmountParams{
+			ID:                  intent.ID,
+			RefundedAmountMicro: refundAmountMicro,
+		})
+		if err != nil {
+			return err
+		}
+
+		intentUUID := uuid.UUID(intent.ID.Bytes)
+		customerUUID := uuid.UUID(intent.CustomerID.Bytes)
+		outboxPayload, _ := json.Marshal(reverseBalancePayload(intentUUID, customerUUID, refundAmountMicro, providerRefundID))
+		_, err = txQueries.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{
+			EventType: OutboxEventReverseBalance,
+			Payload:   outboxPayload,
+		})
+		if err != nil {
+			return err
 		}
 
 		return updateStripeWebhookStatus(ctx, txQueries, eventID, db.PaymentWebhookEventStatusPROCESSED, "")

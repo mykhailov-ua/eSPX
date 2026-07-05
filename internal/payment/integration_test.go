@@ -260,4 +260,47 @@ func TestPaymentService_Integration(t *testing.T) {
 	assert.Equal(t, ads_db.LedgerType("PAYMENT_TOPUP"), ledgerRows[0].Type)
 	assert.Equal(t, "payment:"+uuid.UUID(intent.ID.Bytes).String(), ledgerRows[0].IdempotencyHash.String)
 	assert.Equal(t, ads.ToUUID(uuid.UUID(intent.ID.Bytes)), ledgerRows[0].PaymentIntentID)
+
+	// Refund half the top-up via Stripe webhook and settle the reverse-balance outbox.
+	refundMicro := amountMicro / 2
+	refundID := "re_integration_" + uuid.New().String()
+	refundCents, err := MicroToStripeAmount(refundMicro)
+	require.NoError(t, err)
+	refundPayload := fmt.Sprintf(`{
+		"id": "evt_refund_integration",
+		"type": "refund.created",
+		"data": {
+			"object": {
+				"id": "%s",
+				"amount": %d,
+				"payment_intent": "%s",
+				"status": "succeeded"
+			}
+		}
+	}`, refundID, refundCents, providerRef)
+	err = svc.ProcessStripeRefundWebhook(ctx, "evt_refund_integration", "refund.created", []byte(refundPayload), refundID, providerRef, refundMicro, "succeeded")
+	require.NoError(t, err)
+
+	refundOutbox, err := qPayment.GetPendingOutboxEventsForUpdate(ctx, 10)
+	require.NoError(t, err)
+	require.Len(t, refundOutbox, 1)
+	assert.Equal(t, OutboxEventReverseBalance, refundOutbox[0].EventType)
+
+	n, err := outboxWorker.ProcessOutbox(ctx, 10)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	customerAfterRefund, err := qAds.GetCustomerForUpdate(ctx, ads.ToUUID(customerID))
+	require.NoError(t, err)
+	assert.Equal(t, amountMicro-refundMicro, customerAfterRefund.Balance)
+
+	ledgerRows, err = qAds.ListCustomerLedger(ctx, ads_db.ListCustomerLedgerParams{
+		CustomerID: ads.ToUUID(customerID),
+		Limit:      10,
+		Offset:     0,
+	})
+	require.NoError(t, err)
+	require.Len(t, ledgerRows, 2)
+	assert.Equal(t, ads_db.LedgerType("PAYMENT_REFUND"), ledgerRows[0].Type)
+	assert.Equal(t, -refundMicro, ledgerRows[0].Amount)
 }

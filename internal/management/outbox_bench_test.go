@@ -148,7 +148,14 @@ func TestOutboxExplainAnalyze(t *testing.T) {
 	row, err := pool.Query(ctx, `EXPLAIN (ANALYZE, COSTS, VERBOSE, BUFFERS)
 SELECT id, event_type, payload, status, created_at FROM outbox_events
 WHERE status = 'PENDING'
-ORDER BY created_at ASC
+ORDER BY
+  CASE event_type
+    WHEN 'UPDATE_BLACKLIST' THEN 0
+    WHEN 'PAUSE_CAMPAIGN' THEN 0
+    WHEN 'CANCEL_CAMPAIGN' THEN 0
+    ELSE 1
+  END,
+  created_at ASC
 LIMIT 1000
 FOR UPDATE SKIP LOCKED;`)
 	require.NoError(t, err)

@@ -16,11 +16,12 @@ import (
 
 // Service owns notification persistence and the background delivery loop.
 type Service struct {
-	pool        *pgxpool.Pool
-	queries     *db.Queries
-	providers   map[pb.Provider]Provider
-	options     ServiceOptions
-	rateLimiter *recipientRateLimiter
+	pool                *pgxpool.Pool
+	queries             *db.Queries
+	providers           map[pb.Provider]Provider
+	options             ServiceOptions
+	rateLimiter         *recipientRateLimiter
+	deliveryRateLimiter *providerRateLimiter
 }
 
 // NewService binds Postgres and delivery providers for gRPC enqueue and worker dispatch.
@@ -31,11 +32,12 @@ func NewService(pool *pgxpool.Pool, providers map[pb.Provider]Provider) *Service
 // NewServiceWithOptions binds Postgres with delivery tuning options.
 func NewServiceWithOptions(pool *pgxpool.Pool, providers map[pb.Provider]Provider, opts ServiceOptions) *Service {
 	return &Service{
-		pool:        pool,
-		queries:     db.New(pool),
-		providers:   providers,
-		options:     opts,
-		rateLimiter: newRecipientRateLimiter(opts.RateLimitPerMinute),
+		pool:                pool,
+		queries:             db.New(pool),
+		providers:           providers,
+		options:             opts,
+		rateLimiter:         newRecipientRateLimiter(opts.RateLimitPerMinute),
+		deliveryRateLimiter: newProviderRateLimiter(deliveryRateLimitsFromOptions(opts)),
 	}
 }
 

@@ -42,6 +42,16 @@ func main() {
 	}
 	defer pool.Close()
 
+	ledgerPool := pool
+	if cfg.PaymentDBDSN != cfg.DBDSN {
+		ledgerPool, err = database.Connect(ctx, string(cfg.DBDSN), cfg.DBTrackerMaxConns, cfg.DBMinConns)
+		if err != nil {
+			slog.Error("failed to connect to ledger database", "error", err)
+			os.Exit(1)
+		}
+		defer ledgerPool.Close()
+	}
+
 	if err := payment.ApplyMigrations(ctx, pool); err != nil {
 		slog.Error("failed to apply payment schema migrations", "error", err)
 		os.Exit(1)
@@ -53,8 +63,30 @@ func main() {
 	svc := payment.NewService(pool, prov, cfg)
 	grpcHandler := payment.NewHandler(svc, cfg)
 
+	var notifierClient *payment.NotifierClient
+	if cfg.OpsAlertsEnabled() {
+		notifierClient, err = payment.NewNotifierClient(cfg)
+		if err != nil {
+			slog.Error("failed to connect to notifier gRPC server", "error", err)
+			os.Exit(1)
+		}
+		if notifierClient != nil {
+			defer notifierClient.Close()
+			slog.Info("notifier gRPC client enabled for payment ops alerts", "target", cfg.Notifier.ServerHost+":"+cfg.Notifier.Port)
+		}
+	}
+
 	outboxWorker := payment.NewOutboxWorker(pool, cfg)
+	outboxWorker.SetSettlementFailedAlerter(payment.NewSettlementFailedAlerter(notifierClient, cfg))
 	go outboxWorker.Start(ctx, 100*time.Millisecond)
+
+	var reconWorker *payment.ReconService
+	if cfg.PaymentFinancialReconIntervalMs > 0 {
+		reconAlerter := payment.NewFinancialReconAlerter(notifierClient, cfg)
+		reconWorker = payment.NewReconService(pool, ledgerPool, reconAlerter)
+		go reconWorker.StartWorker(ctx, time.Duration(cfg.PaymentFinancialReconIntervalMs)*time.Millisecond)
+		slog.Info("payment financial recon worker started", "interval_ms", cfg.PaymentFinancialReconIntervalMs)
+	}
 
 	httpServerMux := http.NewServeMux()
 	payment.NewWebhookHandler(svc, cfg).RegisterRoutes(httpServerMux)
@@ -113,6 +145,9 @@ func main() {
 
 	cancel()
 	outboxWorker.Wait()
+	if reconWorker != nil {
+		reconWorker.Wait()
+	}
 
 	stopped := make(chan struct{})
 	go func() {

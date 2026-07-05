@@ -35,4 +35,16 @@ var (
 		Name: "payment_webhook_signature_failures_total",
 		Help: "Rejected Stripe webhook signatures",
 	})
+
+	// FinancialReconRunsTotal tracks completed and failed reconciliation passes for worker health.
+	FinancialReconRunsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "payment_financial_recon_runs_total",
+		Help: "Payment financial reconciliation runs by terminal status",
+	}, []string{"status"})
+
+	// FinancialReconFindingsTotal counts persisted findings by kind for Prometheus alerting.
+	FinancialReconFindingsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "payment_financial_recon_findings_total",
+		Help: "Payment financial reconciliation findings persisted by kind",
+	}, []string{"kind"})
 )

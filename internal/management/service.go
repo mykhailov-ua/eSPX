@@ -140,6 +140,13 @@ func (s *Service) StartPacingController(syncWorkers []*ads.SyncWorker, interval 
 	})
 }
 
+// StartAutoscaleBudgetWorker starts CTR-based budget shifting when interval is positive.
+func (s *Service) StartAutoscaleBudgetWorker(syncWorkers []*ads.SyncWorker, interval time.Duration) {
+	s.startWorker(func() {
+		NewAutoscaleBudgetWorker(s, syncWorkers).Start(s.ctx, interval)
+	})
+}
+
 // GetCampaign loads the full campaign row for internal authorization and lifecycle checks.
 func (s *Service) GetCampaign(ctx context.Context, id uuid.UUID) (db.Campaign, error) {
 	return db.New(s.pool).GetCampaignFull(ctx, ads.ToUUID(id))
@@ -265,6 +272,209 @@ func (s *Service) ApplyPaymentCredit(ctx context.Context, customerID uuid.UUID, 
 
 		metrics.BalanceTopupsTotal.WithLabelValues("USD").Add(float64(amount) / ads.MicroUnitFactor)
 		s.AuditLog(ctx, q, uuid.Nil, "PAYMENT_SETTLEMENT", "customer", &customerID, map[string]any{"amount": amount, "payment_intent_id": paymentIntentID.String(), "provider": provider, "provider_ref": providerRef}, map[string]any{"idempotency_key": ledgerIdempotencyKey})
+		return nil
+	})
+
+	return applied, ledgerEntryID, err
+}
+
+// ApplyPaymentRefund debits a customer account idempotently after a Stripe refund webhook.
+func (s *Service) ApplyPaymentRefund(ctx context.Context, customerID uuid.UUID, amountMicro int64, ledgerIdempotencyKey string, paymentIntentID uuid.UUID, provider string, providerRefundID string) (bool, int64, error) {
+	if amountMicro <= 0 {
+		return false, 0, fmt.Errorf("refund amount must be positive")
+	}
+
+	var ledgerEntryID int64
+	var applied bool
+
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		q := db.New(tx)
+
+		existing, err := q.GetLedgerByHashForUpdate(ctx, pgtype.Text{String: ledgerIdempotencyKey, Valid: true})
+		if err == nil {
+			ledgerEntryID = existing.ID
+			applied = false
+			return nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("refund idempotency check failed: %w", err)
+		}
+
+		topup, err := q.GetLedgerByPaymentIntentForUpdate(ctx, ads.ToUUID(paymentIntentID))
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrPaymentTopupNotFound
+			}
+			return fmt.Errorf("payment topup lookup failed: %w", err)
+		}
+
+		refundedSoFar, err := q.SumPaymentRefundAmountForIntent(ctx, ads.ToUUID(paymentIntentID))
+		if err != nil {
+			return fmt.Errorf("sum payment refunds failed: %w", err)
+		}
+		if refundedSoFar+amountMicro > topup.Amount {
+			return ErrRefundExceedsTopup
+		}
+
+		debitAmount := -amountMicro
+		_, err = q.UpdateCustomerBalanceManagement(ctx, db.UpdateCustomerBalanceManagementParams{
+			ID:      ads.ToUUID(customerID),
+			Balance: debitAmount,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrCustomerNotFound
+			}
+			return fmt.Errorf("failed to debit balance: %w", err)
+		}
+
+		row, err := q.CreateLedgerEntry(ctx, db.CreateLedgerEntryParams{
+			CustomerID:      ads.ToUUID(customerID),
+			Amount:          debitAmount,
+			Type:            db.LedgerType("PAYMENT_REFUND"),
+			IdempotencyHash: pgtype.Text{String: ledgerIdempotencyKey, Valid: true},
+			PaymentIntentID: ads.ToUUID(paymentIntentID),
+		})
+		if err != nil {
+			if isPgUniqueViolation(err) {
+				if existing, lookupErr := q.GetLedgerByHashForUpdate(ctx, pgtype.Text{String: ledgerIdempotencyKey, Valid: true}); lookupErr == nil {
+					ledgerEntryID = existing.ID
+					applied = false
+					return nil
+				}
+			}
+			return fmt.Errorf("failed to create refund ledger entry: %w", err)
+		}
+
+		ledgerEntryID = row.ID
+		applied = true
+
+		s.AuditLog(ctx, q, uuid.Nil, "PAYMENT_REFUND", "customer", &customerID,
+			map[string]any{"amount": amountMicro, "payment_intent_id": paymentIntentID.String(), "provider": provider, "provider_refund_id": providerRefundID},
+			map[string]any{"idempotency_key": ledgerIdempotencyKey})
+		return nil
+	})
+
+	return applied, ledgerEntryID, err
+}
+
+// ApplyPaymentChargeback debits a customer account when Stripe withdraws disputed funds.
+func (s *Service) ApplyPaymentChargeback(ctx context.Context, customerID uuid.UUID, amountMicro int64, ledgerIdempotencyKey string, paymentIntentID uuid.UUID, provider string, providerDisputeID string) (bool, int64, error) {
+	return s.applyPaymentChargebackMovement(ctx, customerID, amountMicro, ledgerIdempotencyKey, paymentIntentID, provider, providerDisputeID, "PAYMENT_CHARGEBACK", true)
+}
+
+// ApplyPaymentChargebackReversal credits a customer account when Stripe reinstates won dispute funds.
+func (s *Service) ApplyPaymentChargebackReversal(ctx context.Context, customerID uuid.UUID, amountMicro int64, ledgerIdempotencyKey string, paymentIntentID uuid.UUID, provider string, providerDisputeID string) (bool, int64, error) {
+	return s.applyPaymentChargebackMovement(ctx, customerID, amountMicro, ledgerIdempotencyKey, paymentIntentID, provider, providerDisputeID, "PAYMENT_CHARGEBACK_REVERSAL", false)
+}
+
+func (s *Service) applyPaymentChargebackMovement(
+	ctx context.Context,
+	customerID uuid.UUID,
+	amountMicro int64,
+	ledgerIdempotencyKey string,
+	paymentIntentID uuid.UUID,
+	provider string,
+	providerDisputeID string,
+	ledgerType string,
+	isDebit bool,
+) (bool, int64, error) {
+	if amountMicro <= 0 {
+		return false, 0, fmt.Errorf("chargeback amount must be positive")
+	}
+
+	var ledgerEntryID int64
+	var applied bool
+
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		q := db.New(tx)
+
+		existing, err := q.GetLedgerByHashForUpdate(ctx, pgtype.Text{String: ledgerIdempotencyKey, Valid: true})
+		if err == nil {
+			ledgerEntryID = existing.ID
+			applied = false
+			return nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("chargeback idempotency check failed: %w", err)
+		}
+
+		topup, err := q.GetLedgerByPaymentIntentForUpdate(ctx, ads.ToUUID(paymentIntentID))
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrPaymentTopupNotFound
+			}
+			return fmt.Errorf("payment topup lookup failed: %w", err)
+		}
+
+		refundedSoFar, err := q.SumPaymentRefundAmountForIntent(ctx, ads.ToUUID(paymentIntentID))
+		if err != nil {
+			return fmt.Errorf("sum payment refunds failed: %w", err)
+		}
+		chargebackSoFar, err := q.SumPaymentChargebackAmountForIntent(ctx, ads.ToUUID(paymentIntentID))
+		if err != nil {
+			return fmt.Errorf("sum payment chargebacks failed: %w", err)
+		}
+		reversalSoFar, err := q.SumPaymentChargebackReversalAmountForIntent(ctx, ads.ToUUID(paymentIntentID))
+		if err != nil {
+			return fmt.Errorf("sum payment chargeback reversals failed: %w", err)
+		}
+
+		netChargeback := chargebackSoFar - reversalSoFar
+		if isDebit {
+			if refundedSoFar+netChargeback+amountMicro > topup.Amount {
+				return ErrChargebackExceedsTopup
+			}
+		} else if amountMicro > netChargeback {
+			return ErrChargebackReversalExceedsWithdrawn
+		}
+
+		balanceDelta := amountMicro
+		ledgerAmount := amountMicro
+		if isDebit {
+			balanceDelta = -amountMicro
+			ledgerAmount = -amountMicro
+		}
+
+		_, err = q.UpdateCustomerBalanceManagement(ctx, db.UpdateCustomerBalanceManagementParams{
+			ID:      ads.ToUUID(customerID),
+			Balance: balanceDelta,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrCustomerNotFound
+			}
+			return fmt.Errorf("failed to update balance for chargeback: %w", err)
+		}
+
+		row, err := q.CreateLedgerEntry(ctx, db.CreateLedgerEntryParams{
+			CustomerID:      ads.ToUUID(customerID),
+			Amount:          ledgerAmount,
+			Type:            db.LedgerType(ledgerType),
+			IdempotencyHash: pgtype.Text{String: ledgerIdempotencyKey, Valid: true},
+			PaymentIntentID: ads.ToUUID(paymentIntentID),
+		})
+		if err != nil {
+			if isPgUniqueViolation(err) {
+				if existing, lookupErr := q.GetLedgerByHashForUpdate(ctx, pgtype.Text{String: ledgerIdempotencyKey, Valid: true}); lookupErr == nil {
+					ledgerEntryID = existing.ID
+					applied = false
+					return nil
+				}
+			}
+			return fmt.Errorf("failed to create chargeback ledger entry: %w", err)
+		}
+
+		ledgerEntryID = row.ID
+		applied = true
+
+		action := "PAYMENT_CHARGEBACK"
+		if !isDebit {
+			action = "PAYMENT_CHARGEBACK_REVERSAL"
+		}
+		s.AuditLog(ctx, q, uuid.Nil, action, "customer", &customerID,
+			map[string]any{"amount": amountMicro, "payment_intent_id": paymentIntentID.String(), "provider": provider, "provider_dispute_id": providerDisputeID},
+			map[string]any{"idempotency_key": ledgerIdempotencyKey})
 		return nil
 	})
 
