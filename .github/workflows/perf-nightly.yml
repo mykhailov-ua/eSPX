@@ -29,12 +29,12 @@ jobs:
             nightly-escape-
 
       - name: Stabilize CPU
-        run: bash scripts/stabilize-cpu.sh
+        run: bash scripts/perf/stabilize_cpu.sh
 
       - name: Escape report and regression gate
         run: |
           mkdir -p .ci-baselines/escape
-          bash scripts/escape-nightly-job.sh escape_report.txt .ci-baselines/escape/heap_lines.count
+          bash scripts/perf/escape_nightly_job.sh escape_report.txt .ci-baselines/escape/heap_lines.count
 
       - uses: actions/upload-artifact@v4
         with:
@@ -67,10 +67,10 @@ jobs:
             nightly-redis-
 
       - name: Stabilize CPU
-        run: bash scripts/stabilize-cpu.sh
+        run: bash scripts/perf/stabilize_cpu.sh
 
       - name: Benchmark and regression gate
-        run: bash scripts/nightly-bench-job.sh redis
+        run: bash scripts/perf/nightly_bench_job.sh redis
 
       - uses: actions/upload-artifact@v4
         with:
@@ -105,10 +105,10 @@ jobs:
             nightly-broker-
 
       - name: Stabilize CPU
-        run: bash scripts/stabilize-cpu.sh
+        run: bash scripts/perf/stabilize_cpu.sh
 
       - name: Benchmark and regression gate
-        run: bash scripts/nightly-bench-job.sh broker
+        run: bash scripts/perf/nightly_bench_job.sh broker
 
       - uses: actions/upload-artifact@v4
         with:

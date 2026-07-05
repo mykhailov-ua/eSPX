@@ -266,7 +266,7 @@ var slotMapExplainCmd = &cobra.Command{
 			},
 			{
 				name: "CountSlotMapRowsForVersion",
-				sql:  fmt.Sprintf("EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) SELECT COUNT(*) FROM redis_slot_map WHERE version = 1"),
+				sql:  "EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) SELECT COUNT(*) FROM redis_slot_map WHERE version = 1",
 			},
 			{
 				name: "LockSlotMapEntry",

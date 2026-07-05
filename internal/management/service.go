@@ -29,6 +29,7 @@ type Service struct {
 	rdbs     []redis.UniversalClient
 	sharder  ads.Sharder
 	cfg      *config.Config
+	alerter  *OpsAlerter
 	ctx      context.Context
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
@@ -101,6 +102,13 @@ func (s *Service) StartAuditCleaner(retention Days) {
 	})
 }
 
+// StartBlacklistJanitor evicts expired temporary blacklist entries from Postgres and Redis.
+func (s *Service) StartBlacklistJanitor(interval time.Duration) {
+	s.startWorker(func() {
+		NewBlacklistJanitor(s, interval).Start(s.ctx)
+	})
+}
+
 // GetPool exposes the Postgres pool for tests and auxiliary workers.
 func (s *Service) GetPool() *pgxpool.Pool {
 	return s.pool
@@ -109,6 +117,11 @@ func (s *Service) GetPool() *pgxpool.Pool {
 // SetPool replaces the Postgres pool after reconnect (e.g. DB failover).
 func (s *Service) SetPool(pool *pgxpool.Pool) {
 	s.pool = pool
+}
+
+// SetOpsAlerter attaches the notifier-backed operator alert sender.
+func (s *Service) SetOpsAlerter(alerter *OpsAlerter) {
+	s.alerter = alerter
 }
 
 // Close cancels background workers and waits for them to exit.

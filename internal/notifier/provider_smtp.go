@@ -9,26 +9,28 @@ import (
 
 // SMTPProvider delivers HTML email via plain SMTP with optional AUTH.
 type SMTPProvider struct {
-	host     string
-	port     string
-	username string
-	password string
-	sender   string
-	breaker  *CircuitBreaker
+	host               string
+	port               string
+	username           string
+	password           string
+	sender             string
+	breaker            *CircuitBreaker
+	requireCredentials bool
 }
 
 // NewSMTPProvider binds SMTP credentials; port defaults to 587 when empty.
-func NewSMTPProvider(host, port, username, password, sender string, breaker *CircuitBreaker) *SMTPProvider {
+func NewSMTPProvider(host, port, username, password, sender string, breaker *CircuitBreaker, requireCredentials bool) *SMTPProvider {
 	if port == "" {
 		port = "587"
 	}
 	return &SMTPProvider{
-		host:     host,
-		port:     port,
-		username: username,
-		password: password,
-		sender:   sender,
-		breaker:  breaker,
+		host:               host,
+		port:               port,
+		username:           username,
+		password:           password,
+		sender:             sender,
+		breaker:            breaker,
+		requireCredentials: requireCredentials,
 	}
 }
 
@@ -48,6 +50,9 @@ func (s *SMTPProvider) Send(ctx context.Context, recipient, title, body string) 
 	}
 
 	if s.host == "" || s.sender == "" {
+		if s.requireCredentials {
+			return fmt.Errorf("smtp credentials not configured")
+		}
 		slog.Info("smtp notification dry-run", "to", recipient, "title", title, "body", body)
 		return nil
 	}

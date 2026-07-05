@@ -5,13 +5,12 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"espx/internal/edge"
 	"espx/internal/edge/allowlist"
 	"espx/internal/edge/blocklist"
+	"espx/pkg/lifecycle"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
@@ -58,7 +57,7 @@ func main() {
 	})
 	defer rdb.Close()
 
-	ctx, cancel := signalContext()
+	ctx, cancel := lifecycle.NotifyContext(context.Background())
 	defer cancel()
 
 	denyStore := blocklist.NewStore()
@@ -101,15 +100,4 @@ func runSync(ctx context.Context, rdb *redis.Client, denyMap, allowMap *ebpf.Map
 		"allow_removed", allowRemoved,
 	)
 	return nil
-}
-
-func signalContext() (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithCancel(context.Background())
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sig
-		cancel()
-	}()
-	return ctx, cancel
 }

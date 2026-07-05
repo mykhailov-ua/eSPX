@@ -1,4 +1,5 @@
-# Use scripts/gen.sh --proto (api/buf.gen.yml). Never set out to . or ..
+# DO NOT run buf from repo root. Use: bash scripts/codegen/gen.sh --proto
+# api/buf.gen.yml is the only template; out must stay a relative staging dir (gen -> api/gen/).
 version: v1
 plugins:
   - plugin: buf.build/protocolbuffers/go

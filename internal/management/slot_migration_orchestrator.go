@@ -42,11 +42,17 @@ func (o *SlotMigrationOrchestrator) tick(ctx context.Context) {
 	draft, err := migRepo.GetMaxDraftVersionWithMigrating(ctx)
 	if err != nil {
 		slog.Error("slot migration: draft version lookup failed", "error", err)
+		if o.svc.alerter != nil {
+			o.svc.alerter.AlertSlotMigrationError("draft_lookup", err)
+		}
 		return
 	}
 	if draft > 0 {
 		if err := o.svc.CopyAllMigratingSlots(ctx, draft); err != nil {
 			slog.Warn("slot migration copy tick", "version", draft, "error", err)
+			if o.svc.alerter != nil {
+				o.svc.alerter.AlertSlotMigrationError("copy", err)
+			}
 		}
 	}
 
@@ -54,9 +60,16 @@ func (o *SlotMigrationOrchestrator) tick(ctx context.Context) {
 	active, err := mapRepo.GetActiveVersion(ctx)
 	if err != nil {
 		slog.Error("slot migration: active version lookup failed", "error", err)
+		if o.svc.alerter != nil {
+			o.svc.alerter.AlertSlotMigrationError("active_lookup", err)
+		}
 		return
 	}
 	if err := o.svc.DrainMigratingSlots(ctx, active); err != nil {
 		slog.Warn("slot migration drain tick", "version", active, "error", err)
+		if o.svc.alerter != nil {
+			o.svc.alerter.AlertSlotMigrationError("drain", err)
+		}
 	}
+	o.svc.CheckStuckDrainJobs(ctx)
 }

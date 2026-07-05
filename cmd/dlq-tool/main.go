@@ -9,13 +9,12 @@ import (
 	"io"
 	"log"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/google/uuid"
 	"espx/internal/ads"
 	"espx/internal/ads/pb"
+	"espx/pkg/lifecycle"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/proto"
 )
@@ -30,7 +29,7 @@ func main() {
 	)
 	flag.Parse()
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, cancel := lifecycle.NotifyContext(context.Background())
 	defer cancel()
 
 	opt, err := redis.ParseURL(*redisURL)

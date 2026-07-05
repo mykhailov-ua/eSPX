@@ -1,4 +1,5 @@
-# Generated files land in api/gen/ only (--clean cannot touch the repo root).
+# Generated files land in api/gen/ only. Never set out to ., .., or /.
+# Sync into internal/*/pb via scripts/codegen/gen.sh (safe_sync_proto_gen).
 version: v1
 plugins:
   - plugin: buf.build/protocolbuffers/go

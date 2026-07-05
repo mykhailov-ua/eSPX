@@ -161,6 +161,14 @@ func (reconService *ReconService) ReconcileWindow(ctx context.Context, start, en
 		"delta", totalDelta,
 		"discrepancies", discrepancies,
 	)
+	if discrepancies > 0 && reconService.mgmt.alerter != nil {
+		reconService.mgmt.alerter.AlertReconDiscrepancy(
+			run.ID,
+			discrepancies,
+			totalDelta,
+			start.Format(time.RFC3339)+"-"+end.Format(time.RFC3339),
+		)
+	}
 	return nil
 }
 

@@ -16,27 +16,27 @@ Setup, tooling, and operational procedures for the eSPX codebase.
 ```bash
 cp .env.example .env
 # Optional: deploy/geoip/GeoLite2-Country.mmdb for production geo
-bash scripts/dev-stack.sh build
-bash scripts/dev-stack.sh full
-bash scripts/dev-preflight.sh
+bash scripts/dev/dev_stack.sh build
+bash scripts/dev/dev_stack.sh full
+bash scripts/dev/dev_preflight.sh
 ```
 
 Full stack adds `tracker-1..3`, `nginx`, `prometheus`, `grafana`, `alertmanager`, sentinels, replicas.
 
-`dev-stack.sh` profiles:
+`dev_stack.sh` profiles:
 
 | Command | Services started |
 | :--- | :--- |
-| `bash scripts/dev-stack.sh infra` | db, redis-0…5, clickhouse |
-| `bash scripts/dev-stack.sh full` | infra + processor, tracker-0, auth, management, payment, billing |
-| `bash scripts/dev-stack.sh sentinel` | redis-0, replica, sentinel-0…2 |
-| `bash scripts/dev-stack.sh status` | `docker compose ps` |
-| `bash scripts/dev-stack.sh down` | tear down compose stack |
+| `bash scripts/dev/dev_stack.sh infra` | db, redis-0…5, clickhouse |
+| `bash scripts/dev/dev_stack.sh full` | infra + processor, tracker-0, auth, management, payment, billing |
+| `bash scripts/dev/dev_stack.sh sentinel` | redis-0, replica, sentinel-0…2 |
+| `bash scripts/dev/dev_stack.sh status` | `docker compose ps` |
+| `bash scripts/dev/dev_stack.sh down` | tear down compose stack |
 
 Pre-deploy topology check:
 
 ```bash
-sh scripts/verify-redis-topology.sh .env
+sh scripts/redis/verify_redis_topology.sh .env
 ```
 
 ---
@@ -45,9 +45,9 @@ sh scripts/verify-redis-topology.sh .env
 
 | Target | Command | Output |
 | :--- | :--- | :--- |
-| `make proto` | `scripts/gen.sh --proto` | `internal/*/pb/*` (vtproto) |
-| `make gen` | `scripts/gen.sh` (sqlc) | `internal/*/db/*` |
-| `task gen` | `scripts/gen.sh --all` | sqlc + templ (if installed) + buf |
+| `make proto` | `scripts/codegen/gen.sh --proto` | `internal/*/pb/*` (vtproto) |
+| `make gen` | `scripts/codegen/gen.sh` (sqlc) | `internal/*/db/*` |
+| `task gen` | `scripts/codegen/gen.sh --all` | sqlc + templ (if installed) + buf |
 
 Protobuf sources live in `api/` (flat layout). sqlc pinned to **v1.28.0** (Go 1.25-compatible).
 
@@ -55,57 +55,60 @@ Protobuf sources live in `api/` (flat layout). sqlc pinned to **v1.28.0** (Go 1.
 
 ## Scripts (`scripts/`)
 
-Flat directory; invoke with `bash scripts/<name>.sh` (no subfolders).
+One subdirectory level: `bash scripts/<area>/<name>.sh`. File names use **snake_case** with domain prefix (R2); shared paths in `_common/paths.sh`.
 
 ### Local dev and compose
 
 | Script | Purpose |
 | :--- | :--- |
-| `dev-stack.sh` | Compose lifecycle: `infra`, `full`, `sentinel`, `down`, `status`, `build` |
-| `dev-preflight.sh` | `check-deps.sh` then `smoke-local.sh` |
-| `check-deps.sh` | Preflight: Postgres, six Redis shards, ClickHouse ports/migrations |
-| `smoke-local.sh` | Tracker/processor `/health`, edge `/metrics/edge`, 4× Redis PING/AOF; SKIP when stack down |
+| `dev_stack.sh` | Compose lifecycle: `infra`, `full`, `sentinel`, `down`, `status`, `build` |
+| `dev_preflight.sh` | `check_deps.sh` then `smoke_local.sh` |
+| `check_deps.sh` | Preflight: Postgres, six Redis shards, ClickHouse ports/migrations |
+| `local_check.sh` | Lint, alloc gate, unit+integration tests, docker build (local pre-push) |
+| `govulncheck.sh` | Dependency vulnerability scan (`make check-vuln`) |
+| `full_test.sh` | `go test ./... -skip Chaos` (CI + `make test-full`) |
+| `smoke_local.sh` | Tracker/processor `/health`, edge `/metrics/edge`, 4× Redis PING/AOF; SKIP when stack down |
 | `gen.sh` | Codegen: default sqlc; flags `--proto`, `--templ`, `--all` |
 
 ### Performance and CI
 
 | Script | Purpose |
 | :--- | :--- |
-| `perf-gate-run.sh` | PR perf gate: worktree baseline + `perf-gate-bench.sh` + `perf_gate.go` |
-| `perf-gate-bench.sh` | Hot-path benchmarks for PR gate (`internal/ads`) |
+| `perf_gate_run.sh` | Perf gate: worktree baseline + `perf_gate_bench.sh` + `perf_gate.go` |
+| `perf_gate_bench.sh` | Hot-path benchmarks for PR gate (`internal/ads`) |
 | `perf_gate.go` | Zero-alloc check + benchstat; `--cpu-only` for nightly |
-| `perf-baseline-gate.sh` | Nightly benchstat vs cached baseline (seeds on miss) |
-| `run-bench.sh` | Shared `go test -bench` runner (`<regex> <pkg...>`) |
-| `nightly-bench-job.sh` | Nightly: `redis` or `broker` bench + gate + baseline update |
-| `escape-nightly-job.sh` | Escape analysis; second arg enables regression gate |
-| `stabilize-cpu.sh` | CPU performance governor (perf CI) |
-| `edge-nic-tune.sh` | Ingress NIC RX ring max + IRQ/RSS spread (`deploy/edge/`) |
-| `edge-sysctl.sh` | Ingress sysctl install/verify (`deploy/edge/99-espx-edge.conf`) |
-| `edge-baseline.sh` | Minimal Prometheus SLA snapshot for edge baseline |
-| `install-benchstat.sh` | Ensures `benchstat` on PATH |
+| `perf_baseline_gate.sh` | Nightly benchstat vs cached baseline (seeds on miss) |
+| `run_bench.sh` | Shared `go test -bench` runner (`<regex> <pkg...>`) |
+| `nightly_bench_job.sh` | Nightly: `redis` or `broker` bench + gate + baseline update |
+| `escape_nightly_job.sh` | Escape analysis; second arg enables regression gate |
+| `stabilize_cpu.sh` | CPU performance governor (perf CI) |
+| `edge_nic_tune.sh` | Ingress NIC RX ring max + IRQ/RSS spread (`deploy/edge/`) |
+| `edge_sysctl.sh` | Ingress sysctl install/verify (`deploy/edge/99-espx-edge.conf`) |
+| `edge_baseline.sh` | Minimal Prometheus SLA snapshot for edge baseline |
+| `install_benchstat.sh` | Ensures `benchstat` on PATH |
 
 ### Chaos and failover
 
 | Script | Purpose |
 | :--- | :--- |
-| `test-chaos.sh` | testcontainers chaos suite; requires ≥24 `chaos_proof` lines |
-| `test-sentinel-failover.sh` | Sentinel promote/failover against compose stack |
-| `sentinel-chaos-env.sh` | CI: copy `.env.example` with sentinel test password |
+| `test_chaos.sh` | testcontainers chaos suite; requires ≥24 `chaos_proof` lines |
+| `test_sentinel_failover.sh` | Sentinel promote/failover against compose stack |
+| `sentinel_chaos_env.sh` | CI: copy `.env.example` with sentinel test password |
 
 ### Redis operations
 
 | Script | Purpose |
 | :--- | :--- |
-| `verify-redis-topology.sh` | `REDIS_ADDRS` count vs `REDIS_SHARD_COUNT` (default 4) |
-| `redis-reconcile-post-deploy.sh` | Read-only drift check: `config:*`, `blacklist:manual` on all shards |
-| `redis-migrate-campaign.sh` | Move campaign keys between shards (StaticSlot) |
-| `campaign_shard.go` | `go run ./scripts/campaign_shard.go <uuid> [N]` — shard index |
+| `verify_redis_topology.sh` | `REDIS_ADDRS` count vs `REDIS_SHARD_COUNT` (default 4) |
+| `redis_reconcile_post_deploy.sh` | Read-only drift check: `config:*`, `blacklist:manual` on all shards |
+| `redis_migrate_campaign.sh` | Move campaign keys between shards (StaticSlot) |
+| `campaign_shard.go` | `go run ./scripts/redis/campaign_shard.go <uuid> [N]` — shard index |
 
 ### Production
 
 | Script | Purpose |
 | :--- | :--- |
-| `log-evacuate` | S3 upload of `.log.zst.ready` segments (`Dockerfile.log-evacuator`) |
+| `log_evacuate.sh` | S3 upload of `.log.zst.ready` segments (`Dockerfile.log-evacuator`) |
 
 Workflow wiring: `.github/workflows/` (`ci.yml`, `perf-gate.yml`, `perf-nightly.yml`, `sentinel-chaos.yml`).
 
@@ -116,16 +119,18 @@ Workflow wiring: `.github/workflows/` (`ci.yml`, `perf-gate.yml`, `perf-nightly.
 | Target | Purpose |
 | :--- | :--- |
 | `make fmt` | `go fmt ./...` |
-| `make gen` | `scripts/gen.sh` (sqlc v1.28.0) |
-| `make proto` | `scripts/gen.sh --proto` (buf → vtproto) |
+| `make gen` | `scripts/codegen/gen.sh` (sqlc v1.28.0) |
+| `make proto` | `scripts/codegen/gen.sh --proto` (buf → vtproto) |
 | `make lint` | gen + fmt + golangci-lint |
 | `make test-unit` | `go test -short ./internal/...` |
 | `make test-int` | `go test ./tests/...` |
 | `make test-alloc-gate` | zero-alloc + fraud SLA in `./internal/ads/`; `BenchmarkAuction` 0 allocs in `./internal/rtb/` |
-| `make test-chaos` | `scripts/test-chaos.sh` (Docker, ≥24 `chaos_proof` lines) |
-| `make test-sentinel-chaos` | `scripts/test-sentinel-failover.sh` |
+| `make test-chaos` | `scripts/chaos/test_chaos.sh` (Docker, ≥24 `chaos_proof` lines) |
+| `make test-sentinel-chaos` | `scripts/chaos/test_sentinel_failover.sh` |
 | `make test` | test-unit + test-int |
-| `make test-full` | `go test ./... -count=1 -timeout 30m -skip Chaos` (chaos: `make test-chaos`) |
+| `make test-full` | `scripts/ci/full_test.sh` (chaos: `make test-chaos`) |
+| `make check-local` | `scripts/ci/local_check.sh` — lint, alloc gate, test, build |
+| `make check-vuln` | `scripts/ci/govulncheck.sh` |
 | `make build` | `docker build -t ad-event-processor:latest .` |
 
 ---
@@ -136,12 +141,12 @@ Requires [Task](https://taskfile.dev). Overlaps with `make` where noted.
 
 | Task | Purpose |
 | :--- | :--- |
-| `task gen` | `scripts/gen.sh --all` (sqlc + templ if installed + buf) |
-| `task docker-up` | `scripts/dev-stack.sh infra` |
-| `task docker-down` | `scripts/dev-stack.sh down` |
-| `task check-deps` | `scripts/check-deps.sh` |
-| `task dev-preflight` | `scripts/dev-preflight.sh` |
-| `task perf-gate` | `scripts/perf-gate-run.sh` vs `main` (worktree `../baseline-local`) |
+| `task gen` | `scripts/codegen/gen.sh --all` (sqlc + templ if installed + buf) |
+| `task docker-up` | `scripts/dev/dev_stack.sh infra` |
+| `task docker-down` | `scripts/dev/dev_stack.sh down` |
+| `task check-deps` | `scripts/ci/check_deps.sh` |
+| `task dev-preflight` | `scripts/dev/dev_preflight.sh` |
+| `task perf-gate` | `scripts/perf/perf_gate_run.sh` vs `main` (worktree `../baseline-local`) |
 | `task test-full` | `go test -race ./...` (not the same as `make test-full`) |
 
 ---
@@ -193,9 +198,9 @@ Host networking (`NET_MODE=host`) is default for app services. Stateful stores p
 | `cmd/dlq` | DLQ archive / requeue / restore |
 | `cmd/admin` | Cobra dev CLI (users, seed, budget reset) |
 
-`billing` is in the default `dev-stack.sh full` profile but optional for minimal ingest-only stacks. Notifier gRPC starts inside management when channel credentials are set.
+`billing` is in the default `dev_stack.sh full` profile but optional for minimal ingest-only stacks. Notifier gRPC starts inside management when channel credentials are set.
 
-Broker HA lab: `deploy/broker/` (optional). `docker compose -f deploy/broker/docker-compose.yml up -d`. HAProxy exposes `:9092` (leader-only produce via `/leaderz`) and `:9093` (any healthy node for fetch). Sentinel overlay and chaos drills: see `deploy/broker/README.md` and `scripts/broker-chaos-lab.sh`. Override binary: `ESPX_BROKER_BIN=/path/to/espx-broker`.
+Broker HA lab: `deploy/broker/` (optional). `docker compose -f deploy/broker/docker-compose.yml up -d`. HAProxy exposes `:9092` (leader-only produce via `/leaderz`) and `:9093` (any healthy node for fetch). Sentinel overlay and chaos drills: see `deploy/broker/README.md` and `scripts/chaos/broker_chaos_lab.sh`. Override binary: `ESPX_BROKER_BIN=/path/to/espx-broker`.
 
 RTB live soak (optional): `docker compose -f docker-compose.yml -f deploy/rtb/docker-compose.override.yml up -d tracker-0 … tracker-3`. Default `.env` keeps `RTB_MODE=off`. See `deploy/rtb/README.md`.
 
@@ -222,11 +227,14 @@ REDIS_BREAKER_OPEN_TIMEOUT_MS=5000
 PAYMENT_SERVER_PORT=51052
 PAYMENT_WEBHOOK_PORT=8187
 SETTLEMENT_SERVER_PORT=51053
+PAYMENT_DB_DSN=postgres://...@127.0.0.1:5431/espx_payment?sslmode=disable  # separate db-payment container
 PAYMENT_INTERNAL_TOKEN=...      # management to payment gRPC
 SETTLEMENT_INTERNAL_TOKEN=...   # payment outbox to settlement gRPC
 STRIPE_SECRET_KEY=              # empty = mock provider
 STRIPE_WEBHOOK_SECRET=          # required for live webhooks
 ```
+
+Payment schema is auto-applied on `cmd/payment` startup (embedded goose migrations). With compose, `db-payment` on `PAYMENT_DB_PORT` (default 5431) holds only the `payment` schema. Omit `PAYMENT_DB_DSN` to fall back to `DB_DSN` (single-DB dev).
 
 Stripe checkout API is not wired (`provider_stripe.go` returns `ErrProviderNotConfigured` even with secret key). Mock provider works for local settlement flow testing.
 
@@ -344,24 +352,23 @@ go run cmd/dlq/main.go -action=requeue -stream=ad:events:dlq -dest=ad:events -ba
 
 ## CI (GitHub Actions)
 
+Push to `main` only (no PR workflows). Lint, short tests, docker build, and `govulncheck` run locally — see `make check-local` and `make check-vuln`.
+
 | Workflow | When | What |
 | :--- | :--- | :--- |
-| `ci.yml` | push/PR `main` | lint, alloc gate, short tests, docker build, `govulncheck` |
-| `ci.yml` → `full-test` | push/PR `main` (parallel) | `go test ./... -skip Chaos` |
-| `ci.yml` → `chaos` | push/PR `main` (parallel) | `make test-chaos` (≥28 `chaos_proof` lines) |
-| `perf-gate.yml` | path-filtered PR/push | smoke zero-alloc on github-hosted; strict benchstat when `PERF_RUNNER_LABEL` set |
+| `ci.yml` → `full-test` | push `main` | `scripts/ci/full_test.sh` |
+| `ci.yml` → `chaos` | push `main` | `scripts/chaos/test_chaos.sh` (≥28 `chaos_proof` lines) |
+| `perf-gate.yml` | path-filtered push | smoke zero-alloc on github-hosted; strict benchstat when `PERF_RUNNER_LABEL` set |
 | `perf-nightly.yml` | Mon 03:00 UTC, manual | escape + redis/broker benchstat regression |
-| `sentinel-chaos.yml` | push/PR `main` | Sentinel failover script |
+| `sentinel-chaos.yml` | push `main`, manual | Sentinel failover script |
 
 Set repository variable **`PERF_RUNNER_LABEL`** (e.g. `self-hosted`) to enable strict perf gate (benchstat vs baseline). Without it, `perf-gate.yml` runs smoke mode only (zero-alloc, no CPU regression fail).
-
-Dependabot (`.github/dependabot.yml`): weekly Go modules and GitHub Actions updates.
 
 ---
 
 ## Performance Gate
 
-CI validates hot-path benchmarks on PRs touching `internal/ads/**`, `internal/rtb/**`, `internal/config/**`, `internal/database/redis*.go`, `pkg/logger/**`, `pkg/broker/**`, `deploy/nginx/lua/**`, or `api/**`. Thresholds:
+CI validates hot-path benchmarks on push when paths under `internal/ads/**`, `internal/rtb/**`, `internal/config/**`, `internal/database/redis*.go`, `pkg/logger/**`, `pkg/broker/**`, `deploy/nginx/lua/**`, or `api/**` change. Thresholds:
 
 - Heap allocations: 0 allocs/op on gated benchmarks (CPU-only exempt list below)
 - Memory: 0 B/op
@@ -369,14 +376,14 @@ CI validates hot-path benchmarks on PRs touching `internal/ads/**`, `internal/rt
 
 On github-hosted runners without `PERF_RUNNER_LABEL`, CI runs **smoke mode**: zero-alloc check with 2 bench iterations, no benchstat baseline comparison (avoids flaky CPU failures).
 
-`ci.yml` also runs a fast alloc gate (`make test-alloc-gate`): `ZeroAlloc`, fraud scoring zero-alloc, and 500µs fraud SLA unit tests in `./internal/ads/`.
+Run locally before push: `make check-local` (lint, alloc gate, test, build). Hot-path perf vs baseline:
 
 ```bash
-bash scripts/perf-gate-run.sh   # or: task perf-gate
-make test-alloc-gate
+bash scripts/perf/perf_gate_run.sh   # or: task perf-gate
+make test-alloc-gate            # zero-alloc + fraud SLA in ./internal/ads/
 ```
 
-Gated benchmarks (via `scripts/perf-gate-bench.sh`):
+Gated benchmarks (via `scripts/perf/perf_gate_bench.sh`):
 
 - Handler: `BenchmarkAdsPacketHandlerProto`, `Proto_NoExtra`, `Proto_ExtraBytes`
 - Error paths: `BenchmarkHotPath_AdsPacketHandlerProto_reject404`, `_infra503` (infra: CPU-only)
@@ -398,7 +405,7 @@ Unit zero-alloc tests (in `test-alloc-gate`): `TestParseTrackRequestJSON_ZeroAll
 Escape analysis (nightly artifact or local):
 
 ```bash
-bash scripts/escape-nightly-job.sh /tmp/espx-escape.txt
+bash scripts/perf/escape_nightly_job.sh /tmp/espx-escape.txt
 ```
 
 IDE settings (format on save, Go tools, debug env) live in Cursor user config (`~/.config/Cursor/User/settings.json` on Linux), not `.vscode/` in the repo. Use `make lint`, `task`, and lefthook for repeatable workflows.
@@ -412,13 +419,13 @@ Run after rolling deploys that touch management outbox, Sentinel failover, or sh
 **When to run:**
 
 - After deploy changing outbox handlers, `redis_global.go`, or sharder alignment
-- After Sentinel failover or manual `redis-migrate-campaign.sh`
+- After Sentinel failover or manual `redis_migrate_campaign.sh`
 - Before closing a production change window
 
 **Automated check:**
 
 ```bash
-bash scripts/redis-reconcile-post-deploy.sh .env
+bash scripts/redis/redis_reconcile_post_deploy.sh .env
 ```
 
 Checks on every shard in `REDIS_ADDRS`:
@@ -442,7 +449,7 @@ Budget and pacing keys are shard-local. Tracker and outbox must agree on `Static
 ```bash
 # 1. Pause campaign in management
 # 2. Migrate keys (auto-detects source shard from campaign UUID)
-bash scripts/redis-migrate-campaign.sh <campaign_uuid> <source_shard> <target_shard>
+bash scripts/redis/redis_migrate_campaign.sh <campaign_uuid> <source_shard> <target_shard>
 
 # 3. Verify on target
 redis-cli -h <target_host> -p <port> -a "$REDIS_PASSWORD" GET budget:campaign:<uuid>
@@ -455,7 +462,7 @@ Keys copied: `budget:campaign:{id}`, `campaign:settings:{id}`, `budget:daily_spe
 Shard index helper:
 
 ```bash
-go run ./scripts/campaign_shard.go <campaign_uuid> 4
+go run ./scripts/redis/campaign_shard.go <campaign_uuid> 4
 ```
 
 **Alerts tied to this runbook:**
@@ -480,7 +487,7 @@ For active campaigns, sample from Postgres:
 SELECT id FROM campaigns WHERE status = 'ACTIVE' LIMIT 20;
 ```
 
-For each id, `GET budget:campaign:{id}` only on shard from `go run ./scripts/campaign_shard.go {id}`.
+For each id, `GET budget:campaign:{id}` only on shard from `go run ./scripts/redis/campaign_shard.go {id}`.
 
 ---
 
@@ -489,8 +496,8 @@ For each id, `GET budget:campaign:{id}` only on shard from `go run ./scripts/cam
 ### Topology verification
 
 ```bash
-sh scripts/verify-redis-topology.sh .env
-# Override count: REDIS_SHARD_COUNT=3 sh scripts/verify-redis-topology.sh .env
+sh scripts/redis/verify_redis_topology.sh .env
+# Override count: REDIS_SHARD_COUNT=3 sh scripts/redis/verify_redis_topology.sh .env
 ```
 
 ### Health checks
@@ -525,12 +532,12 @@ go test ./internal/config/ -run Redis -count=1
 go test ./internal/database/ -run ShardUniversal -count=1
 
 # Stack (optional)
-bash scripts/dev-stack.sh sentinel
+bash scripts/dev/dev_stack.sh sentinel
 # Enable REDIS_SENTINEL_ADDRS in .env, restart tracker
 
 # Scripted chaos
-bash scripts/sentinel-chaos-env.sh   # CI only; local: use your .env
-bash scripts/test-sentinel-failover.sh
+bash scripts/chaos/sentinel_chaos_env.sh   # CI only; local: use your .env
+bash scripts/chaos/test_sentinel_failover.sh
 
 # Manual chaos
 docker stop redis-2
@@ -659,13 +666,15 @@ Profile `tools` in compose starts `log-evacuator`.
 
 ```bash
 make test-unit          # fast, -short
-make test-int           # integration tests in tests/
-make test-alloc-gate    # hot-path zero-alloc + fraud SLA (CI)
-make test-full          # full suite, no -short (~CI full-test)
-make test-chaos         # scripts/test-chaos.sh (Docker)
+make test-int           # integration/e2e/chaos tests in tests/
+make test-alloc-gate    # hot-path zero-alloc + fraud SLA (local check-local)
+make test-full          # full suite, no -short (CI full-test)
+make check-local        # lint + alloc gate + test + docker build
+make check-vuln         # govulncheck (local, not CI)
+make test-chaos         # scripts/chaos/test_chaos.sh (Docker)
 make test-sentinel-chaos
 task test-full          # optional: race detector on ./... (not CI-equivalent)
-bash scripts/dev-preflight.sh   # after compose up
+bash scripts/dev/dev_preflight.sh   # after compose up
 ```
 
 Redis-related tests:
@@ -687,7 +696,7 @@ Redis-related tests:
 | Tenant isolation | `go test ./internal/management/... -run Isolation` | 403 |
 | Redis outage auth | `go test ./internal/management/... -run MeRedisOutage` | 401 fail-closed |
 | Outbox chaos | `go test ./internal/management/ -run Chaos` | PASS |
-| Hot path perf | `task perf-gate` or `scripts/perf-gate-run.sh` | perf_gate CI |
+| Hot path perf | `task perf-gate` or `scripts/perf/perf_gate_run.sh` | perf_gate CI |
 | Payment | `go test ./internal/payment/...` | PASS |
 | Billing | `go test ./internal/billing/...` | PASS |
 | Notifier | `go test ./internal/notifier/...` | PASS |
@@ -703,7 +712,7 @@ Full suite (slow): `make test-full` or `go test ./... -count=1`
 
 Native XDP/eBPF (optional) + OpenResty Lua fixes for `/track` ingress. Not fully implemented yet.
 
-**Phase 0 (ops):** `edge-nic-tune.sh`, `edge-sysctl.sh`, optional `edge-baseline.sh` (minimal snapshot; 24h soak deferred).
+**Phase 0 (ops):** `edge_nic_tune.sh`, `edge_sysctl.sh`, optional `edge_baseline.sh` (minimal snapshot; 24h soak deferred).
 
 **SLA:** Tracker `ad_http_request_duration_seconds` p95 < 50 ms, p99 < 80 ms (`.cursorrules`); edge changes must not regress nominal-path metrics.
 

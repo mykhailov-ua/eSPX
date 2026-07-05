@@ -5,11 +5,10 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"espx/internal/config"
+	"espx/pkg/lifecycle"
 	"espx/internal/logevacuator"
 )
 
@@ -23,7 +22,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := lifecycle.NotifyContext(context.Background())
 	defer stop()
 
 	store, err := logevacuator.NewS3Store(ctx, logevacuator.S3Config{
@@ -40,9 +39,10 @@ func main() {
 	}
 
 	evac, err := logevacuator.NewEvacuator(logevacuator.Config{
-		LogDir:         cfg.LogDir,
-		CheckpointPath: cfg.CheckpointPath,
-		ScanInterval:   time.Duration(cfg.ScanIntervalMs) * time.Millisecond,
+		LogDir:                 cfg.LogDir,
+		CheckpointPath:         cfg.CheckpointPath,
+		ScanInterval:           time.Duration(cfg.ScanIntervalMs) * time.Millisecond,
+		RequireCompactorMarker: cfg.RequireCompactorMarker,
 	}, store)
 	if err != nil {
 		slog.Error("failed to initialize evacuator", "error", err)

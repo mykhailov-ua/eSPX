@@ -69,9 +69,9 @@ func TestChaos_notifierConcurrentDelivery(t *testing.T) {
 	assert.Len(t, mockProv.Sent, notifications)
 
 	logChaosProof(t, "notifier_concurrent_delivery", map[string]string{
-		"workers":        fmt.Sprintf("%d", workerCount),
-		"notifications":  fmt.Sprintf("%d", notifications),
-		"sent_total":     fmt.Sprintf("%d", len(mockProv.Sent)),
-		"double_send":    "false",
+		"workers":       fmt.Sprintf("%d", workerCount),
+		"notifications": fmt.Sprintf("%d", notifications),
+		"sent_total":    fmt.Sprintf("%d", len(mockProv.Sent)),
+		"double_send":   "false",
 	})
 }

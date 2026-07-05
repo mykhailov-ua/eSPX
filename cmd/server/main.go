@@ -4,14 +4,13 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"espx/internal/ads"
 	"espx/internal/ads/db"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/pkg/lifecycle"
 
 	"github.com/panjf2000/gnet/v2"
 	"github.com/redis/go-redis/v9"
@@ -144,12 +143,11 @@ func main() {
 		}
 	}()
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	sig := <-stop
+	sig := lifecycle.WaitSignal()
 	slog.Info("received shutdown signal", "signal", sig.String())
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), time.Duration(cfg.Lifecycle.ShutdownTimeoutMs)*time.Millisecond)
+	timeouts := lifecycle.TimeoutsFromConfig(cfg)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), timeouts.Shutdown)
 	defer shutdownCancel()
 
 	cancel()

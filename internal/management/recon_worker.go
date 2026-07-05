@@ -32,6 +32,9 @@ func (w *ReconWorker) Start(ctx context.Context) {
 	quotaTicker := time.NewTicker(10 * time.Second)
 	defer quotaTicker.Stop()
 
+	drainCheckTicker := time.NewTicker(time.Minute)
+	defer drainCheckTicker.Stop()
+
 	reconSvc := NewReconService(w.svc)
 
 	for {
@@ -48,6 +51,8 @@ func (w *ReconWorker) Start(ctx context.Context) {
 			if w.svc.cfg != nil && (w.svc.cfg.QuotaMode == "shadow" || w.svc.cfg.QuotaMode == "live") {
 				w.ReconcileQuotas(ctx)
 			}
+		case <-drainCheckTicker.C:
+			w.svc.CheckStuckDrainJobs(ctx)
 		}
 	}
 }
@@ -67,6 +72,9 @@ func (w *ReconWorker) ReconcileQuotas(ctx context.Context) {
 
 		if err != nil {
 			slog.Error("redis shard is unreachable in recon, releasing stuck reservations", "shard", shardIdx, "error", err)
+			if w.svc.alerter != nil {
+				w.svc.alerter.AlertRedisShardUnhealthy(shardIdx, err)
+			}
 			// Shard is dead! Release all reservations on this shard that haven't been updated for 60 seconds
 			_, dbErr := pool.Exec(ctx, `
 				UPDATE campaign_quotas

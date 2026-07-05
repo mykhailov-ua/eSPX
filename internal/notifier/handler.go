@@ -27,6 +27,11 @@ func (handler *Handler) SendNotification(ctx context.Context, req *pb.SendNotifi
 	return resp, mapRPCError(err)
 }
 
+func (handler *Handler) SendNotificationBatch(ctx context.Context, req *pb.SendNotificationBatchRequest) (*pb.SendNotificationBatchResponse, error) {
+	resp, err := handler.service.SendNotificationBatch(ctx, req)
+	return resp, mapRPCError(err)
+}
+
 func (handler *Handler) GetNotification(ctx context.Context, req *pb.GetNotificationRequest) (*pb.GetNotificationResponse, error) {
 	resp, err := handler.service.GetNotification(ctx, req)
 	return resp, mapRPCError(err)
@@ -39,7 +44,9 @@ func mapRPCError(err error) error {
 	if errors.Is(err, ErrRecipientRequired) ||
 		errors.Is(err, ErrBodyRequired) ||
 		errors.Is(err, ErrUnsupportedProvider) ||
-		errors.Is(err, ErrInvalidNotificationID) {
+		errors.Is(err, ErrInvalidNotificationID) ||
+		errors.Is(err, ErrRateLimited) ||
+		errors.Is(err, ErrBatchEmpty) {
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
 	if errors.Is(err, ErrNotificationNotFound) || errors.Is(err, pgx.ErrNoRows) {

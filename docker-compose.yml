@@ -262,11 +262,15 @@ services:
       - .env
     volumes:
       - espx_logs:/var/log/espx:rw
+      - ./deploy/geoip:/deploy/geoip:rw
     environment:
       - DB_DSN=${DB_DSN}
       - REDIS_ADDRS=127.0.0.1:6479,127.0.0.1:6480,127.0.0.1:6481,127.0.0.1:6482,127.0.0.1:6483,127.0.0.1:6484
       - CH_DSN=${CH_DSN}
       - PROCESSOR_PORT=${PROCESSOR_PORT:-8186}
+      - GEOIP_DB_PATH=/deploy/geoip/GeoLite2-Country.mmdb
+      - GEOIP_UPDATER_ENABLED=${GEOIP_UPDATER_ENABLED:-false}
+      - MAXMIND_LICENSE_KEY=${MAXMIND_LICENSE_KEY:-}
       - DB_PROCESSOR_MAX_CONNS=${DB_PROCESSOR_MAX_CONNS}
       - ENV=${ENV:-development}
       - GOMEMLIMIT=1500MiB  # processor holds larger in-flight batches; needs wider heap
@@ -344,6 +348,11 @@ services:
       - BILLING_SERVER_PORT=51054
       - PAYMENT_SERVER_HOST=127.0.0.1
       - PAYMENT_SERVER_PORT=51052
+      - NOTIFIER_SERVER_HOST=127.0.0.1
+      - NOTIFIER_PORT=8085
+      - ALERTMANAGER_WEBHOOK_ENABLED=${ALERTMANAGER_WEBHOOK_ENABLED:-false}
+      - ALERTMANAGER_WEBHOOK_TOKEN=${ALERTMANAGER_WEBHOOK_TOKEN:-}
+      - BLACKLIST_JANITOR_ENABLED=${BLACKLIST_JANITOR_ENABLED:-true}
       - DB_DSN=${DB_DSN}
       - REDIS_ADDRS=127.0.0.1:6479
     deploy:
@@ -377,6 +386,9 @@ services:
     environment:
       - NOTIFIER_PORT=8085
       - DB_DSN=${DB_DSN}
+      - GOMEMLIMIT=400MiB
+      - NOTIFIER_WORKER_CONCURRENCY=1
+      - NOTIFIER_GROUP_PARALLELISM=2
     deploy:
       resources:
         limits:
@@ -440,14 +452,14 @@ services:
       - PAYMENT_WEBHOOK_PORT=8187
       - SETTLEMENT_SERVER_HOST=127.0.0.1
       - SETTLEMENT_SERVER_PORT=51053
-      - DB_DSN=${DB_DSN}
+      - PAYMENT_DB_DSN=${PAYMENT_DB_DSN}
     deploy:
       resources:
         limits:
           memory: 512M
     restart: always
     depends_on:
-      db:
+      db-payment:
         condition: service_healthy
       management:
         condition: service_started
@@ -516,6 +528,39 @@ services:
       resources:
         limits:
           memory: 2G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+
+  # Payment-only Postgres: checkout intents, webhooks, settlement outbox (compliance isolation from ads ledger).
+  db-payment:
+    image: postgres:${POSTGRES_VERSION}
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_USER=${PAYMENT_DB_USER}
+      - POSTGRES_PASSWORD=${PAYMENT_DB_PASSWORD}
+      - POSTGRES_DB=${PAYMENT_DB_NAME}
+    ports:
+      - "${PAYMENT_DB_PORT}:${PAYMENT_DB_PORT}"
+    command:
+      ["postgres", "-p", "${PAYMENT_DB_PORT}", "-c", "max_connections=100", "-c", "shared_buffers=256MB", "-c", "work_mem=16MB", "-c", "maintenance_work_mem=64MB", "-c", "effective_cache_size=768MB"]
+    volumes:
+      - db_payment_data:/var/lib/postgresql/data
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -p ${PAYMENT_DB_PORT} -U ${PAYMENT_DB_USER} -d ${PAYMENT_DB_NAME}"]
+      interval: ${HEALTHCHECK_INTERVAL}
+      timeout: ${HEALTHCHECK_TIMEOUT}
+      retries: ${HEALTHCHECK_RETRIES}
+    deploy:
+      resources:
+        limits:
+          memory: 1G
     logging:
       driver: "json-file"
       options:
@@ -746,7 +791,7 @@ services:
   alertmanager:
     image: prom/alertmanager:latest
     network_mode: "${NET_MODE:-host}"
-    # Routes firing alerts to alertmanager-telegram on :8222.
+    # Routes firing alerts to management Alertmanager webhook adapter on :8188.
     command: ["--config.file=/etc/alertmanager/alertmanager.yml", "--web.listen-address=:9093"]
     volumes:
       - ./deploy/monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
@@ -781,6 +826,33 @@ services:
         max-size: "100m"
         max-file: "3"
 
+  # Warm-tier downsampling of rotated audit segments (local FS MVP). Profile "tools" only.
+  log-compactor:
+    build:
+      context: .
+      dockerfile: Dockerfile.log-compactor
+    volumes:
+      - espx_logs:/var/log/espx:ro
+      - log_compactor_state:/var/lib/espx:rw
+    environment:
+      - LOG_COMPACTOR_BACKEND=local
+      - LOG_COMPACTOR_SOURCE_DIR=/var/log/espx
+      - LOG_COMPACTOR_WARM_DIR=/var/lib/espx/log-store/warm
+      - LOG_COMPACTOR_HOT_MIN_AGE_H=24
+      - LOG_COMPACTOR_WARM_SAMPLE_RATE=1000
+      - LOG_COMPACTOR_WORK_INTERVAL_H=1
+      - LOG_COMPACTOR_METRICS_PORT=9190
+      - CH_DSN=${CH_DSN}
+      - LOG_COMPACTOR_COLD_WARM_MIN_AGE_D=7
+      - LOG_COMPACTOR_COLD_WORK_INTERVAL_H=24
+    profiles:
+      - tools
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   # Off-path rsync of rotated .log.zst.ready segments to remote storage. Profile "tools" only.
   log-evacuator:
     build:
@@ -810,7 +882,8 @@ networks:
   monitoring: # clickhouse metrics export
 
 volumes:
-  db_data:           # postgres data dir
+  db_data:           # postgres data dir (ads, auth, billing, notifier)
+  db_payment_data:   # payment schema only
   clickhouse_data:   # clickhouse parts and metadata
   redis_0_data:      # per-shard AOF/RDB; keys are not shared across shards
   redis_1_data:
@@ -819,3 +892,4 @@ volumes:
   redis_4_data:
   redis_5_data:
   espx_logs:         # shared mmap audit logs from all trackers/processor
+  log_compactor_state: # warm-tier compactor checkpoints and output

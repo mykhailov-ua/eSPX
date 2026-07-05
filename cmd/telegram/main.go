@@ -10,9 +10,9 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
+
+	"espx/pkg/lifecycle"
 )
 
 // Alert mirrors one Alertmanager notification for decoding because webhook JSON is nested and partially typed.
@@ -122,15 +122,11 @@ func main() {
 		}
 	}()
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	<-stop
+	sig := lifecycle.WaitSignal()
+	slog.Info("received shutdown signal", "signal", sig.String())
 
-	slog.Info("shutting down proxy")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := server.Shutdown(ctx); err != nil {
+	timeouts := lifecycle.TimeoutsFromEnv()
+	if err := lifecycle.ShutdownHTTPServer(server, timeouts.Shutdown); err != nil {
 		slog.Error("proxy shutdown failed", "error", err)
 	}
 	slog.Info("proxy shutdown complete")

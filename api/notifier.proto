@@ -10,6 +10,9 @@ service NotifierService {
   // Enqueues a notification to be sent asynchronously.
   rpc SendNotification(SendNotificationRequest) returns (SendNotificationResponse);
 
+  // Enqueues multiple notifications in one RPC.
+  rpc SendNotificationBatch(SendNotificationBatchRequest) returns (SendNotificationBatchResponse);
+
   // Retrieves the status of a specific notification.
   rpc GetNotification(GetNotificationRequest) returns (GetNotificationResponse);
 }
@@ -27,6 +30,14 @@ enum NotificationStatus {
   NOTIFICATION_STATUS_PENDING = 1;
   NOTIFICATION_STATUS_SENT = 2;
   NOTIFICATION_STATUS_FAILED = 3;
+  NOTIFICATION_STATUS_PROCESSING = 4;
+}
+
+// DeliveryMode controls single-channel fallback vs parallel multi-channel fan-out.
+enum DeliveryMode {
+  DELIVERY_MODE_UNSPECIFIED = 0; // treated as FALLBACK
+  DELIVERY_MODE_FALLBACK = 1;
+  DELIVERY_MODE_BROADCAST = 2;
 }
 
 message SendNotificationRequest {
@@ -34,11 +45,23 @@ message SendNotificationRequest {
   string recipient = 2; // e.g. chat_id, webhook URL, or email address
   string title = 3;     // optional (e.g. subject line for email)
   string body = 4;      // message content (HTML for Telegram, Markdown for Slack, HTML/Text for Email)
+  DeliveryMode delivery_mode = 5;
+  repeated Provider broadcast_providers = 6; // optional subset; empty = all configured providers
+  string dedup_key = 7; // optional; suppresses duplicate enqueue within cooldown window
+}
+
+message SendNotificationBatchRequest {
+  repeated SendNotificationRequest notifications = 1;
+}
+
+message SendNotificationBatchResponse {
+  repeated SendNotificationResponse notifications = 1;
 }
 
 message SendNotificationResponse {
   string notification_id = 1;
   NotificationStatus status = 2;
+  bool deduplicated = 3;
 }
 
 message GetNotificationRequest {
@@ -60,4 +83,7 @@ message Notification {
   string error_message = 8;
   google.protobuf.Timestamp created_at = 9;
   google.protobuf.Timestamp updated_at = 10;
+  DeliveryMode delivery_mode = 11;
+  repeated Provider broadcast_providers = 12;
+  string dedup_key = 13;
 }

@@ -6,15 +6,16 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/pkg/lifecycle"
 	"espx/internal/notifier"
 	"espx/internal/notifier/pb"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	google_grpc "google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 )
@@ -39,13 +40,37 @@ func main() {
 	}
 	defer pool.Close()
 
-	providers := notifier.NewProvidersFromConfig(cfg)
-	svc := notifier.NewService(pool, providers)
+	notifier.RegisterMetrics()
+	prometheus.MustRegister(
+		collectors.NewGoCollector(),
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+	)
+	notifier.SetAdminBaseURL(cfg.Notifier.AdminBaseURL)
+	bundle := notifier.NewProviderBundleFromConfig(cfg)
+	svc := notifier.NewServiceWithOptions(pool, bundle.Providers, notifier.ServiceOptionsFromConfig(cfg))
 	grpcHandler := notifier.NewHandler(svc)
+
+	go notifier.StartQueueMetricsScraper(ctx, pool, 15*time.Second)
+	go notifier.StartCircuitBreakerMetricsScraper(ctx, bundle.Breakers, 15*time.Second)
+
+	retentionInterval := time.Duration(cfg.Notifier.RetentionIntervalHours) * time.Hour
+	notifier.NewRetentionJanitor(
+		pool,
+		retentionInterval,
+		cfg.Notifier.RetentionSentDays,
+		cfg.Notifier.RetentionFailedDays,
+	).Start(ctx)
 
 	workerInterval := time.Duration(cfg.Notifier.WorkerIntervalMs) * time.Millisecond
 	worker := notifier.NewWorker(svc, workerInterval, int32(cfg.Notifier.WorkerBatchSize))
-	worker.Start(ctx)
+	worker.StartPool(ctx, cfg.Notifier.WorkerConcurrency)
+
+	metricsPort := cfg.Notifier.MetricsPort
+	if metricsPort == "" {
+		metricsPort = "8086"
+	}
+	metricsSrv := lifecycle.StartMetrics(":" + metricsPort)
+	timeouts := lifecycle.TimeoutsFromConfig(cfg)
 
 	lis, err := net.Listen("tcp", ":"+cfg.Notifier.Port)
 	if err != nil {
@@ -68,15 +93,17 @@ func main() {
 		}
 	}()
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	<-stop
+	sig := lifecycle.WaitSignal()
+	slog.Info("received shutdown signal", "signal", sig.String())
 
-	slog.Info("shutting down notifier service")
-
-	grpcServer.GracefulStop()
 	cancel()
-	worker.Wait()
+	if err := lifecycle.Wait(timeouts.Wait, worker.Wait); err != nil {
+		slog.Warn("notifier worker drain timed out", "error", err)
+	}
+	lifecycle.ShutdownGRPC(grpcServer, timeouts.Shutdown)
+	if err := metricsSrv.Shutdown(timeouts.Wait); err != nil {
+		slog.Error("notifier metrics server shutdown failed", "error", err)
+	}
 
 	slog.Info("notifier service shutdown complete")
 }

@@ -115,6 +115,27 @@ func (p *MaxMindProvider) IsAnonymous(ipStr string) (bool, error) {
 	return record.IsAnonymous || record.IsAnonymousVPN || record.IsHostingProvider || record.IsPublicProxy || record.IsTorExitNode, nil
 }
 
+// Reload atomically swaps the MaxMind reader after a database file update on disk.
+func (p *MaxMindProvider) Reload(dbPath string) error {
+	if p == nil {
+		return fmt.Errorf("geoip provider is nil")
+	}
+	db, err := maxminddb.Open(dbPath)
+	if err != nil {
+		return fmt.Errorf("failed to open maxmind db: %w", err)
+	}
+
+	p.mu.Lock()
+	old := p.reader
+	p.reader = db
+	p.mu.Unlock()
+
+	if old != nil {
+		return old.Close()
+	}
+	return nil
+}
+
 // Close releases the MaxMind database reader.
 func (p *MaxMindProvider) Close() error {
 	p.mu.Lock()

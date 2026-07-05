@@ -35,12 +35,17 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	pool, err := database.Connect(ctx, string(cfg.DBDSN), cfg.DBTrackerMaxConns, cfg.DBMinConns)
+	pool, err := database.Connect(ctx, string(cfg.PaymentDBDSN), cfg.DBTrackerMaxConns, cfg.DBMinConns)
 	if err != nil {
-		slog.Error("failed to connect to database", "error", err)
+		slog.Error("failed to connect to payment database", "error", err)
 		os.Exit(1)
 	}
 	defer pool.Close()
+
+	if err := payment.ApplyMigrations(ctx, pool); err != nil {
+		slog.Error("failed to apply payment schema migrations", "error", err)
+		os.Exit(1)
+	}
 
 	prov := payment.NewProvider(cfg)
 	payment.LogProviderMode(cfg)

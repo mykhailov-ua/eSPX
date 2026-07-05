@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// logRtbChaosProof emits chaos_proof lines parsed by scripts/test-chaos.sh.
+// logRtbChaosProof emits chaos_proof lines parsed by scripts/chaos/test_chaos.sh.
 func logRtbChaosProof(t *testing.T, fault string, kv map[string]string) {
 	t.Helper()
 	var b strings.Builder

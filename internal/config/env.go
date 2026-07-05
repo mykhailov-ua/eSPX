@@ -19,6 +19,7 @@ type Config struct {
 	ManagementPort             string
 	MetricsPort                string
 	DBDSN                      Secret
+	PaymentDBDSN               Secret
 	RedisAddrs                 []string
 	RedisSentinelAddrs         []string
 	RedisMasterNames           []string
@@ -90,12 +91,22 @@ type Config struct {
 	StripeSecretKey            Secret
 	StripeWebhookSecret        Secret
 	Management                 struct {
-		RetentionDays          int
-		CancellationFeePercent float64
-		ReconIntervalMs        int
-		PacingIntervalMs       int
-		RateLimitRPS           float64
-		RateLimitBurst         int
+		RetentionDays               int
+		CancellationFeePercent      float64
+		ReconIntervalMs             int
+		PacingIntervalMs            int
+		RateLimitRPS                float64
+		RateLimitBurst              int
+		OpsAlertsEnabled            bool
+		OpsAlertCooldownSec         int
+		DrainStuckThresholdSec      int
+		BlacklistJanitorEnabled     bool
+		BlacklistJanitorIntervalSec int
+		BlacklistAutoTTLHours       int
+		BlacklistFraudTTLHours      int
+		AlertmanagerWebhookEnabled  bool
+		AlertmanagerWebhookToken    string
+		OpsAlertOutboxStuckSec      int
 	}
 	CampaignUpdateChannel string
 
@@ -163,6 +174,7 @@ type Config struct {
 	ManagementURL           string
 
 	Notifier struct {
+		ServerHost              string
 		Port                    string
 		WorkerIntervalMs        int
 		WorkerBatchSize         int
@@ -180,6 +192,16 @@ type Config struct {
 		SMTPUsername            string
 		SMTPPassword            Secret
 		SMTPSender              string
+		MetricsPort             string
+		RetentionSentDays       int
+		RetentionFailedDays     int
+		RetentionIntervalHours  int
+		AdminBaseURL            string
+		WorkerConcurrency       int
+		DedupCooldownSec        int
+		ClaimStaleSec           int
+		GroupParallelism        int
+		RateLimitPerMinute      int
 	}
 
 	IVT struct {
@@ -191,6 +213,16 @@ type Config struct {
 		MinImpressions     uint64
 		ClickToImpRatio    float64
 		MinIPsPerUA        uint64
+	}
+
+	GeoIP struct {
+		DBPath              string
+		StagingPath         string
+		EditionID           string
+		LicenseKey          string
+		UpdaterEnabled      bool
+		UpdateIntervalHours int
+		WatcherIntervalSec  int
 	}
 
 	Billing struct {
@@ -230,6 +262,7 @@ func Load() (*Config, error) {
 		ProcessorPort:               os.Getenv("PROCESSOR_PORT"),
 		ManagementPort:              os.Getenv("MANAGEMENT_PORT"),
 		DBDSN:                       Secret(os.Getenv("DB_DSN")),
+		PaymentDBDSN:                Secret(os.Getenv("PAYMENT_DB_DSN")),
 		RedisAddrs:                  trimCommaList(os.Getenv("REDIS_ADDRS")),
 		RedisSentinelAddrs:          trimCommaList(os.Getenv("REDIS_SENTINEL_ADDRS")),
 		RedisMasterNames:            trimCommaList(os.Getenv("REDIS_MASTER_NAMES")),
@@ -371,6 +404,10 @@ func Load() (*Config, error) {
 		cfg.ManagementURL = "http://127.0.0.1:" + cfg.ManagementPort
 	}
 
+	cfg.Notifier.ServerHost = os.Getenv("NOTIFIER_SERVER_HOST")
+	if cfg.Notifier.ServerHost == "" {
+		cfg.Notifier.ServerHost = "127.0.0.1"
+	}
 	cfg.Notifier.Port = os.Getenv("NOTIFIER_PORT")
 	if cfg.Notifier.Port == "" {
 		cfg.Notifier.Port = "8085"
@@ -391,6 +428,22 @@ func Load() (*Config, error) {
 	cfg.Notifier.SMTPUsername = os.Getenv("SMTP_USERNAME")
 	cfg.Notifier.SMTPPassword = Secret(os.Getenv("SMTP_PASSWORD"))
 	cfg.Notifier.SMTPSender = os.Getenv("SMTP_SENDER")
+	cfg.Notifier.MetricsPort = os.Getenv("NOTIFIER_METRICS_PORT")
+	if cfg.Notifier.MetricsPort == "" {
+		cfg.Notifier.MetricsPort = "8086"
+	}
+	cfg.Notifier.RetentionSentDays = getEnvInt("NOTIFIER_RETENTION_SENT_DAYS", 30)
+	cfg.Notifier.RetentionFailedDays = getEnvInt("NOTIFIER_RETENTION_FAILED_DAYS", 90)
+	cfg.Notifier.RetentionIntervalHours = getEnvInt("NOTIFIER_RETENTION_INTERVAL_HOURS", 24)
+	cfg.Notifier.AdminBaseURL = os.Getenv("NOTIFIER_ADMIN_BASE_URL")
+	if cfg.Notifier.AdminBaseURL == "" {
+		cfg.Notifier.AdminBaseURL = cfg.ManagementURL
+	}
+	cfg.Notifier.WorkerConcurrency = getEnvInt("NOTIFIER_WORKER_CONCURRENCY", 1)
+	cfg.Notifier.DedupCooldownSec = getEnvInt("NOTIFIER_DEDUP_COOLDOWN_SEC", 300)
+	cfg.Notifier.ClaimStaleSec = getEnvInt("NOTIFIER_CLAIM_STALE_SEC", 300)
+	cfg.Notifier.GroupParallelism = getEnvInt("NOTIFIER_GROUP_PARALLELISM", 2)
+	cfg.Notifier.RateLimitPerMinute = getEnvInt("NOTIFIER_RATE_LIMIT_PER_MINUTE", 60)
 
 	cfg.IVT.Enabled = getEnvBool("IVT_DETECTOR_ENABLED", true)
 	cfg.IVT.ScanIntervalMs = getEnvInt("IVT_DETECTOR_SCAN_INTERVAL_MS", 300000)
@@ -421,6 +474,33 @@ func Load() (*Config, error) {
 	cfg.Management.PacingIntervalMs = getEnvInt("PACING_CONTROLLER_INTERVAL_MS", 300_000)
 	cfg.Management.RateLimitRPS = getEnvFloat("MANAGEMENT_RATE_LIMIT_RPS", 10)
 	cfg.Management.RateLimitBurst = getEnvInt("MANAGEMENT_RATE_LIMIT_BURST", 50)
+	cfg.Management.OpsAlertsEnabled = getEnvBool("OPS_ALERTS_ENABLED", false)
+	cfg.Management.OpsAlertCooldownSec = getEnvInt("OPS_ALERT_COOLDOWN_SEC", 300)
+	cfg.Management.DrainStuckThresholdSec = getEnvInt("OPS_ALERT_DRAIN_STUCK_SEC", 900)
+	cfg.Management.BlacklistJanitorEnabled = getEnvBool("BLACKLIST_JANITOR_ENABLED", true)
+	cfg.Management.BlacklistJanitorIntervalSec = getEnvInt("BLACKLIST_JANITOR_INTERVAL_SEC", 60)
+	cfg.Management.BlacklistAutoTTLHours = getEnvInt("BLACKLIST_AUTO_TTL_HOURS", 24)
+	cfg.Management.BlacklistFraudTTLHours = getEnvInt("BLACKLIST_FRAUD_TTL_HOURS", 168)
+	cfg.Management.AlertmanagerWebhookEnabled = getEnvBool("ALERTMANAGER_WEBHOOK_ENABLED", false)
+	cfg.Management.AlertmanagerWebhookToken = os.Getenv("ALERTMANAGER_WEBHOOK_TOKEN")
+	cfg.Management.OpsAlertOutboxStuckSec = getEnvInt("OPS_ALERT_OUTBOX_STUCK_SEC", 120)
+
+	cfg.GeoIP.DBPath = os.Getenv("GEOIP_DB_PATH")
+	if cfg.GeoIP.DBPath == "" {
+		cfg.GeoIP.DBPath = "deploy/geoip/GeoLite2-Country.mmdb"
+	}
+	cfg.GeoIP.StagingPath = os.Getenv("GEOIP_STAGING_PATH")
+	if cfg.GeoIP.StagingPath == "" {
+		cfg.GeoIP.StagingPath = cfg.GeoIP.DBPath + ".staging"
+	}
+	cfg.GeoIP.EditionID = os.Getenv("MAXMIND_EDITION_ID")
+	if cfg.GeoIP.EditionID == "" {
+		cfg.GeoIP.EditionID = "GeoLite2-Country"
+	}
+	cfg.GeoIP.LicenseKey = os.Getenv("MAXMIND_LICENSE_KEY")
+	cfg.GeoIP.UpdaterEnabled = getEnvBool("GEOIP_UPDATER_ENABLED", false)
+	cfg.GeoIP.UpdateIntervalHours = getEnvInt("GEOIP_UPDATE_INTERVAL_HOURS", 24)
+	cfg.GeoIP.WatcherIntervalSec = getEnvInt("GEOIP_WATCHER_INTERVAL_SEC", 60)
 
 	cfg.Lifecycle.ShutdownTimeoutMs = getEnvInt("SHUTDOWN_TIMEOUT_MS", 15000)
 	cfg.Lifecycle.DrainTimeoutMs = getEnvInt("DRAIN_TIMEOUT_MS", 10000)
@@ -440,6 +520,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.DBDSN == "" {
 		return nil, errors.New("DB_DSN is required")
+	}
+	if cfg.PaymentDBDSN == "" {
+		cfg.PaymentDBDSN = cfg.DBDSN
 	}
 	if len(cfg.RedisAddrs) == 0 {
 		return nil, errors.New("REDIS_ADDRS is required")
@@ -524,6 +607,43 @@ func (c *Config) NotifierConfigured() bool {
 		c.Notifier.SlackWebhookURL != "" ||
 		c.Notifier.SMTPHost != "" ||
 		c.Notifier.SMTPSender != ""
+}
+
+// OpsAlertsEnabled reports whether management should dial notifier for operator alerts.
+func (c *Config) OpsAlertsEnabled() bool {
+	if c == nil || !c.Management.OpsAlertsEnabled {
+		return false
+	}
+	return c.opsAlertRecipient() != ""
+}
+
+// AlertmanagerWebhookEnabled reports whether management should accept Alertmanager webhooks.
+func (c *Config) AlertmanagerWebhookEnabled() bool {
+	if c == nil || !c.Management.AlertmanagerWebhookEnabled {
+		return false
+	}
+	return c.opsAlertRecipient() != ""
+}
+
+// NotifierDialEnabled reports whether management should open a notifier gRPC client.
+func (c *Config) NotifierDialEnabled() bool {
+	return c.OpsAlertsEnabled() || c.AlertmanagerWebhookEnabled()
+}
+
+func (c *Config) opsAlertRecipient() string {
+	if c.Notifier.TelegramChatID != "" {
+		return c.Notifier.TelegramChatID
+	}
+	if c.Notifier.SlackWebhookURL != "" {
+		return string(c.Notifier.SlackWebhookURL)
+	}
+	if c.Notifier.SMSDefaultRecipient != "" {
+		return c.Notifier.SMSDefaultRecipient
+	}
+	if c.Notifier.SMTPSender != "" {
+		return c.Notifier.SMTPSender
+	}
+	return ""
 }
 
 // IVTDetectorEnabled reports whether the management-hosted IVT scan loop should run.

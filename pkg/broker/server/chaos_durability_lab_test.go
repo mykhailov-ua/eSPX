@@ -17,7 +17,7 @@ func skipChaosLab(t *testing.T) {
 	t.Helper()
 	skipChaosIntegration(t)
 	if os.Getenv("BROKER_CHAOS_LAB") != "1" && os.Getenv("CI") == "" {
-		t.Skip("durability lab tests run with BROKER_CHAOS_LAB=1 or in CI; use scripts/broker-chaos-lab.sh")
+		t.Skip("durability lab tests run with BROKER_CHAOS_LAB=1 or in CI; use scripts/chaos/broker_chaos_lab.sh")
 	}
 }
 

@@ -3,8 +3,6 @@ name: Sentinel Chaos
 on:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -21,7 +19,7 @@ jobs:
           cache: true
 
       - name: Prepare env
-        run: bash scripts/sentinel-chaos-env.sh
+        run: bash scripts/chaos/sentinel_chaos_env.sh
 
       - name: Sentinel failover chaos test
-        run: bash scripts/test-sentinel-failover.sh
+        run: bash scripts/chaos/test_sentinel_failover.sh

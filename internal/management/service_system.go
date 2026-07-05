@@ -20,17 +20,25 @@ type BlacklistDTO struct {
 	IP        string `json:"ip"`
 	Reason    string `json:"reason"`
 	CreatedAt string `json:"created_at"`
+	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
 // BlockIP persists a blacklist entry and propagates it to Redis and nginx via cold.
 func (s *Service) BlockIP(ctx context.Context, ip string, source string) error {
+	return s.BlockIPWithTTL(ctx, ip, source, nil)
+}
+
+// BlockIPWithTTL persists a blacklist entry with optional per-request TTL override.
+func (s *Service) BlockIPWithTTL(ctx context.Context, ip string, source string, ttlSeconds *int64) error {
 	reason := normalizeBlacklistReason(source)
+	expiresAt := resolveBlacklistExpiry(reason, ttlSeconds, blacklistTTLFromConfig(s.cfg))
 
 	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 		_, err := q.CreateBlacklistIP(ctx, db.CreateBlacklistIPParams{
-			Ip:     ip,
-			Reason: reason,
+			Ip:        ip,
+			Reason:    reason,
+			ExpiresAt: expiresAt,
 		})
 		if err != nil {
 			return err
@@ -114,12 +122,16 @@ func (s *Service) ListBlacklist(ctx context.Context, limit, offset int32) ([]Bla
 }
 
 func blacklistToDTO(r db.IpBlacklist) BlacklistDTO {
-	return BlacklistDTO{
+	dto := BlacklistDTO{
 		ID:        r.ID,
 		IP:        r.Ip,
 		Reason:    r.Reason,
 		CreatedAt: r.CreatedAt.Time.Format(time.RFC3339),
 	}
+	if r.ExpiresAt.Valid {
+		dto.ExpiresAt = r.ExpiresAt.Time.UTC().Format(time.RFC3339)
+	}
+	return dto
 }
 
 // GetSettings loads all system settings from Postgres for the admin API.

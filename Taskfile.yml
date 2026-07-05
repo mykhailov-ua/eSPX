@@ -13,27 +13,27 @@ tasks:
   gen:
     desc: Run sqlc, templ, and protoc code generation
     cmds:
-      - bash scripts/gen.sh --all
+      - bash scripts/codegen/gen.sh --all
 
   docker-up:
     desc: Start infrastructure containers (PostgreSQL, sharded Redis, ClickHouse) in detached mode
     cmds:
-      - bash scripts/dev-stack.sh infra
+      - bash scripts/dev/dev_stack.sh infra
 
   docker-down:
     desc: Stop and remove all infrastructure containers
     cmds:
-      - bash scripts/dev-stack.sh down
+      - bash scripts/dev/dev_stack.sh down
 
   check-deps:
     desc: Run dependency healthcheck script to verify all databases and migrations are functional
     cmds:
-      - bash scripts/check-deps.sh
+      - bash scripts/ci/check_deps.sh
 
   dev-preflight:
     desc: check-deps then smoke-local HTTP/redis health
     cmds:
-      - bash scripts/dev-preflight.sh
+      - bash scripts/dev/dev_preflight.sh
 
   test-full:
     desc: Run all unit and integration tests with the Go race detector enabled
@@ -46,4 +46,4 @@ tasks:
     env:
       BASELINE_WORKTREE: ../baseline-local
     cmds:
-      - bash scripts/perf-gate-run.sh
+      - bash scripts/perf/perf_gate_run.sh

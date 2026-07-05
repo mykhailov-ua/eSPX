@@ -117,14 +117,23 @@ ORDER BY created_at DESC
 LIMIT $2 OFFSET $3;
 
 -- name: CreateBlacklistIP :one
-INSERT INTO ip_blacklist (ip, reason)
-VALUES ($1, $2)
-ON CONFLICT (ip) DO UPDATE SET reason = EXCLUDED.reason, created_at = CURRENT_TIMESTAMP
+INSERT INTO ip_blacklist (ip, reason, expires_at)
+VALUES ($1, $2, $3)
+ON CONFLICT (ip) DO UPDATE
+    SET reason = EXCLUDED.reason,
+        created_at = CURRENT_TIMESTAMP,
+        expires_at = EXCLUDED.expires_at
 RETURNING *;
 
 -- name: DeleteBlacklistIP :exec
 DELETE FROM ip_blacklist
 WHERE ip = $1;
+
+-- name: ListExpiredBlacklistIPs :many
+SELECT ip, reason FROM ip_blacklist
+WHERE expires_at IS NOT NULL AND expires_at <= NOW()
+ORDER BY expires_at ASC
+LIMIT $1;
 
 -- name: CountBlacklist :one
 SELECT COUNT(*) FROM ip_blacklist;

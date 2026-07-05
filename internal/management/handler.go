@@ -392,14 +392,15 @@ func (h *Handler) toggleEmergencyBreaker(w http.ResponseWriter, r *http.Request)
 // blockIP handles POST /admin/blacklist for operator-initiated IP blocks.
 func (h *Handler) blockIP(w http.ResponseWriter, r *http.Request) {
 	req, err := cold.DecodeRequest[struct {
-		IP     string `json:"ip"`
-		Source string `json:"source"`
+		IP         string `json:"ip"`
+		Source     string `json:"source"`
+		TTLSeconds *int64 `json:"ttl_seconds,omitempty"`
 	}](w, r, cold.DefaultMaxBody)
 	if err != nil || req.IP == "" {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
-	if err := h.svc.BlockIP(r.Context(), req.IP, req.Source); err != nil {
+	if err := h.svc.BlockIPWithTTL(r.Context(), req.IP, req.Source, req.TTLSeconds); err != nil {
 		writeServiceError(w, err, slog.String("ip", req.IP))
 		return
 	}

@@ -1,10 +1,10 @@
-.PHONY: fmt gen lint test test-unit test-int test-alloc-gate test-full test-chaos test-broker-chaos-lab test-sentinel-chaos build proto
+.PHONY: fmt gen lint test test-unit test-int test-alloc-gate test-full test-chaos test-broker-chaos-lab test-sentinel-chaos build proto check-local check-vuln
 
 fmt:
 	go fmt ./...
 
 gen:
-	bash scripts/gen.sh
+	bash scripts/codegen/gen.sh
 
 lint: gen fmt
 	@if [ -z "$$(which golangci-lint 2> /dev/null)" ]; then \
@@ -28,24 +28,30 @@ test-int: gen fmt
 
 # Chaos tests kill real containers (testcontainers). Requires Docker. Skipped by -short elsewhere.
 test-chaos:
-	bash scripts/test-chaos.sh
+	bash scripts/chaos/test_chaos.sh
 
 # Broker durability lab chaos: slow fsync, page cache, CPU throttle, Redis outage, optional Sentinel stack.
 test-broker-chaos-lab:
-	bash scripts/broker-chaos-lab.sh
+	bash scripts/chaos/broker_chaos_lab.sh
 
 # Sentinel failover chaos: docker compose redis+sentinel stack, stop master, verify go-redis client reads replica.
 test-sentinel-chaos:
-	bash scripts/test-sentinel-failover.sh
+	bash scripts/chaos/test_sentinel_failover.sh
 
 test: test-unit test-int
 
 # Full suite without -short; chaos tests run only in make test-chaos (CI chaos job).
-test-full: gen fmt
-	go test ./... -count=1 -timeout 30m -skip Chaos
+test-full: fmt
+	bash scripts/ci/full_test.sh
+
+check-local:
+	bash scripts/ci/local_check.sh
+
+check-vuln:
+	bash scripts/ci/govulncheck.sh
 
 build: gen fmt
 	docker build -t ad-event-processor:latest .
 
 proto:
-	bash scripts/gen.sh --proto
+	bash scripts/codegen/gen.sh --proto

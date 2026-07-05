@@ -12,12 +12,11 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"espx/internal/ads"
 	"espx/internal/ads/pb"
+	"espx/pkg/lifecycle"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -38,7 +37,7 @@ func main() {
 	)
 	flag.Parse()
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, cancel := lifecycle.NotifyContext(context.Background())
 	defer cancel()
 
 	opt, err := redis.ParseURL(*redisURL)

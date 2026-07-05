@@ -252,6 +252,21 @@ var (
 		Help: "Age in seconds of the oldest PENDING outbox event (0 when queue empty)",
 	})
 
+	ManagementOpsAlertEnqueueFailuresTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_management_ops_alert_enqueue_failures_total",
+		Help: "Failed notifier enqueue attempts from OpsAlerter and Alertmanager webhook",
+	})
+
+	GeoIPUpdateErrorsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_geoip_update_errors_total",
+		Help: "MaxMind GeoIP database update failures",
+	})
+
+	GeoIPReloadErrorsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_geoip_reload_errors_total",
+		Help: "GeoIP hot-reload failures in the tracker watcher",
+	})
+
 	// Fraud scoring metrics exist so ops can alert on IVT mix, signal prevalence, and L1 auto-reject rate.
 	FraudScoreHistogram = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "ad_fraud_score_histogram",

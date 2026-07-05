@@ -5,19 +5,16 @@ import (
 	"context"
 	"log/slog"
 	"net"
-	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
+	"sync"
 	"time"
-
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"espx/internal/auth"
 	"espx/internal/auth/db"
 	"espx/internal/auth/pb"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/pkg/lifecycle"
 
 	google_grpc "google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
@@ -73,8 +70,14 @@ func main() {
 	}
 	authService := auth.NewService(repo, tokenMaker, hasher, lockoutLimiter, rdb)
 	cleanupWorker := auth.NewSessionCleanupWorker(authService)
-	go cleanupWorker.Start(ctx, time.Minute)
+	var cleanupWG sync.WaitGroup
+	cleanupWG.Add(1)
+	go func() {
+		defer cleanupWG.Done()
+		cleanupWorker.Start(ctx, time.Minute)
+	}()
 	grpcHandler := auth.NewHandler(authService, cfg)
+	timeouts := lifecycle.TimeoutsFromConfig(cfg)
 
 	lis, err := net.Listen("tcp", ":"+cfg.AuthServerPort)
 	if err != nil {
@@ -89,14 +92,7 @@ func main() {
 		reflection.Register(server)
 	}
 
-	go func() {
-		mux := http.NewServeMux()
-		mux.Handle("/metrics", promhttp.Handler())
-		slog.Info("starting auth metrics server", "port", cfg.AuthMetricsPort)
-		if err := http.ListenAndServe(":"+cfg.AuthMetricsPort, mux); err != nil && err != http.ErrServerClosed {
-			slog.Error("metrics server failed", "error", err)
-		}
-	}()
+	metricsSrv := lifecycle.StartMetrics(":" + cfg.AuthMetricsPort)
 
 	slog.Info("starting auth gRPC server", "port", cfg.AuthServerPort)
 
@@ -107,23 +103,15 @@ func main() {
 		}
 	}()
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	<-stop
+	sig := lifecycle.WaitSignal()
+	slog.Info("received shutdown signal", "signal", sig.String())
 
-	slog.Info("shutting down auth gRPC server")
-
-	stopped := make(chan struct{})
-	go func() {
-		server.GracefulStop()
-		close(stopped)
-	}()
-
-	select {
-	case <-stopped:
-		slog.Info("gRPC server stopped cleanly")
-	case <-time.After(5 * time.Second):
-		slog.Warn("gRPC graceful shutdown timed out, force stopping")
-		server.Stop()
+	cancel()
+	if err := lifecycle.Wait(timeouts.Wait, cleanupWG.Wait); err != nil {
+		slog.Warn("auth session cleanup worker drain timed out", "error", err)
+	}
+	lifecycle.ShutdownGRPC(server, timeouts.Shutdown)
+	if err := metricsSrv.Shutdown(timeouts.Wait); err != nil {
+		slog.Error("auth metrics server shutdown failed", "error", err)
 	}
 }

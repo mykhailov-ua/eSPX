@@ -30,4 +30,22 @@ func (w *OutboxWorker) recordOutboxLagMetrics(ctx context.Context) {
 	}
 	metrics.ManagementOutboxPendingTotal.Set(float64(pending))
 	metrics.ManagementOutboxOldestPendingSeconds.Set(oldestSeconds)
+
+	if w.svc != nil && w.svc.alerter != nil && pending > 0 {
+		threshold := float64(w.svc.alerter.OutboxStuckThresholdSec())
+		if oldestSeconds >= threshold {
+			w.svc.alerter.AlertOutboxStuck(pending, oldestSeconds)
+		}
+	}
+}
+
+func (w *OutboxWorker) recordOutboxLagFromValues(pending int64, oldestSeconds float64) {
+	metrics.ManagementOutboxPendingTotal.Set(float64(pending))
+	metrics.ManagementOutboxOldestPendingSeconds.Set(oldestSeconds)
+	if w.svc != nil && w.svc.alerter != nil && pending > 0 {
+		threshold := float64(w.svc.alerter.OutboxStuckThresholdSec())
+		if oldestSeconds >= threshold {
+			w.svc.alerter.AlertOutboxStuck(pending, oldestSeconds)
+		}
+	}
 }

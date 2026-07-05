@@ -12,25 +12,7 @@ on:
       - 'pkg/broker/**'
       - 'deploy/nginx/lua/**'
       - 'api/**'
-      - 'scripts/perf-gate*.sh'
-      - 'scripts/perf_gate.go'
-      - 'scripts/stabilize-cpu.sh'
-      - 'scripts/install-benchstat.sh'
-  pull_request:
-    branches: [ main ]
-    paths:
-      - 'internal/ads/**'
-      - 'internal/rtb/**'
-      - 'internal/config/**'
-      - 'internal/database/redis*.go'
-      - 'pkg/logger/**'
-      - 'pkg/broker/**'
-      - 'deploy/nginx/lua/**'
-      - 'api/**'
-      - 'scripts/perf-gate*.sh'
-      - 'scripts/perf_gate.go'
-      - 'scripts/stabilize-cpu.sh'
-      - 'scripts/install-benchstat.sh'
+      - 'scripts/perf/**'
 
 jobs:
   performance-gate:
@@ -39,7 +21,7 @@ jobs:
     timeout-minutes: 30
     env:
       GOMAXPROCS: "1"
-      BASELINE_REF: ${{ github.event.pull_request.base.sha || 'main' }}
+      BASELINE_REF: main
       OUTDIR: ${{ github.workspace }}
       # Smoke on github-hosted: zero-alloc only. Strict benchstat when PERF_RUNNER_LABEL is set.
       PERF_GATE_STRICT: ${{ vars.PERF_RUNNER_LABEL != '' && 'true' || 'false' }}
@@ -65,10 +47,10 @@ jobs:
 
       - name: Stabilize CPU (performance governor)
         if: env.PERF_GATE_STRICT == 'true'
-        run: bash scripts/stabilize-cpu.sh
+        run: bash scripts/perf/stabilize_cpu.sh
 
       - name: Run performance gate
-        run: bash scripts/perf-gate-run.sh
+        run: bash scripts/perf/perf_gate_run.sh
 
       - name: Upload Benchmark Artifacts
         if: always() && env.PERF_GATE_STRICT == 'true'

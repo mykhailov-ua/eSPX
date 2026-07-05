@@ -8,24 +8,25 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"time"
 )
 
 // TelegramProvider delivers HTML messages via the Telegram Bot API.
 type TelegramProvider struct {
-	botToken  string
-	defaultID string
-	breaker   *CircuitBreaker
-	client    *http.Client
+	botToken           string
+	defaultID          string
+	breaker            *CircuitBreaker
+	requireCredentials bool
+	client             *http.Client
 }
 
 // NewTelegramProvider binds bot credentials and a fallback chat ID for empty recipients.
-func NewTelegramProvider(botToken, defaultID string, breaker *CircuitBreaker) *TelegramProvider {
+func NewTelegramProvider(botToken, defaultID string, breaker *CircuitBreaker, requireCredentials bool) *TelegramProvider {
 	return &TelegramProvider{
-		botToken:  botToken,
-		defaultID: defaultID,
-		breaker:   breaker,
+		botToken:           botToken,
+		defaultID:          defaultID,
+		breaker:            breaker,
+		requireCredentials: requireCredentials,
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -48,6 +49,9 @@ func (t *TelegramProvider) Send(ctx context.Context, recipient, title, body stri
 	}
 
 	if t.botToken == "" || chatID == "" {
+		if t.requireCredentials {
+			return fmt.Errorf("telegram credentials not configured")
+		}
 		slog.Info("telegram notification dry-run", "title", title, "body", body)
 		return nil
 	}
@@ -65,25 +69,25 @@ func (t *TelegramProvider) Send(ctx context.Context, recipient, title, body stri
 		"parse_mode": "HTML",
 	}
 
-	// 1. Build interactive buttons
+	// Build interactive buttons
 	notificationID, _ := NotificationIDFromContext(ctx)
-	ipRegex := regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`)
+	actions := BuildInteractiveActions(notificationID, title, body)
 	var inlineKeyboard [][]map[string]interface{}
 
-	if notificationID != "" {
+	if actions.AcknowledgeURL != "" {
 		inlineKeyboard = append(inlineKeyboard, []map[string]interface{}{
 			{
 				"text": "✅ Acknowledge Incident",
-				"url":  fmt.Sprintf("https://admin.espx.dev/admin/acknowledge?id=%s", notificationID),
+				"url":  actions.AcknowledgeURL,
 			},
 		})
 	}
 
-	if ip := ipRegex.FindString(body + " " + title); ip != "" {
+	if actions.BlockIPURL != "" {
 		inlineKeyboard = append(inlineKeyboard, []map[string]interface{}{
 			{
-				"text": fmt.Sprintf("🚫 Block IP %s", ip),
-				"url":  fmt.Sprintf("https://admin.espx.dev/admin/blacklist?ip=%s&source=manual", ip),
+				"text": fmt.Sprintf("🚫 Block IP %s", actions.BlockIP),
+				"url":  actions.BlockIPURL,
 			},
 		})
 	}

@@ -172,9 +172,9 @@ Auth lockout previously considered pipelined INCR; kept as Lua for atomic condit
 
 `edge-config.lua` (worker 0, 5s poll) mirrors `config:values` fields `rate_limit_per_min` and `rate_limit_window_ms` from Redis shard 0 into `lua_shared_dict edge_config`. `edge-rl.lua` applies a fixed-window counter per `campaign_id` before proxying; returns 429 when exceeded. Conn limits (`limit_conn` 200/IP, 8192 global) remain the OOM backstop.
 
-**Why edge blacklist:** Reject abusive IPs before they reach tracker TCP stack. Trade-off: stale cache up to TTL; emergency block propagation depends on outbox replication latency. Blacklist sets must be replicated to every shard before edge Lua is authoritative; run `scripts/redis-reconcile-post-deploy.sh` after deploy.
+**Why edge blacklist:** Reject abusive IPs before they reach tracker TCP stack. Trade-off: stale cache up to TTL; emergency block propagation depends on outbox replication latency. Blacklist sets must be replicated to every shard before edge Lua is authoritative; run `scripts/redis/redis_reconcile_post_deploy.sh` after deploy.
 
-**Planned edge hardening:** Lua pipeline fix (IP before body, no per-request Redis blacklist), optional XDP on public NIC (`deploy/edge/xdp/`). Tracker SLA (p95 < 50 ms, p99 < 80 ms, 100 ms ceiling) is measured on gnet; edge work protects it under abuse. Ops: `deploy/edge/` (sysctl, NIC tuning, XDP) and `scripts/edge-*.sh` (see [development.md](development.md)).
+**Planned edge hardening:** Lua pipeline fix (IP before body, no per-request Redis blacklist), optional XDP on public NIC (`deploy/edge/xdp/`). Tracker SLA (p95 < 50 ms, p99 < 80 ms, 100 ms ceiling) is measured on gnet; edge work protects it under abuse. Ops: `deploy/edge/` (sysctl, NIC tuning, XDP) and `scripts/edge/edge_*.sh` (see [development.md](development.md)).
 
 ---
 
@@ -379,15 +379,22 @@ Protobuf definitions in `api/` (buf generate to vtproto):
 
 ## Database Schemas
 
-Single Postgres database `ad_event_processor`:
+Postgres topology:
 
-| Migration tree | Domain |
-| :--- | :--- |
-| `internal/ads/migrations/` (26 files) | Campaigns, events (partitioned), ledger, outbox, templates, creatives, recon, fraud config |
-| `internal/auth/migrations/` (8 files) | Users, sessions, API keys |
-| `internal/payment/migrations/` (2 files) | Payment intents, webhooks, outbox |
-| `internal/billing/migrations/` (1 file) | Invoices, invoice lines, customer tax profiles |
-| `internal/notifier/migrations/` (1 file) | Notification queue and delivery status |
+| Instance | Compose service | Port (default) | Schemas |
+| :--- | :--- | :--- | :--- |
+| Core | `db` | 5430 | `public` (ads), `auth`, `billing`, `notifier` |
+| Payment | `db-payment` | 5431 | `payment` only |
+
+`cmd/payment` connects via `PAYMENT_DB_DSN` (falls back to `DB_DSN` when unset). Migrations run on payment startup from embedded `internal/payment/migrations/`.
+
+| Migration tree | Database | Domain |
+| :--- | :--- | :--- |
+| `internal/ads/migrations/` (26 files) | `db` | Campaigns, events (partitioned), ledger, outbox, templates, creatives, recon, fraud config |
+| `internal/auth/migrations/` (8 files) | `db` | Users, sessions, API keys |
+| `internal/payment/migrations/` (2 files) | `db-payment` | Payment intents, webhooks, outbox |
+| `internal/billing/migrations/` (1 file) | `db` | Invoices, invoice lines, customer tax profiles |
+| `internal/notifier/migrations/` (1 file) | `db` | Notification queue and delivery status |
 
 Money columns: BIGINT micro-units (migration 00020). Ledger type `PAYMENT_TOPUP` + `payment_intent_id` unique index (00024, 00025).
 
@@ -442,6 +449,6 @@ All long-running binaries honor `SHUTDOWN_TIMEOUT_MS` (default 15000) via `confi
 | gnet worker pool | Copies request buffer and re-parses HTTP when offloading from event loop |
 | ClickHouse dedup | `insert_deduplicate=1` is windowed, not permanent |
 | Auth Redis outage | Returns 401 fail-closed; optional future: 503 for infra vs 401 for invalid token |
-| Shard resize | StaticSlot remaps ~85% keys on N+1; blue/green + `scripts/redis-migrate-campaign.sh` required |
+| Shard resize | StaticSlot remaps ~85% keys on N+1; blue/green + `scripts/redis/redis_migrate_campaign.sh` required |
 
 **Conscious non-goals:** Redis Cluster (Sentinel covers failover); JumpHash on tracker (~84% divergence with StaticSlot management); removing gnet (perf gate dependency).

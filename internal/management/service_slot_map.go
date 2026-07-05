@@ -200,7 +200,13 @@ func (s *Service) MarkSlotMapMigrating(ctx context.Context, adminID uuid.UUID, v
 		"target_shard": targetShard,
 	}, nil)
 
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if s.alerter != nil {
+		s.alerter.AlertSlotMapMigrating(version, slots, targetShard)
+	}
+	return nil
 }
 
 // ActivateSlotMapVersion switches active_version after validation with audit log in the same tx.

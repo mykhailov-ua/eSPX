@@ -52,12 +52,14 @@ func (worker *Worker) Start(ctx context.Context) {
 					if ctx.Err() != nil {
 						return
 					}
+					workerIterationErrorsTotal.Inc()
 					slog.Error("notification worker processing iteration failed", "error", err, "retry_in", workerErrorBackoff)
 					timer.Reset(workerErrorBackoff)
 					continue
 				}
 
 				if processed > 0 {
+					workerBatchProcessed.Observe(float64(processed))
 					timer.Reset(0)
 				} else {
 					timer.Reset(worker.interval)
@@ -69,4 +71,15 @@ func (worker *Worker) Start(ctx context.Context) {
 
 func (worker *Worker) Wait() {
 	worker.wg.Wait()
+}
+
+// StartPool runs N independent polling loops for higher throughput.
+func (worker *Worker) StartPool(ctx context.Context, concurrency int) {
+	if concurrency <= 1 {
+		worker.Start(ctx)
+		return
+	}
+	for range concurrency {
+		worker.Start(ctx)
+	}
 }

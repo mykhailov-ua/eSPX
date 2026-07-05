@@ -8,22 +8,23 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"time"
 )
 
 // SlackProvider delivers messages via incoming webhook URLs.
 type SlackProvider struct {
-	defaultWebhook string
-	breaker        *CircuitBreaker
-	client         *http.Client
+	defaultWebhook     string
+	breaker            *CircuitBreaker
+	requireCredentials bool
+	client             *http.Client
 }
 
 // NewSlackProvider binds a default webhook used when the recipient field is empty.
-func NewSlackProvider(defaultWebhook string, breaker *CircuitBreaker) *SlackProvider {
+func NewSlackProvider(defaultWebhook string, breaker *CircuitBreaker, requireCredentials bool) *SlackProvider {
 	return &SlackProvider{
-		defaultWebhook: defaultWebhook,
-		breaker:        breaker,
+		defaultWebhook:     defaultWebhook,
+		breaker:            breaker,
+		requireCredentials: requireCredentials,
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -46,6 +47,9 @@ func (s *SlackProvider) Send(ctx context.Context, recipient, title, body string)
 	}
 
 	if webhookURL == "" {
+		if s.requireCredentials {
+			return fmt.Errorf("slack webhook not configured")
+		}
 		slog.Info("slack notification dry-run", "title", title, "body", body)
 		return nil
 	}
@@ -61,30 +65,29 @@ func (s *SlackProvider) Send(ctx context.Context, recipient, title, body string)
 
 	// Build interactive blocks
 	notificationID, _ := NotificationIDFromContext(ctx)
-	ipRegex := regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`)
-
+	actions := BuildInteractiveActions(notificationID, title, body)
 	var buttons []map[string]interface{}
 
-	if notificationID != "" {
+	if actions.AcknowledgeURL != "" {
 		buttons = append(buttons, map[string]interface{}{
 			"type": "button",
 			"text": map[string]interface{}{
 				"type": "plain_text",
 				"text": "✅ Acknowledge",
 			},
-			"url": fmt.Sprintf("https://admin.espx.dev/admin/acknowledge?id=%s", notificationID),
+			"url": actions.AcknowledgeURL,
 		})
 	}
 
-	if ip := ipRegex.FindString(body + " " + title); ip != "" {
+	if actions.BlockIPURL != "" {
 		buttons = append(buttons, map[string]interface{}{
 			"type":  "button",
 			"style": "danger",
 			"text": map[string]interface{}{
 				"type": "plain_text",
-				"text": fmt.Sprintf("🚫 Block IP %s", ip),
+				"text": fmt.Sprintf("🚫 Block IP %s", actions.BlockIP),
 			},
-			"url": fmt.Sprintf("https://admin.espx.dev/admin/blacklist?ip=%s&source=manual", ip),
+			"url": actions.BlockIPURL,
 		})
 	}
 

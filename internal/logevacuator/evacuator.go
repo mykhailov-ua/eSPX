@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+
+	"espx/internal/logcompactor"
 )
 
 const (
@@ -20,10 +22,11 @@ const (
 
 // Config configures the evacuator watcher and upload pipeline.
 type Config struct {
-	LogDir             string
-	CheckpointPath     string
-	ScanInterval       time.Duration
-	MultipartThreshold int64
+	LogDir                 string
+	CheckpointPath         string
+	ScanInterval           time.Duration
+	MultipartThreshold     int64
+	RequireCompactorMarker bool
 }
 
 // Evacuator watches for rotated segments and uploads them with checkpointed exactly-once semantics.
@@ -160,6 +163,10 @@ func (evac *Evacuator) scanReadySegments(ctx context.Context) error {
 }
 
 func (evac *Evacuator) processReadyFile(ctx context.Context, readyPath string) error {
+	if evac.cfg.RequireCompactorMarker && !logcompactor.CompactMarkerReady(readyPath) {
+		return nil
+	}
+
 	evacPath, err := evac.claimReadyFile(readyPath)
 	if err != nil {
 		return err

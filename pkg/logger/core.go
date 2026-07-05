@@ -268,7 +268,7 @@ func NewLogger(cfg Config, numShards int) *Logger {
 }
 
 // StartCompressorWorker rotates plaintext segments to encrypted .zst.ready archives
-// for log-evacuate.sh without blocking the active append file.
+// for log_evacuate.sh without blocking the active append file.
 func (l *Logger) StartCompressorWorker() {
 	defer l.wg.Done()
 	ticker := time.NewTicker(50 * time.Millisecond)

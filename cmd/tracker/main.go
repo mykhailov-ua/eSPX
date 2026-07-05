@@ -123,7 +123,7 @@ func main() {
 	registry.StartWatch(ctx, rdbs[0], channel)
 
 	var geoProvider ads.GeoProvider
-	geoProvider, err = ads.NewMaxMindProvider("deploy/geoip/GeoLite2-Country.mmdb")
+	geoProvider, err = ads.NewMaxMindProvider(cfg.GeoIP.DBPath)
 	if err != nil {
 		if cfg.Env == "prod" || cfg.Env == "production" {
 			slog.Error("FATAL: MaxMind DB load failed in production", "error", err)
@@ -134,8 +134,11 @@ func main() {
 	}
 	defer geoProvider.Close()
 
-	if _, ok := geoProvider.(*ads.MaxMindProvider); ok {
+	if mm, ok := geoProvider.(*ads.MaxMindProvider); ok {
 		metrics.GeoProviderStatus.Set(1)
+		watcherInterval := time.Duration(cfg.GeoIP.WatcherIntervalSec) * time.Second
+		go ads.NewGeoIPWatcher(mm, cfg.GeoIP.DBPath, watcherInterval).Start(ctx)
+		slog.Info("geoip hot-reload watcher started", "path", cfg.GeoIP.DBPath, "interval", watcherInterval)
 	} else {
 		metrics.GeoProviderStatus.Set(0)
 	}

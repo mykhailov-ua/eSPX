@@ -74,6 +74,21 @@ func main() {
 	partManager := database.NewPartitionManager(pool, cfg.LogRetentionDays, cfg.PartitionPreCreateDays)
 	partManager.StartBackground(ctx)
 
+	if cfg.GeoIP.UpdaterEnabled {
+		updater := ads.NewGeoIPUpdater(ads.GeoIPUpdaterConfig{
+			DBPath:         cfg.GeoIP.DBPath,
+			StagingPath:    cfg.GeoIP.StagingPath,
+			EditionID:      cfg.GeoIP.EditionID,
+			LicenseKey:     cfg.GeoIP.LicenseKey,
+			UpdateInterval: time.Duration(cfg.GeoIP.UpdateIntervalHours) * time.Hour,
+		})
+		go updater.Start(ctx)
+		slog.Info("geoip updater started",
+			"path", cfg.GeoIP.DBPath,
+			"interval_hours", cfg.GeoIP.UpdateIntervalHours,
+		)
+	}
+
 	chConn, err := database.ConnectClickHouse(ctx, string(cfg.CHDSN))
 	if err != nil {
 		slog.Error("failed to connect to clickhouse", "error", err)

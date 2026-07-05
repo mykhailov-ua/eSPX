@@ -21,6 +21,65 @@ func NotificationIDFromContext(ctx context.Context) (string, bool) {
 	return id, ok
 }
 
+func MapPBDeliveryModeToDB(mode pb.DeliveryMode) db.NotifierDeliveryMode {
+	switch mode {
+	case pb.DeliveryMode_DELIVERY_MODE_BROADCAST:
+		return db.NotifierDeliveryModeBROADCAST
+	case pb.DeliveryMode_DELIVERY_MODE_FALLBACK, pb.DeliveryMode_DELIVERY_MODE_UNSPECIFIED:
+		return db.NotifierDeliveryModeFALLBACK
+	default:
+		return db.NotifierDeliveryModeFALLBACK
+	}
+}
+
+func MapDBDeliveryModeToPB(mode db.NotifierDeliveryMode) pb.DeliveryMode {
+	switch mode {
+	case db.NotifierDeliveryModeBROADCAST:
+		return pb.DeliveryMode_DELIVERY_MODE_BROADCAST
+	case db.NotifierDeliveryModeFALLBACK:
+		return pb.DeliveryMode_DELIVERY_MODE_FALLBACK
+	default:
+		return pb.DeliveryMode_DELIVERY_MODE_UNSPECIFIED
+	}
+}
+
+func MapDBProvidersToPB(providers []string) []pb.Provider {
+	if len(providers) == 0 {
+		return nil
+	}
+	out := make([]pb.Provider, 0, len(providers))
+	for _, provider := range providers {
+		out = append(out, MapDBProviderToPB(db.NotifierProvider(provider)))
+	}
+	return out
+}
+
+func MapPBProvidersToDBStrings(providers []pb.Provider) ([]string, error) {
+	if len(providers) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(providers))
+	for _, provider := range providers {
+		dbProvider, err := MapPBProviderToDB(provider)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, string(dbProvider))
+	}
+	return out, nil
+}
+
+func MapDBProviderStringsToDB(providers []string) []db.NotifierProvider {
+	if len(providers) == 0 {
+		return nil
+	}
+	out := make([]db.NotifierProvider, 0, len(providers))
+	for _, provider := range providers {
+		out = append(out, db.NotifierProvider(provider))
+	}
+	return out
+}
+
 func MapPBProviderToDB(p pb.Provider) (db.NotifierProvider, error) {
 	switch p {
 	case pb.Provider_PROVIDER_TELEGRAM:
@@ -59,6 +118,8 @@ func MapDBStatusToPB(s db.NotifierNotificationStatus) pb.NotificationStatus {
 		return pb.NotificationStatus_NOTIFICATION_STATUS_SENT
 	case db.NotifierNotificationStatusFAILED:
 		return pb.NotificationStatus_NOTIFICATION_STATUS_FAILED
+	case db.NotifierNotificationStatusPROCESSING:
+		return pb.NotificationStatus_NOTIFICATION_STATUS_PROCESSING
 	default:
 		return pb.NotificationStatus_NOTIFICATION_STATUS_UNSPECIFIED
 	}
@@ -66,16 +127,21 @@ func MapDBStatusToPB(s db.NotifierNotificationStatus) pb.NotificationStatus {
 
 func notificationToProto(n db.NotifierNotification) *pb.Notification {
 	out := &pb.Notification{
-		Id:           uuid.UUID(n.ID.Bytes).String(),
-		Provider:     MapDBProviderToPB(n.Provider),
-		Recipient:    n.Recipient,
-		Body:         n.Body,
-		Status:       MapDBStatusToPB(n.Status),
-		RetryCount:   n.RetryCount,
-		ErrorMessage: n.ErrorMessage.String,
+		Id:                 uuid.UUID(n.ID.Bytes).String(),
+		Provider:           MapDBProviderToPB(n.Provider),
+		Recipient:          n.Recipient,
+		Body:               n.Body,
+		Status:             MapDBStatusToPB(n.Status),
+		RetryCount:         n.RetryCount,
+		ErrorMessage:       n.ErrorMessage.String,
+		DeliveryMode:       MapDBDeliveryModeToPB(n.DeliveryMode),
+		BroadcastProviders: MapDBProvidersToPB(n.BroadcastProviders),
 	}
 	if n.Title.Valid {
 		out.Title = n.Title.String
+	}
+	if n.DedupKey.Valid {
+		out.DedupKey = n.DedupKey.String
 	}
 	if n.CreatedAt.Valid {
 		out.CreatedAt = timestamppb.New(n.CreatedAt.Time)

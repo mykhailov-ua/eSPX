@@ -105,6 +105,12 @@ func main() {
 	svc.StartAuditCleaner(management.Days(cfg.Management.RetentionDays))
 	slog.Info("started audit cleaner", "retention_days", cfg.Management.RetentionDays)
 
+	if cfg.Management.BlacklistJanitorEnabled {
+		janitorInterval := time.Duration(cfg.Management.BlacklistJanitorIntervalSec) * time.Second
+		svc.StartBlacklistJanitor(janitorInterval)
+		slog.Info("started blacklist TTL janitor", "interval", janitorInterval)
+	}
+
 	if exportPath := os.Getenv("NGINX_DENY_EXPORT_PATH"); exportPath != "" {
 		nginxWorker := management.NewNginxConfigWorker(svc, exportPath)
 		svc.StartBackgroundWorker(func() {
@@ -133,10 +139,40 @@ func main() {
 		slog.Info("billing gRPC client enabled", "target", cfg.Billing.ServerHost+":"+cfg.Billing.Port)
 	}
 
+	notifierClient, err := management.NewNotifierClient(cfg)
+	if err != nil {
+		slog.Error("failed to connect to notifier gRPC server", "error", err)
+		os.Exit(1)
+	}
+	if notifierClient != nil {
+		defer notifierClient.Close()
+		slog.Info("notifier gRPC client enabled", "target", cfg.Notifier.ServerHost+":"+cfg.Notifier.Port)
+	}
+	opsAlerter := management.NewOpsAlerter(notifierClient, cfg)
+	if opsAlerter != nil {
+		svc.SetOpsAlerter(opsAlerter)
+		slog.Info("ops alerts enabled")
+	}
+
+	alertmanagerWebhook := management.NewAlertmanagerWebhook(notifierClient, cfg)
+
+	if cfg.SlotMigrationEnabled {
+		migrationInterval := time.Duration(cfg.SlotMigrationIntervalMs) * time.Millisecond
+		orchestrator := management.NewSlotMigrationOrchestrator(svc, migrationInterval)
+		svc.StartBackgroundWorker(func() {
+			orchestrator.Start(ctx)
+		})
+		slog.Info("started slot migration orchestrator", "interval", migrationInterval)
+	}
+
 	mgmtHandler := management.NewHandler(svc, cfg, authMiddleware, paymentClient, billingClient)
 
 	mux := http.NewServeMux()
 	management.RegisterOpsRoutes(mux, pool, rdbs)
+	if alertmanagerWebhook != nil {
+		alertmanagerWebhook.Register(mux)
+		slog.Info("alertmanager webhook adapter enabled")
+	}
 	authHandler.RegisterRoutes(mux)
 	mgmtHandler.RegisterRoutes(mux)
 

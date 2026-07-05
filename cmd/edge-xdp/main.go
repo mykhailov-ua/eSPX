@@ -6,11 +6,10 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"espx/internal/edge"
 	"espx/internal/edge/bpf"
+	"espx/pkg/lifecycle"
 
 	"github.com/cilium/ebpf/rlimit"
 )
@@ -62,8 +61,6 @@ func main() {
 
 	slog.Info("edge xdp attached", "iface", *iface, "mode", *mode, "pin_dir", *pinDir)
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
-	slog.Info("shutting down edge-xdp")
+	sig := lifecycle.WaitSignal()
+	slog.Info("received shutdown signal", "signal", sig.String(), "iface", *iface)
 }

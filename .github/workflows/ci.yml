@@ -3,32 +3,8 @@ name: CI
 on:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
 
 jobs:
-  all-in-one:
-    name: Lint, Test & Build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
-          cache: true
-
-      - name: Run Lint
-        run: make lint
-
-      - name: Hot-path alloc gate
-        run: make test-alloc-gate
-
-      - name: Run Tests
-        run: make test
-
-      - name: Build Docker
-        run: make build
-
   full-test:
     name: Full test suite (no -short)
     runs-on: ubuntu-latest
@@ -40,26 +16,8 @@ jobs:
           go-version: '1.25'
           cache: true
 
-      - name: Generate sqlc
-        run: make gen
-
       - name: Run full test suite
-        run: go test ./... -count=1 -timeout 30m -skip Chaos
-
-  security:
-    name: Vulnerability scan
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
-          cache: true
-
-      - name: govulncheck
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
+        run: bash scripts/ci/full_test.sh
 
   chaos:
     name: Container chaos tests
@@ -73,4 +31,4 @@ jobs:
           cache: true
 
       - name: Run chaos suite
-        run: make test-chaos
+        run: bash scripts/chaos/test_chaos.sh

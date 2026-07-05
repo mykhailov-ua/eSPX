@@ -5,9 +5,9 @@ import (
 	"flag"
 	"log/slog"
 	"os"
-	"os/signal"
-	"syscall"
 
+	"espx/internal/config"
+	"espx/pkg/lifecycle"
 	"espx/pkg/broker/server"
 )
 
@@ -26,6 +26,7 @@ func main() {
 
 	srv := server.NewServer(*addr, *dataDir, *maxSegSize, *indexInterval)
 	srv.SetHealthAddr(*healthAddr)
+	srv.SetShutdownTimeout(config.LifecycleShutdownTimeout())
 
 	if err := srv.Start(); err != nil {
 		slog.Error("Failed to start server", "error", err)
@@ -42,14 +43,12 @@ func main() {
 	srv.SetCoordinator(coord)
 	coord.Start()
 
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	slog.Info("ESPX Broker running. Press Ctrl+C to exit.")
-	<-sigChan
+	slog.Info("ESPX Broker running")
+	sig := lifecycle.WaitSignal()
+	slog.Info("received shutdown signal", "signal", sig.String(), "node_id", *nodeID)
 
 	slog.Info("Shutting down ESPX Broker...")
-	coord.Stop()
 	srv.Stop()
+	coord.Stop()
 	slog.Info("Shutdown complete.")
 }

@@ -466,6 +466,51 @@ func TestService_processPending_fallback(t *testing.T) {
 	})
 }
 
+// Guards broadcast fan-out delivers to all configured providers in parallel.
+func TestService_processPending_broadcast(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	pool, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	providers := newBroadcastMockProviders(pb.Provider_PROVIDER_UNSPECIFIED)
+	svc := NewService(pool, providers)
+	ctx := context.Background()
+
+	resp, err := svc.SendNotification(ctx, &pb.SendNotificationRequest{
+		Provider:     pb.Provider_PROVIDER_TELEGRAM,
+		Recipient:    "12345678",
+		Title:        "Broadcast Alert",
+		Body:         "fan-out to all channels",
+		DeliveryMode: pb.DeliveryMode_DELIVERY_MODE_BROADCAST,
+		BroadcastProviders: []pb.Provider{
+			pb.Provider_PROVIDER_SLACK,
+			pb.Provider_PROVIDER_TELEGRAM,
+		},
+	})
+	require.NoError(t, err)
+
+	processed, err := svc.ProcessPending(ctx, workerBatchSize)
+	require.NoError(t, err)
+	assert.Equal(t, 1, processed)
+
+	mockSlack := providers[pb.Provider_PROVIDER_SLACK].(*MockProvider)
+	mockTelegram := providers[pb.Provider_PROVIDER_TELEGRAM].(*MockProvider)
+	mockSMS := providers[pb.Provider_PROVIDER_SMS].(*MockProvider)
+
+	assert.Len(t, mockSlack.Sent, 1)
+	assert.Len(t, mockTelegram.Sent, 1)
+	assert.Len(t, mockSMS.Sent, 0, "SMS not in broadcast_providers subset")
+
+	getResp, err := svc.GetNotification(ctx, &pb.GetNotificationRequest{NotificationId: resp.NotificationId})
+	require.NoError(t, err)
+	assert.Equal(t, pb.NotificationStatus_NOTIFICATION_STATUS_SENT, getResp.Notification.Status)
+	assert.Equal(t, pb.DeliveryMode_DELIVERY_MODE_BROADCAST, getResp.Notification.DeliveryMode)
+	assert.Equal(t, pb.Provider_PROVIDER_TELEGRAM, getResp.Notification.Provider)
+}
+
 type mockRoundTripper func(req *http.Request) (*http.Response, error)
 
 func (m mockRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -478,7 +523,7 @@ func TestProviders_interactiveButtons(t *testing.T) {
 
 	// 1. Telegram test
 	var capturedTelegram []byte
-	tProv := NewTelegramProvider("token123", "default-chat", NewCircuitBreaker(3, 2, time.Second))
+	tProv := NewTelegramProvider("token123", "default-chat", NewCircuitBreaker(3, 2, time.Second), false)
 	tProv.client.Transport = mockRoundTripper(func(req *http.Request) (*http.Response, error) {
 		var err error
 		capturedTelegram, err = io.ReadAll(req.Body)
@@ -509,7 +554,7 @@ func TestProviders_interactiveButtons(t *testing.T) {
 
 	// 2. Slack test
 	var capturedSlack []byte
-	sProv := NewSlackProvider("https://hooks.slack.com/services/test", NewCircuitBreaker(3, 2, time.Second))
+	sProv := NewSlackProvider("https://hooks.slack.com/services/test", NewCircuitBreaker(3, 2, time.Second), false)
 	sProv.client.Transport = mockRoundTripper(func(req *http.Request) (*http.Response, error) {
 		var err error
 		capturedSlack, err = io.ReadAll(req.Body)

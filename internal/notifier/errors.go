@@ -9,4 +9,6 @@ var (
 	ErrNotificationNotFound  = errors.New("notification not found")
 	ErrUnsupportedProvider   = errors.New("unsupported provider")
 	ErrCircuitOpen           = errors.New("circuit breaker is open")
+	ErrRateLimited           = errors.New("recipient rate limit exceeded")
+	ErrBatchEmpty            = errors.New("batch must contain at least one notification")
 )

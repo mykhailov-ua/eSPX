@@ -13,7 +13,7 @@ import (
 func sentinelChaosConfig(t *testing.T) *config.Config {
 	t.Helper()
 	if os.Getenv("SENTINEL_CHAOS") == "" {
-		t.Skip("set SENTINEL_CHAOS=1 (run scripts/test-sentinel-failover.sh or CI sentinel job)")
+		t.Skip("set SENTINEL_CHAOS=1 (run scripts/chaos/test_sentinel_failover.sh or CI sentinel job)")
 	}
 	if testing.Short() {
 		t.Skip("sentinel chaos skipped in -short")

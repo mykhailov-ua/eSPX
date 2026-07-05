@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 EnvironmentFile=-/etc/espx/edge-nic-tune.env
-ExecStart=/usr/local/bin/edge-nic-tune.sh apply
+ExecStart=/usr/local/bin/edge_nic_tune.sh apply
 # RX ring and IRQ affinity are lost on driver reload/reboot; re-apply at boot.
 
 [Install]

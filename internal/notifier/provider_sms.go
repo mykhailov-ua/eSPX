@@ -13,20 +13,22 @@ import (
 
 // SMSProvider delivers SMS alerts via an external HTTP API (e.g., Twilio or SMSC).
 type SMSProvider struct {
-	providerURL      string
-	apiToken         string
-	defaultRecipient string
-	breaker          *CircuitBreaker
-	client           *http.Client
+	providerURL        string
+	apiToken           string
+	defaultRecipient   string
+	breaker            *CircuitBreaker
+	requireCredentials bool
+	client             *http.Client
 }
 
 // NewSMSProvider binds SMS API credentials and default fallback recipient.
-func NewSMSProvider(providerURL, apiToken, defaultRecipient string, breaker *CircuitBreaker) *SMSProvider {
+func NewSMSProvider(providerURL, apiToken, defaultRecipient string, breaker *CircuitBreaker, requireCredentials bool) *SMSProvider {
 	return &SMSProvider{
-		providerURL:      providerURL,
-		apiToken:         apiToken,
-		defaultRecipient: defaultRecipient,
-		breaker:          breaker,
+		providerURL:        providerURL,
+		apiToken:           apiToken,
+		defaultRecipient:   defaultRecipient,
+		breaker:            breaker,
+		requireCredentials: requireCredentials,
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -49,6 +51,9 @@ func (s *SMSProvider) Send(ctx context.Context, recipient, title, body string) e
 	}
 
 	if s.providerURL == "" || phone == "" {
+		if s.requireCredentials {
+			return fmt.Errorf("sms credentials not configured")
+		}
 		slog.Info("sms notification dry-run", "to", phone, "title", title, "body", body)
 		return nil
 	}

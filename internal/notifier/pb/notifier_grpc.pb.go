@@ -19,8 +19,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	NotifierService_SendNotification_FullMethodName = "/notifier.NotifierService/SendNotification"
-	NotifierService_GetNotification_FullMethodName  = "/notifier.NotifierService/GetNotification"
+	NotifierService_SendNotification_FullMethodName      = "/notifier.NotifierService/SendNotification"
+	NotifierService_SendNotificationBatch_FullMethodName = "/notifier.NotifierService/SendNotificationBatch"
+	NotifierService_GetNotification_FullMethodName       = "/notifier.NotifierService/GetNotification"
 )
 
 // NotifierServiceClient is the client API for NotifierService service.
@@ -29,6 +30,8 @@ const (
 type NotifierServiceClient interface {
 	// Enqueues a notification to be sent asynchronously.
 	SendNotification(ctx context.Context, in *SendNotificationRequest, opts ...grpc.CallOption) (*SendNotificationResponse, error)
+	// Enqueues multiple notifications in one RPC.
+	SendNotificationBatch(ctx context.Context, in *SendNotificationBatchRequest, opts ...grpc.CallOption) (*SendNotificationBatchResponse, error)
 	// Retrieves the status of a specific notification.
 	GetNotification(ctx context.Context, in *GetNotificationRequest, opts ...grpc.CallOption) (*GetNotificationResponse, error)
 }
@@ -51,6 +54,16 @@ func (c *notifierServiceClient) SendNotification(ctx context.Context, in *SendNo
 	return out, nil
 }
 
+func (c *notifierServiceClient) SendNotificationBatch(ctx context.Context, in *SendNotificationBatchRequest, opts ...grpc.CallOption) (*SendNotificationBatchResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SendNotificationBatchResponse)
+	err := c.cc.Invoke(ctx, NotifierService_SendNotificationBatch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *notifierServiceClient) GetNotification(ctx context.Context, in *GetNotificationRequest, opts ...grpc.CallOption) (*GetNotificationResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetNotificationResponse)
@@ -67,6 +80,8 @@ func (c *notifierServiceClient) GetNotification(ctx context.Context, in *GetNoti
 type NotifierServiceServer interface {
 	// Enqueues a notification to be sent asynchronously.
 	SendNotification(context.Context, *SendNotificationRequest) (*SendNotificationResponse, error)
+	// Enqueues multiple notifications in one RPC.
+	SendNotificationBatch(context.Context, *SendNotificationBatchRequest) (*SendNotificationBatchResponse, error)
 	// Retrieves the status of a specific notification.
 	GetNotification(context.Context, *GetNotificationRequest) (*GetNotificationResponse, error)
 	mustEmbedUnimplementedNotifierServiceServer()
@@ -81,6 +96,9 @@ type UnimplementedNotifierServiceServer struct{}
 
 func (UnimplementedNotifierServiceServer) SendNotification(context.Context, *SendNotificationRequest) (*SendNotificationResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SendNotification not implemented")
+}
+func (UnimplementedNotifierServiceServer) SendNotificationBatch(context.Context, *SendNotificationBatchRequest) (*SendNotificationBatchResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SendNotificationBatch not implemented")
 }
 func (UnimplementedNotifierServiceServer) GetNotification(context.Context, *GetNotificationRequest) (*GetNotificationResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetNotification not implemented")
@@ -124,6 +142,24 @@ func _NotifierService_SendNotification_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NotifierService_SendNotificationBatch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SendNotificationBatchRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NotifierServiceServer).SendNotificationBatch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NotifierService_SendNotificationBatch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NotifierServiceServer).SendNotificationBatch(ctx, req.(*SendNotificationBatchRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _NotifierService_GetNotification_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetNotificationRequest)
 	if err := dec(in); err != nil {
@@ -152,6 +188,10 @@ var NotifierService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SendNotification",
 			Handler:    _NotifierService_SendNotification_Handler,
+		},
+		{
+			MethodName: "SendNotificationBatch",
+			Handler:    _NotifierService_SendNotificationBatch_Handler,
 		},
 		{
 			MethodName: "GetNotification",

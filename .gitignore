@@ -4,6 +4,8 @@ bin/
 vendor/
 .idea/
 .vscode/
+/gen/
+/api/gen/
 campaigns_replica.json
 campaigns_replica.json.tmp
 GUIDE_*.md

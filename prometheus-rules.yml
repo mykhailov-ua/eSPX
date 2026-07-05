@@ -106,3 +106,144 @@ groups:
         annotations:
           summary: "Redis shard ops skew >3x average"
           description: "One shard is receiving more than 3x the average unified-filter Redis RPS. Check hot campaigns before resharding — see docs/architecture.md (Redis Sharding)."
+
+      # Log compactor hot-tier lag: oldest uncompacted segment age.
+      - alert: LogCompactorHotLagHigh
+        expr: log_compactor_hot_lag_seconds > 172800
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Log compactor hot-tier lag >48h"
+          description: "Oldest uncompacted hot audit segment is older than 48 hours. Check compactor health and hot_pending_total."
+
+      # Log compactor cold-tier lag: warm segments waiting for ClickHouse rollup.
+      - alert: LogCompactorColdLagHigh
+        expr: log_compactor_cold_lag_seconds > 604800
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Log compactor cold-tier lag >7d"
+          description: "Oldest warm segment pending cold rollup is older than 7 days. Verify CH_DSN and cold worker."
+
+      - alert: LogCompactorColdErrors
+        expr: rate(log_compactor_cold_errors_total[15m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Log compactor cold rollup errors"
+          description: "Cold-tier rollup failures detected in the last 15 minutes."
+
+  - name: notifier-alerts
+    rules:
+      - alert: NotifierQueueBacklog
+        expr: notifier_queue_pending_total > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Notifier delivery queue backlog"
+          description: "More than 50 PENDING notifications awaiting delivery."
+
+      - alert: NotifierOldestPendingStale
+        expr: notifier_queue_oldest_pending_seconds > 600
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Notifier oldest pending notification stale"
+          description: "Oldest PENDING notification is older than 10 minutes."
+
+      - alert: NotifierPermanentFailures
+        expr: rate(notifier_permanent_failures_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Notifier permanent delivery failures"
+          description: "Notifications exhausted retry budget and were marked FAILED."
+
+      - alert: NotifierCircuitBreakerOpen
+        expr: notifier_circuit_breaker_state == 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Notifier circuit breaker open on {{ $labels.provider }}"
+          description: "Delivery channel {{ $labels.provider }} is fast-failing due to consecutive errors."
+
+      - alert: NotifierDown
+        expr: up{job="notifier"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Notifier service unreachable"
+          description: "Prometheus cannot scrape the notifier metrics endpoint."
+
+      - alert: NotifierDeliveryLatencyHigh
+        expr: histogram_quantile(0.99, sum by (le, provider) (rate(notifier_delivery_duration_seconds_bucket[5m]))) > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Notifier delivery latency high on {{ $labels.provider }}"
+          description: "P99 provider delivery latency exceeds 30 seconds."
+
+      - alert: NotifierProcessingStale
+        expr: notifier_queue_processing_total > 0 and notifier_queue_oldest_processing_seconds > 600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Notifier PROCESSING claims stale"
+          description: "Notifications remain claimed longer than 10 minutes; worker may be stuck or crashed."
+
+      - alert: NotifierHeapHigh
+        expr: go_memstats_heap_inuse_bytes{job="notifier"} > 3.4e8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Notifier heap usage high"
+          description: "Heap in-use exceeds ~340MiB (85% of GOMEMLIMIT=400MiB). GC pressure or backlog may precede OOM."
+
+  - name: geoip-alerts
+    rules:
+      - alert: GeoIPUpdateErrors
+        expr: rate(ad_geoip_update_errors_total[1h]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GeoIP database update failures"
+          description: "MaxMind GeoIP updater failed in the last hour."
+
+      - alert: GeoIPReloadErrors
+        expr: rate(ad_geoip_reload_errors_total[15m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GeoIP hot-reload failures"
+          description: "Tracker GeoIP watcher failed to reload the mmdb file."
+
+      - alert: LogCompactorNoLeader
+        expr: log_compactor_hot_pending_total > 0 and log_compactor_leader == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Log compactor has no leader with pending hot segments"
+          description: "Hot-tier segments are waiting but no compactor instance holds leadership."
+
+      - alert: ManagementOpsAlertEnqueueFailures
+        expr: rate(ad_management_ops_alert_enqueue_failures_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Management failed to enqueue ops alerts"
+          description: "OpsAlerter or Alertmanager webhook could not reach the notifier gRPC service."

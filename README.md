@@ -101,7 +101,7 @@ Redis does not hold payment or ledger state.
 
 ## Tooling and CI
 
-Local workflows use `Makefile`, optional [Task](Taskfile.yml), and flat `scripts/` (codegen, compose, perf gate, Redis ops, chaos). See [Development Guide](docs/development.md) for commands and CI workflow map under `.github/workflows/`.
+Local workflows use `Makefile`, optional [Task](Taskfile.yml), and categorized `scripts/<area>/` (codegen, compose, perf gate, Redis ops, chaos). See [Development Guide](docs/development.md) for commands and CI workflow map under `.github/workflows/`.
 
 ## Documentation
 

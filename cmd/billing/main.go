@@ -6,13 +6,12 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"espx/internal/billing"
 	"espx/internal/billing/pb"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/pkg/lifecycle"
 
 	google_grpc "google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
@@ -54,6 +53,8 @@ func main() {
 		reflection.Register(grpcServer)
 	}
 
+	timeouts := lifecycle.TimeoutsFromConfig(cfg)
+
 	go func() {
 		slog.Info("starting billing gRPC server", "port", cfg.Billing.Port)
 		if err := grpcServer.Serve(lis); err != nil {
@@ -62,12 +63,10 @@ func main() {
 		}
 	}()
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	<-stop
+	sig := lifecycle.WaitSignal()
+	slog.Info("received shutdown signal", "signal", sig.String())
 
-	slog.Info("shutting down billing service")
-	grpcServer.GracefulStop()
 	cancel()
+	lifecycle.ShutdownGRPC(grpcServer, timeouts.Shutdown)
 	slog.Info("billing service shutdown complete")
 }

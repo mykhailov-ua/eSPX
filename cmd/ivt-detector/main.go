@@ -5,13 +5,12 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"espx/internal/config"
 	"espx/internal/database"
 	"espx/internal/ivtdetector"
+	"espx/pkg/lifecycle"
 )
 
 func main() {
@@ -37,7 +36,7 @@ func main() {
 		managementURL = "http://127.0.0.1:" + cfg.ManagementPort
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := lifecycle.NotifyContext(context.Background())
 	defer stop()
 
 	pool, err := database.Connect(ctx, string(cfg.DBDSN), cfg.DBTrackerMaxConns, cfg.DBMinConns)

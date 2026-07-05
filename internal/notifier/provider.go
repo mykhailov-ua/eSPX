@@ -23,8 +23,10 @@ type MockSentNotification struct {
 
 // MockProvider captures sent messages in-process for integration tests.
 type MockProvider struct {
-	breaker *CircuitBreaker
-	Sent    []MockSentNotification
+	breaker      *CircuitBreaker
+	ProviderName string
+	ShouldFail   bool
+	Sent         []MockSentNotification
 }
 
 // NewMockProvider returns a provider that records deliveries without network calls.
@@ -33,6 +35,9 @@ func NewMockProvider(breaker *CircuitBreaker) *MockProvider {
 }
 
 func (m *MockProvider) Name() string {
+	if m.ProviderName != "" {
+		return m.ProviderName
+	}
 	return "TELEGRAM"
 }
 
@@ -43,7 +48,7 @@ func (m *MockProvider) Send(ctx context.Context, recipient, title, body string) 
 		return ErrCircuitOpen
 	}
 
-	if strings.Contains(body, "trigger_failure") {
+	if strings.Contains(body, "trigger_failure") || m.ShouldFail {
 		m.breaker.RecordFailure()
 		return fmt.Errorf("mock send failure triggered")
 	}
