@@ -21,17 +21,10 @@ func rtbDealRowToData(row db.RtbDeal) rtb.DealData {
 		FloorMicro: row.FloorMicro,
 		GeoMask:    uint64(row.GeoMask),
 		CatMask:    uint64(row.CatMask),
-		PacingOpen: normalizeDealPacingOpen(row.Pacing),
+		PacingOpen: rtb.DealPacingOpen(row.Pacing),
 		Seats:      row.Seats,
 		CustomerID: CustomerIDFromCustomerUUID(uuid.UUID(row.CustomerID.Bytes)),
 	}
-}
-
-func normalizeDealPacingOpen(p int16) uint8 {
-	if p == int16(rtb.PacingClosed) {
-		return rtb.PacingClosed
-	}
-	return rtb.PacingOpen
 }
 
 // ReloadRtbDeals loads all deals from Postgres and rebuilds the in-memory deal index.

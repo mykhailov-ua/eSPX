@@ -190,8 +190,11 @@ func validateSupplyChainNodes(nodes []SupplyChainNode) error {
 
 func (s *Service) enqueueSupplyFilesUpdate(ctx context.Context, q db.Querier, trigger string) error {
 	invalidateSellersJSONCache()
-	payload, _ := json.Marshal(SupplyFilesPayload{Trigger: trigger})
-	_, err := q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{
+	payload, err := json.Marshal(SupplyFilesPayload{Trigger: trigger})
+	if err != nil {
+		return err
+	}
+	_, err = q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{
 		EventType: "UPDATE_SUPPLY_FILES",
 		Payload:   payload,
 	})

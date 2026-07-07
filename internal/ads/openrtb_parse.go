@@ -51,23 +51,19 @@ func ParseOpenRTB3Payload(payload []byte) (minBid int64, deviceType uint8, categ
 		return 0, 0, 0, false
 	}
 
-	// Check if this is an OpenRTB 3.0 payload by looking for "openrtb"
 	openrtbIdx := bytes.Index(payload, []byte(`"openrtb"`))
 	if openrtbIdx == -1 {
 		return 0, 0, 0, false
 	}
 	isOpenRTB = true
 
-	// Default values
 	minBid = 0
-	deviceType = 1   // default desktop
-	categoryMask = 1 // default mask
+	deviceType = 1
+	categoryMask = 1
 
-	// Find "flr" for publisher floor price
 	flrIdx := bytes.Index(payload, []byte(`"flr"`))
 	if flrIdx != -1 {
-		// Find value after "flr"
-		idx := flrIdx + 5 // skip `"flr"`
+		idx := flrIdx + 5
 		for idx < n && (payload[idx] == ' ' || payload[idx] == '\t' || payload[idx] == ':') {
 			idx++
 		}
@@ -80,13 +76,11 @@ func ParseOpenRTB3Payload(payload []byte) (minBid int64, deviceType uint8, categ
 		}
 	}
 
-	// Find "type" for device type inside device context
-	// To avoid matching other "type" fields, we can look for `"device"` and then `"type"`
 	deviceIdx := bytes.Index(payload, []byte(`"device"`))
 	if deviceIdx != -1 {
 		typeIdx := bytes.Index(payload[deviceIdx:], []byte(`"type"`))
 		if typeIdx != -1 {
-			idx := deviceIdx + typeIdx + 6 // skip `"type"`
+			idx := deviceIdx + typeIdx + 6
 			for idx < n && (payload[idx] == ' ' || payload[idx] == '\t' || payload[idx] == ':') {
 				idx++
 			}
@@ -115,10 +109,9 @@ func ParseOpenRTB3Payload(payload []byte) (minBid int64, deviceType uint8, categ
 		}
 	}
 
-	// Find "category_mask"
 	catIdx := bytes.Index(payload, []byte(`"category_mask"`))
 	if catIdx != -1 {
-		idx := catIdx + 15 // skip `"category_mask"`
+		idx := catIdx + 15
 		for idx < n && (payload[idx] == ' ' || payload[idx] == '\t' || payload[idx] == ':') {
 			idx++
 		}

@@ -25,8 +25,8 @@ func TestReloadRtbDeals_buildsDealIndex(t *testing.T) {
 	_, err := pool.Exec(ctx, `INSERT INTO customers (id, name) VALUES ($1, 'deal-test')`, customerID)
 	require.NoError(t, err)
 	_, err = pool.Exec(ctx, `
-		INSERT INTO rtb_deals (deal_id, floor_micro, geo_mask, cat_mask, pacing, customer_id)
-		VALUES ('pmp-001', 500000, 15, 7, 1, $1)`, customerID)
+		INSERT INTO rtb_deals (deal_id, floor_micro, geo_mask, cat_mask, pacing, customer_id, seats)
+		VALUES ('pmp-001', 500000, 15, 7, 1, $1, 3)`, customerID)
 	require.NoError(t, err)
 
 	catalog := NewRtbCatalog(rtb.NewBudgetStore(), BudgetAuthorityShadow)
@@ -38,6 +38,7 @@ func TestReloadRtbDeals_buildsDealIndex(t *testing.T) {
 	assert.Equal(t, int64(500000), deal.FloorMicro)
 	assert.Equal(t, uint64(15), deal.GeoMask)
 	assert.Equal(t, rtb.PacingOpen, deal.PacingOpen)
+	assert.Equal(t, int32(3), deal.Seats)
 }
 
 func TestRtbCatalogReloadChannel_default(t *testing.T) {

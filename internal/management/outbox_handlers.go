@@ -54,6 +54,8 @@ func (w *OutboxWorker) handleOutboxEvent(opCtx, ctx context.Context, ev db.Outbo
 		return w.handleConfigureBrandFcap(ctx, ev.Payload)
 	case "UPDATE_SUPPLY_FILES":
 		return w.handleUpdateSupplyFiles(ctx, ev.Payload)
+	case "RELOAD_RTB_CATALOG":
+		return w.handleReloadRtbCatalog(ctx, ev.Payload)
 	default:
 		return fmt.Errorf("unknown outbox event type: %s", ev.EventType)
 	}

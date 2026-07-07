@@ -19,8 +19,8 @@ import (
 )
 
 var (
-	ErrRtbDealNotFound    = errors.New("rtb deal not found")
-	ErrInvalidDealPacing  = errors.New("pacing must be open or closed")
+	ErrRtbDealNotFound     = errors.New("rtb deal not found")
+	ErrInvalidDealPacing   = rtb.ErrInvalidDealPacing
 	ErrDuplicateDealID    = errors.New("deal_id already exists")
 	ErrDealCustomerMissing = errors.New("customer not found")
 	ErrInvalidDealSeats    = errors.New("seats must be at least 1")
@@ -74,29 +74,11 @@ func toRtbDealDTO(r db.RtbDeal) RtbDealDTO {
 		FloorMicro: r.FloorMicro,
 		GeoMask:    r.GeoMask,
 		CatMask:    r.CatMask,
-		Pacing:     dealPacingToString(r.Pacing),
+		Pacing:     rtb.DealPacingLabel(r.Pacing),
 		Seats:      r.Seats,
 		CustomerID: uuid.UUID(r.CustomerID.Bytes).String(),
 		CreatedAt:  r.CreatedAt.Time.Format(time.RFC3339),
 		UpdatedAt:  r.UpdatedAt.Time.Format(time.RFC3339),
-	}
-}
-
-func dealPacingToString(p int16) string {
-	if p == int16(rtb.PacingClosed) {
-		return "closed"
-	}
-	return "open"
-}
-
-func normalizeDealPacing(v string) (int16, error) {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "", "open":
-		return int16(rtb.PacingOpen), nil
-	case "closed":
-		return int16(rtb.PacingClosed), nil
-	default:
-		return 0, ErrInvalidDealPacing
 	}
 }
 
@@ -167,7 +149,7 @@ func (s *Service) GetRtbDeal(ctx context.Context, id int64) (RtbDealDTO, error) 
 
 // CreateRtbDeal persists a deal and queues catalog reload propagation.
 func (s *Service) CreateRtbDeal(ctx context.Context, spec RtbDealCreateSpec) (RtbDealDTO, error) {
-	pacing, err := normalizeDealPacing(spec.Pacing)
+	pacing, err := rtb.ParseDealPacingString(spec.Pacing)
 	if err != nil {
 		return RtbDealDTO{}, err
 	}
@@ -227,7 +209,7 @@ func (s *Service) CreateRtbDeal(ctx context.Context, spec RtbDealCreateSpec) (Rt
 
 // UpdateRtbDeal updates a deal and queues catalog reload propagation.
 func (s *Service) UpdateRtbDeal(ctx context.Context, id int64, spec RtbDealUpdateSpec) (RtbDealDTO, error) {
-	pacing, err := normalizeDealPacing(spec.Pacing)
+	pacing, err := rtb.ParseDealPacingString(spec.Pacing)
 	if err != nil {
 		return RtbDealDTO{}, err
 	}

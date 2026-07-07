@@ -80,6 +80,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	h.registerFraudRoutes(mux)
 	h.registerSlotMapRoutes(mux)
 	h.registerSupplyRoutes(mux)
+	h.registerRtbRoutes(mux)
 	h.registerOpsRoutes(mux)
 	h.registerAPIRoutes(mux)
 }
