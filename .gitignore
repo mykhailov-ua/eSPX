@@ -9,3 +9,4 @@ vendor/
 campaigns_replica.json
 campaigns_replica.json.tmp
 GUIDE_*.md
+docs/reports/

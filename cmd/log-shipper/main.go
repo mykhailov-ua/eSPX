@@ -1,4 +1,4 @@
-// Command log-shipper forwards rotated tracker logs to the broker because the hot path must not block on remote I/O.
+// Command log-shipper tails length-prefixed tracker log segments and produces them to the mmap broker.
 package main
 
 import (
@@ -6,16 +6,15 @@ import (
 	"encoding/binary"
 	"flag"
 	"io"
-	"log"
+	"log/slog"
 	"os"
 	"sync"
 	"time"
 
-	"espx/pkg/lifecycle"
 	"espx/pkg/broker/client"
+	"espx/pkg/lifecycle"
 )
 
-// main runs an async broker fan-out because tracker logging is length-prefixed on disk and must survive broker restarts.
 func main() {
 	brokerAddr := flag.String("broker", "127.0.0.1:9092", "Broker address")
 	redisURL := flag.String("redis-url", "redis://127.0.0.1:6379/0", "Redis URL for leader discovery")
@@ -24,7 +23,13 @@ func main() {
 	workersCount := flag.Int("workers", 16, "Number of concurrent workers")
 	flag.Parse()
 
-	log.Printf("Starting log shipper targeting broker %s (redis: %s) on topic %s with %d workers", *brokerAddr, *redisURL, *topic, *workersCount)
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	slog.Info("starting log shipper",
+		"broker", *brokerAddr,
+		"redis_url", *redisURL,
+		"topic", *topic,
+		"workers", *workersCount,
+	)
 
 	ctx, stop := lifecycle.NotifyContext(context.Background())
 	defer stop()
@@ -46,6 +51,7 @@ func main() {
 
 	file, err := openLogFile(ctx, *logFilePath)
 	if err != nil {
+		slog.Error("failed to open log file", "path", *logFilePath, "error", err)
 		shutdown(jobs, &wg, timeouts)
 		return
 	}
@@ -72,7 +78,7 @@ readLoop:
 				}
 				continue
 			}
-			log.Printf("Error reading length header: %v", err)
+			slog.Error("error reading length header", "error", err)
 			select {
 			case <-ctx.Done():
 				break readLoop
@@ -90,7 +96,7 @@ readLoop:
 			payloadBuf = make([]byte, length)
 		}
 		if _, err = io.ReadFull(file, payloadBuf[:length]); err != nil {
-			log.Printf("Error reading payload: %v", err)
+			slog.Error("error reading payload", "error", err)
 			continue
 		}
 
@@ -104,7 +110,7 @@ readLoop:
 		}
 	}
 
-	log.Printf("log shipper shutting down")
+	slog.Info("log shipper shutting down")
 	shutdown(jobs, &wg, timeouts)
 }
 
@@ -128,7 +134,10 @@ func runWorker(ctx context.Context, wg *sync.WaitGroup, cfg workerConfig) {
 		if connectErr == nil {
 			break
 		}
-		log.Printf("[Worker %d] Failed to connect to broker, retrying in 1s: %v", cfg.id, connectErr)
+		slog.Warn("failed to connect to broker, retrying",
+			"worker", cfg.id,
+			"error", connectErr,
+		)
 		select {
 		case <-ctx.Done():
 			return
@@ -146,13 +155,13 @@ func runWorker(ctx context.Context, wg *sync.WaitGroup, cfg workerConfig) {
 	for payload := range cfg.jobs {
 		_, err := cli.Produce(cfg.topic, 0, payload)
 		if err != nil {
-			log.Printf("[Worker %d] Error producing: %v", cfg.id, err)
+			slog.Error("error producing message", "worker", cfg.id, "error", err)
 		} else {
 			count++
 		}
 
 		if time.Since(lastReport) > 5*time.Second {
-			log.Printf("[Worker %d] Sent %d messages", cfg.id, count)
+			slog.Info("worker send progress", "worker", cfg.id, "sent", count)
 			lastReport = time.Now()
 		}
 	}
@@ -161,9 +170,9 @@ func runWorker(ctx context.Context, wg *sync.WaitGroup, cfg workerConfig) {
 func shutdown(jobs chan []byte, wg *sync.WaitGroup, timeouts lifecycle.Timeouts) {
 	close(jobs)
 	if err := lifecycle.Wait(timeouts.Wait, wg.Wait); err != nil {
-		log.Printf("log shipper worker drain timed out: %v", err)
+		slog.Error("log shipper worker drain timed out", "error", err)
 	}
-	log.Printf("log shipper shutdown complete")
+	slog.Info("log shipper shutdown complete")
 }
 
 func openLogFile(ctx context.Context, path string) (*os.File, error) {
@@ -172,7 +181,7 @@ func openLogFile(ctx context.Context, path string) (*os.File, error) {
 		if err == nil {
 			return file, nil
 		}
-		log.Printf("Waiting for log file %s to be created: %v", path, err)
+		slog.Info("waiting for log file", "path", path, "error", err)
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -192,7 +201,7 @@ func tryReopenAfterRotation(ctx context.Context, file *os.File, logFilePath stri
 		return file, false, nil
 	}
 
-	log.Printf("Log file rotation detected (size shrunk). Reopening.")
+	slog.Info("log file rotation detected, reopening", "path", logFilePath)
 	if err := file.Close(); err != nil {
 		return nil, false, err
 	}

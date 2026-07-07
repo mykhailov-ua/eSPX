@@ -29,7 +29,16 @@ func mapServiceError(err error) (status int, code, message string) {
 		return http.StatusNotFound, "NOT_FOUND", "resource not found"
 	case strings.Contains(msg, "insufficient balance"):
 		return http.StatusBadRequest, "BAD_REQUEST", "insufficient balance"
-	case strings.Contains(msg, "belongs to another customer"),
+	case strings.Contains(msg, "unsupported granularity"),
+		strings.Contains(msg, "invalid time range"),
+		strings.Contains(msg, "granularity must be hour"),
+		strings.Contains(msg, "invalid to timestamp"),
+		strings.Contains(msg, "invalid from timestamp"),
+		strings.Contains(msg, "to must be after from"),
+		strings.Contains(msg, "time range exceeds 90 days"),
+		strings.Contains(msg, "invalid service filter"),
+		strings.Contains(msg, "invalid cursor"),
+		strings.Contains(msg, "belongs to another customer"),
 		strings.Contains(msg, "cannot be paused"),
 		strings.Contains(msg, "is not paused"),
 		strings.Contains(msg, "outside scheduled delivery"),

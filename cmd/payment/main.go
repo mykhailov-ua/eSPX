@@ -1,4 +1,4 @@
-// Command payment runs gRPC intents, Stripe webhook ingress, and settlement outbox in isolation from management.
+// Command payment wires gRPC intents, Stripe webhooks, and settlement outbox outside the management HTTP process.
 package main
 
 import (
@@ -20,8 +20,6 @@ import (
 	"google.golang.org/grpc/reflection"
 )
 
-// main runs payment as its own process so Stripe webhooks and settlement retries do not share
-// the management HTTP listener or its connection pool.
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
@@ -41,16 +39,6 @@ func main() {
 		os.Exit(1)
 	}
 	defer pool.Close()
-
-	ledgerPool := pool
-	if cfg.PaymentDBDSN != cfg.DBDSN {
-		ledgerPool, err = database.Connect(ctx, string(cfg.DBDSN), cfg.DBTrackerMaxConns, cfg.DBMinConns)
-		if err != nil {
-			slog.Error("failed to connect to ledger database", "error", err)
-			os.Exit(1)
-		}
-		defer ledgerPool.Close()
-	}
 
 	if err := payment.ApplyMigrations(ctx, pool); err != nil {
 		slog.Error("failed to apply payment schema migrations", "error", err)
@@ -81,9 +69,11 @@ func main() {
 	go outboxWorker.Start(ctx, 100*time.Millisecond)
 
 	var reconWorker *payment.ReconService
+	settlementLedger := payment.NewSettlementLedgerClient(cfg)
+	defer settlementLedger.Close()
 	if cfg.PaymentFinancialReconIntervalMs > 0 {
 		reconAlerter := payment.NewFinancialReconAlerter(notifierClient, cfg)
-		reconWorker = payment.NewReconService(pool, ledgerPool, reconAlerter)
+		reconWorker = payment.NewReconService(pool, settlementLedger, reconAlerter)
 		go reconWorker.StartWorker(ctx, time.Duration(cfg.PaymentFinancialReconIntervalMs)*time.Millisecond)
 		slog.Info("payment financial recon worker started", "interval_ms", cfg.PaymentFinancialReconIntervalMs)
 	}

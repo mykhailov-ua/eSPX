@@ -84,6 +84,25 @@ SELECT * FROM admin_audit_log
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2;
 
+-- name: CountAuditLogs :one
+SELECT COUNT(*) FROM admin_audit_log;
+
+-- name: ListAuditPaginated :many
+SELECT * FROM admin_audit_log
+ORDER BY created_at DESC
+LIMIT $1 OFFSET $2;
+
+-- name: ListAuditLogsInRange :many
+SELECT * FROM admin_audit_log
+WHERE created_at >= $1 AND created_at < $2
+ORDER BY created_at ASC, id ASC
+LIMIT $3 OFFSET $4;
+
+-- name: GetLedgerByPaymentIntent :one
+SELECT * FROM balance_ledger
+WHERE payment_intent_id = $1 AND type = 'PAYMENT_TOPUP'
+LIMIT 1;
+
 -- name: CountCustomers :one
 SELECT COUNT(*) FROM customers;
 
@@ -108,6 +127,27 @@ SELECT * FROM balance_ledger
 WHERE customer_id = $1
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3;
+
+-- name: ListCustomerLedgerByIDDesc :many
+SELECT * FROM balance_ledger
+WHERE customer_id = $1
+ORDER BY id DESC
+LIMIT 100;
+
+-- name: ListCustomerLedgerExport :many
+SELECT * FROM balance_ledger
+WHERE customer_id = @customer_id
+  AND (@cursor_id::bigint = 0 OR id < @cursor_id::bigint)
+ORDER BY id DESC
+LIMIT @batch_limit;
+
+-- name: ListManagementReconRuns :many
+SELECT * FROM recon_runs
+ORDER BY id DESC
+LIMIT $1 OFFSET $2;
+
+-- name: CountManagementReconRuns :one
+SELECT COUNT(*) FROM recon_runs;
 
 -- name: CountCampaigns :one
 SELECT COUNT(*) FROM campaigns
@@ -327,3 +367,100 @@ WHERE id = $1;
 INSERT INTO recon_discrepancies (
     run_id, campaign_id, customer_id, expected_spend, actual_spend, delta, redis_adjusted
 ) VALUES ($1, $2, $3, $4, $5, $6, $7);
+
+-- name: SumCampaignStatsInRange :one
+SELECT
+    COALESCE(SUM(impressions_count), 0)::bigint AS impressions,
+    COALESCE(SUM(clicks_count), 0)::bigint AS clicks,
+    COALESCE(SUM(conversions_count), 0)::bigint AS conversions
+FROM campaign_stats
+WHERE campaign_id = @campaign_id
+  AND date >= @from_date::date
+  AND date <= @to_date::date;
+
+-- name: ListSellers :many
+SELECT * FROM sellers ORDER BY seller_id;
+
+-- name: GetSeller :one
+SELECT * FROM sellers WHERE id = $1;
+
+-- name: CreateSeller :one
+INSERT INTO sellers (seller_id, domain, seller_type, name, is_confidential)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING *;
+
+-- name: UpdateSeller :one
+UPDATE sellers
+SET seller_id = $2,
+    domain = $3,
+    seller_type = $4,
+    name = $5,
+    is_confidential = $6,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING *;
+
+-- name: DeleteSeller :exec
+DELETE FROM sellers WHERE id = $1;
+
+-- name: ListAdsTxtEntries :many
+SELECT * FROM ads_txt_entries ORDER BY sort_order, id;
+
+-- name: GetAdsTxtEntry :one
+SELECT * FROM ads_txt_entries WHERE id = $1;
+
+-- name: CreateAdsTxtEntry :one
+INSERT INTO ads_txt_entries (domain, publisher_account_id, relationship, cert_authority_id, sort_order)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING *;
+
+-- name: UpdateAdsTxtEntry :one
+UPDATE ads_txt_entries
+SET domain = $2,
+    publisher_account_id = $3,
+    relationship = $4,
+    cert_authority_id = $5,
+    sort_order = $6,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING *;
+
+-- name: DeleteAdsTxtEntry :exec
+DELETE FROM ads_txt_entries WHERE id = $1;
+
+-- name: UpdateCampaignSupplyChain :one
+UPDATE campaigns
+SET supply_chain_nodes = $2,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING *;
+
+-- name: ListRtbDeals :many
+SELECT * FROM rtb_deals ORDER BY deal_id;
+
+-- name: GetRtbDeal :one
+SELECT * FROM rtb_deals WHERE id = $1;
+
+-- name: GetRtbDealByDealID :one
+SELECT * FROM rtb_deals WHERE deal_id = $1;
+
+-- name: CreateRtbDeal :one
+INSERT INTO rtb_deals (deal_id, floor_micro, geo_mask, cat_mask, pacing, customer_id, seats)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING *;
+
+-- name: UpdateRtbDeal :one
+UPDATE rtb_deals
+SET deal_id = $2,
+    floor_micro = $3,
+    geo_mask = $4,
+    cat_mask = $5,
+    pacing = $6,
+    customer_id = $7,
+    seats = $8,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING *;
+
+-- name: DeleteRtbDeal :exec
+DELETE FROM rtb_deals WHERE id = $1;

@@ -1,4 +1,4 @@
-// Command edge-bpf-sync mirrors Redis shard-0 deny/allow sets into pinned XDP LPM maps.
+// Command edge-bpf-sync mirrors Redis shard-0 deny and allow sets into pinned XDP LPM trie maps.
 package main
 
 import (
@@ -17,7 +17,6 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// main polls Redis deny/allow sets and incrementally updates pinned BPF maps.
 func main() {
 	syncInterval := edge.EnvDuration("SYNC_INTERVAL", 5*time.Second)
 	blocklistPath := edge.EnvOr("BPF_BLOCKLIST_MAP", blocklist.DefaultMapPath)

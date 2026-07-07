@@ -1,5 +1,5 @@
-// Command tracker runs the gnet ad-event hot path as a separate process because Lua filters and Redis sharding need isolated CPU from admin services.
-// Metrics and health use a dedicated listener so Prometheus scrapes do not run LatencyRing flush on gnet event loops.
+// Command tracker wires gnet ingestion, Redis Lua filters, and registry sync in a dedicated process.
+// Metrics and health use a separate listener so Prometheus scrapes do not run on gnet event loops.
 package main
 
 import (
@@ -24,7 +24,6 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// main wires gnet ingestion, Redis filters, and registry sync because RTB validation must stay off admin and processor processes.
 func main() {
 	if len(os.Args) > 2 && os.Args[1] == "--health-probe" {
 		resp, err := http.Get(os.Args[2])
@@ -205,6 +204,16 @@ func main() {
 			rtbCatalog.Registry().SetTargetingIndexEnabled(true)
 		}
 		ads.StartRtbCatalogSync(ctx, registry, rtbCatalog, cfg, rtbHybrid, rtbBudgetSync, time.Duration(cfg.RegistrySyncIntervalMs)*time.Millisecond)
+		if err := ads.ReloadRtbDeals(ctx, queries, rtbCatalog); err != nil {
+			slog.Warn("initial rtb deals load failed", "error", err)
+		} else {
+			slog.Info("rtb deals loaded", "count", rtbCatalog.DealCount())
+		}
+		ads.StartRtbCatalogReloadWatch(ctx, queries, rdbs[0], ads.RtbCatalogReloadChannel(cfg), registry, rtbCatalog, cfg, rtbHybrid, rtbBudgetSync)
+		dealFloorCache := ads.NewDealFloorCache(rdbs[0])
+		rtbCatalog.SetDealFloors(dealFloorCache)
+		ads.StartDealFloorRefresh(ctx, dealFloorCache, rtbCatalog, time.Duration(cfg.DealFloorRefreshIntervalMs)*time.Millisecond)
+		_ = ads.NewRtbAuthorityController(cfg, settingsWatcher, unifiedFilter, rtbCatalog, &rtbBudgetSync)
 		rtbReconcile = ads.NewRtbBudgetReconcileWorker(
 			ads.RtbBudgetReconcileConfig{
 				Interval:            time.Duration(cfg.RtbReconcileIntervalMs) * time.Millisecond,
@@ -234,7 +243,7 @@ func main() {
 	gnetHandler := ads.NewAdsPacketHandler(cfg, registry, filterEngine, pool, rdbs, sharder, cfg.FraudStreamName, creativeStore)
 	gnetHandler.ConfigureIngestGeo(geoProvider)
 	if rtbCatalog != nil {
-		gnetHandler.ConfigureRtb(rtbCatalog, geoProvider, unifiedFilter)
+		gnetHandler.ConfigureRtb(rtbCatalog, geoProvider, unifiedFilter, settingsWatcher)
 	}
 	gnetHandler.SetLogger(appLogger)
 	gnetHandler.StartHealthProbe(ctx)

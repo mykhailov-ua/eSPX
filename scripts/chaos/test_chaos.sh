@@ -6,7 +6,7 @@ source "$(cd "$(dirname "$0")/../_common" && pwd)/paths.sh"
 cd "$ROOT"
 
 LOG="${CHAOS_LOG:-/tmp/espx-chaos.log}"
-MIN_PROOFS="${CHAOS_MIN_PROOFS:-28}"
+MIN_PROOFS="${CHAOS_MIN_PROOFS:-30}"
 export BROKER_CHAOS_LAB=1
 
 go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.28.0 generate

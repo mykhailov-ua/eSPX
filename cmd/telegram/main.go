@@ -1,4 +1,4 @@
-// Command telegram bridges Alertmanager webhooks to Telegram because on-call needs mobile alerts without exposing the Bot API from Prometheus.
+// Command telegram forwards Alertmanager webhook payloads to the Telegram Bot API.
 package main
 
 import (
@@ -15,7 +15,7 @@ import (
 	"espx/pkg/lifecycle"
 )
 
-// Alert mirrors one Alertmanager notification for decoding because webhook JSON is nested and partially typed.
+// Alert matches the Alertmanager webhook alert object JSON shape.
 type Alert struct {
 	Status      string            `json:"status"`
 	Labels      map[string]string `json:"labels"`
@@ -24,7 +24,7 @@ type Alert struct {
 	EndsAt      time.Time         `json:"endsAt"`
 }
 
-// AlertmanagerPayload is the webhook envelope Alertmanager posts because alerts arrive batched with shared labels.
+// AlertmanagerPayload matches the Alertmanager webhook envelope JSON shape.
 type AlertmanagerPayload struct {
 	Receiver          string            `json:"receiver"`
 	Status            string            `json:"status"`
@@ -35,7 +35,6 @@ type AlertmanagerPayload struct {
 	ExternalURL       string            `json:"externalURL"`
 }
 
-// main accepts Alertmanager webhooks locally because Telegram Bot API calls must not run inside Alertmanager itself.
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
@@ -132,7 +131,6 @@ func main() {
 	slog.Info("proxy shutdown complete")
 }
 
-// sendTelegramMessage delivers HTML alerts because Telegram is the mobile on-call channel configured for this stack.
 func sendTelegramMessage(token, chatID, htmlMessage string) error {
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
 	payload := map[string]interface{}{

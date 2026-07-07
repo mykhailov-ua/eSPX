@@ -1,3 +1,4 @@
+// Command alertmanager-telegram forwards Alertmanager webhook payloads to the Telegram Bot API.
 package main
 
 import (
@@ -70,10 +71,8 @@ func main() {
 
 		for _, alert := range payload.Alerts {
 			var message string
-			statusEmoji := "🔥"
 			statusText := "ALERT ACTIVE"
 			if alert.Status == "resolved" {
-				statusEmoji = "✅"
 				statusText = "ALERT RESOLVED"
 			}
 
@@ -83,8 +82,7 @@ func main() {
 			}
 
 			message = fmt.Sprintf(
-				"%s <b>%s</b>\n\n<b>Alert:</b> %s\n<b>Severity:</b> <code>%s</code>\n<b>Description:</b> %s\n<b>Time:</b> <code>%s</code>\n",
-				statusEmoji,
+				"<b>%s</b>\n\n<b>Alert:</b> %s\n<b>Severity:</b> <code>%s</code>\n<b>Description:</b> %s\n<b>Time:</b> <code>%s</code>\n",
 				statusText,
 				alert.Annotations["summary"],
 				severity,

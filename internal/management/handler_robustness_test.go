@@ -3,6 +3,7 @@ package management
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestManagementAPI_Robustness guards malformed input, DB failures, worker shutdown, and pagination limits.
@@ -144,5 +146,9 @@ func TestManagementAPI_Robustness(t *testing.T) {
 		mux.ServeHTTP(resp, req)
 		assert.Equal(t, http.StatusOK, resp.Code)
 
+		var items []any
+		err := json.NewDecoder(resp.Body).Decode(&items)
+		require.NoError(t, err)
+		assert.LessOrEqual(t, len(items), 1000)
 	})
 }

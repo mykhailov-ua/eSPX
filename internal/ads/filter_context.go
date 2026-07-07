@@ -113,7 +113,7 @@ func attachFraudAccumulator(evt *domain.Event) *fraudAccumulator {
 	acc := fraudAccPool.Get().(*fraudAccumulator)
 	acc.reset()
 	if evt != nil {
-		evt.Scratch = uintptr(unsafe.Pointer(acc))
+		evt.Scratch = unsafe.Pointer(acc)
 	}
 	return acc
 }
@@ -126,16 +126,16 @@ func releaseFraudAccumulator(evt *domain.Event, acc *fraudAccumulator) {
 	acc.reset()
 	fraudAccPool.Put(acc)
 	if evt != nil {
-		evt.Scratch = 0
+		evt.Scratch = nil
 	}
 }
 
 // fraudAccFromEvent loads the accumulator stored in evt.Scratch during FilterEngine.Check.
 func fraudAccFromEvent(evt *domain.Event) (*fraudAccumulator, bool) {
-	if evt == nil || evt.Scratch == 0 {
+	if evt == nil || evt.Scratch == nil {
 		return nil, false
 	}
-	return (*fraudAccumulator)(unsafe.Pointer(evt.Scratch)), true
+	return (*fraudAccumulator)(evt.Scratch), true
 }
 
 // addFraudSignal records a weighted fraud signal for the current filter pass.

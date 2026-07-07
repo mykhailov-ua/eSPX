@@ -1,4 +1,4 @@
-// Command auth runs the session and credential gRPC service as its own deployable unit.
+// Command auth wires the session and credential gRPC service in a dedicated process.
 package main
 
 import (
@@ -20,7 +20,6 @@ import (
 	"google.golang.org/grpc/reflection"
 )
 
-// main runs auth as an isolated gRPC service because session state and password hashing must not share the tracker process.
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)

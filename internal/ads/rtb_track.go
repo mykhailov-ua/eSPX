@@ -26,15 +26,19 @@ func rtbModeFromConfig(cfg *config.Config) uint8 {
 }
 
 // ConfigureTrackRtb wires RTB auction state into the shared track processor and Lua filter.
-func ConfigureTrackRtb(proc *trackProcessor, cfg *config.Config, catalog *RtbCatalog, geo GeoProvider, unified *UnifiedFilter) {
+func ConfigureTrackRtb(proc *trackProcessor, cfg *config.Config, catalog *RtbCatalog, geo GeoProvider, unified *UnifiedFilter, watcher *SettingsWatcher) {
 	if proc == nil || cfg == nil || catalog == nil || !cfg.RtbEnabled() {
 		return
 	}
 	proc.rtbCatalog = catalog
 	proc.rtbMode = rtbModeFromConfig(cfg)
 	proc.ingestGeo = geo
-	if unified != nil && cfg.RtbBudgetAuthoritative() {
-		unified.SetSkipBudgetDebit(true)
+	if unified != nil {
+		setting := ""
+		if watcher != nil {
+			setting = watcher.Get().RtbBudgetAuthority
+		}
+		unified.SetSkipBudgetDebit(RtbSkipLuaBudgetDebit(cfg, setting))
 	}
 }
 
@@ -46,11 +50,11 @@ func ConfigureIngestGeo(proc *trackProcessor, geo GeoProvider) {
 }
 
 // ConfigureHandlerRtb wires RTB into a gnet AdsPacketHandler.
-func (h *AdsPacketHandler) ConfigureRtb(catalog *RtbCatalog, geo GeoProvider, unified *UnifiedFilter) {
+func (h *AdsPacketHandler) ConfigureRtb(catalog *RtbCatalog, geo GeoProvider, unified *UnifiedFilter, watcher *SettingsWatcher) {
 	if h == nil {
 		return
 	}
-	ConfigureTrackRtb(&h.trackProc, h.cfg, catalog, geo, unified)
+	ConfigureTrackRtb(&h.trackProc, h.cfg, catalog, geo, unified, watcher)
 }
 
 // ConfigureHandlerIngestGeo wires shared GeoIP lookup for ingest geo deduplication.
@@ -61,10 +65,14 @@ func (h *AdsPacketHandler) ConfigureIngestGeo(geo GeoProvider) {
 	ConfigureIngestGeo(&h.trackProc, geo)
 }
 
-func buildRtbTargeting(evt *domain.Event, deviceType []byte, floorMicro int64) RtbTargetingInput {
+func buildRtbTargeting(evt *domain.Event, deviceType []byte, floorMicro int64, catalog *RtbCatalog) RtbTargetingInput {
 	geoHash := uint32(0)
+	dealID := ""
 	if evt != nil && evt.IngestGeoResolved {
 		geoHash = evt.GeoHash
+	}
+	if evt != nil && len(evt.Payload) > 0 {
+		dealID = ParseDealID(evt.Payload)
 	}
 
 	// Try OpenRTB 3.0 parsing first
@@ -73,11 +81,13 @@ func buildRtbTargeting(evt *domain.Event, deviceType []byte, floorMicro int64) R
 			if floorMicro <= 0 {
 				floorMicro = minBid
 			}
+			floorMicro = EffectiveDealFloor(catalog, catalogDealFloors(catalog), dealID, floorMicro)
 			return RtbTargetingInput{
 				GeoHash:             geoHash,
 				DeviceType:          devType,
 				CategoryMask:        catMask,
 				PublisherFloorMicro: floorMicro,
+				DealID:              dealID,
 			}
 		}
 	}
@@ -92,12 +102,21 @@ func buildRtbTargeting(evt *domain.Event, deviceType []byte, floorMicro int64) R
 			categoryMask = parsed
 		}
 	}
+	floorMicro = EffectiveDealFloor(catalog, catalogDealFloors(catalog), dealID, floorMicro)
 	return RtbTargetingInput{
 		GeoHash:             geoHash,
 		DeviceType:          DeviceMaskFromType(deviceType),
 		CategoryMask:        categoryMask,
 		PublisherFloorMicro: floorMicro,
+		DealID:              dealID,
 	}
+}
+
+func catalogDealFloors(catalog *RtbCatalog) *DealFloorCache {
+	if catalog == nil {
+		return nil
+	}
+	return catalog.dealFloors
 }
 
 func applyRtbAuction(proc trackProcessor, evt *domain.Event, deviceType []byte) (trackOutcome, bool) {
@@ -105,7 +124,7 @@ func applyRtbAuction(proc trackProcessor, evt *domain.Event, deviceType []byte) 
 		return trackOutcome{}, false
 	}
 
-	targeting := buildRtbTargeting(evt, deviceType, 0)
+	targeting := buildRtbTargeting(evt, deviceType, 0, proc.rtbCatalog)
 	payloadBidMicro := targeting.PublisherFloorMicro
 	res, reason := proc.rtbCatalog.RunAuction(evt, targeting)
 

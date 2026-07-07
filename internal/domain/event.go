@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/google/uuid"
 )
@@ -32,8 +33,8 @@ type Event struct {
 	ShadowEvent  bool
 	CreatedAt    time.Time
 	StringBuffer []byte
-	// Scratch is an opaque ads-internal slot (fraud accumulator pointer); 0 when unset.
-	Scratch uintptr
+	// Scratch is an opaque ads-internal slot (fraud accumulator pointer); nil when unset.
+	Scratch unsafe.Pointer
 	// FilterDeadlineMono is a monotonic-ns filter budget set by FilterEngine.Check; 0 means unset.
 	FilterDeadlineMono int64
 	IngestGeoResolved  bool
@@ -64,7 +65,7 @@ func (event *Event) Reset() {
 	event.GhostEvent = false
 	event.ShadowEvent = false
 	event.CreatedAt = time.Time{}
-	event.Scratch = 0
+	event.Scratch = nil
 	event.FilterDeadlineMono = 0
 	event.IngestGeoResolved = false
 	event.GeoHash = 0

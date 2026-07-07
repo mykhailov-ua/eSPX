@@ -28,13 +28,18 @@ type DynamicConfig struct {
 	ASNCDNWhitelist      string `json:"asn_cdn_whitelist"`
 	ASNMobileWhitelist   string `json:"asn_mobile_whitelist"`
 	TLSHashBlocklist     string `json:"tls_hash_blocklist"`
+	RtbBudgetAuthority   string `json:"rtb_budget_authority"`
 }
+
+// SettingsChangeListener runs after a new dynamic config snapshot is stored.
+type SettingsChangeListener func(*DynamicConfig)
 
 // SettingsWatcher polls Redis for config changes without restarting trackers.
 type SettingsWatcher struct {
 	rdbs           []redis.UniversalClient
 	currentVersion int64
 	snapshot       atomic.Value
+	onChange       []SettingsChangeListener
 }
 
 // NewSettingsWatcher seeds dynamic config from static startup values.
@@ -53,6 +58,14 @@ func NewSettingsWatcher(rdbs []redis.UniversalClient, initial *config.Config) *S
 	})
 
 	return sw
+}
+
+// AddChangeListener registers a callback invoked after each successful config reload.
+func (sw *SettingsWatcher) AddChangeListener(fn SettingsChangeListener) {
+	if fn == nil {
+		return
+	}
+	sw.onChange = append(sw.onChange, fn)
 }
 
 // Get returns the current immutable config snapshot; callers must not mutate it.
@@ -137,6 +150,10 @@ func (sw *SettingsWatcher) sync(ctx context.Context) {
 	sw.snapshot.Store(newCfg)
 	atomic.StoreInt64(&sw.currentVersion, v)
 
+	for _, fn := range sw.onChange {
+		fn(newCfg)
+	}
+
 	slog.Info("dynamic settings updated", "version", v)
 }
 
@@ -160,6 +177,7 @@ func (sw *SettingsWatcher) parseConfig(version int64, data map[string]string) *D
 	updateString(&next.ASNCDNWhitelist, data["asn_cdn_whitelist"])
 	updateString(&next.ASNMobileWhitelist, data["asn_mobile_whitelist"])
 	updateString(&next.TLSHashBlocklist, data["tls_hash_blocklist"])
+	updateString(&next.RtbBudgetAuthority, data[systemSettingRtbBudgetAuthority])
 
 	return &next
 }

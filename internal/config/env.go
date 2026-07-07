@@ -14,80 +14,80 @@ import (
 const ExpectedRedisShardCount = 4
 
 type Config struct {
-	ServerPort                 string
-	ProcessorPort              string
-	ManagementPort             string
-	MetricsPort                string
-	DBDSN                      Secret
-	PaymentDBDSN               Secret
-	RedisAddrs                 []string
-	RedisSentinelAddrs         []string
-	RedisMasterNames           []string
-	RedisPassword              Secret
-	RedisStreamName            string
-	FraudStreamName            string
-	RedisGroupName             string
-	RedisConsumerID            string
-	CHDSN                      Secret
-	AuthServerPort             string
-	AuthMetricsPort            string
-	Env                        string
-	TrustedProxies             []string
-	TokenSymmetricKey          Secret
-	MaxRequestBodySize         int64
-	ClickAmount                int64
-	ImpressionAmount           int64
-	EventBatchSize             int
-	EventFlushMs               int
-	StatsFlushMs               int
-	MaxWorkers                 int
-	CHMaxWorkers               int
-	LogRetentionDays           int
-	DBTrackerMaxConns          int
-	DBProcessorMaxConns        int
-	DBMinConns                 int
-	WriteTimeoutMs             int
-	FilterTimeoutMs            int
-	MetricsHistogramSampleMask int
-	AuditLogSampleMask         int
-	IdempotencyTTLHrs          int
-	RateLimitPerMin            int
-	RateLimitWindowMs          int
-	DuplicateTTLSec            int
-	TTCMinMs                   int
-	TTCFailClosed              bool
-	CHBatchSize                int
-	CHFlushIntervalMs          int
-	PartitionPreCreateDays     int
-	RegistrySyncIntervalMs     int
-	BudgetSyncIntervalMs       int
-	HttpReadHeaderTimeoutMs    int
-	HttpReadTimeoutMs          int
-	HttpWriteTimeoutMs         int
-	HttpIdleTimeoutMs          int
-	DefaultTokenDurationHrs    int
-	StreamMaxLen               int
-	RetryInitialWaitMs         int
-	RetryMaxWaitMs             int
-	MaxRetries                 int
-	StreamMinIdleMs            int
-	Argon2Memory               int
-	Argon2Iterations           int
-	Argon2Parallelism          int
-	RedisPoolSize              int
-	RedisBreakerFailThreshold  int
-	RedisBreakerHalfOpen       int
-	RedisBreakerOpenTimeoutMs  int
-	AdminAPIKey                Secret
-	AllowedOrigins             []string
-	PaymentServerPort          string
-	PaymentServerHost          string
-	PaymentMetricsPort         string
-	PaymentWebhookPort         string
-	SettlementServerPort       string
-	SettlementServerHost       string
-	PaymentInternalToken       Secret
-	SettlementInternalToken    Secret
+	ServerPort                      string
+	ProcessorPort                   string
+	ManagementPort                  string
+	MetricsPort                     string
+	DBDSN                           Secret
+	PaymentDBDSN                    Secret
+	RedisAddrs                      []string
+	RedisSentinelAddrs              []string
+	RedisMasterNames                []string
+	RedisPassword                   Secret
+	RedisStreamName                 string
+	FraudStreamName                 string
+	RedisGroupName                  string
+	RedisConsumerID                 string
+	CHDSN                           Secret
+	AuthServerPort                  string
+	AuthMetricsPort                 string
+	Env                             string
+	TrustedProxies                  []string
+	TokenSymmetricKey               Secret
+	MaxRequestBodySize              int64
+	ClickAmount                     int64
+	ImpressionAmount                int64
+	EventBatchSize                  int
+	EventFlushMs                    int
+	StatsFlushMs                    int
+	MaxWorkers                      int
+	CHMaxWorkers                    int
+	LogRetentionDays                int
+	DBTrackerMaxConns               int
+	DBProcessorMaxConns             int
+	DBMinConns                      int
+	WriteTimeoutMs                  int
+	FilterTimeoutMs                 int
+	MetricsHistogramSampleMask      int
+	AuditLogSampleMask              int
+	IdempotencyTTLHrs               int
+	RateLimitPerMin                 int
+	RateLimitWindowMs               int
+	DuplicateTTLSec                 int
+	TTCMinMs                        int
+	TTCFailClosed                   bool
+	CHBatchSize                     int
+	CHFlushIntervalMs               int
+	PartitionPreCreateDays          int
+	RegistrySyncIntervalMs          int
+	BudgetSyncIntervalMs            int
+	HttpReadHeaderTimeoutMs         int
+	HttpReadTimeoutMs               int
+	HttpWriteTimeoutMs              int
+	HttpIdleTimeoutMs               int
+	DefaultTokenDurationHrs         int
+	StreamMaxLen                    int
+	RetryInitialWaitMs              int
+	RetryMaxWaitMs                  int
+	MaxRetries                      int
+	StreamMinIdleMs                 int
+	Argon2Memory                    int
+	Argon2Iterations                int
+	Argon2Parallelism               int
+	RedisPoolSize                   int
+	RedisBreakerFailThreshold       int
+	RedisBreakerHalfOpen            int
+	RedisBreakerOpenTimeoutMs       int
+	AdminAPIKey                     Secret
+	AllowedOrigins                  []string
+	PaymentServerPort               string
+	PaymentServerHost               string
+	PaymentMetricsPort              string
+	PaymentWebhookPort              string
+	SettlementServerPort            string
+	SettlementServerHost            string
+	PaymentInternalToken            Secret
+	SettlementInternalToken         Secret
 	StripeSecretKey                 Secret
 	StripeWebhookSecret             Secret
 	PaymentFinancialReconIntervalMs int
@@ -108,8 +108,12 @@ type Config struct {
 		AlertmanagerWebhookEnabled  bool
 		AlertmanagerWebhookToken    string
 		OpsAlertOutboxStuckSec      int
+		AuditExportPath             string
+		AuditExportRetentionDays    int
+		SupplyExportPath            string
 	}
-	CampaignUpdateChannel string
+	CampaignUpdateChannel   string
+	RtbCatalogReloadChannel string
 
 	AutoscaleHighCTRThreshold   float64
 	AutoscaleMinImpressions     int64
@@ -117,6 +121,14 @@ type Config struct {
 	AutoscaleMinRemainingBudget int64
 	AutoscaleShiftAmount        int64
 	AutoscaleIntervalMs         int
+
+	DeliveryOptimizerIntervalMs int
+	BidFloorLookbackHours       int
+	BidFloorWinRateLow          float64
+	BidFloorWinRateHigh         float64
+	BidFloorAdjustPct           int
+	BidFloorMinMicro            int64
+	DealFloorRefreshIntervalMs  int
 
 	PacingToleranceMargin float64
 
@@ -176,34 +188,34 @@ type Config struct {
 	ManagementURL           string
 
 	Notifier struct {
-		ServerHost              string
-		Port                    string
-		WorkerIntervalMs        int
-		WorkerBatchSize         int
-		BreakerFailThreshold    int
-		BreakerSuccessThreshold int
-		BreakerOpenTimeoutMs    int
-		TelegramBotToken        Secret
-		TelegramChatID          string
-		SlackWebhookURL         Secret
-		SMSProviderURL          string
-		SMSAPIToken             Secret
-		SMSDefaultRecipient     string
-		SMTPHost                string
-		SMTPPort                string
-		SMTPUsername            string
-		SMTPPassword            Secret
-		SMTPSender              string
-		MetricsPort             string
-		RetentionSentDays       int
-		RetentionFailedDays     int
-		RetentionIntervalHours  int
-		AdminBaseURL            string
-		WorkerConcurrency       int
-		DedupCooldownSec        int
-		ClaimStaleSec           int
-		GroupParallelism        int
-		RateLimitPerMinute      int
+		ServerHost                 string
+		Port                       string
+		WorkerIntervalMs           int
+		WorkerBatchSize            int
+		BreakerFailThreshold       int
+		BreakerSuccessThreshold    int
+		BreakerOpenTimeoutMs       int
+		TelegramBotToken           Secret
+		TelegramChatID             string
+		SlackWebhookURL            Secret
+		SMSProviderURL             string
+		SMSAPIToken                Secret
+		SMSDefaultRecipient        string
+		SMTPHost                   string
+		SMTPPort                   string
+		SMTPUsername               string
+		SMTPPassword               Secret
+		SMTPSender                 string
+		MetricsPort                string
+		RetentionSentDays          int
+		RetentionFailedDays        int
+		RetentionIntervalHours     int
+		AdminBaseURL               string
+		WorkerConcurrency          int
+		DedupCooldownSec           int
+		ClaimStaleSec              int
+		GroupParallelism           int
+		RateLimitPerMinute         int
 		TelegramRateLimitPerMinute int
 	}
 
@@ -229,8 +241,9 @@ type Config struct {
 	}
 
 	Billing struct {
-		Port       string
-		ServerHost string
+		Port        string
+		ServerHost  string
+		MetricsPort string
 	}
 
 	BillingInternalToken Secret
@@ -261,94 +274,102 @@ func (c *Config) ResolveRedisMasterNames() []string {
 // Load builds a validated Config from the process environment.
 func Load() (*Config, error) {
 	cfg := &Config{
-		ServerPort:                  os.Getenv("SERVER_PORT"),
-		ProcessorPort:               os.Getenv("PROCESSOR_PORT"),
-		ManagementPort:              os.Getenv("MANAGEMENT_PORT"),
-		DBDSN:                       Secret(os.Getenv("DB_DSN")),
-		PaymentDBDSN:                Secret(os.Getenv("PAYMENT_DB_DSN")),
-		RedisAddrs:                  trimCommaList(os.Getenv("REDIS_ADDRS")),
-		RedisSentinelAddrs:          trimCommaList(os.Getenv("REDIS_SENTINEL_ADDRS")),
-		RedisMasterNames:            trimCommaList(os.Getenv("REDIS_MASTER_NAMES")),
-		RedisPassword:               Secret(os.Getenv("REDIS_PASSWORD")),
-		RedisStreamName:             os.Getenv("REDIS_STREAM_NAME"),
-		FraudStreamName:             os.Getenv("FRAUD_STREAM_NAME"),
-		RedisGroupName:              os.Getenv("REDIS_GROUP_NAME"),
-		RedisConsumerID:             os.Getenv("REDIS_CONSUMER_ID"),
-		EventBatchSize:              getEnvInt("EVENT_BATCH_SIZE", 1000),
-		EventFlushMs:                getEnvInt("EVENT_FLUSH_MS", 500),
-		StatsFlushMs:                getEnvInt("STATS_FLUSH_MS", 5000),
-		MaxWorkers:                  getEnvInt("MAX_WORKERS", 16),
-		CHMaxWorkers:                getEnvInt("CH_MAX_WORKERS", 1),
-		LogRetentionDays:            getEnvInt("LOG_RETENTION_DAYS", 7),
-		DBTrackerMaxConns:           getEnvInt("DB_TRACKER_MAX_CONNS", 4),
-		DBProcessorMaxConns:         getEnvInt("DB_PROCESSOR_MAX_CONNS", 16),
-		DBMinConns:                  getEnvInt("DB_MIN_CONNS", 2),
-		WriteTimeoutMs:              getEnvInt("WRITE_TIMEOUT_MS", 5000),
-		FilterTimeoutMs:             getEnvInt("FILTER_TIMEOUT_MS", 0),
-		MetricsHistogramSampleMask:  getEnvInt("METRICS_HISTOGRAM_SAMPLE_MASK", 127),
-		AuditLogSampleMask:          getEnvInt("AUDIT_LOG_SAMPLE_RATE", 127),
-		IdempotencyTTLHrs:           getEnvInt("IDEMPOTENCY_TTL_HRS", 24),
-		RateLimitPerMin:             getEnvInt("RATE_LIMIT_PER_MIN", 100),
-		RateLimitWindowMs:           getEnvInt("RATE_LIMIT_WINDOW_MS", 60000),
-		MaxRequestBodySize:          getEnvInt64("MAX_REQUEST_BODY_SIZE", 1048576),
-		DuplicateTTLSec:             getEnvInt("DUPLICATE_TTL_SEC", 10),
-		TTCMinMs:                    getEnvInt("TTC_MIN_MS", 300),
-		TTCFailClosed:               getEnvBool("TTC_FAIL_CLOSED", false),
-		CHDSN:                       Secret(os.Getenv("CH_DSN")),
-		CHBatchSize:                 getEnvInt("CH_BATCH_SIZE", 50000),
-		CHFlushIntervalMs:           getEnvInt("CH_FLUSH_INTERVAL_MS", 10000),
-		AuthServerPort:              os.Getenv("AUTH_SERVER_PORT"),
-		TokenSymmetricKey:           Secret(os.Getenv("TOKEN_SYMMETRIC_KEY")),
-		PartitionPreCreateDays:      getEnvInt("PARTITION_PRECREATE_DAYS", 2),
-		RegistrySyncIntervalMs:      getEnvInt("REGISTRY_SYNC_INTERVAL_MS", 60000),
-		BudgetSyncIntervalMs:        getEnvInt("BUDGET_SYNC_INTERVAL_MS", 5000),
-		HttpReadHeaderTimeoutMs:     getEnvInt("HTTP_READ_HEADER_TIMEOUT_MS", 2000),
-		HttpReadTimeoutMs:           getEnvInt("HTTP_READ_TIMEOUT_MS", 5000),
-		HttpWriteTimeoutMs:          getEnvInt("HTTP_WRITE_TIMEOUT_MS", 10000),
-		HttpIdleTimeoutMs:           getEnvInt("HTTP_IDLE_TIMEOUT_MS", 30000),
-		DefaultTokenDurationHrs:     getEnvInt("DEFAULT_TOKEN_DURATION_HRS", 24),
-		ClickAmount:                 getEnvMicro("CLICK_AMOUNT", 100_000),
-		ImpressionAmount:            getEnvMicro("IMPRESSION_AMOUNT", 10_000),
-		StreamMaxLen:                getEnvInt("STREAM_MAX_LEN", 100000),
-		RetryInitialWaitMs:          getEnvInt("RETRY_INITIAL_WAIT_MS", 100),
-		RetryMaxWaitMs:              getEnvInt("RETRY_MAX_WAIT_MS", 5000),
-		MaxRetries:                  getEnvInt("MAX_RETRIES", 5),
-		StreamMinIdleMs:             getEnvInt("STREAM_MIN_IDLE_MS", 300000),
-		Argon2Memory:                getEnvInt("ARGON2_MEMORY", 65536),
-		Argon2Iterations:            getEnvInt("ARGON2_ITERATIONS", 3),
-		Argon2Parallelism:           getEnvInt("ARGON2_PARALLELISM", 4),
-		RedisPoolSize:               getEnvInt("REDIS_POOL_SIZE", 0),
-		RedisBreakerFailThreshold:   getEnvInt("REDIS_BREAKER_FAIL_THRESHOLD", 150),
-		RedisBreakerHalfOpen:        getEnvInt("REDIS_BREAKER_HALF_OPEN", 10),
-		RedisBreakerOpenTimeoutMs:   getEnvInt("REDIS_BREAKER_OPEN_TIMEOUT_MS", 5000),
-		AdminAPIKey:                 Secret(os.Getenv("ADMIN_API_KEY")),
-		AllowedOrigins:              strings.Split(os.Getenv("ALLOWED_ORIGINS"), ","),
-		TrustedProxies:              strings.Split(os.Getenv("TRUSTED_PROXIES"), ","),
-		Env:                         os.Getenv("ENV"),
-		AuthMetricsPort:             os.Getenv("AUTH_METRICS_PORT"),
-		CampaignUpdateChannel:       os.Getenv("CAMPAIGN_UPDATE_CHANNEL"),
-		AutoscaleHighCTRThreshold:   getEnvFloat("AUTOSCALE_HIGH_CTR_THRESHOLD", 0.015),
-		AutoscaleMinImpressions:     getEnvInt64("AUTOSCALE_MIN_IMPRESSIONS", 100),
-		AutoscaleLowCTRThreshold:    getEnvFloat("AUTOSCALE_LOW_CTR_THRESHOLD", 0.005),
-		AutoscaleMinRemainingBudget: getEnvMicro("AUTOSCALE_MIN_REMAINING_BUDGET", 20.0),
-		AutoscaleShiftAmount:        getEnvMicro("AUTOSCALE_SHIFT_AMOUNT", 10.0),
-		AutoscaleIntervalMs:         getEnvInt("AUTOSCALE_INTERVAL_MS", 0),
-		PacingToleranceMargin:       getEnvFloat("PACING_TOLERANCE_MARGIN", 0.15),
-		CreditScoringMinAgeDays:     getEnvFloat("CREDIT_SCORING_MIN_AGE_DAYS", 7.0),
-		CreditScoringMatureAgeDays:  getEnvFloat("CREDIT_SCORING_MATURE_AGE_DAYS", 30.0),
-		CreditScoringMidTierPercent: getEnvInt64("CREDIT_SCORING_MID_TIER_PERCENT", 15),
-		CreditScoringMaturePercent:  getEnvInt64("CREDIT_SCORING_MATURE_PERCENT", 30),
-		CreditScoringMaxCap:         getEnvMicro("CREDIT_SCORING_MAX_CAP", 10000.0),
-		PaymentServerPort:           os.Getenv("PAYMENT_SERVER_PORT"),
-		PaymentServerHost:           os.Getenv("PAYMENT_SERVER_HOST"),
-		PaymentMetricsPort:          os.Getenv("PAYMENT_METRICS_PORT"),
-		PaymentWebhookPort:          os.Getenv("PAYMENT_WEBHOOK_PORT"),
-		SettlementServerPort:        os.Getenv("SETTLEMENT_SERVER_PORT"),
-		SettlementServerHost:        os.Getenv("SETTLEMENT_SERVER_HOST"),
-		PaymentInternalToken:        Secret(os.Getenv("PAYMENT_INTERNAL_TOKEN")),
-		SettlementInternalToken:     Secret(os.Getenv("SETTLEMENT_INTERNAL_TOKEN")),
-		StripeSecretKey:             Secret(os.Getenv("STRIPE_SECRET_KEY")),
-		StripeWebhookSecret:         Secret(os.Getenv("STRIPE_WEBHOOK_SECRET")),
+		ServerPort:                      os.Getenv("SERVER_PORT"),
+		ProcessorPort:                   os.Getenv("PROCESSOR_PORT"),
+		ManagementPort:                  os.Getenv("MANAGEMENT_PORT"),
+		DBDSN:                           Secret(os.Getenv("DB_DSN")),
+		PaymentDBDSN:                    Secret(os.Getenv("PAYMENT_DB_DSN")),
+		RedisAddrs:                      trimCommaList(os.Getenv("REDIS_ADDRS")),
+		RedisSentinelAddrs:              trimCommaList(os.Getenv("REDIS_SENTINEL_ADDRS")),
+		RedisMasterNames:                trimCommaList(os.Getenv("REDIS_MASTER_NAMES")),
+		RedisPassword:                   Secret(os.Getenv("REDIS_PASSWORD")),
+		RedisStreamName:                 os.Getenv("REDIS_STREAM_NAME"),
+		FraudStreamName:                 os.Getenv("FRAUD_STREAM_NAME"),
+		RedisGroupName:                  os.Getenv("REDIS_GROUP_NAME"),
+		RedisConsumerID:                 os.Getenv("REDIS_CONSUMER_ID"),
+		EventBatchSize:                  getEnvInt("EVENT_BATCH_SIZE", 1000),
+		EventFlushMs:                    getEnvInt("EVENT_FLUSH_MS", 500),
+		StatsFlushMs:                    getEnvInt("STATS_FLUSH_MS", 5000),
+		MaxWorkers:                      getEnvInt("MAX_WORKERS", 16),
+		CHMaxWorkers:                    getEnvInt("CH_MAX_WORKERS", 1),
+		LogRetentionDays:                getEnvInt("LOG_RETENTION_DAYS", 7),
+		DBTrackerMaxConns:               getEnvInt("DB_TRACKER_MAX_CONNS", 4),
+		DBProcessorMaxConns:             getEnvInt("DB_PROCESSOR_MAX_CONNS", 16),
+		DBMinConns:                      getEnvInt("DB_MIN_CONNS", 2),
+		WriteTimeoutMs:                  getEnvInt("WRITE_TIMEOUT_MS", 5000),
+		FilterTimeoutMs:                 getEnvInt("FILTER_TIMEOUT_MS", 0),
+		MetricsHistogramSampleMask:      getEnvInt("METRICS_HISTOGRAM_SAMPLE_MASK", 127),
+		AuditLogSampleMask:              getEnvInt("AUDIT_LOG_SAMPLE_RATE", 127),
+		IdempotencyTTLHrs:               getEnvInt("IDEMPOTENCY_TTL_HRS", 24),
+		RateLimitPerMin:                 getEnvInt("RATE_LIMIT_PER_MIN", 100),
+		RateLimitWindowMs:               getEnvInt("RATE_LIMIT_WINDOW_MS", 60000),
+		MaxRequestBodySize:              getEnvInt64("MAX_REQUEST_BODY_SIZE", 1048576),
+		DuplicateTTLSec:                 getEnvInt("DUPLICATE_TTL_SEC", 10),
+		TTCMinMs:                        getEnvInt("TTC_MIN_MS", 300),
+		TTCFailClosed:                   getEnvBool("TTC_FAIL_CLOSED", false),
+		CHDSN:                           Secret(os.Getenv("CH_DSN")),
+		CHBatchSize:                     getEnvInt("CH_BATCH_SIZE", 50000),
+		CHFlushIntervalMs:               getEnvInt("CH_FLUSH_INTERVAL_MS", 10000),
+		AuthServerPort:                  os.Getenv("AUTH_SERVER_PORT"),
+		TokenSymmetricKey:               Secret(os.Getenv("TOKEN_SYMMETRIC_KEY")),
+		PartitionPreCreateDays:          getEnvInt("PARTITION_PRECREATE_DAYS", 2),
+		RegistrySyncIntervalMs:          getEnvInt("REGISTRY_SYNC_INTERVAL_MS", 60000),
+		BudgetSyncIntervalMs:            getEnvInt("BUDGET_SYNC_INTERVAL_MS", 5000),
+		HttpReadHeaderTimeoutMs:         getEnvInt("HTTP_READ_HEADER_TIMEOUT_MS", 2000),
+		HttpReadTimeoutMs:               getEnvInt("HTTP_READ_TIMEOUT_MS", 5000),
+		HttpWriteTimeoutMs:              getEnvInt("HTTP_WRITE_TIMEOUT_MS", 10000),
+		HttpIdleTimeoutMs:               getEnvInt("HTTP_IDLE_TIMEOUT_MS", 30000),
+		DefaultTokenDurationHrs:         getEnvInt("DEFAULT_TOKEN_DURATION_HRS", 24),
+		ClickAmount:                     getEnvMicro("CLICK_AMOUNT", 100_000),
+		ImpressionAmount:                getEnvMicro("IMPRESSION_AMOUNT", 10_000),
+		StreamMaxLen:                    getEnvInt("STREAM_MAX_LEN", 100000),
+		RetryInitialWaitMs:              getEnvInt("RETRY_INITIAL_WAIT_MS", 100),
+		RetryMaxWaitMs:                  getEnvInt("RETRY_MAX_WAIT_MS", 5000),
+		MaxRetries:                      getEnvInt("MAX_RETRIES", 5),
+		StreamMinIdleMs:                 getEnvInt("STREAM_MIN_IDLE_MS", 300000),
+		Argon2Memory:                    getEnvInt("ARGON2_MEMORY", 65536),
+		Argon2Iterations:                getEnvInt("ARGON2_ITERATIONS", 3),
+		Argon2Parallelism:               getEnvInt("ARGON2_PARALLELISM", 4),
+		RedisPoolSize:                   getEnvInt("REDIS_POOL_SIZE", 0),
+		RedisBreakerFailThreshold:       getEnvInt("REDIS_BREAKER_FAIL_THRESHOLD", 150),
+		RedisBreakerHalfOpen:            getEnvInt("REDIS_BREAKER_HALF_OPEN", 10),
+		RedisBreakerOpenTimeoutMs:       getEnvInt("REDIS_BREAKER_OPEN_TIMEOUT_MS", 5000),
+		AdminAPIKey:                     Secret(os.Getenv("ADMIN_API_KEY")),
+		AllowedOrigins:                  strings.Split(os.Getenv("ALLOWED_ORIGINS"), ","),
+		TrustedProxies:                  strings.Split(os.Getenv("TRUSTED_PROXIES"), ","),
+		Env:                             os.Getenv("ENV"),
+		AuthMetricsPort:                 os.Getenv("AUTH_METRICS_PORT"),
+		CampaignUpdateChannel:           os.Getenv("CAMPAIGN_UPDATE_CHANNEL"),
+		RtbCatalogReloadChannel:         os.Getenv("RTB_CATALOG_RELOAD_CHANNEL"),
+		AutoscaleHighCTRThreshold:       getEnvFloat("AUTOSCALE_HIGH_CTR_THRESHOLD", 0.015),
+		AutoscaleMinImpressions:         getEnvInt64("AUTOSCALE_MIN_IMPRESSIONS", 100),
+		AutoscaleLowCTRThreshold:        getEnvFloat("AUTOSCALE_LOW_CTR_THRESHOLD", 0.005),
+		AutoscaleMinRemainingBudget:     getEnvMicro("AUTOSCALE_MIN_REMAINING_BUDGET", 20.0),
+		AutoscaleShiftAmount:            getEnvMicro("AUTOSCALE_SHIFT_AMOUNT", 10.0),
+		AutoscaleIntervalMs:             getEnvInt("AUTOSCALE_INTERVAL_MS", 0),
+		DeliveryOptimizerIntervalMs:     getEnvInt("DELIVERY_OPTIMIZER_INTERVAL_MS", 0),
+		BidFloorLookbackHours:           getEnvInt("BID_FLOOR_LOOKBACK_HOURS", 24),
+		BidFloorWinRateLow:              getEnvFloat("BID_FLOOR_WIN_RATE_LOW", 0.05),
+		BidFloorWinRateHigh:             getEnvFloat("BID_FLOOR_WIN_RATE_HIGH", 0.25),
+		BidFloorAdjustPct:               getEnvInt("BID_FLOOR_ADJUST_PCT", 10),
+		BidFloorMinMicro:                getEnvMicro("BID_FLOOR_MIN_MICRO", 1000),
+		DealFloorRefreshIntervalMs:      getEnvInt("DEAL_FLOOR_REFRESH_INTERVAL_MS", 60_000),
+		PacingToleranceMargin:           getEnvFloat("PACING_TOLERANCE_MARGIN", 0.15),
+		CreditScoringMinAgeDays:         getEnvFloat("CREDIT_SCORING_MIN_AGE_DAYS", 7.0),
+		CreditScoringMatureAgeDays:      getEnvFloat("CREDIT_SCORING_MATURE_AGE_DAYS", 30.0),
+		CreditScoringMidTierPercent:     getEnvInt64("CREDIT_SCORING_MID_TIER_PERCENT", 15),
+		CreditScoringMaturePercent:      getEnvInt64("CREDIT_SCORING_MATURE_PERCENT", 30),
+		CreditScoringMaxCap:             getEnvMicro("CREDIT_SCORING_MAX_CAP", 10000.0),
+		PaymentServerPort:               os.Getenv("PAYMENT_SERVER_PORT"),
+		PaymentServerHost:               os.Getenv("PAYMENT_SERVER_HOST"),
+		PaymentMetricsPort:              os.Getenv("PAYMENT_METRICS_PORT"),
+		PaymentWebhookPort:              os.Getenv("PAYMENT_WEBHOOK_PORT"),
+		SettlementServerPort:            os.Getenv("SETTLEMENT_SERVER_PORT"),
+		SettlementServerHost:            os.Getenv("SETTLEMENT_SERVER_HOST"),
+		PaymentInternalToken:            Secret(os.Getenv("PAYMENT_INTERNAL_TOKEN")),
+		SettlementInternalToken:         Secret(os.Getenv("SETTLEMENT_INTERNAL_TOKEN")),
+		StripeSecretKey:                 Secret(os.Getenv("STRIPE_SECRET_KEY")),
+		StripeWebhookSecret:             Secret(os.Getenv("STRIPE_WEBHOOK_SECRET")),
 		PaymentFinancialReconIntervalMs: getEnvInt("PAYMENT_FINANCIAL_RECON_INTERVAL_MS", 0),
 	}
 
@@ -468,6 +489,10 @@ func Load() (*Config, error) {
 	if cfg.Billing.ServerHost == "" {
 		cfg.Billing.ServerHost = "127.0.0.1"
 	}
+	cfg.Billing.MetricsPort = os.Getenv("BILLING_METRICS_PORT")
+	if cfg.Billing.MetricsPort == "" {
+		cfg.Billing.MetricsPort = "9092"
+	}
 	cfg.BillingInternalToken = Secret(os.Getenv("BILLING_INTERNAL_TOKEN"))
 
 	if len(cfg.AllowedOrigins) == 1 && cfg.AllowedOrigins[0] == "" {
@@ -490,6 +515,15 @@ func Load() (*Config, error) {
 	cfg.Management.AlertmanagerWebhookEnabled = getEnvBool("ALERTMANAGER_WEBHOOK_ENABLED", false)
 	cfg.Management.AlertmanagerWebhookToken = os.Getenv("ALERTMANAGER_WEBHOOK_TOKEN")
 	cfg.Management.OpsAlertOutboxStuckSec = getEnvInt("OPS_ALERT_OUTBOX_STUCK_SEC", 120)
+	cfg.Management.AuditExportPath = os.Getenv("AUDIT_EXPORT_PATH")
+	if cfg.Management.AuditExportPath == "" {
+		cfg.Management.AuditExportPath = "./data/audit-export"
+	}
+	cfg.Management.AuditExportRetentionDays = getEnvInt("AUDIT_EXPORT_RETENTION_DAYS", 90)
+	cfg.Management.SupplyExportPath = os.Getenv("SUPPLY_EXPORT_PATH")
+	if cfg.Management.SupplyExportPath == "" {
+		cfg.Management.SupplyExportPath = "./data/supply-export"
+	}
 
 	cfg.GeoIP.DBPath = os.Getenv("GEOIP_DB_PATH")
 	if cfg.GeoIP.DBPath == "" {
@@ -658,4 +692,9 @@ func (c *Config) IVTDetectorEnabled() bool {
 		return false
 	}
 	return string(c.CHDSN) != ""
+}
+
+// ClickHouseEnabled reports whether analytics queries should use ClickHouse.
+func (c *Config) ClickHouseEnabled() bool {
+	return c != nil && string(c.CHDSN) != ""
 }

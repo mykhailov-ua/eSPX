@@ -78,3 +78,49 @@ func (h *Handler) limitByIP(next http.HandlerFunc) http.HandlerFunc {
 		next(w, r)
 	}
 }
+
+const customerExportRPS = 1.0
+const customerExportBurst = 3
+
+// customerRateLimiter throttles CSV export per customer so one tenant cannot exhaust gateway capacity.
+type customerRateLimiter struct {
+	mu      sync.Mutex
+	limit   rate.Limit
+	burst   int
+	entries map[string]*rate.Limiter
+}
+
+func newCustomerRateLimiter() *customerRateLimiter {
+	return &customerRateLimiter{
+		limit:   customerExportRPS,
+		burst:   customerExportBurst,
+		entries: make(map[string]*rate.Limiter),
+	}
+}
+
+func (l *customerRateLimiter) allow(customerID string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	lim, ok := l.entries[customerID]
+	if !ok {
+		lim = rate.NewLimiter(l.limit, l.burst)
+		l.entries[customerID] = lim
+	}
+	return lim.Allow()
+}
+
+// limitExportByCustomer wraps export handlers with per-customer token buckets.
+func (h *Handler) limitExportByCustomer(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		customerID := r.PathValue("id")
+		if customerID == "" {
+			httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid customer id")
+			return
+		}
+		if h.customerLimiter != nil && !h.customerLimiter.allow(customerID) {
+			httpresponse.Error(w, http.StatusTooManyRequests, "TOO_MANY_REQUESTS", "export rate limit exceeded")
+			return
+		}
+		next(w, r)
+	}
+}

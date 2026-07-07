@@ -38,6 +38,8 @@ func (service *Service) GenerateInvoice(ctx context.Context, customerID uuid.UUI
 		return nil, err
 	}
 	if err := CheckLedgerBalanceInvariant(ctx, service.pool, customerID); err != nil {
+		LedgerDriftTotal.Inc()
+		InvoiceErrorsTotal.WithLabelValues("ledger_drift").Inc()
 		return nil, err
 	}
 
@@ -148,6 +150,7 @@ func (service *Service) GenerateInvoice(ctx context.Context, customerID uuid.UUI
 		return nil, fmt.Errorf("commit invoice: %w", err)
 	}
 
+	InvoicesGeneratedTotal.Inc()
 	return service.invoiceToProto(ctx, invoice)
 }
 

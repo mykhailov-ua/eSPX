@@ -23,6 +23,7 @@ const (
 	SettlementService_ApplyPaymentRefund_FullMethodName             = "/settlement.SettlementService/ApplyPaymentRefund"
 	SettlementService_ApplyPaymentChargeback_FullMethodName         = "/settlement.SettlementService/ApplyPaymentChargeback"
 	SettlementService_ApplyPaymentChargebackReversal_FullMethodName = "/settlement.SettlementService/ApplyPaymentChargebackReversal"
+	SettlementService_GetLedgerEntry_FullMethodName                 = "/settlement.SettlementService/GetLedgerEntry"
 )
 
 // SettlementServiceClient is the client API for SettlementService service.
@@ -37,6 +38,8 @@ type SettlementServiceClient interface {
 	ApplyPaymentChargeback(ctx context.Context, in *ApplyPaymentChargebackRequest, opts ...grpc.CallOption) (*ApplyPaymentChargebackResponse, error)
 	// Called from payment outbox when Stripe reinstates funds after a won dispute.
 	ApplyPaymentChargebackReversal(ctx context.Context, in *ApplyPaymentChargebackReversalRequest, opts ...grpc.CallOption) (*ApplyPaymentChargebackReversalResponse, error)
+	// Read-only ledger lookup by payment_intent_id for payment financial recon.
+	GetLedgerEntry(ctx context.Context, in *GetLedgerEntryRequest, opts ...grpc.CallOption) (*GetLedgerEntryResponse, error)
 }
 
 type settlementServiceClient struct {
@@ -87,6 +90,16 @@ func (c *settlementServiceClient) ApplyPaymentChargebackReversal(ctx context.Con
 	return out, nil
 }
 
+func (c *settlementServiceClient) GetLedgerEntry(ctx context.Context, in *GetLedgerEntryRequest, opts ...grpc.CallOption) (*GetLedgerEntryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetLedgerEntryResponse)
+	err := c.cc.Invoke(ctx, SettlementService_GetLedgerEntry_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SettlementServiceServer is the server API for SettlementService service.
 // All implementations must embed UnimplementedSettlementServiceServer
 // for forward compatibility.
@@ -99,6 +112,8 @@ type SettlementServiceServer interface {
 	ApplyPaymentChargeback(context.Context, *ApplyPaymentChargebackRequest) (*ApplyPaymentChargebackResponse, error)
 	// Called from payment outbox when Stripe reinstates funds after a won dispute.
 	ApplyPaymentChargebackReversal(context.Context, *ApplyPaymentChargebackReversalRequest) (*ApplyPaymentChargebackReversalResponse, error)
+	// Read-only ledger lookup by payment_intent_id for payment financial recon.
+	GetLedgerEntry(context.Context, *GetLedgerEntryRequest) (*GetLedgerEntryResponse, error)
 	mustEmbedUnimplementedSettlementServiceServer()
 }
 
@@ -120,6 +135,9 @@ func (UnimplementedSettlementServiceServer) ApplyPaymentChargeback(context.Conte
 }
 func (UnimplementedSettlementServiceServer) ApplyPaymentChargebackReversal(context.Context, *ApplyPaymentChargebackReversalRequest) (*ApplyPaymentChargebackReversalResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ApplyPaymentChargebackReversal not implemented")
+}
+func (UnimplementedSettlementServiceServer) GetLedgerEntry(context.Context, *GetLedgerEntryRequest) (*GetLedgerEntryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetLedgerEntry not implemented")
 }
 func (UnimplementedSettlementServiceServer) mustEmbedUnimplementedSettlementServiceServer() {}
 func (UnimplementedSettlementServiceServer) testEmbeddedByValue()                           {}
@@ -214,6 +232,24 @@ func _SettlementService_ApplyPaymentChargebackReversal_Handler(srv interface{}, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SettlementService_GetLedgerEntry_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetLedgerEntryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SettlementServiceServer).GetLedgerEntry(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SettlementService_GetLedgerEntry_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SettlementServiceServer).GetLedgerEntry(ctx, req.(*GetLedgerEntryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SettlementService_ServiceDesc is the grpc.ServiceDesc for SettlementService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -236,6 +272,10 @@ var SettlementService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ApplyPaymentChargebackReversal",
 			Handler:    _SettlementService_ApplyPaymentChargebackReversal_Handler,
+		},
+		{
+			MethodName: "GetLedgerEntry",
+			Handler:    _SettlementService_GetLedgerEntry_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

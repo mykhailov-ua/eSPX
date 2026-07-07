@@ -99,7 +99,7 @@ func TestConfigureTrackRtb_skipLuaBudget(t *testing.T) {
 	catalog := NewRtbCatalog(rtb.NewBudgetStore(), BudgetAuthorityRTB)
 	proc := trackProcessor{}
 	uf := NewUnifiedFilter(nil, nil, nil, nil, 0, 0, 0, 0, 0, 0, "", 0)
-	ConfigureTrackRtb(&proc, cfg, catalog, nil, uf)
+	ConfigureTrackRtb(&proc, cfg, catalog, nil, uf, nil)
 	assert.Equal(t, rtbModeLive, proc.rtbMode)
 	assert.Equal(t, oneAny, uf.skipBudgetDebitAny)
 }
@@ -135,7 +135,7 @@ func TestBuildRtbTargeting_OpenRTB3AndLegacy(t *testing.T) {
 		GeoHash:           12345,
 	}
 
-	targetingOpenRTB := buildRtbTargeting(evtOpenRTB, []byte("desktop"), 0)
+	targetingOpenRTB := buildRtbTargeting(evtOpenRTB, []byte("desktop"), 0, nil)
 	assert.Equal(t, uint32(12345), targetingOpenRTB.GeoHash)
 	assert.Equal(t, uint8(2), targetingOpenRTB.DeviceType) // mapped from 4 (Phone) to 2 (Mobile)
 	assert.Equal(t, uint64(8), targetingOpenRTB.CategoryMask)
@@ -149,7 +149,7 @@ func TestBuildRtbTargeting_OpenRTB3AndLegacy(t *testing.T) {
 		GeoHash:           12345,
 	}
 
-	targetingLegacy := buildRtbTargeting(evtLegacy, []byte("mobile"), 0)
+	targetingLegacy := buildRtbTargeting(evtLegacy, []byte("mobile"), 0, nil)
 	assert.Equal(t, uint32(12345), targetingLegacy.GeoHash)
 	assert.Equal(t, uint8(2), targetingLegacy.DeviceType) // mapped from "mobile"
 	assert.Equal(t, uint64(4), targetingLegacy.CategoryMask)
@@ -157,7 +157,7 @@ func TestBuildRtbTargeting_OpenRTB3AndLegacy(t *testing.T) {
 
 	// 3. Zero-allocation check
 	allocs := testing.AllocsPerRun(1000, func() {
-		_ = buildRtbTargeting(evtOpenRTB, []byte("desktop"), 0)
+		_ = buildRtbTargeting(evtOpenRTB, []byte("desktop"), 0, nil)
 	})
 	assert.Equal(t, float64(0), allocs)
 }
@@ -193,7 +193,7 @@ func BenchmarkBuildRtbTargeting_OpenRTB3(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = buildRtbTargeting(evt, []byte("desktop"), 0)
+		_ = buildRtbTargeting(evt, []byte("desktop"), 0, nil)
 	}
 }
 
@@ -207,6 +207,6 @@ func BenchmarkBuildRtbTargeting_Legacy(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = buildRtbTargeting(evt, []byte("mobile"), 0)
+		_ = buildRtbTargeting(evt, []byte("mobile"), 0, nil)
 	}
 }

@@ -18,12 +18,13 @@ import (
 
 // Handler serves the admin HTTP API with auth, rate limiting, and permission checks.
 type Handler struct {
-	svc            *Service
-	cfg            *config.Config
-	ipLimiter      *ipRateLimiter
-	authMiddleware *AuthMiddleware
-	payment        *PaymentClient
-	billing        *BillingClient
+	svc             *Service
+	cfg             *config.Config
+	ipLimiter       *ipRateLimiter
+	customerLimiter *customerRateLimiter
+	authMiddleware  *AuthMiddleware
+	payment         *PaymentClient
+	billing         *BillingClient
 }
 
 // NewHandler constructs the admin HTTP handler with per-IP rate limits from config.
@@ -35,12 +36,13 @@ func NewHandler(svc *Service, cfg *config.Config, authMiddleware *AuthMiddleware
 		burst = cfg.Management.RateLimitBurst
 	}
 	return &Handler{
-		svc:            svc,
-		cfg:            cfg,
-		ipLimiter:      newIPRateLimiter(rps, burst),
-		authMiddleware: authMiddleware,
-		payment:        paymentClient,
-		billing:        billingClient,
+		svc:             svc,
+		cfg:             cfg,
+		ipLimiter:       newIPRateLimiter(rps, burst),
+		customerLimiter: newCustomerRateLimiter(),
+		authMiddleware:  authMiddleware,
+		payment:         paymentClient,
+		billing:         billingClient,
 	}
 }
 
@@ -77,7 +79,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	h.registerDeliveryRoutes(mux)
 	h.registerFraudRoutes(mux)
 	h.registerSlotMapRoutes(mux)
+	h.registerSupplyRoutes(mux)
 	h.registerOpsRoutes(mux)
+	h.registerAPIRoutes(mux)
 }
 
 // limit wraps handlers with a per-client IP token bucket.
@@ -427,15 +431,15 @@ func (h *Handler) unblockIP(w http.ResponseWriter, r *http.Request) {
 
 // listAudit handles GET /admin/audit for compliance review of admin actions.
 func (h *Handler) listAudit(w http.ResponseWriter, r *http.Request) {
-	limit, offset := parsePagination(r)
-	logs, err := h.svc.ListAuditLogs(r.Context(), limit, offset)
+	limit, offset := parseAPIPagination(r)
+	logs, total, err := h.svc.ListAuditLogs(r.Context(), limit, offset)
 	if err != nil {
 		slog.Error("failed to list audit logs", "error", err)
 		httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", "internal error")
 		return
 	}
 
-	httpresponse.JSON(w, http.StatusOK, logs)
+	cold.WritePaginatedJSON(w, logs, total)
 }
 
 // parsePagination reads limit and offset query params with safe defaults and caps.

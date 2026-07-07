@@ -161,13 +161,7 @@ func firstTargetCountryGeo(camp *domain.Campaign) uint32 {
 
 // BudgetAuthorityFromConfig maps rollout config to rtb spend policy.
 func BudgetAuthorityFromConfig(cfg *config.Config) BudgetAuthority {
-	if cfg == nil || !cfg.RtbEnabled() {
-		return BudgetAuthorityShadow
-	}
-	if cfg.RtbBudgetAuthoritative() {
-		return BudgetAuthorityRTB
-	}
-	return BudgetAuthorityShadow
+	return BudgetAuthorityFromSettings(cfg, "")
 }
 
 func utcSecondsElapsed() int64 {

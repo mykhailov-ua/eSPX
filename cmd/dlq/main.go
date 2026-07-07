@@ -1,4 +1,4 @@
-// Command dlq maintains Redis dead-letter streams for offline archive, replay, and surgical edits after processor failures.
+// Command dlq is the operator CLI for Redis DLQ archive, requeue, restore, inspect, and edit.
 package main
 
 import (
@@ -9,7 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"time"
@@ -24,7 +24,11 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// main is the operator CLI for DLQ streams because failed ad events must be recoverable without hot-path code changes.
+func fatal(msg string, args ...any) {
+	slog.Error(msg, args...)
+	os.Exit(1)
+}
+
 func main() {
 	var (
 		action    = flag.String("action", "archive", "Action to perform: archive, requeue, restore, inspect, or edit")
@@ -37,50 +41,51 @@ func main() {
 	)
 	flag.Parse()
 
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+
 	ctx, cancel := lifecycle.NotifyContext(context.Background())
 	defer cancel()
 
 	opt, err := redis.ParseURL(*redisURL)
 	if err != nil {
-		log.Fatalf("Invalid Redis URL: %v", err)
+		fatal("invalid redis url", "error", err)
 	}
 	rdb := redis.NewClient(opt)
 	defer rdb.Close()
 
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		log.Fatalf("Failed to connect to Redis: %v", err)
+		fatal("failed to connect to redis", "error", err)
 	}
 
 	switch *action {
 	case "archive":
 		if err := archiveDLQ(ctx, rdb, *stream, *dest, *batch); err != nil {
-			log.Fatalf("Archive failed: %v", err)
+			fatal("archive failed", "error", err)
 		}
 	case "requeue":
 		if err := requeueDLQ(ctx, rdb, *stream, *dest, *batch, *rateLimit); err != nil {
-			log.Fatalf("Requeue failed: %v", err)
+			fatal("requeue failed", "error", err)
 		}
 	case "restore":
 		if err := restoreDLQ(ctx, rdb, *dest, *stream, *batch, *rateLimit); err != nil {
-			log.Fatalf("Restore failed: %v", err)
+			fatal("restore failed", "error", err)
 		}
 	case "inspect":
 		if err := inspectStream(ctx, rdb, *stream, *batch); err != nil {
-			log.Fatalf("Inspect failed: %v", err)
+			fatal("inspect failed", "error", err)
 		}
 	case "edit":
 		if *id == "" {
-			log.Fatalf("Please specify the message ID to edit using the -id flag")
+			fatal("message id required for edit action", "flag", "-id")
 		}
 		if err := editDLQMessage(ctx, rdb, *stream, *id); err != nil {
-			log.Fatalf("Edit failed: %v", err)
+			fatal("edit failed", "error", err)
 		}
 	default:
-		log.Fatalf("Unknown action: %s", *action)
+		fatal("unknown action", "action", *action)
 	}
 }
 
-// archiveDLQ persists stream entries to disk before XDEL because Redis memory must be reclaimed only after durable backup.
 func archiveDLQ(ctx context.Context, rdb *redis.Client, stream, destFile string, batchSize int64) error {
 	file, err := os.OpenFile(destFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -94,7 +99,7 @@ func archiveDLQ(ctx context.Context, rdb *redis.Client, stream, destFile string,
 	startID := "0-0"
 	var totalProcessed int64
 
-	log.Printf("Starting binary Protobuf archive of stream %s to %s", stream, destFile)
+	slog.Info("starting dlq archive", "stream", stream, "dest", destFile)
 
 	pbDLQ := &pb.AdDLQEvent{}
 	pbStream := &pb.AdStreamEvent{}
@@ -207,25 +212,32 @@ func archiveDLQ(ctx context.Context, rdb *redis.Client, stream, destFile string,
 			startID = msg.ID
 		}
 
+		// XDEL runs only after every message in the batch is flushed to the archive file.
 		pipe.XDel(ctx, stream, msgIDs...)
 		if _, err := pipe.Exec(ctx); err != nil {
 			return fmt.Errorf("failed to delete archived messages: %w", err)
 		}
 
 		totalProcessed += int64(len(msgIDs))
-		log.Printf("Archived and deleted %d messages (Total: %d)", len(msgIDs), totalProcessed)
+		slog.Info("dlq archive batch complete",
+			"batch", len(msgIDs),
+			"total", totalProcessed,
+		)
 	}
 
-	log.Printf("Archive completed. Total archived: %d", totalProcessed)
+	slog.Info("dlq archive complete", "total", totalProcessed)
 	return nil
 }
 
-// requeueDLQ replays DLQ events into a live stream because operators need a controlled path back to normal ingestion.
 func requeueDLQ(ctx context.Context, rdb *redis.Client, dlqStream, targetStream string, batchSize int64, rateLimit int64) error {
 	startID := "0-0"
 	var totalProcessed int64
 
-	log.Printf("Starting requeue from %s to %s with rate limit %d events/sec", dlqStream, targetStream, rateLimit)
+	slog.Info("starting dlq requeue",
+		"dlq_stream", dlqStream,
+		"target_stream", targetStream,
+		"rate_limit", rateLimit,
+	)
 
 	pbDLQ := &pb.AdDLQEvent{}
 
@@ -267,10 +279,16 @@ func requeueDLQ(ctx context.Context, rdb *redis.Client, dlqStream, targetStream 
 					if err == nil {
 						values["d"] = ads.UnsafeString(data)
 					} else {
-						log.Printf("Failed to re-marshal original event from DLQ message %s: %v", msg.ID, err)
+						slog.Warn("failed to re-marshal original event from dlq message",
+							"message_id", msg.ID,
+							"error", err,
+						)
 					}
 				} else {
-					log.Printf("Failed to unmarshal Protobuf DLQ message %s: %v", msg.ID, err)
+					slog.Warn("failed to unmarshal protobuf dlq message",
+						"message_id", msg.ID,
+						"error", err,
+					)
 				}
 			} else {
 				for k, v := range msg.Values {
@@ -294,14 +312,16 @@ func requeueDLQ(ctx context.Context, rdb *redis.Client, dlqStream, targetStream 
 		}
 
 		totalProcessed += int64(len(msgIDs))
-		log.Printf("Requeued %d messages (Total: %d)", len(msgIDs), totalProcessed)
+		slog.Info("dlq requeue batch complete",
+			"batch", len(msgIDs),
+			"total", totalProcessed,
+		)
 	}
 
-	log.Printf("Requeue completed. Total requeued: %d", totalProcessed)
+	slog.Info("dlq requeue complete", "total", totalProcessed)
 	return nil
 }
 
-// restoreDLQ injects archived events into Redis because cold backups must be replayable after cluster rebuilds.
 func restoreDLQ(ctx context.Context, rdb *redis.Client, srcFile, targetStream string, batchSize int64, rateLimit int64) error {
 	file, err := os.Open(srcFile)
 	if err != nil {
@@ -309,7 +329,11 @@ func restoreDLQ(ctx context.Context, rdb *redis.Client, srcFile, targetStream st
 	}
 	defer file.Close()
 
-	log.Printf("Starting restore from %s to stream %s with rate limit %d events/sec", srcFile, targetStream, rateLimit)
+	slog.Info("starting dlq restore",
+		"src", srcFile,
+		"target_stream", targetStream,
+		"rate_limit", rateLimit,
+	)
 
 	reader := bufio.NewReader(file)
 	var totalProcessed int64
@@ -351,7 +375,7 @@ func restoreDLQ(ctx context.Context, rdb *redis.Client, srcFile, targetStream st
 		}
 
 		if pbDLQ.OriginalEvent == nil {
-			log.Printf("Warning: AdDLQEvent at offset %d has no original event, skipping", totalProcessed)
+			slog.Warn("dlq event has no original event, skipping", "offset", totalProcessed)
 			continue
 		}
 
@@ -379,7 +403,10 @@ func restoreDLQ(ctx context.Context, rdb *redis.Client, srcFile, targetStream st
 			if _, err := pipe.Exec(ctx); err != nil {
 				return fmt.Errorf("failed to restore batch to Redis: %w", err)
 			}
-			log.Printf("Restored %d messages (Total: %d)", batchCount, totalProcessed)
+			slog.Info("dlq restore batch complete",
+				"batch", batchCount,
+				"total", totalProcessed,
+			)
 			pipe = rdb.Pipeline()
 			batchCount = 0
 		}
@@ -389,19 +416,21 @@ func restoreDLQ(ctx context.Context, rdb *redis.Client, srcFile, targetStream st
 		if _, err := pipe.Exec(ctx); err != nil {
 			return fmt.Errorf("failed to restore final batch to Redis: %w", err)
 		}
-		log.Printf("Restored %d messages (Total: %d)", batchCount, totalProcessed)
+		slog.Info("dlq restore batch complete",
+			"batch", batchCount,
+			"total", totalProcessed,
+		)
 	}
 
-	log.Printf("Restore completed. Total restored: %d", totalProcessed)
+	slog.Info("dlq restore complete", "total", totalProcessed)
 	return nil
 }
 
-// inspectStream prints human-readable DLQ payloads for operator triage without mutating the stream.
 func inspectStream(ctx context.Context, rdb *redis.Client, stream string, batchSize int64) error {
 	startID := "0-0"
 	var totalProcessed int64
 
-	log.Printf("Starting inspection of stream %s", stream)
+	slog.Info("starting dlq inspect", "stream", stream)
 
 	pbDLQ := &pb.AdDLQEvent{}
 	pbStream := &pb.AdStreamEvent{}
@@ -499,11 +528,11 @@ func inspectStream(ctx context.Context, rdb *redis.Client, stream string, batchS
 			totalProcessed++
 		}
 	}
-	log.Printf("Inspection completed. Total inspected: %d", totalProcessed)
+	slog.Info("dlq inspect complete", "total", totalProcessed)
 	return nil
 }
 
-// EditableStreamEvent is the JSON edit view of AdStreamEvent because $EDITOR workflows cannot edit protobuf directly.
+// EditableStreamEvent is the JSON shape for editing AdStreamEvent fields in $EDITOR.
 type EditableStreamEvent struct {
 	ClickId       string `json:"click_id"`
 	CampaignId    string `json:"campaign_id"`
@@ -514,7 +543,7 @@ type EditableStreamEvent struct {
 	CreatedAtUnix int64  `json:"created_at_unix"`
 }
 
-// EditableDLQEvent wraps stream metadata for JSON editing because DLQ repair happens outside the hot path.
+// EditableDLQEvent is the JSON shape for editing AdDLQEvent metadata and nested stream fields in $EDITOR.
 type EditableDLQEvent struct {
 	ID            string              `json:"id"`
 	Error         string              `json:"error"`
@@ -525,7 +554,6 @@ type EditableDLQEvent struct {
 	OriginalEvent EditableStreamEvent `json:"original_event"`
 }
 
-// toEditable decodes protobuf into JSON structs because interactive edit uses human-readable fields, not wire types.
 func toEditable(id string, pbDLQ *pb.AdDLQEvent) EditableDLQEvent {
 	var orig EditableStreamEvent
 	if pbDLQ.OriginalEvent != nil {
@@ -560,7 +588,6 @@ func toEditable(id string, pbDLQ *pb.AdDLQEvent) EditableDLQEvent {
 	}
 }
 
-// fromEditable re-encodes operator edits because the stream stores protobuf AdDLQEvent blobs, not JSON.
 func fromEditable(edit EditableDLQEvent) *pb.AdDLQEvent {
 	var campID []byte
 	if u, err := uuid.Parse(edit.OriginalEvent.CampaignId); err == nil {
@@ -587,7 +614,6 @@ func fromEditable(edit EditableDLQEvent) *pb.AdDLQEvent {
 	}
 }
 
-// launchEditor defers payload fixes to $EDITOR because inline flags cannot safely edit nested event JSON.
 func launchEditor(filepath string) error {
 	editor := os.Getenv("EDITOR")
 	if editor != "" {
@@ -612,7 +638,6 @@ func launchEditor(filepath string) error {
 	return fmt.Errorf("failed to start editor: please set your EDITOR environment variable")
 }
 
-// editDLQMessage replaces one DLQ entry atomically because partial updates would leave duplicate or corrupt stream IDs.
 func editDLQMessage(ctx context.Context, rdb *redis.Client, stream, id string) error {
 	msgs, err := rdb.XRange(ctx, stream, id, id).Result()
 	if err != nil {
@@ -652,7 +677,7 @@ func editDLQMessage(ctx context.Context, rdb *redis.Client, stream, id string) e
 	}
 	_ = tmpFile.Close()
 
-	log.Printf("Opening editor for message %s. Edit the JSON and save/close...", id)
+	slog.Info("opening editor for dlq message", "message_id", id)
 	if err := launchEditor(tmpPath); err != nil {
 		return err
 	}
@@ -673,6 +698,7 @@ func editDLQMessage(ctx context.Context, rdb *redis.Client, stream, id string) e
 		return fmt.Errorf("failed to marshal modified event to Protobuf: %w", err)
 	}
 
+	// Redis stream entries are immutable; replace via XDEL and XADD in one pipeline.
 	pipe := rdb.Pipeline()
 	pipe.XDel(ctx, stream, id)
 	pipe.XAdd(ctx, &redis.XAddArgs{
@@ -687,6 +713,6 @@ func editDLQMessage(ctx context.Context, rdb *redis.Client, stream, id string) e
 	}
 
 	newID := cmds[1].(*redis.StringCmd).Val()
-	log.Printf("Successfully updated message. Old ID: %s, New ID: %s", id, newID)
+	slog.Info("dlq message updated", "old_id", id, "new_id", newID)
 	return nil
 }

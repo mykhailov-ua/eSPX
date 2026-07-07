@@ -82,6 +82,7 @@ func TestManagementAPI_Hardening(t *testing.T) {
 		resp := httptest.NewRecorder()
 		mux.ServeHTTP(resp, req)
 		assert.Equal(t, http.StatusOK, resp.Code)
+		assert.NotEmpty(t, resp.Header().Get("X-Total-Count"))
 
 		var logs []any
 		err := json.NewDecoder(resp.Body).Decode(&logs)

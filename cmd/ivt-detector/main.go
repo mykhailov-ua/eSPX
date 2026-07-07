@@ -1,4 +1,4 @@
-// Command ivt-detector analyzes ClickHouse telemetry for IVT botnet clusters and enqueues blacklist:fraud via management.
+// Command ivt-detector wires ClickHouse botnet analysis and management blacklist enqueue.
 package main
 
 import (

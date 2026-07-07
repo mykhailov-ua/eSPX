@@ -19,15 +19,15 @@ import (
 // ReconService compares payment schema state against ads balance_ledger for finance reporting.
 type ReconService struct {
 	paymentPool *pgxpool.Pool
-	ledgerPool  *pgxpool.Pool
+	ledger      *SettlementLedgerClient
 	alerter     *FinancialReconAlerter
 
 	wg sync.WaitGroup
 }
 
-// NewReconService wires payment and ledger pools; both may point at the same DB in dev.
-func NewReconService(paymentPool, ledgerPool *pgxpool.Pool, alerter *FinancialReconAlerter) *ReconService {
-	return &ReconService{paymentPool: paymentPool, ledgerPool: ledgerPool, alerter: alerter}
+// NewReconService wires payment pool and settlement ledger reader for financial recon.
+func NewReconService(paymentPool *pgxpool.Pool, ledger *SettlementLedgerClient, alerter *FinancialReconAlerter) *ReconService {
+	return &ReconService{paymentPool: paymentPool, ledger: ledger, alerter: alerter}
 }
 
 // StartWorker runs financial reconciliation on a fixed interval until ctx is cancelled.
@@ -163,22 +163,10 @@ func (recon *ReconService) collectFindings(ctx context.Context) ([]FinancialReco
 		return nil, 0, err
 	}
 
-	topups, err := recon.loadLedgerTopups(ctx)
-	if err != nil {
-		return nil, 0, err
-	}
-	refundLedger, err := recon.loadLedgerSumsByIntent(ctx, "PAYMENT_REFUND", true)
-	if err != nil {
-		return nil, 0, err
-	}
-	chargebackLedger, err := recon.loadLedgerSumsByIntent(ctx, "PAYMENT_CHARGEBACK", true)
-	if err != nil {
-		return nil, 0, err
-	}
-	reversalLedger, err := recon.loadLedgerSumsByIntent(ctx, "PAYMENT_CHARGEBACK_REVERSAL", false)
-	if err != nil {
-		return nil, 0, err
-	}
+	topups := make(map[uuid.UUID]int64)
+	refundLedger := make(map[uuid.UUID]int64)
+	chargebackLedger := make(map[uuid.UUID]int64)
+	reversalLedger := make(map[uuid.UUID]int64)
 
 	paymentRefunds, err := q.SumRefundsByIntentForRecon(ctx)
 	if err != nil {
@@ -208,6 +196,19 @@ func (recon *ReconService) collectFindings(ctx context.Context) ([]FinancialReco
 		intentID := uuid.UUID(intent.ID.Bytes)
 		customerID := uuid.UUID(intent.CustomerID.Bytes)
 		seenTopupIntents[intentID] = struct{}{}
+
+		if recon.ledger != nil {
+			ledgerState, ledgerErr := recon.ledger.GetPaymentIntentLedger(ctx, intentID)
+			if ledgerErr != nil {
+				return nil, 0, ledgerErr
+			}
+			if ledgerState.HasTopup {
+				topups[intentID] = ledgerState.TopupMicro
+			}
+			refundLedger[intentID] = ledgerState.RefundMicro
+			chargebackLedger[intentID] = ledgerState.ChargebackMicro
+			reversalLedger[intentID] = ledgerState.ChargebackReversalMicro
+		}
 
 		if intent.Status == db.PaymentPaymentIntentStatusSETTLEMENTFAILED {
 			findings = append(findings, FinancialReconFinding{
@@ -310,56 +311,4 @@ func (recon *ReconService) collectFindings(ctx context.Context) ([]FinancialReco
 	}
 
 	return findings, len(intents), nil
-}
-
-func (recon *ReconService) loadLedgerTopups(ctx context.Context) (map[uuid.UUID]int64, error) {
-	rows, err := recon.ledgerPool.Query(ctx, `
-		SELECT payment_intent_id, COALESCE(SUM(amount), 0)::bigint
-		FROM balance_ledger
-		WHERE type = 'PAYMENT_TOPUP' AND payment_intent_id IS NOT NULL
-		GROUP BY payment_intent_id`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := make(map[uuid.UUID]int64)
-	for rows.Next() {
-		var intentID uuid.UUID
-		var amount int64
-		if err := rows.Scan(&intentID, &amount); err != nil {
-			return nil, err
-		}
-		out[intentID] = amount
-	}
-	return out, rows.Err()
-}
-
-func (recon *ReconService) loadLedgerSumsByIntent(ctx context.Context, ledgerType string, useAbs bool) (map[uuid.UUID]int64, error) {
-	expr := "COALESCE(SUM(amount), 0)::bigint"
-	if useAbs {
-		expr = "COALESCE(SUM(ABS(amount)), 0)::bigint"
-	}
-	query := fmt.Sprintf(`
-		SELECT payment_intent_id, %s
-		FROM balance_ledger
-		WHERE type = $1 AND payment_intent_id IS NOT NULL
-		GROUP BY payment_intent_id`, expr)
-
-	rows, err := recon.ledgerPool.Query(ctx, query, ledgerType)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := make(map[uuid.UUID]int64)
-	for rows.Next() {
-		var intentID uuid.UUID
-		var amount int64
-		if err := rows.Scan(&intentID, &amount); err != nil {
-			return nil, err
-		}
-		out[intentID] = amount
-	}
-	return out, rows.Err()
 }

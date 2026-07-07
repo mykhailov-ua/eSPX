@@ -137,3 +137,32 @@ func ParseOpenRTB3Payload(payload []byte) (minBid int64, deviceType uint8, categ
 
 	return minBid, deviceType, categoryMask, true
 }
+
+// ParseDealID extracts a PMP deal_id from OpenRTB or legacy JSON payload without full unmarshaling.
+func ParseDealID(payload []byte) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	key := []byte(`"deal_id"`)
+	idx := bytes.Index(payload, key)
+	if idx == -1 {
+		return ""
+	}
+	i := idx + len(key)
+	n := len(payload)
+	for i < n && (payload[i] == ' ' || payload[i] == '\t' || payload[i] == ':') {
+		i++
+	}
+	if i >= n || payload[i] != '"' {
+		return ""
+	}
+	i++
+	start := i
+	for i < n && payload[i] != '"' {
+		i++
+	}
+	if start >= i {
+		return ""
+	}
+	return string(payload[start:i])
+}

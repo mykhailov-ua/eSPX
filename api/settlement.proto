@@ -16,6 +16,9 @@ service SettlementService {
 
   // Called from payment outbox when Stripe reinstates funds after a won dispute.
   rpc ApplyPaymentChargebackReversal(ApplyPaymentChargebackReversalRequest) returns (ApplyPaymentChargebackReversalResponse);
+
+  // Read-only ledger lookup by payment_intent_id for payment financial recon.
+  rpc GetLedgerEntry(GetLedgerEntryRequest) returns (GetLedgerEntryResponse);
 }
 
 message ApplyPaymentCreditRequest {
@@ -72,4 +75,25 @@ message ApplyPaymentChargebackReversalRequest {
 message ApplyPaymentChargebackReversalResponse {
   bool applied = 1;
   int64 ledger_entry_id = 2;
+}
+
+message GetLedgerEntryRequest {
+  string payment_intent_id = 1;
+}
+
+message LedgerEntry {
+  int64 id = 1;
+  string customer_id = 2;
+  string campaign_id = 3;
+  int64 amount_micro = 4;
+  string type = 5;
+  string created_at = 6;
+}
+
+message GetLedgerEntryResponse {
+  bool found = 1;
+  LedgerEntry topup = 2;
+  int64 refund_total_micro = 3;
+  int64 chargeback_total_micro = 4;
+  int64 chargeback_reversal_total_micro = 5;
 }

@@ -235,6 +235,28 @@ func (h *Handler) resumeCampaign(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
+// warmCampaignBudget handles POST /admin/campaigns/{id}/warm-budget for direct Redis budget key refresh.
+func (h *Handler) warmCampaignBudget(w http.ResponseWriter, r *http.Request) {
+	campaignID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid campaign id")
+		return
+	}
+	if err := h.ensureCampaignAccess(r, campaignID); err != nil {
+		httpresponse.Error(w, http.StatusForbidden, "FORBIDDEN", "forbidden")
+		return
+	}
+	remaining, err := h.svc.WarmCampaignBudget(r.Context(), campaignID)
+	if err != nil {
+		writeServiceError(w, err, slog.String("campaign_id", campaignID.String()))
+		return
+	}
+	httpresponse.JSON(w, http.StatusOK, map[string]any{
+		"campaign_id":     campaignID.String(),
+		"remaining_micro": remaining,
+	})
+}
+
 // updateCampaignSchedule handles POST /admin/campaigns/{id}/schedule for window and daypart changes.
 func (h *Handler) updateCampaignSchedule(w http.ResponseWriter, r *http.Request) {
 	campaignID, err := uuid.Parse(r.PathValue("id"))

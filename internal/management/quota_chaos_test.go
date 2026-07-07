@@ -87,11 +87,11 @@ func TestChaos_QuotaRefillRace(t *testing.T) {
 	require.Equal(t, int64(0), exists, "refill lock must be consumed")
 
 	logChaosProof(t, "quota_refill_race", map[string]string{
-		"subsystem":        "management_quota",
-		"workers":          strconv.Itoa(workers),
-		"pg_reserved":      strconv.FormatInt(pgQuota.ReservedAmount, 10),
-		"redis_quota":      strconv.FormatInt(redisQuota, 10),
-		"baseline_ok":      "true",
+		"subsystem":         "management_quota",
+		"workers":           strconv.Itoa(workers),
+		"pg_reserved":       strconv.FormatInt(pgQuota.ReservedAmount, 10),
+		"redis_quota":       strconv.FormatInt(redisQuota, 10),
+		"baseline_ok":       "true",
 		"budget_consistent": "true",
 	})
 }

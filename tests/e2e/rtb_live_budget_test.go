@@ -124,7 +124,7 @@ func TestE2E_RtbLiveBudgetAuthority(t *testing.T) {
 
 	handler := ads.NewAdsPacketHandler(cfg, registry, filterEngine, pool, []redis.UniversalClient{rdb}, sharder, cfg.FraudStreamName, nil)
 	handler.ConfigureIngestGeo(staticGeoCountry{country: "US"})
-	handler.ConfigureRtb(catalog, staticGeoCountry{country: "US"}, unifiedFilter)
+	handler.ConfigureRtb(catalog, staticGeoCountry{country: "US"}, unifiedFilter, nil)
 	defer handler.Stop(ctx)
 
 	clientCampID := uuid.New()

@@ -11,6 +11,8 @@ import (
 // RtbCatalog wires the in-process rtb registry to ads campaign sync and ingest targeting.
 type RtbCatalog struct {
 	registry   *rtb.Registry
+	dealIndex  *rtb.DealIndex
+	dealFloors *DealFloorCache
 	authority  BudgetAuthority
 	winnerUUID atomic.Pointer[map[rtb.CampaignID]uuid.UUID]
 }
@@ -18,6 +20,7 @@ type RtbCatalog struct {
 func NewRtbCatalog(store *rtb.BudgetStore, authority BudgetAuthority) *RtbCatalog {
 	return &RtbCatalog{
 		registry:  rtb.NewRegistry(store),
+		dealIndex: rtb.NewDealIndex(),
 		authority: authority,
 	}
 }
@@ -28,6 +31,16 @@ func (catalog *RtbCatalog) Registry() *rtb.Registry {
 
 func (catalog *RtbCatalog) Authority() BudgetAuthority {
 	return catalog.authority
+}
+
+// SetAuthority updates live budget ownership without rebuilding the catalog.
+func (catalog *RtbCatalog) SetAuthority(authority BudgetAuthority) {
+	catalog.authority = authority
+}
+
+// SetDealFloors attaches the read-only Redis-backed optimized floor cache.
+func (catalog *RtbCatalog) SetDealFloors(cache *DealFloorCache) {
+	catalog.dealFloors = cache
 }
 
 // SyncActiveCampaigns rebuilds the rtb catalog from active domain campaigns and auction inputs.
@@ -79,6 +92,38 @@ func (catalog *RtbCatalog) SyncFromRegistry(registry *Registry, inputs map[uuid.
 
 func (catalog *RtbCatalog) SetClearingMode(mode rtb.ClearingMode) {
 	catalog.registry.SetClearingMode(mode)
+}
+
+// UpdateDeals rebuilds the PMP deal index from Postgres rows.
+func (catalog *RtbCatalog) UpdateDeals(deals []rtb.DealData) {
+	if catalog.dealIndex == nil {
+		catalog.dealIndex = rtb.NewDealIndex()
+	}
+	catalog.dealIndex.UpdateDeals(deals)
+}
+
+// DealCount returns the number of indexed PMP deals.
+func (catalog *RtbCatalog) DealCount() int {
+	if catalog.dealIndex == nil {
+		return 0
+	}
+	return catalog.dealIndex.Len()
+}
+
+// LookupDeal returns one deal by deal_id for bid-path targeting.
+func (catalog *RtbCatalog) LookupDeal(dealID string) (rtb.DealData, bool) {
+	if catalog.dealIndex == nil {
+		return rtb.DealData{}, false
+	}
+	return catalog.dealIndex.Lookup(dealID)
+}
+
+// AllDeals returns a snapshot of indexed PMP deals.
+func (catalog *RtbCatalog) AllDeals() []rtb.DealData {
+	if catalog.dealIndex == nil {
+		return nil
+	}
+	return catalog.dealIndex.All()
 }
 
 // RunAuction runs an in-process auction for one ingest event.

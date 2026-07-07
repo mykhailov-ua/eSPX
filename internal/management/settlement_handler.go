@@ -6,6 +6,7 @@ import (
 	"errors"
 	"espx/internal/config"
 	"espx/internal/management/pb"
+	"time"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
@@ -27,17 +28,8 @@ func NewSettlementHandler(service *Service, cfg *config.Config) *SettlementHandl
 }
 
 func (h *SettlementHandler) ApplyPaymentCredit(ctx context.Context, req *pb.ApplyPaymentCreditRequest) (*pb.ApplyPaymentCreditResponse, error) {
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
-		return nil, status.Error(codes.Unauthenticated, "missing metadata")
-	}
-	tokens := md.Get("x-internal-token")
-	expectedToken := string(h.cfg.SettlementInternalToken)
-	if expectedToken == "" {
-		return nil, status.Error(codes.FailedPrecondition, "settlement internal token not configured")
-	}
-	if len(tokens) == 0 || subtle.ConstantTimeCompare([]byte(tokens[0]), []byte(expectedToken)) != 1 {
-		return nil, status.Error(codes.PermissionDenied, "invalid internal token")
+	if err := h.requireSettlementToken(ctx); err != nil {
+		return nil, err
 	}
 
 	customerID, err := uuid.Parse(req.CustomerId)
@@ -72,17 +64,8 @@ func (h *SettlementHandler) ApplyPaymentCredit(ctx context.Context, req *pb.Appl
 }
 
 func (h *SettlementHandler) ApplyPaymentRefund(ctx context.Context, req *pb.ApplyPaymentRefundRequest) (*pb.ApplyPaymentRefundResponse, error) {
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
-		return nil, status.Error(codes.Unauthenticated, "missing metadata")
-	}
-	tokens := md.Get("x-internal-token")
-	expectedToken := string(h.cfg.SettlementInternalToken)
-	if expectedToken == "" {
-		return nil, status.Error(codes.FailedPrecondition, "settlement internal token not configured")
-	}
-	if len(tokens) == 0 || subtle.ConstantTimeCompare([]byte(tokens[0]), []byte(expectedToken)) != 1 {
-		return nil, status.Error(codes.PermissionDenied, "invalid internal token")
+	if err := h.requireSettlementToken(ctx); err != nil {
+		return nil, err
 	}
 
 	customerID, err := uuid.Parse(req.CustomerId)
@@ -165,6 +148,43 @@ func (h *SettlementHandler) ApplyPaymentChargebackReversal(ctx context.Context, 
 		return nil, h.mapChargebackError(err)
 	}
 	return &pb.ApplyPaymentChargebackReversalResponse{Applied: applied, LedgerEntryId: ledgerEntryID}, nil
+}
+
+func (h *SettlementHandler) GetLedgerEntry(ctx context.Context, req *pb.GetLedgerEntryRequest) (*pb.GetLedgerEntryResponse, error) {
+	if err := h.requireSettlementToken(ctx); err != nil {
+		return nil, err
+	}
+	paymentIntentID, err := uuid.Parse(req.GetPaymentIntentId())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid payment intent id")
+	}
+
+	found, entry, refundTotal, chargebackTotal, reversalTotal, err := h.service.GetLedgerEntry(ctx, paymentIntentID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to load ledger entry: %v", err)
+	}
+
+	resp := &pb.GetLedgerEntryResponse{
+		Found:                        found,
+		RefundTotalMicro:             refundTotal,
+		ChargebackTotalMicro:         chargebackTotal,
+		ChargebackReversalTotalMicro: reversalTotal,
+	}
+	if found {
+		campID := ""
+		if entry.CampaignID.Valid {
+			campID = uuid.UUID(entry.CampaignID.Bytes).String()
+		}
+		resp.Topup = &pb.LedgerEntry{
+			Id:          entry.ID,
+			CustomerId:  uuid.UUID(entry.CustomerID.Bytes).String(),
+			CampaignId:  campID,
+			AmountMicro: entry.Amount,
+			Type:        string(entry.Type),
+			CreatedAt:   entry.CreatedAt.Time.UTC().Format(time.RFC3339),
+		}
+	}
+	return resp, nil
 }
 
 func (h *SettlementHandler) requireSettlementToken(ctx context.Context) error {

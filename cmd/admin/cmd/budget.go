@@ -92,7 +92,6 @@ var budgetResetCmd = &cobra.Command{
 	},
 }
 
-// init registers budget reset commands because spend cache drift must be cleared without redeploying Redis.
 func init() {
 	budgetResetCmd.Flags().String("campaign-id", "", "UUID of the campaign to reset")
 	budgetResetCmd.Flags().Bool("reset-db-spend", false, "Reset current_spend to 0 and set status to ACTIVE in PostgreSQL")

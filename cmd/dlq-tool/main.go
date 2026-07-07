@@ -1,3 +1,4 @@
+// Command dlq-tool is a legacy operator CLI for Redis DLQ archive, requeue, restore, and inspect.
 package main
 
 import (
@@ -7,7 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"os"
 	"time"
 
@@ -19,6 +20,11 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+func fatal(msg string, args ...any) {
+	slog.Error(msg, args...)
+	os.Exit(1)
+}
+
 func main() {
 	var (
 		action   = flag.String("action", "archive", "Action to perform: archive, requeue, restore, or inspect")
@@ -29,39 +35,41 @@ func main() {
 	)
 	flag.Parse()
 
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+
 	ctx, cancel := lifecycle.NotifyContext(context.Background())
 	defer cancel()
 
 	opt, err := redis.ParseURL(*redisURL)
 	if err != nil {
-		log.Fatalf("Invalid Redis URL: %v", err)
+		fatal("invalid redis url", "error", err)
 	}
 	rdb := redis.NewClient(opt)
 	defer rdb.Close()
 
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		log.Fatalf("Failed to connect to Redis: %v", err)
+		fatal("failed to connect to redis", "error", err)
 	}
 
 	switch *action {
 	case "archive":
 		if err := archiveDLQ(ctx, rdb, *stream, *dest, *batch); err != nil {
-			log.Fatalf("Archive failed: %v", err)
+			fatal("archive failed", "error", err)
 		}
 	case "requeue":
 		if err := requeueDLQ(ctx, rdb, *stream, *dest, *batch); err != nil {
-			log.Fatalf("Requeue failed: %v", err)
+			fatal("requeue failed", "error", err)
 		}
 	case "restore":
 		if err := restoreDLQ(ctx, rdb, *dest, *stream, *batch); err != nil {
-			log.Fatalf("Restore failed: %v", err)
+			fatal("restore failed", "error", err)
 		}
 	case "inspect":
 		if err := inspectStream(ctx, rdb, *stream, *batch); err != nil {
-			log.Fatalf("Inspect failed: %v", err)
+			fatal("inspect failed", "error", err)
 		}
 	default:
-		log.Fatalf("Unknown action: %s", *action)
+		fatal("unknown action", "action", *action)
 	}
 }
 
@@ -75,7 +83,7 @@ func archiveDLQ(ctx context.Context, rdb *redis.Client, stream, destFile string,
 	startID := "0-0"
 	var totalProcessed int64
 
-	log.Printf("Starting binary Protobuf archive of stream %s to %s", stream, destFile)
+	slog.Info("starting dlq archive", "stream", stream, "dest", destFile)
 
 	for {
 		msgs, err := rdb.XRead(ctx, &redis.XReadArgs{
@@ -99,9 +107,7 @@ func archiveDLQ(ctx context.Context, rdb *redis.Client, stream, destFile string,
 			pbDLQ := &pb.AdDLQEvent{}
 
 			if rawBytesStr, ok := msg.Values["d"].(string); ok {
-				// Protobuf format
 				if err := proto.Unmarshal(ads.UnsafeBytes(rawBytesStr), pbDLQ); err != nil {
-					// Fallback to stream event format directly
 					pbStream := &pb.AdStreamEvent{}
 					if err := proto.Unmarshal(ads.UnsafeBytes(rawBytesStr), pbStream); err == nil {
 						pbDLQ.OriginalEvent = pbStream
@@ -109,7 +115,6 @@ func archiveDLQ(ctx context.Context, rdb *redis.Client, stream, destFile string,
 						pbDLQ.OriginalId = ads.UnsafeBytes(msg.ID)
 						pbDLQ.FailedAtUnix = time.Now().Unix()
 					} else {
-						// Create raw dummy event
 						pbDLQ.OriginalEvent = &pb.AdStreamEvent{
 							Payload: ads.UnsafeBytes(rawBytesStr),
 						}
@@ -119,7 +124,6 @@ func archiveDLQ(ctx context.Context, rdb *redis.Client, stream, destFile string,
 					}
 				}
 			} else {
-				// Legacy flat-map format. Map fields to pb.AdDLQEvent
 				pbStream := &pb.AdStreamEvent{}
 				if v, ok := msg.Values["click_id"].(string); ok {
 					pbStream.ClickId = ads.UnsafeBytes(v)
@@ -176,8 +180,7 @@ func archiveDLQ(ctx context.Context, rdb *redis.Client, stream, destFile string,
 				return fmt.Errorf("failed to marshal message %s: %w", msg.ID, err)
 			}
 
-			// Store event records sequentially using a 4-byte Big-Endian unsigned integer prefix indicating the byte size.
-			// This enables streaming decompression and framing of individual message frames without high heap-allocation cost.
+			// Length-prefixed frames allow streaming restore without loading the full archive into heap.
 			var lengthBuf [4]byte
 			binary.BigEndian.PutUint32(lengthBuf[:], uint32(len(data)))
 			if _, err := file.Write(lengthBuf[:]); err != nil {
@@ -197,10 +200,13 @@ func archiveDLQ(ctx context.Context, rdb *redis.Client, stream, destFile string,
 		}
 
 		totalProcessed += int64(len(msgIDs))
-		log.Printf("Archived and deleted %d messages (Total: %d)", len(msgIDs), totalProcessed)
+		slog.Info("dlq archive batch complete",
+			"batch", len(msgIDs),
+			"total", totalProcessed,
+		)
 	}
 
-	log.Printf("Archive completed. Total archived: %d", totalProcessed)
+	slog.Info("dlq archive complete", "total", totalProcessed)
 	return nil
 }
 
@@ -208,7 +214,7 @@ func requeueDLQ(ctx context.Context, rdb *redis.Client, dlqStream, targetStream 
 	startID := "0-0"
 	var totalProcessed int64
 
-	log.Printf("Starting requeue from %s to %s", dlqStream, targetStream)
+	slog.Info("starting dlq requeue", "dlq_stream", dlqStream, "target_stream", targetStream)
 
 	for {
 		msgs, err := rdb.XRead(ctx, &redis.XReadArgs{
@@ -231,20 +237,24 @@ func requeueDLQ(ctx context.Context, rdb *redis.Client, dlqStream, targetStream 
 		for _, msg := range msgs[0].Messages {
 			values := make(map[string]interface{})
 			if rawBytesStr, ok := msg.Values["d"].(string); ok {
-				// Protobuf format
 				pbDLQ := &pb.AdDLQEvent{}
 				if err := proto.Unmarshal(ads.UnsafeBytes(rawBytesStr), pbDLQ); err == nil && pbDLQ.OriginalEvent != nil {
 					data, err := proto.Marshal(pbDLQ.OriginalEvent)
 					if err == nil {
 						values["d"] = ads.UnsafeString(data)
 					} else {
-						log.Printf("Failed to re-marshal original event from DLQ message %s: %v", msg.ID, err)
+						slog.Warn("failed to re-marshal original event from dlq message",
+							"message_id", msg.ID,
+							"error", err,
+						)
 					}
 				} else {
-					log.Printf("Failed to unmarshal Protobuf DLQ message %s: %v", msg.ID, err)
+					slog.Warn("failed to unmarshal protobuf dlq message",
+						"message_id", msg.ID,
+						"error", err,
+					)
 				}
 			} else {
-				// Legacy flat-map format
 				for k, v := range msg.Values {
 					if k != "error" && k != "original_id" && k != "failed_at" && k != "service" && k != "worker_id" && k != "retry_count" {
 						values[k] = v
@@ -266,10 +276,13 @@ func requeueDLQ(ctx context.Context, rdb *redis.Client, dlqStream, targetStream 
 		}
 
 		totalProcessed += int64(len(msgIDs))
-		log.Printf("Requeued %d messages (Total: %d)", len(msgIDs), totalProcessed)
+		slog.Info("dlq requeue batch complete",
+			"batch", len(msgIDs),
+			"total", totalProcessed,
+		)
 	}
 
-	log.Printf("Requeue completed. Total requeued: %d", totalProcessed)
+	slog.Info("dlq requeue complete", "total", totalProcessed)
 	return nil
 }
 
@@ -280,7 +293,7 @@ func restoreDLQ(ctx context.Context, rdb *redis.Client, srcFile, targetStream st
 	}
 	defer file.Close()
 
-	log.Printf("Starting restore from %s to stream %s", srcFile, targetStream)
+	slog.Info("starting dlq restore", "src", srcFile, "target_stream", targetStream)
 
 	var totalProcessed int64
 	var lengthBuf [4]byte
@@ -314,7 +327,7 @@ func restoreDLQ(ctx context.Context, rdb *redis.Client, srcFile, targetStream st
 		}
 
 		if pbDLQ.OriginalEvent == nil {
-			log.Printf("Warning: AdDLQEvent at offset %d has no original event, skipping", totalProcessed)
+			slog.Warn("dlq event has no original event, skipping", "offset", totalProcessed)
 			continue
 		}
 
@@ -336,7 +349,10 @@ func restoreDLQ(ctx context.Context, rdb *redis.Client, srcFile, targetStream st
 			if _, err := pipe.Exec(ctx); err != nil {
 				return fmt.Errorf("failed to restore batch to Redis: %w", err)
 			}
-			log.Printf("Restored %d messages (Total: %d)", batchCount, totalProcessed)
+			slog.Info("dlq restore batch complete",
+				"batch", batchCount,
+				"total", totalProcessed,
+			)
 			pipe = rdb.Pipeline()
 			batchCount = 0
 		}
@@ -346,10 +362,13 @@ func restoreDLQ(ctx context.Context, rdb *redis.Client, srcFile, targetStream st
 		if _, err := pipe.Exec(ctx); err != nil {
 			return fmt.Errorf("failed to restore final batch to Redis: %w", err)
 		}
-		log.Printf("Restored %d messages (Total: %d)", batchCount, totalProcessed)
+		slog.Info("dlq restore batch complete",
+			"batch", batchCount,
+			"total", totalProcessed,
+		)
 	}
 
-	log.Printf("Restore completed. Total restored: %d", totalProcessed)
+	slog.Info("dlq restore complete", "total", totalProcessed)
 	return nil
 }
 
@@ -357,7 +376,7 @@ func inspectStream(ctx context.Context, rdb *redis.Client, stream string, batchS
 	startID := "0-0"
 	var totalProcessed int64
 
-	log.Printf("Starting inspection of stream %s", stream)
+	slog.Info("starting dlq inspect", "stream", stream)
 
 	for {
 		msgs, err := rdb.XRead(ctx, &redis.XReadArgs{
@@ -378,7 +397,6 @@ func inspectStream(ctx context.Context, rdb *redis.Client, stream string, batchS
 			fmt.Printf("\nMessage ID: %s\n", msg.ID)
 
 			if rawBytesStr, ok := msg.Values["d"].(string); ok {
-				// Try to unmarshal as DLQ event first
 				pbDLQ := &pb.AdDLQEvent{}
 				if err := proto.Unmarshal(ads.UnsafeBytes(rawBytesStr), pbDLQ); err == nil && pbDLQ.OriginalEvent != nil {
 					fmt.Println("Format: Protobuf (AdDLQEvent)")
@@ -414,7 +432,6 @@ func inspectStream(ctx context.Context, rdb *redis.Client, stream string, batchS
 					prettyJSON, _ := json.MarshalIndent(m, "", "  ")
 					fmt.Println(string(prettyJSON))
 				} else {
-					// Try to unmarshal as Stream event
 					pbStream := &pb.AdStreamEvent{}
 					if err := proto.Unmarshal(ads.UnsafeBytes(rawBytesStr), pbStream); err == nil {
 						fmt.Println("Format: Protobuf (AdStreamEvent)")
@@ -454,6 +471,6 @@ func inspectStream(ctx context.Context, rdb *redis.Client, stream string, batchS
 			totalProcessed++
 		}
 	}
-	log.Printf("Inspection completed. Total inspected: %d", totalProcessed)
+	slog.Info("dlq inspect complete", "total", totalProcessed)
 	return nil
 }

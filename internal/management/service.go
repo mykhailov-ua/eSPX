@@ -15,7 +15,9 @@ import (
 	"espx/internal/ads/db"
 	"espx/internal/config"
 	"espx/internal/metrics"
+	"espx/pkg/cold"
 
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -25,17 +27,19 @@ import (
 
 // Service coordinates management business logic, background workers, and hot-path propagation via outbox.
 type Service struct {
-	pool     *pgxpool.Pool
-	rdbs     []redis.UniversalClient
-	sharder  ads.Sharder
-	cfg      *config.Config
-	alerter  *OpsAlerter
-	ctx      context.Context
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
-	workerMu sync.Mutex
-	closed   atomic.Bool
-	locCache sync.Map
+	pool        *pgxpool.Pool
+	rdbs        []redis.UniversalClient
+	sharder     ads.Sharder
+	cfg         *config.Config
+	alerter     *OpsAlerter
+	ch          driver.Conn
+	paymentPool *pgxpool.Pool
+	ctx         context.Context
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	workerMu    sync.Mutex
+	closed      atomic.Bool
+	locCache    sync.Map
 }
 
 // StartBackgroundWorker launches an auxiliary goroutine tracked for graceful shutdown.
@@ -632,11 +636,45 @@ func (s *Service) getRDB(campaignID uuid.UUID) redis.UniversalClient {
 }
 
 // ListAuditLogs returns paginated admin audit entries for compliance review.
-func (s *Service) ListAuditLogs(ctx context.Context, limit, offset int32) ([]db.AdminAuditLog, error) {
-	return db.New(s.pool).ListAuditLogs(ctx, db.ListAuditLogsParams{
-		Limit:  limit,
-		Offset: offset,
-	})
+func (s *Service) ListAuditLogs(ctx context.Context, limit, offset int32) ([]db.AdminAuditLog, int64, error) {
+	q := db.New(s.pool)
+	return cold.PaginatedQuery(
+		func() (int64, error) { return q.CountAuditLogs(ctx) },
+		func() ([]db.AdminAuditLog, error) {
+			return q.ListAuditPaginated(ctx, db.ListAuditPaginatedParams{
+				Limit:  limit,
+				Offset: offset,
+			})
+		},
+	)
+}
+
+// GetLedgerEntry returns PAYMENT_TOPUP ledger state and related totals for a payment intent.
+func (s *Service) GetLedgerEntry(ctx context.Context, paymentIntentID uuid.UUID) (found bool, entry db.BalanceLedger, refundTotal, chargebackTotal, reversalTotal int64, err error) {
+	q := db.New(s.pool)
+	entry, err = q.GetLedgerByPaymentIntent(ctx, ads.ToUUID(paymentIntentID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			entry = db.BalanceLedger{}
+		} else {
+			return false, db.BalanceLedger{}, 0, 0, 0, err
+		}
+	} else {
+		found = true
+	}
+	refundTotal, err = q.SumPaymentRefundAmountForIntent(ctx, ads.ToUUID(paymentIntentID))
+	if err != nil {
+		return false, db.BalanceLedger{}, 0, 0, 0, err
+	}
+	chargebackTotal, err = q.SumPaymentChargebackAmountForIntent(ctx, ads.ToUUID(paymentIntentID))
+	if err != nil {
+		return false, db.BalanceLedger{}, 0, 0, 0, err
+	}
+	reversalTotal, err = q.SumPaymentChargebackReversalAmountForIntent(ctx, ads.ToUUID(paymentIntentID))
+	if err != nil {
+		return false, db.BalanceLedger{}, 0, 0, 0, err
+	}
+	return found, entry, refundTotal, chargebackTotal, reversalTotal, nil
 }
 
 // UpdateOverdraft adjusts credit limits and suspends campaigns when reduced overdraft would overcommit balance.

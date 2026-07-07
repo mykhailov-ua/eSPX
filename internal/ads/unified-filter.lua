@@ -1,3 +1,5 @@
+-- Hot-path filter script: non-blocking Redis ops only (MGET, GET, INCR, SET NX, XADD, SADD, EXPIRE).
+-- No KEYS, BLPOP/BRPOP, WAIT, or other O(N)/blocking commands — Lua must not stall the ingest path.
 -- KEYS[1..12]: rate, dup, budget:campaign, idempotency, sync, dirty, stream, daily, fcap, imp_ts.
 -- KEYS[13..15] (Phase 1.3 quotas): budget:quota, budget:refill_lock, budget:refill_needed.
 -- ARGV[25..27]: quota_enabled ("1"/"0"), chunk_size, refill_threshold_pct.

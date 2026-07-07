@@ -1,4 +1,4 @@
-// Command edge-xdp loads the XDP program and pins BPF maps for edge-bpf-sync.
+// Command edge-xdp attaches the ingress XDP program and pins BPF maps consumed by edge-bpf-sync.
 package main
 
 import (
@@ -14,7 +14,6 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 )
 
-// main attaches the edge XDP filter to the ingress interface and blocks until shutdown.
 func main() {
 	iface := flag.String("iface", os.Getenv("INGRESS_INTERFACE"), "network interface for XDP attach")
 	pinDir := flag.String("pin-dir", edge.EnvOr("BPF_PIN_DIR", "/sys/fs/bpf/espx"), "directory for pinned BPF maps")

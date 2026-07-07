@@ -1,4 +1,4 @@
-// Command billing runs the gRPC BillingService for invoice generation and ledger reconciliation.
+// Command billing wires the gRPC BillingService for invoice generation and ledger reconciliation.
 package main
 
 import (
@@ -63,10 +63,16 @@ func main() {
 		}
 	}()
 
+	metricsSrv := lifecycle.StartMetrics(":" + cfg.Billing.MetricsPort)
+	slog.Info("billing metrics server enabled", "port", cfg.Billing.MetricsPort)
+
 	sig := lifecycle.WaitSignal()
 	slog.Info("received shutdown signal", "signal", sig.String())
 
 	cancel()
 	lifecycle.ShutdownGRPC(grpcServer, timeouts.Shutdown)
+	if err := metricsSrv.Shutdown(timeouts.Shutdown); err != nil {
+		slog.Error("billing metrics server shutdown failed", "error", err)
+	}
 	slog.Info("billing service shutdown complete")
 }

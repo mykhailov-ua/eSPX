@@ -30,8 +30,15 @@ AS SELECT
 FROM clicks
 GROUP BY campaign_id, hour;
 
--- Example queries:
--- SELECT sum(impression_count) FROM mv_campaign_hourly_impressions
--- WHERE campaign_id = ? AND hour BETWEEN ? AND ?;
--- SELECT sum(click_count) FROM mv_campaign_hourly_clicks
--- WHERE campaign_id = ? AND hour BETWEEN ? AND ?;
+-- Hourly conversion counts per campaign; mirrors impressions/clicks MV layout.
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_campaign_hourly_conversions
+ENGINE = SummingMergeTree()
+PARTITION BY toYYYYMM(hour)
+ORDER BY (campaign_id, hour)
+POPULATE
+AS SELECT
+    campaign_id,
+    toStartOfHour(created_at) AS hour,
+    count() AS conversion_count
+FROM conversions
+GROUP BY campaign_id, hour;

@@ -1,4 +1,4 @@
-// Command management runs the admin API gateway and background control-plane workers.
+// Command management wires the admin HTTP API and control-plane background workers outside the tracker process.
 package main
 
 import (
@@ -19,6 +19,7 @@ import (
 	"espx/internal/database"
 	"espx/internal/management"
 	mgmt_pb "espx/internal/management/pb"
+	"espx/internal/processor"
 
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
@@ -26,7 +27,6 @@ import (
 	"google.golang.org/grpc/reflection"
 )
 
-// main hosts the management HTTP API separately because admin RBAC and background workers must not share tracker resources.
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
@@ -81,6 +81,22 @@ func main() {
 	authHandler := management.NewAuthHandler(authClient, tokenMaker, rdbs[0], cfg, authMiddleware)
 
 	svc := management.NewService(pool, rdbs, sharder, cfg)
+	svc.SetPaymentPool(pool)
+
+	if cfg.ClickHouseEnabled() {
+		chConn, err := database.ConnectClickHouse(ctx, string(cfg.CHDSN))
+		if err != nil {
+			slog.Error("failed to connect to clickhouse for reporting", "error", err)
+			os.Exit(1)
+		}
+		defer chConn.Close()
+		if err := processor.ApplyClickHouseMigrations(ctx, chConn); err != nil {
+			slog.Error("failed to apply clickhouse migrations", "error", err)
+			os.Exit(1)
+		}
+		svc.SetClickHouse(chConn)
+		slog.Info("clickhouse reporting enabled")
+	}
 
 	queries := db.New(pool)
 	campaignRepo := ads.NewCampaignRepo(queries)
@@ -130,6 +146,14 @@ func main() {
 			nginxWorker.Start(ctx, time.Minute)
 		})
 		slog.Info("started nginx deny export worker", "path", exportPath)
+	}
+
+	if cfg.Management.AuditExportPath != "" {
+		auditWorker := management.NewAuditExportWorker(svc, cfg.Management.AuditExportPath, cfg.Management.AuditExportRetentionDays)
+		svc.StartBackgroundWorker(func() {
+			auditWorker.Start(ctx, 24*time.Hour)
+		})
+		slog.Info("started audit export worker", "path", cfg.Management.AuditExportPath, "retention_days", cfg.Management.AuditExportRetentionDays)
 	}
 
 	paymentClient, err := management.NewPaymentClient(cfg)

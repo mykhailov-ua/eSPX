@@ -1,4 +1,4 @@
-// Command log-compactor downsampled warm-tier audit logs from rotated tracker segments.
+// Command log-compactor downsamples warm-tier audit logs from rotated tracker segments.
 package main
 
 import (

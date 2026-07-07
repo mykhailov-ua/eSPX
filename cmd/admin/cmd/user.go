@@ -321,7 +321,6 @@ var deleteUserCmd = &cobra.Command{
 	},
 }
 
-// pgUUIDToGoogleUUID converts sqlc pgtype UUIDs into google/uuid for display and token minting.
 func pgUUIDToGoogleUUID(p pgtype.UUID) uuid.UUID {
 	if !p.Valid {
 		return uuid.Nil
@@ -329,7 +328,6 @@ func pgUUIDToGoogleUUID(p pgtype.UUID) uuid.UUID {
 	return p.Bytes
 }
 
-// init wires user and token subcommands into the admin CLI.
 func init() {
 	createTokenCmd.Flags().String("email", "", "User email address")
 	createTokenCmd.Flags().Bool("auto-create", false, "Auto-create user if they do not exist")

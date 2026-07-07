@@ -1,5 +1,4 @@
-// Package cmd is the internal developer CLI for budget recovery, auth tokens, and database ops
-// that would be unsafe or awkward to expose on the management HTTP API.
+// Package cmd implements the admin developer CLI for operations not exposed on the management HTTP API.
 package cmd
 
 import (
@@ -46,17 +45,16 @@ var rootCmd = &cobra.Command{
 	},
 }
 
-// Execute is the single entry for operator-facing dev tooling kept off the production HTTP surface.
+// Execute runs the admin Cobra root command.
 func Execute() error {
 	return rootCmd.Execute()
 }
 
-// init binds persistent flags early so every subcommand shares the same config and env bootstrap.
 func init() {
 	rootCmd.PersistentFlags().StringVar(&envPath, "env-path", ".env", "path to .env configuration file")
 }
 
-// loadEnvFile fills unset env vars from a dotenv file because admin runs outside Docker compose injection.
+// loadEnvFile applies unset variables from a dotenv file when admin runs outside Compose env injection.
 func loadEnvFile(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -90,12 +88,12 @@ func loadEnvFile(path string) error {
 	return scanner.Err()
 }
 
-// getDB opens a short-lived pool because admin commands are one-shot and must not hold production-sized pools.
+// getDB uses a small pool because admin subcommands are one-shot and must not hold tracker-sized pools.
 func getDB(ctx context.Context) (*pgxpool.Pool, error) {
 	return database.Connect(ctx, string(cfg.DBDSN), 5, 1)
 }
 
-// getRedisShards dials every shard with StaticSlot routing aligned to tracker hot-path sharding.
+// getRedisShards dials every shard with StaticSlot routing matching the tracker hot path.
 func getRedisShards(ctx context.Context) ([]redis.UniversalClient, *ads.StaticSlotSharder, error) {
 	clients, err := database.ConnectRedisShards(ctx, cfg, database.RedisShardOptions{PoolSize: 10})
 	if err != nil {

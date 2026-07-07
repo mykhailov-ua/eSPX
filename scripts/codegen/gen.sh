@@ -43,7 +43,8 @@ if [[ "$RUN_PROTO" -eq 1 ]]; then
 	# Staging only: api/gen/. Never set buf out to . or repo root.
 	safe_rm_rf "$ROOT/api/gen"
 	mkdir -p "$ROOT/api/gen"
-	go run github.com/bufbuild/buf/cmd/buf@latest generate --template api/buf.gen.yml api
+	# buf out: gen is relative to api/; running from repo root would write to $ROOT/gen.
+	( cd "$ROOT/api" && go run github.com/bufbuild/buf/cmd/buf@latest generate --template buf.gen.yml . )
 	safe_sync_proto_gen
 fi
 

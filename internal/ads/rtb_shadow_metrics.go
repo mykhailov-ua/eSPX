@@ -61,12 +61,13 @@ func recordRtbShadowAuction(
 		if counter, ok := rtbShadowMetrics.noBid[reason]; ok {
 			counter.Inc()
 		}
-		return
+	} else {
+		shadowWinner, ok := catalog.UUIDForWinner(res.CampaignID)
+		if !ok || shadowWinner != evt.CampaignID {
+			rtbShadowMetrics.winnerMismatch.Inc()
+		}
 	}
-	shadowWinner, ok := catalog.UUIDForWinner(res.CampaignID)
-	if !ok || shadowWinner != evt.CampaignID {
-		rtbShadowMetrics.winnerMismatch.Inc()
-	}
+	recordRtbShadowDiff(catalog, evt, res, reason)
 	if payloadBidMicro <= 0 {
 		return
 	}

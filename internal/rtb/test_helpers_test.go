@@ -20,6 +20,20 @@ func logRtbChaosProof(t *testing.T, fault string, kv map[string]string) {
 	t.Log(b.String())
 }
 
+func itoaU64(v uint64) string {
+	if v == 0 {
+		return "0"
+	}
+	var buf [20]byte
+	i := len(buf)
+	for v > 0 {
+		i--
+		buf[i] = byte('0' + v%10)
+		v /= 10
+	}
+	return string(buf[i:])
+}
+
 // Builds a one-campaign UpdateCampaigns payload for tests.
 func singleCampaign(id CampaignID, bid int64, budget int64) []CampaignData {
 	return []CampaignData{{

@@ -42,6 +42,7 @@ type RtbTargetingInput struct {
 	DeviceType          uint8
 	CategoryMask        uint64
 	PublisherFloorMicro int64
+	DealID              string
 }
 
 // CampaignIDFromUUID maps campaign UUIDs to the fixed-width rtb catalog key.

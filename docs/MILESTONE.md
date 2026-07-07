@@ -46,7 +46,7 @@ M6.4 erasure: table `privacy_erasure_requests`, tombstone -> PG anonymize PII ->
 
 M7.1 invoice cron: `pg_advisory_lock(hashtext(customer_id::text || billing_month))` or `INSERT ... ON CONFLICT` + `SKIP LOCKED` claim in billing worker.
 
-## Phase M0 - WIP and ops
+## Phase M0 - WIP and ops [implemented]
 
 **M0.1 QuotaManager.** Code: `internal/management/quota_manager.go`. Poll `budget:refill_needed` via `SPopN` on each shard, refill via `ads.QuotaRepo`. Env: `QUOTA_MODE=off|shadow|live` (default `off`, `internal/config/env.go`), `QUOTA_CHUNK_SIZE`, `QUOTA_REFILL_THRESHOLD_PCT`. Not connected in `cmd/management/main.go` - add `svc.StartBackgroundWorker(func() { NewQuotaManager(svc).Start(ctx) })`. Shadow: refill is logged, Redis budget keys are not modified. Live: PG `reserved_amount` + Redis quota keys. Recon quota: `ReconWorker.ReconcileQuotas` is already called under shadow/live. Chaos: `quota_refill_race`, `quota_dead_shard_release`.
 
@@ -58,7 +58,7 @@ M7.1 invoice cron: `pg_advisory_lock(hashtext(customer_id::text || billing_month
 
 **M0.5 Compose prod profile.** Enable `PAYMENT_FINANCIAL_RECON_INTERVAL_MS=3600000` in the production docker-compose profile; monitor finding kinds `DEAD_OUTBOX`, `MISSING_LEDGER_TOPUP` (detailed in `docs/reports/PAYMENT_FINANCIAL_RECON.md`).
 
-**M0.6 Stripe policy.** Code: `internal/payment/provider_stripe.go` - currently a placeholder `createStripeCheckoutSession`; `NewStripeProvider` delegates there. Document in `docs/development.md`: this remains mock-only until M4.6 or live DoD verification is completed.
+**M0.6 Stripe policy.** Code: `internal/payment/provider_stripe.go` - currently a placeholder `createStripeCheckoutSession`; `NewStripeProvider` delegates there. Document in `docs/development.md`: this remains mock-only until M4.3 or live DoD verification is completed.
 
 **M0.7 Outbox priority lanes.** Currently, `GetPendingOutboxEventsForUpdate` sorts only by `created_at ASC`. Modify the SQL query or implement a two-phase claim: first claim `event_type IN ('UPDATE_BLACKLIST','PAUSE_CAMPAIGN','CANCEL_CAMPAIGN')` with a limit, then fetch remaining events. Alternative: add a `priority SMALLINT` column and order by `priority DESC, created_at ASC`. Chaos test: `outbox_priority_lanes` - enqueue 500 `UPDATE_CAMPAIGN_PACING` and 1 `UPDATE_BLACKLIST`, verify that the blacklist event is PROCESSED first.
 
@@ -86,19 +86,17 @@ Introduce a new router prefix `/api/v1/*` next to `/admin/*` in `handler.go` or 
 
 **M1.5** Billing Prometheus - expose HTTP endpoint `:9092/metrics` in `cmd/billing` or register metrics inside the existing application metrics registry.
 
-**M1.6** OpenAPI 3.1 `api/openapi/control-plane.yaml` - document all `/api/v1/*` endpoints and read-only `/admin/*` routes; specify `consistency` and `stale` properties; add a CI target validation command `make lint-openapi`.
+**M1.6** Materialized views/indexes for `GET /admin/audit` - add a migration with `CREATE INDEX ON audit_log(created_at DESC)` or construct a materialized view for listing entries; generate a new sqlc query `ListAuditPaginated`.
 
-**M1.7** Materialized views/indexes for `GET /admin/audit` - add a migration with `CREATE INDEX ON audit_log(created_at DESC)` or construct a materialized view for listing entries; generate a new sqlc query `ListAuditPaginated`.
+**M1.7** `GetLedgerEntry` RPC in `api/settlement.proto` - perform lookup by `payment_intent_id`, implement the handler in `settlement_handler.go`, and invoke it from the payment service gRPC client instead of executing direct SQL queries.
 
-**M1.8** `GetLedgerEntry` RPC in `api/settlement.proto` - perform lookup by `payment_intent_id`, implement the handler in `settlement_handler.go`, and invoke it from the payment HTMX interface instead of executing direct SQL queries.
-
-**M1.9** Audit export worker - launch via `StartBackgroundWorker` to write a daily dump of `audit_log` to `./data/audit-export/YYYY-MM-DD.csv`. Use configurations: `AUDIT_EXPORT_PATH` and `AUDIT_EXPORT_RETENTION_DAYS=90`. Follow the same implementation pattern as `NginxConfigWorker`.
+**M1.8** Audit export worker - launch via `StartBackgroundWorker` to write a daily dump of `audit_log` to `./data/audit-export/YYYY-MM-DD.csv`. Use configurations: `AUDIT_EXPORT_PATH` and `AUDIT_EXPORT_RETENTION_DAYS=90`. Follow the same implementation pattern as `NginxConfigWorker`.
 
 Pagination: enforce `limit` max 1000, default 50. Error responses must use `pkg/httpresponse` JSON formatting `{"code","message"}`.
 
 Chaos M1: write validation tests for `api_tenant_isolation`, `api_ch_lag_stale_ok`, and `ledger_export_cursor`.
 
-## Phase M2 - Supply chain (IAB)
+## Phase M2 - Supply chain (IAB) [implemented]
 
 **M2.1** Database migration: create the `sellers` table containing columns: `seller_id`, `domain`, `seller_type`, `name`, and `is_confidential`. Set up handler `GET /.well-known/sellers.json` (or map via an Nginx alias pointing to management static assets); conform to the IAB sellers.json Final 2019 JSON schema specification. Implement in-memory caching with a TTL of 60 seconds.
 
@@ -106,11 +104,11 @@ Chaos M1: write validation tests for `api_tenant_isolation`, `api_ch_lag_stale_o
 
 **M2.3** Add database column `campaigns.supply_chain_nodes JSONB` (restricted to a maximum of 10 hops); record mutations inside the audit log by triggering the existing `AuditLog` utility.
 
-**M2.4** Implement an HTMX tab within administrative HTML templates providing CRUD functions for sellers and ads.txt entries; enforce CSRF checks and the `settings:write` permission.
+**M2.4** Admin CRUD endpoints `POST/GET/PUT/DELETE /admin/supply/sellers` and `/admin/supply/ads-txt`; enforce `settings:write` permission via RBAC.
 
-Publish mechanism: enqueue outbox event `UPDATE_SUPPLY_FILES` (define a new event type) - triggers an Nginx configuration reload or updates files directly in the export path. Chaos test cases: `sellers_json_invalid`, `supply_outbox_redelivery`.
+Publish mechanism: enqueue outbox event `UPDATE_SUPPLY_FILES` (define a new event type) - triggers an Nginx configuration reload or updates files directly in the export path. Chaos test cases: `sellers_json_invalid`, `supply_outbox_redelivery`. See `docs/reports/CHAOS_M2.md`.
 
-## Phase M3 - OpenRTB Control Plane
+## Phase M3 - OpenRTB Control Plane [implemented]
 
 Hot path components: `internal/rtb/` (`catalog_registry.go`, `budget_store.go`, `auction.go`), ingestion hook `internal/ads/rtb_track.go`, validation parser `internal/ads/openrtb_parse.go` (`ParseOpenRTB3Payload`). Environment setting: `RTB_MODE=off|shadow|live` (`internal/config/rtb.go`).
 
@@ -130,7 +128,7 @@ Hot path components: `internal/rtb/` (`catalog_registry.go`, `budget_store.go`, 
 
 **M3.8** `POST /admin/campaigns/{id}/warm-budget` - query Postgres for the difference `budget_limit - current_spend` and execute `setCampaignBudgetRemaining` directly without forcing a full registry restart; reuse existing outbox worker helper functions.
 
-Chaos M3: extend tests in `internal/rtb/chaos_*` with scenarios: `rtb_catalog_reload`, `rtb_shadow_live_parity`, and `rtb_deal_floor`.
+Chaos M3: extend tests in `internal/rtb/chaos_*` with scenarios: `rtb_catalog_reload`, `rtb_shadow_live_parity`, and `rtb_deal_floor`. **Done:** see [CHAOS_M3.md](./reports/CHAOS_M3.md).
 
 ## Phase M4 - Self-Serve API
 
@@ -146,11 +144,9 @@ Role `U` (`rbac.go`) already possesses permissions `campaigns:write` and `custom
 
 **M4.5** API keys: call the `auth.CreateAPIKey` gRPC endpoint requesting `campaigns:write` scope; enforce a rate limit of 30 RPS per API key in middleware logic.
 
-**M4.6** HTMX checkout flow inside `internal/payment/http_htmx.go` - replace the placeholder dummy mock checkout session URL with Stripe integration.
+**M4.6** `POST /admin/payment/webhooks/replay` - read JSON from `payment.webhook_events.payload_redacted` and execute processing pipeline with absolute idempotency; guarantee zero double balance credit events.
 
-**M4.7** `POST /admin/payment/webhooks/replay` - read JSON from `payment.webhook_events.payload_redacted` and execute processing pipeline with absolute idempotency; guarantee zero double balance credit events.
-
-**M4.8** Dispute UI - list entries with status `payment_intents.status = DISPUTED` and provide navigation hyperlinks to matching `PAYMENT_CHARGEBACK` database ledger lines (implement in `internal/payment/dispute.go`, schema from `00004_payment_disputes.sql`).
+**M4.7** `GET /api/v1/disputes` - list `payment_intents` with `status = DISPUTED`, include linked `PAYMENT_CHARGEBACK` ledger entry IDs (implement in `internal/payment/dispute.go`, schema from `00004_payment_disputes.sql`).
 
 Limit parameters in config/env: `SELF_SERVE_MAX_ACTIVE_CAMPAIGNS=500`, `SELF_SERVE_MAX_CREATES_PER_DAY=50`, configure min/max values for budget micro-units.
 
@@ -202,7 +198,7 @@ Chaos M6: write automated validation scripts verifying `consent_webhook_replay`,
 
 **M7.3** Credit notes - allow negative line item values mapping to corresponding database ledger types `PAYMENT_REFUND` and `RECONCILIATION_ADJUST`.
 
-**M7.4** Multi-currency support - aggregate ledger records grouping by the database `currency` column; remove hardcoded references to USD inside `handler_billing.go` and its associated HTMX rendering templates.
+**M7.4** Multi-currency support - aggregate ledger records grouping by the database `currency` column; remove hardcoded references to USD inside `handler_billing.go` and billing gRPC responses.
 
 **M7.5** On a `CheckLedgerBalanceInvariant` check failure, trigger an alert via `OpsAlerter` (follow the alerting structure used inside the billing chaos suite).
 
@@ -240,7 +236,7 @@ Chaos M7: write validation checks for `invoice_cron_idempotent`, `ivt_grpc_block
 
 ## Phase dependencies
 
-M0 addresses disconnected WIP items (quota management, autoscaling, reconciliation alerts, outbox prioritization lanes) - establishing the base infrastructure for subsequent phases. M1 introduces the read API endpoints and OpenAPI schemas - which are prerequisites for M4 self-serve features and external partner integrations. M2 is independent of M3. M3 RTB admin depends on stable outbox propagation pipelines (completed in M0.7). M4 is built on top of M1 auth/RBAC capabilities and the payment/settlement pipelines. M5.0 DeliveryOptimizerWorker prevents concurrent execution issues between M0.2 autoscale, M5.6-M5.7, and M3.7 without race conditions. M6 consent propagation relies on the outbox and Pub/Sub mechanics. M7 billing/notifier/IVT tasks can proceed in parallel with M4-M6 after M0 operations hooks are completed.
+M0 addresses disconnected WIP items (quota management, autoscaling, reconciliation alerts, outbox prioritization lanes) - establishing the base infrastructure for subsequent phases. M1 introduces the read API endpoints - which are prerequisites for M4 self-serve features and external partner integrations. M2 is independent of M3. M3 RTB admin depends on stable outbox propagation pipelines (completed in M0.7). M4 is built on top of M1 auth/RBAC capabilities and the payment/settlement pipelines. M5.0 DeliveryOptimizerWorker prevents concurrent execution issues between M0.2 autoscale, M5.6-M5.7, and M3.7 without race conditions. M6 consent propagation relies on the outbox and Pub/Sub mechanics. M7 billing/notifier/IVT tasks can proceed in parallel with M4-M6 after M0 operations hooks are completed.
 
 ## Out of scope
 

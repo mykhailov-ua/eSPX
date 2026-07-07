@@ -20,7 +20,7 @@ func TestFinancialReconRun_persistsRunAndFindings(t *testing.T) {
 	pool, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	recon := NewReconService(pool, pool, nil)
+	recon := NewReconService(pool, nil, nil)
 	end := time.Now().UTC()
 	summary, err := recon.Run(context.Background(), end.Add(-time.Hour), end)
 	require.NoError(t, err)
@@ -57,7 +57,7 @@ func TestFinancialReconRun_missingTopupAfterWebhook(t *testing.T) {
 	err = svc.ProcessStripeWebhook(ctx, "evt_recon_unit", "payment_intent.succeeded", []byte(payload), providerRef, 11_000_000, payload)
 	require.NoError(t, err)
 
-	recon := NewReconService(pool, pool, nil)
+	recon := NewReconService(pool, nil, nil)
 	end := time.Now().UTC()
 	summary, err := recon.Run(ctx, end.Add(-time.Hour), end)
 	require.NoError(t, err)

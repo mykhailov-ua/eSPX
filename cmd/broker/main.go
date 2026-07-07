@@ -1,4 +1,4 @@
-// Command broker runs the ESPX log ingest broker with on-disk segments and Redis coordination.
+// Command broker wires the mmap log ingest broker with on-disk segments and Redis leader election.
 package main
 
 import (
@@ -11,7 +11,6 @@ import (
 	"espx/pkg/broker/server"
 )
 
-// main runs the log broker as a standalone node because durable ingest segments need local disk and Redis leader election.
 func main() {
 	addr := flag.String("addr", "127.0.0.1:9092", "Address for gnet TCP traffic")
 	healthAddr := flag.String("health-addr", "127.0.0.1:8081", "Address for HTTP health checks")

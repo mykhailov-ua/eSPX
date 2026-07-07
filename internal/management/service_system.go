@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"espx/internal/ads"
 	"espx/internal/ads/db"
 	"espx/pkg/cold"
 
@@ -87,9 +88,13 @@ func (s *Service) UnblockIP(ctx context.Context, ip string, source string) error
 
 // UpdateSettings persists system configuration and queues a hot-path sync via cold.
 func (s *Service) UpdateSettings(ctx context.Context, settings map[string]string) error {
+	normalized, err := normalizeSystemSettings(settings)
+	if err != nil {
+		return err
+	}
 	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
-		for k, v := range settings {
+		for k, v := range normalized {
 			err := q.SetSystemSetting(ctx, db.SetSystemSettingParams{
 				Key:   k,
 				Value: v,
@@ -103,11 +108,30 @@ func (s *Service) UpdateSettings(ctx context.Context, settings map[string]string
 		if u, ok := GetUser(ctx); ok {
 			uid = u.UserID
 		}
-		s.AuditLog(ctx, q, uid, "UPDATE_SETTINGS", "system", nil, settings, nil)
-		payloadBytes, _ := json.Marshal(SettingsPayload{Settings: settings})
+		s.AuditLog(ctx, q, uid, "UPDATE_SETTINGS", "system", nil, normalized, nil)
+		payloadBytes, _ := json.Marshal(SettingsPayload{Settings: normalized})
 		_, err := q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{EventType: "UPDATE_SETTINGS", Payload: payloadBytes})
 		return err
 	})
+}
+
+func normalizeSystemSettings(settings map[string]string) (map[string]string, error) {
+	if len(settings) == 0 {
+		return settings, nil
+	}
+	out := make(map[string]string, len(settings))
+	for k, v := range settings {
+		if k == "rtb_budget_authority" {
+			norm, err := ads.NormalizeRtbBudgetAuthoritySetting(v)
+			if err != nil {
+				return nil, err
+			}
+			out[k] = norm
+			continue
+		}
+		out[k] = v
+	}
+	return out, nil
 }
 
 // ListBlacklist returns paginated blocked IPs for the admin UI.

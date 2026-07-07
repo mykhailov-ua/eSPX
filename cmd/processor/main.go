@@ -1,4 +1,4 @@
-// Command processor drains Redis ad-event streams into Postgres, ClickHouse, and fraud analytics.
+// Command processor wires per-shard Redis stream consumers into Postgres, ClickHouse, and fraud pipelines.
 package main
 
 import (
@@ -14,13 +14,13 @@ import (
 	"espx/internal/ads/db"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/processor"
 	"espx/pkg/logger"
 	"fmt"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 )
 
-// main runs stream consumers per Redis shard because ad events fan out to Postgres, ClickHouse, and fraud pipelines independently.
 func main() {
 	if len(os.Args) > 2 && os.Args[1] == "--health-probe" {
 		resp, err := http.Get(os.Args[2])
@@ -95,6 +95,11 @@ func main() {
 		os.Exit(1)
 	}
 	defer chConn.Close()
+
+	if err := processor.ApplyClickHouseMigrations(ctx, chConn); err != nil {
+		slog.Error("failed to apply clickhouse migrations", "error", err)
+		os.Exit(1)
+	}
 
 	var rdbs []redis.UniversalClient
 	rdbs, err = database.ConnectRedisShards(ctx, cfg, database.RedisShardOptions{

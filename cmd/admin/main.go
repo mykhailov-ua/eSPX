@@ -1,17 +1,17 @@
-// Command admin is the binary entry for internal developer CLI tooling under cmd/admin/cmd.
+// Command admin is the binary entrypoint for the internal developer CLI (cmd/admin/cmd).
 package main
 
 import (
-	"fmt"
+	"log/slog"
 	"os"
 
 	"espx/cmd/admin/cmd"
 )
 
-// main delegates to the admin Cobra CLI so operators get a single entry point for dev tooling.
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
 	if err := cmd.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		slog.Error("admin command failed", "error", err)
 		os.Exit(1)
 	}
 }

@@ -133,10 +133,8 @@ func (h *AlertmanagerWebhook) handle(w http.ResponseWriter, r *http.Request) {
 
 // FormatAlertmanagerAlert renders one alert as HTML suitable for Telegram/Slack providers.
 func FormatAlertmanagerAlert(alert AlertmanagerAlert) (title, body string) {
-	statusEmoji := "🔥"
 	statusText := "ALERT ACTIVE"
 	if alert.Status == "resolved" {
-		statusEmoji = "✅"
 		statusText = "ALERT RESOLVED"
 	}
 
@@ -163,8 +161,7 @@ func FormatAlertmanagerAlert(alert AlertmanagerAlert) (title, body string) {
 
 	title = fmt.Sprintf("eSPX: %s", alertName)
 	body = fmt.Sprintf(
-		"%s <b>%s</b>\n\n<b>Alert:</b> %s\n<b>Severity:</b> <code>%s</code>\n<b>Description:</b> %s\n<b>Time:</b> <code>%s</code>",
-		statusEmoji,
+		"<b>%s</b>\n\n<b>Alert:</b> %s\n<b>Severity:</b> <code>%s</code>\n<b>Description:</b> %s\n<b>Time:</b> <code>%s</code>",
 		statusText,
 		summary,
 		severity,

@@ -105,3 +105,9 @@ func TestParseOpenRTB3Payload_ZeroAlloc(t *testing.T) {
 	})
 	assert.Equal(t, float64(0), allocs)
 }
+
+func TestParseDealID(t *testing.T) {
+	payload := []byte(`{"deal_id":"deal-premium-1","bid_micro":100}`)
+	assert.Equal(t, "deal-premium-1", ParseDealID(payload))
+	assert.Equal(t, "", ParseDealID(nil))
+}

@@ -15,7 +15,7 @@ import (
 )
 
 func newReconForChaos(infra *paymentChaosInfra) *ReconService {
-	return NewReconService(infra.Pool, infra.Pool, nil)
+	return NewReconService(infra.Pool, NewSettlementLedgerClient(infra.Cfg), nil)
 }
 
 func countReconFindingsByKind(t *testing.T, pool *pgxpool.Pool, runID int64, kind db.PaymentFinancialFindingKind) int {
@@ -240,7 +240,7 @@ func TestChaos_FinancialReconOpsAlert(t *testing.T) {
 	require.NotNil(t, alerter)
 
 	seedSucceededIntentWithOutbox(t, infra, uuid.New(), 11_000_000, "chaos-recon-ops-"+uuid.New().String())
-	recon := NewReconService(infra.Pool, infra.Pool, alerter)
+	recon := NewReconService(infra.Pool, NewSettlementLedgerClient(infra.Cfg), alerter)
 
 	end := time.Now().UTC()
 	summary, err := recon.Run(context.Background(), end.Add(-time.Hour), end)
