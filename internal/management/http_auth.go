@@ -2,7 +2,6 @@ package management
 
 import (
 	"bytes"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,6 +11,7 @@ import (
 	"espx/internal/auth"
 	"espx/internal/auth/pb"
 	"espx/internal/config"
+	"espx/pkg/cold"
 	"espx/pkg/httpresponse"
 
 	"github.com/redis/go-redis/v9"
@@ -103,8 +103,8 @@ func (h *AuthHandler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req LoginRequest
-	if err := json.Unmarshal(buf.Bytes(), &req); err != nil || req.Email == "" || req.Password == "" {
+	req, err := cold.DecodeBody[LoginRequest](buf.Bytes())
+	if err != nil || req.Email == "" || req.Password == "" {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid login request")
 		return
 	}
@@ -252,8 +252,8 @@ func (h *AuthHandler) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req RegisterRequest
-	if err := json.Unmarshal(buf.Bytes(), &req); err != nil || req.Email == "" || req.Password == "" || req.Role == "" {
+	req, err := cold.DecodeBody[RegisterRequest](buf.Bytes())
+	if err != nil || req.Email == "" || req.Password == "" || req.Role == "" {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid register request")
 		return
 	}

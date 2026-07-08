@@ -38,9 +38,9 @@ func TestComputeRecommendedFloor_noSampleKeepsBase(t *testing.T) {
 
 func TestComputeRecommendedFloor_respectsMinMicro(t *testing.T) {
 	cfg := &config.Config{
-		BidFloorWinRateLow:  0.05,
-		BidFloorAdjustPct:   90,
-		BidFloorMinMicro:    5000,
+		BidFloorWinRateLow: 0.05,
+		BidFloorAdjustPct:  90,
+		BidFloorMinMicro:   5000,
 	}
 	out := computeRecommendedFloor(10_000, 0.01, 50, cfg)
 	assert.Equal(t, int64(5000), out)

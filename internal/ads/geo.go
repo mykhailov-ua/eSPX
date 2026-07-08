@@ -1,12 +1,20 @@
 package ads
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"strings"
 	"sync"
 
 	"github.com/oschwald/maxminddb-golang"
+)
+
+var (
+	// ErrInvalidIP is returned when geo lookup receives a non-parseable address.
+	ErrInvalidIP = errors.New("invalid IP")
+	// ErrGeoProviderClosed is returned when MaxMind reader is nil after Close.
+	ErrGeoProviderClosed = errors.New("geoip provider closed")
 )
 
 // GeoProvider resolves country and anonymity signals for geo and fraud filters.
@@ -65,14 +73,14 @@ func NewMaxMindProvider(dbPath string) (*MaxMindProvider, error) {
 func (p *MaxMindProvider) GetCountry(ipStr string) (string, error) {
 	ip := net.ParseIP(ipStr)
 	if ip == nil {
-		return "", fmt.Errorf("invalid IP: %s", ipStr)
+		return "", ErrInvalidIP
 	}
 
 	p.mu.RLock()
 	reader := p.reader
 	p.mu.RUnlock()
 	if reader == nil {
-		return "", fmt.Errorf("geoip provider closed")
+		return "", ErrGeoProviderClosed
 	}
 
 	record := countryPool.Get().(*countryResult)
@@ -90,14 +98,14 @@ func (p *MaxMindProvider) GetCountry(ipStr string) (string, error) {
 func (p *MaxMindProvider) IsAnonymous(ipStr string) (bool, error) {
 	ip := net.ParseIP(ipStr)
 	if ip == nil {
-		return false, fmt.Errorf("invalid IP: %s", ipStr)
+		return false, ErrInvalidIP
 	}
 
 	p.mu.RLock()
 	reader := p.reader
 	p.mu.RUnlock()
 	if reader == nil {
-		return false, fmt.Errorf("geoip provider closed")
+		return false, ErrGeoProviderClosed
 	}
 
 	record := anonymousIPPool.Get().(*anonymousIPResult)

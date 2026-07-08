@@ -48,6 +48,9 @@ message SendNotificationRequest {
   DeliveryMode delivery_mode = 5;
   repeated Provider broadcast_providers = 6; // optional subset; empty = all configured providers
   string dedup_key = 7; // optional; suppresses duplicate enqueue within cooldown window
+  string template_id = 8; // optional; render body from notifier_templates when set
+  map<string, string> template_vars = 9;
+  string attachment_url = 10; // optional secure link appended to rendered body
 }
 
 message SendNotificationBatchRequest {

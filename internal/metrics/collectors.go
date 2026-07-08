@@ -446,8 +446,8 @@ var (
 		Name: "ad_rtb_budget_reconcile_samples_total",
 		Help: "Campaign budget reconcile samples completed",
 	})
-	TrackerLocalQuotaBlockTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	TrackerLocalQuotaBlockTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ad_tracker_local_quota_block_total",
 		Help: "Total number of events blocked locally by tracker quota cache",
-	}, []string{"campaign_id"})
+	})
 )

@@ -111,7 +111,7 @@ func (s *Service) GetCustomerDTO(ctx context.Context, id uuid.UUID) (CustomerDTO
 	q := db.New(s.GetPool())
 	r, err := q.GetCustomerByID(ctx, ads.ToUUID(id))
 	if err != nil {
-		return CustomerDTO{}, err
+		return CustomerDTO{}, mapNotFound(err, ErrCustomerNotFound)
 	}
 
 	stats, err := q.GetCustomerStats(ctx, []pgtype.UUID{r.ID})

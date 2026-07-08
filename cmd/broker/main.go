@@ -7,8 +7,8 @@ import (
 	"os"
 
 	"espx/internal/config"
-	"espx/pkg/lifecycle"
 	"espx/pkg/broker/server"
+	"espx/pkg/lifecycle"
 )
 
 func main() {

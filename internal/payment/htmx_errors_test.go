@@ -2,6 +2,7 @@ package payment
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -31,19 +32,19 @@ func TestMapHTMXError(t *testing.T) {
 		},
 		{
 			name:       "idempotency conflict",
-			err:        errors.New("idempotency key conflict: existing intent has customer=..."),
+			err:        fmt.Errorf("%w: existing intent has customer=...", ErrIdempotencyConflict),
 			wantStatus: StatusConflict,
 			wantCode:   CodeConflict,
 		},
 		{
 			name:       "invalid amount",
-			err:        errors.New("amount is required"),
+			err:        errValidation("amount is required"),
 			wantStatus: StatusValidation,
 			wantCode:   CodeInvalidAmount,
 		},
 		{
 			name:       "provider failure",
-			err:        errors.New("failed to create checkout session: timeout"),
+			err:        fmt.Errorf("%w: timeout", ErrCheckoutUnavailable),
 			wantStatus: StatusUnavailable,
 			wantCode:   CodeUnavailable,
 		},

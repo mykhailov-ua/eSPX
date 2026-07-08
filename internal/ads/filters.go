@@ -114,8 +114,12 @@ func NewGeoFilter(geo GeoProvider, registry domain.CampaignRegistry) *GeoFilter 
 // Check blocks events whose country is outside the campaign target set.
 func (f *GeoFilter) Check(ctx context.Context, evt *domain.Event) error {
 	start := monotonicNano()
-	defer observeHistogramSampled(&geoMetricsSeq, luaMetricsSampleMask, filterGeoDuration, start)
+	err := f.checkGeo(evt)
+	observeHistogramSampled(&geoMetricsSeq, luaMetricsSampleMask, filterGeoDuration, start)
+	return err
+}
 
+func (f *GeoFilter) checkGeo(evt *domain.Event) error {
 	camp, ok := f.registry.GetCampaign(evt.CampaignID)
 	if !ok {
 		return ErrCampaignNotFound
@@ -169,7 +173,7 @@ func NewBudgetFilter(manager domain.BudgetManager, registry domain.CampaignRegis
 func (f *BudgetFilter) Check(ctx context.Context, evt *domain.Event) error {
 	customerID, ok := f.registry.GetCustomerID(evt.CampaignID)
 	if !ok {
-		return errors.New("campaign not found in registry")
+		return ErrCampaignNotFound
 	}
 
 	amount := f.clickAmount
@@ -266,54 +270,6 @@ func (e *FilterEngine) Check(ctx context.Context, evt *domain.Event) error {
 	}
 	releaseFraudAccumulator(evt, acc)
 	return retErr
-}
-
-// IPRateLimiter caps per-IP event rates to mitigate abuse on the track endpoint.
-type IPRateLimiter struct {
-	rdb       redis.UniversalClient
-	limit     int
-	window    time.Duration
-	limitAny  any
-	windowAny any
-}
-
-func NewIPRateLimiter(rdb redis.UniversalClient, limit int, window time.Duration) *IPRateLimiter {
-	return &IPRateLimiter{
-		rdb:       rdb,
-		limit:     limit,
-		window:    window,
-		limitAny:  limit,
-		windowAny: int64(window.Milliseconds()),
-	}
-}
-
-// Check increments the IP counter and rejects when the window limit is exceeded.
-func (l *IPRateLimiter) Check(ctx context.Context, evt *domain.Event) error {
-	if evt.IP == "" {
-		return nil
-	}
-
-	w := bufPool.Get().(*bufWrapper)
-	w.buf = w.buf[:0]
-	w.buf = append(w.buf, "ratelimit:ip:"...)
-	w.buf = append(w.buf, evt.IP...)
-	key := unsafeString(w.buf)
-
-	pipe := l.rdb.Pipeline()
-	incr := pipe.Incr(ctx, key)
-	pipe.Do(ctx, "PEXPIRE", key, l.windowAny, "NX")
-	_, err := pipe.Exec(ctx)
-	bufPool.Put(w)
-
-	if err != nil {
-		return err
-	}
-
-	if incr.Val() > int64(l.limit) {
-		return ErrRateLimitExceeded
-	}
-
-	return nil
 }
 
 // DuplicateEventFilter rejects replays using a TTL sized for worst-case stream recovery lag.

@@ -5,7 +5,6 @@ import (
 	"context"
 	_ "embed"
 	"errors"
-	"fmt"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -451,9 +450,16 @@ func (f *UnifiedFilter) getRDB(campaignID uuid.UUID) redis.UniversalClient {
 
 // checkGeoBidFloor rejects bids below configured country floors before Lua spend.
 func (f *UnifiedFilter) checkGeoBidFloor(evt *domain.Event) error {
-	country, err := f.geo.GetCountry(evt.IP)
-	if err != nil || country == "" {
-		return nil
+	country := evt.GeoCountry
+	if country == "" {
+		if evt.IngestGeoResolved {
+			return nil
+		}
+		var err error
+		country, err = f.geo.GetCountry(evt.IP)
+		if err != nil || country == "" {
+			return nil
+		}
 	}
 	floorVal, ok := f.geoFloors.Load(country)
 	if !ok {
@@ -473,7 +479,7 @@ func (f *UnifiedFilter) checkGeoBidFloor(evt *domain.Event) error {
 func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 	nowNano := time.Now().UnixNano()
 	if f.quotaMode == "live" && f.localQuotaCache.IsBlocked(evt.CampaignID, nowNano) {
-		metrics.TrackerLocalQuotaBlockTotal.WithLabelValues(evt.CampaignID.String()).Inc()
+		metrics.TrackerLocalQuotaBlockTotal.Inc()
 		return ErrBudgetExhausted
 	}
 
@@ -483,10 +489,7 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 	}
 
 	if evt.ClickID == "" {
-		id, err := NewFastUUID()
-		if err != nil {
-			return fmt.Errorf("failed to generate click id: %w", err)
-		}
+		id := NewFastUUID()
 		appendUUID(evt.ClickIDBuf[:0], id)
 		evt.ClickID = unsafeString(evt.ClickIDBuf[:])
 	}
@@ -698,7 +701,7 @@ func (f *UnifiedFilter) runUnifiedLua(
 				return context.DeadlineExceeded
 			}
 			if i > 0 {
-				return fmt.Errorf("budget cache miss on retry: %w", ErrBudgetExhausted)
+				return ErrBudgetExhausted
 			}
 
 			recovered, recErr := tryRecoverBudgetFromRegistry(ctx, rdb, f.registry, evt.CampaignID, budgetSourceKey)
@@ -727,7 +730,7 @@ func (f *UnifiedFilter) runUnifiedLua(
 				if errors.Is(err, context.DeadlineExceeded) {
 					return context.DeadlineExceeded
 				}
-				return fmt.Errorf("failed to load campaign from db: %w", err)
+				return err
 			}
 
 			remaining := camp.BudgetLimit - camp.CurrentSpend
@@ -736,7 +739,7 @@ func (f *UnifiedFilter) runUnifiedLua(
 			}
 
 			if err := warmBudgetKeyNX(ctx, rdb, budgetSourceKey, remaining); err != nil {
-				return fmt.Errorf("warm budget key after pg load: %w", err)
+				return err
 			}
 			continue
 		}

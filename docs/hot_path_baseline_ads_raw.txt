@@ -1,0 +1,156 @@
+goos: linux
+goarch: amd64
+pkg: espx/internal/ads
+cpu: 11th Gen Intel(R) Core(TM) i5-11400H @ 2.70GHz
+BenchmarkHotPath_timeNow-12                              	36789282	        31.21 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_timeNow-12                              	36721723	        31.42 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_timeNow-12                              	38923806	        32.43 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_timeNow-12                              	38419386	        31.99 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_timeNow-12                              	36614206	        32.08 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_monotonicNano-12                        	68767502	        17.68 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_monotonicNano-12                        	64733078	        16.88 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_monotonicNano-12                        	72970405	        16.78 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_monotonicNano-12                        	70916976	        18.27 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_monotonicNano-12                        	73241563	        16.91 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_cachedTimeUTC-12                        	677441841	         1.608 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_cachedTimeUTC-12                        	775707152	         1.649 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_cachedTimeUTC-12                        	737204828	         1.564 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_cachedTimeUTC-12                        	684802574	         1.636 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_cachedTimeUTC-12                        	791963215	         1.602 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_filterEngineDeadlineCheck-12            	56913566	        21.78 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_filterEngineDeadlineCheck-12            	53297370	        20.92 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_filterEngineDeadlineCheck-12            	58024954	        21.27 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_filterEngineDeadlineCheck-12            	57048981	        21.66 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_filterEngineDeadlineCheck-12            	53398674	        20.99 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_filterEngineCheck_noTimeout-12          	53318012	        22.11 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_filterEngineCheck_noTimeout-12          	51666190	        22.71 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_filterEngineCheck_noTimeout-12          	53948065	        22.40 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_filterEngineCheck_noTimeout-12          	53743365	        22.49 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_filterEngineCheck_noTimeout-12          	52733509	        22.00 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_filterEngineCheck_withDeadline-12       	22281709	        55.47 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_filterEngineCheck_withDeadline-12       	22197422	        54.50 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_filterEngineCheck_withDeadline-12       	22015821	        54.42 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_filterEngineCheck_withDeadline-12       	22177148	        55.81 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_filterEngineCheck_withDeadline-12       	20262303	        54.28 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_latencyRingRecord-12                    	47497526	        25.47 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_latencyRingRecord-12                    	46228903	        25.43 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_latencyRingRecord-12                    	47081632	        25.43 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_latencyRingRecord-12                    	47333220	        25.68 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_latencyRingRecord-12                    	46666183	        26.11 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_counterInc-12                           	236450935	         5.020 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_counterInc-12                           	233049570	         5.308 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_counterInc-12                           	233237403	         5.092 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_counterInc-12                           	234684487	         5.013 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_counterInc-12                           	240053694	         5.038 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_AdsPacketHandlerProto_accept-12         	 6783158	       161.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_AdsPacketHandlerProto_accept-12         	 7513789	       158.9 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_AdsPacketHandlerProto_accept-12         	 6838970	       160.5 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_AdsPacketHandlerProto_accept-12         	 7472959	       159.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_AdsPacketHandlerProto_accept-12         	 7364066	       157.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_AdsPacketHandlerProto_reject404-12      	 3846817	       339.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_AdsPacketHandlerProto_reject404-12      	 3822436	       326.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_AdsPacketHandlerProto_reject404-12      	 3525475	       311.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_AdsPacketHandlerProto_reject404-12      	 3827923	       309.5 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_AdsPacketHandlerProto_reject404-12      	 3717277	       331.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotPath_AdsPacketHandlerProto_infra503-12       	 1656535	       710.6 ns/op	       8 B/op	       1 allocs/op
+BenchmarkHotPath_AdsPacketHandlerProto_infra503-12       	 1710716	       693.0 ns/op	       8 B/op	       1 allocs/op
+BenchmarkHotPath_AdsPacketHandlerProto_infra503-12       	 1712284	       694.7 ns/op	       8 B/op	       1 allocs/op
+BenchmarkHotPath_AdsPacketHandlerProto_infra503-12       	 1693384	       701.5 ns/op	       8 B/op	       1 allocs/op
+BenchmarkHotPath_AdsPacketHandlerProto_infra503-12       	 1748623	       689.6 ns/op	       8 B/op	       1 allocs/op
+BenchmarkGeoFilter_lookupError-12                        	34074588	        36.28 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGeoFilter_lookupError-12                        	34328086	        35.16 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGeoFilter_lookupError-12                        	30689301	        35.30 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGeoFilter_lookupError-12                        	33749449	        35.98 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGeoFilter_lookupError-12                        	33227300	        35.98 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGeoFilter_lookupOK-12                           	29644104	        40.75 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGeoFilter_lookupOK-12                           	29520058	        40.65 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGeoFilter_lookupOK-12                           	29868117	        41.09 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGeoFilter_lookupOK-12                           	25212751	        40.89 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGeoFilter_lookupOK-12                           	28929906	        40.85 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFraudFilter_DC-12                               	180151526	         6.412 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFraudFilter_DC-12                               	179695168	         6.307 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFraudFilter_DC-12                               	186067309	         6.465 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFraudFilter_DC-12                               	181819615	         6.821 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFraudFilter_DC-12                               	166044632	         7.368 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGeoFilter-12                                    	34508461	        30.43 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGeoFilter-12                                    	41110569	        31.16 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGeoFilter-12                                    	38380579	        30.85 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGeoFilter-12                                    	39994821	        30.96 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGeoFilter-12                                    	39652377	        31.05 ns/op	       0 B/op	       0 allocs/op
+BenchmarkIPRateLimiter_Check-12                          	18784946	        65.64 ns/op	      16 B/op	       1 allocs/op
+BenchmarkIPRateLimiter_Check-12                          	17566910	        72.62 ns/op	      16 B/op	       1 allocs/op
+BenchmarkIPRateLimiter_Check-12                          	15950428	        63.75 ns/op	      16 B/op	       1 allocs/op
+BenchmarkIPRateLimiter_Check-12                          	18583215	        64.27 ns/op	      16 B/op	       1 allocs/op
+BenchmarkIPRateLimiter_Check-12                          	17049027	        67.94 ns/op	      16 B/op	       1 allocs/op
+BenchmarkDuplicateEventFilter_Check-12                   	60986341	        20.49 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDuplicateEventFilter_Check-12                   	56302474	        21.03 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDuplicateEventFilter_Check-12                   	59556076	        20.42 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDuplicateEventFilter_Check-12                   	57079641	        19.98 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDuplicateEventFilter_Check-12                   	58172504	        21.05 ns/op	       0 B/op	       0 allocs/op
+BenchmarkUnifiedFilter_Check-12                          	 3331348	       387.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkUnifiedFilter_Check-12                          	 3241306	       391.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkUnifiedFilter_Check-12                          	 3112554	       404.9 ns/op	       0 B/op	       0 allocs/op
+BenchmarkUnifiedFilter_Check-12                          	 2835823	       400.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkUnifiedFilter_Check-12                          	 3043614	       399.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRedisBudgetManager_CheckAndSpend-12             	 9967825	       126.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRedisBudgetManager_CheckAndSpend-12             	 9871094	       116.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRedisBudgetManager_CheckAndSpend-12             	10452054	       119.6 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRedisBudgetManager_CheckAndSpend-12             	10218012	       122.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRedisBudgetManager_CheckAndSpend-12             	 9566618	       129.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterEngine_Check_noTimeout-12                 	51345112	        24.40 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterEngine_Check_noTimeout-12                 	49519140	        24.02 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterEngine_Check_noTimeout-12                 	54486643	        23.96 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterEngine_Check_noTimeout-12                 	53791576	        23.58 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterEngine_Check_noTimeout-12                 	52462969	        22.77 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterEngine_Check_withDeadline-12              	21359716	        55.20 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterEngine_Check_withDeadline-12              	21964600	        55.55 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterEngine_Check_withDeadline-12              	22110490	        55.98 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterEngine_Check_withDeadline-12              	21364664	        54.75 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterEngine_Check_withDeadline-12              	22103714	        55.15 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterEngine_Check_fraudScoring_noSignals-12    	45521586	        25.15 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterEngine_Check_fraudScoring_noSignals-12    	44230392	        26.40 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterEngine_Check_fraudScoring_noSignals-12    	47960016	        26.78 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterEngine_Check_fraudScoring_noSignals-12    	45347680	        25.63 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterEngine_Check_fraudScoring_noSignals-12    	48393916	        25.01 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterEngine_Check_fraudScoring_L2Shadow-12     	15956148	        72.67 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterEngine_Check_fraudScoring_L2Shadow-12     	16875134	        70.62 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterEngine_Check_fraudScoring_L2Shadow-12     	16220456	        72.59 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterEngine_Check_fraudScoring_L2Shadow-12     	16192030	        71.33 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterEngine_Check_fraudScoring_L2Shadow-12     	16689482	        72.24 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterEngine_Check_fraudScoring_L1Reject-12     	12497212	       104.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterEngine_Check_fraudScoring_L1Reject-12     	10656021	       100.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterEngine_Check_fraudScoring_L1Reject-12     	11360487	        95.45 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterEngine_Check_fraudScoring_L1Reject-12     	12347971	        97.69 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFilterEngine_Check_fraudScoring_L1Reject-12     	12718335	        99.29 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAdsPacketHandlerProto_ExtraBytes-12             	 4265041	       278.0 ns/op	 276.94 MB/s	       0 B/op	       0 allocs/op
+BenchmarkAdsPacketHandlerProto_ExtraBytes-12             	 4687981	       293.7 ns/op	 262.20 MB/s	       0 B/op	       0 allocs/op
+BenchmarkAdsPacketHandlerProto_ExtraBytes-12             	 4457026	       269.1 ns/op	 286.12 MB/s	       0 B/op	       0 allocs/op
+BenchmarkAdsPacketHandlerProto_ExtraBytes-12             	 4642296	       262.2 ns/op	 293.68 MB/s	       0 B/op	       0 allocs/op
+BenchmarkAdsPacketHandlerProto_ExtraBytes-12             	 4710648	       253.3 ns/op	 303.94 MB/s	       0 B/op	       0 allocs/op
+BenchmarkAdsPacketHandlerProto_ExtraRepeated-12          	 3585406	       347.2 ns/op	 201.59 MB/s	       0 B/op	       0 allocs/op
+BenchmarkAdsPacketHandlerProto_ExtraRepeated-12          	 3552770	       338.7 ns/op	 206.68 MB/s	       0 B/op	       0 allocs/op
+BenchmarkAdsPacketHandlerProto_ExtraRepeated-12          	 3456462	       334.7 ns/op	 209.15 MB/s	       0 B/op	       0 allocs/op
+BenchmarkAdsPacketHandlerProto_ExtraRepeated-12          	 3573289	       340.7 ns/op	 205.48 MB/s	       0 B/op	       0 allocs/op
+BenchmarkAdsPacketHandlerProto_ExtraRepeated-12          	 3572042	       333.2 ns/op	 210.11 MB/s	       0 B/op	       0 allocs/op
+BenchmarkAdsPacketHandlerProto_NoExtra-12                	 5184170	       232.5 ns/op	 167.77 MB/s	       0 B/op	       0 allocs/op
+BenchmarkAdsPacketHandlerProto_NoExtra-12                	 5047345	       241.3 ns/op	 161.62 MB/s	       0 B/op	       0 allocs/op
+BenchmarkAdsPacketHandlerProto_NoExtra-12                	 4936384	       238.1 ns/op	 163.79 MB/s	       0 B/op	       0 allocs/op
+BenchmarkAdsPacketHandlerProto_NoExtra-12                	 5095521	       240.2 ns/op	 162.37 MB/s	       0 B/op	       0 allocs/op
+BenchmarkAdsPacketHandlerProto_NoExtra-12                	 5100049	       239.2 ns/op	 163.07 MB/s	       0 B/op	       0 allocs/op
+BenchmarkAdsPacketHandlerProto-12                        	 6944250	       173.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAdsPacketHandlerProto-12                        	 7128913	       161.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAdsPacketHandlerProto-12                        	 7565484	       162.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAdsPacketHandlerProto-12                        	 7021538	       163.5 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAdsPacketHandlerProto-12                        	 7410950	       169.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkUnifiedFilter_Check_RealRedis-12                	   12392	     84809 ns/op	      44 B/op	       3 allocs/op
+BenchmarkUnifiedFilter_Check_RealRedis-12                	   13882	     98687 ns/op	      44 B/op	       3 allocs/op
+BenchmarkUnifiedFilter_Check_RealRedis-12                	   12501	     87003 ns/op	      44 B/op	       3 allocs/op
+BenchmarkUnifiedFilter_Check_RealRedis-12                	   13683	     87826 ns/op	      44 B/op	       3 allocs/op
+BenchmarkUnifiedFilter_Check_RealRedis-12                	   12204	     99737 ns/op	      44 B/op	       3 allocs/op
+BenchmarkUnifiedFilter_Check_QuotaMode-12                	   11792	     93508 ns/op	     466 B/op	      10 allocs/op
+BenchmarkUnifiedFilter_Check_QuotaMode-12                	   12078	    102064 ns/op	     466 B/op	      10 allocs/op
+BenchmarkUnifiedFilter_Check_QuotaMode-12                	   12900	     88383 ns/op	     466 B/op	      10 allocs/op
+BenchmarkUnifiedFilter_Check_QuotaMode-12                	    9879	    115823 ns/op	     466 B/op	      10 allocs/op
+BenchmarkUnifiedFilter_Check_QuotaMode-12                	   12510	     91529 ns/op	     466 B/op	      10 allocs/op
+PASS
+ok  	espx/internal/ads	257.812s

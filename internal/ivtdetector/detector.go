@@ -11,10 +11,10 @@ import (
 
 // DetectorConfig tunes scan cadence and management outbox backpressure.
 type DetectorConfig struct {
-	ScanInterval         time.Duration
-	OutboxPendingLimit   int64
-	ManagementTimeout    time.Duration
-	Analyzer             AnalyzerConfig
+	ScanInterval       time.Duration
+	OutboxPendingLimit int64
+	ManagementTimeout  time.Duration
+	Analyzer           AnalyzerConfig
 }
 
 // DefaultDetectorConfig returns scan and backpressure defaults for production.
@@ -34,6 +34,8 @@ type RunResult struct {
 	Skipped    int
 	Backlogged bool
 }
+
+type suspiciousFinder = SuspiciousFinder
 
 // Detector orchestrates ClickHouse analysis, idempotency claims, and management blacklist enqueue.
 type Detector struct {
@@ -74,6 +76,7 @@ func (detector *Detector) Run(ctx context.Context) (RunResult, error) {
 	}
 	if backlogged {
 		result.Backlogged = true
+		ivtBackpressureDropsTotal.Inc()
 		return result, ErrOutboxBackpressure
 	}
 
@@ -106,6 +109,7 @@ func (detector *Detector) Run(ctx context.Context) (RunResult, error) {
 		}
 
 		result.Enqueued++
+		ivtEnqueuedTotal.Inc()
 		slog.Info("ivt detector enqueued fraud blacklist",
 			"ip", candidate.IP,
 			"signal", candidate.Reason,

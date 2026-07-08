@@ -212,6 +212,28 @@ func (a *OpsAlerter) OutboxStuckThresholdSec() int {
 	return a.outboxStuckSec
 }
 
+// AlertSlotMigrationComplete notifies operators when all drain jobs for the active map finish.
+func (a *OpsAlerter) AlertSlotMigrationComplete(version int32) {
+	if a == nil {
+		return
+	}
+	key := fmt.Sprintf("migration:complete:%d", version)
+	title := "eSPX: slot migration cutover complete"
+	body := fmt.Sprintf("<b>Slot migration complete</b>\nActive version: %d\nPost-cutover R5 verification passed.", version)
+	a.sendAsync(key, title, body, false)
+}
+
+// AlertLedgerDrift notifies operators when billing ledger invariant checks fail.
+func (a *OpsAlerter) AlertLedgerDrift(customerID string, driftErr error) {
+	if a == nil || driftErr == nil {
+		return
+	}
+	key := fmt.Sprintf("billing:drift:%s", customerID)
+	title := "eSPX: billing ledger drift"
+	body := fmt.Sprintf("<b>Ledger invariant failed</b>\nCustomer: %s\nError: %v", customerID, driftErr)
+	a.sendAsync(key, title, body, true)
+}
+
 // AlertSlotMigrationError notifies operators when slot migration orchestrator ticks fail persistently.
 func (a *OpsAlerter) AlertSlotMigrationError(stage string, err error) {
 	if a == nil || err == nil {

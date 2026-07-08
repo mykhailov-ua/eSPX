@@ -121,6 +121,13 @@ func main() {
 
 	registry.StartWatch(ctx, rdbs[0], channel)
 
+	consentChannel := cfg.ConsentUpdateChannel
+	if consentChannel == "" {
+		consentChannel = ads.ConsentDefaultUpdateChannel
+	}
+	consentStore := ads.NewConsentStore(rdbs[0])
+	consentStore.StartWatch(ctx, rdbs[0], consentChannel)
+
 	var geoProvider ads.GeoProvider
 	geoProvider, err = ads.NewMaxMindProvider(cfg.GeoIP.DBPath)
 	if err != nil {
@@ -152,6 +159,7 @@ func main() {
 	go settingsWatcher.Start(ctx, time.Second)
 
 	breakerFilter := ads.NewEmergencyBreakerFilter(settingsWatcher)
+	consentFilter := ads.NewConsentFilter(registry, consentStore)
 
 	unifiedFilter := ads.NewUnifiedFilter(
 		rdbs,
@@ -181,7 +189,7 @@ func main() {
 	slog.Info("redis lua scripts preloaded", "shards", len(rdbs))
 
 	creativeStore := ads.NewBrandCreativeStore(rdbs[0])
-	filterEngine := ads.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, breakerFilter, geoFilter, scheduleFilter, l3Filter, fraudFilter, deviceFilter, unifiedFilter)
+	filterEngine := ads.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, breakerFilter, geoFilter, scheduleFilter, l3Filter, fraudFilter, deviceFilter, consentFilter, unifiedFilter)
 
 	var rtbCatalog *ads.RtbCatalog
 	var rtbHybrid *ads.HybridBalancer

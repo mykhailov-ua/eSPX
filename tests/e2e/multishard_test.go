@@ -71,8 +71,11 @@ func TestE2E_Multishard(t *testing.T) {
 	}
 
 	registry := testutil.NewAdsRegistry(t, queries)
-	registry.SetBudgetWarmer(ads.NewBudgetCacheWarmer(rdbs, sharder))
+	budgetWarmer := ads.NewBudgetCacheWarmer(rdbs, sharder)
+	registry.SetBudgetWarmer(budgetWarmer)
 	_, err = registry.Sync(ctx)
+	require.NoError(t, err)
+	_, err = budgetWarmer.WarmFromRegistry(ctx, registry)
 	require.NoError(t, err)
 
 	store := ads.NewPostgresStore(queries, 1*time.Second)

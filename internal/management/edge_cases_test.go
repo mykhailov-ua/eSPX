@@ -166,7 +166,8 @@ func TestEdge_OutboxPartialRedisFailure(t *testing.T) {
 
 	worker := NewOutboxWorker(svc)
 	processed, err := worker.ProcessOutboxWithCount(ctx, 3)
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "outbox event 2")
 	assert.Equal(t, 2, processed)
 
 	rows, err := pool.Query(ctx, "SELECT id, status, payload FROM outbox_events ORDER BY id ASC")

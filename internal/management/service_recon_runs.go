@@ -43,7 +43,7 @@ func (s *Service) ListReconRuns(ctx context.Context, service string, limit, offs
 		service = "all"
 	case "management", "payment":
 	default:
-		return nil, 0, fmt.Errorf("invalid service filter: %s", service)
+		return nil, 0, fmt.Errorf("%w: %s", ErrInvalidServiceFilter, service)
 	}
 
 	var runs []ReconRunDTO
@@ -112,9 +112,6 @@ func managementReconToDTO(row db.ReconRun) ReconRunDTO {
 
 func (s *Service) listPaymentReconRuns(ctx context.Context, limit, offset int32) ([]ReconRunDTO, int64, error) {
 	pool := s.paymentQueryPool()
-	if pool == nil {
-		return []ReconRunDTO{}, 0, nil
-	}
 
 	var total int64
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM payment.financial_recon_runs`).Scan(&total); err != nil {

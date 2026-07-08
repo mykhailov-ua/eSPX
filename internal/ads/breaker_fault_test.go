@@ -127,7 +127,7 @@ func TestFaultInjection_PostgresCrashOnBudgetMiss(t *testing.T) {
 
 	allowed, err := bm.CheckAndSpend(ctx, customerID, campaignID, clickID, amount)
 	assert.False(t, allowed)
-	assert.ErrorContains(t, err, "failed to load campaign from db on cache miss")
+	assert.ErrorContains(t, err, "pgx connection pool exhausted")
 }
 
 func TestFaultInjection_StreamConsumerPoisonPillToDLQ(t *testing.T) {

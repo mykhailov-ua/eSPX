@@ -1,7 +1,7 @@
 package management
 
 import (
-	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -34,7 +34,7 @@ func (h *Handler) registerSupplyRoutes(mux *http.ServeMux) {
 func (h *Handler) getSellersJSON(w http.ResponseWriter, r *http.Request) {
 	body, err := h.svc.GetSellersJSON(r.Context())
 	if err != nil {
-		writeSupplyError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -45,7 +45,7 @@ func (h *Handler) getSellersJSON(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) exportAdsTxt(w http.ResponseWriter, r *http.Request) {
 	text, err := h.svc.BuildAdsTxt(r.Context())
 	if err != nil {
-		writeSupplyError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -56,7 +56,7 @@ func (h *Handler) exportAdsTxt(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) listSellers(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.svc.ListSellers(r.Context())
 	if err != nil {
-		writeSupplyError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	httpresponse.JSON(w, http.StatusOK, map[string]any{"sellers": rows})
@@ -70,7 +70,7 @@ func (h *Handler) getSeller(w http.ResponseWriter, r *http.Request) {
 	}
 	row, err := h.svc.GetSeller(r.Context(), id)
 	if err != nil {
-		writeSupplyError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	httpresponse.JSON(w, http.StatusOK, row)
@@ -84,7 +84,7 @@ func (h *Handler) createSeller(w http.ResponseWriter, r *http.Request) {
 	}
 	row, err := h.svc.CreateSeller(r.Context(), spec)
 	if err != nil {
-		writeSupplyError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	httpresponse.JSON(w, http.StatusCreated, row)
@@ -103,7 +103,7 @@ func (h *Handler) updateSeller(w http.ResponseWriter, r *http.Request) {
 	}
 	row, err := h.svc.UpdateSeller(r.Context(), id, spec)
 	if err != nil {
-		writeSupplyError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	httpresponse.JSON(w, http.StatusOK, row)
@@ -116,7 +116,7 @@ func (h *Handler) deleteSeller(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.svc.DeleteSeller(r.Context(), id); err != nil {
-		writeSupplyError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	httpresponse.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -125,7 +125,7 @@ func (h *Handler) deleteSeller(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) listAdsTxtEntries(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.svc.ListAdsTxtEntries(r.Context())
 	if err != nil {
-		writeSupplyError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	httpresponse.JSON(w, http.StatusOK, map[string]any{"entries": rows})
@@ -139,7 +139,7 @@ func (h *Handler) getAdsTxtEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	row, err := h.svc.GetAdsTxtEntry(r.Context(), id)
 	if err != nil {
-		writeSupplyError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	httpresponse.JSON(w, http.StatusOK, row)
@@ -153,7 +153,7 @@ func (h *Handler) createAdsTxtEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	row, err := h.svc.CreateAdsTxtEntry(r.Context(), spec)
 	if err != nil {
-		writeSupplyError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	httpresponse.JSON(w, http.StatusCreated, row)
@@ -172,7 +172,7 @@ func (h *Handler) updateAdsTxtEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	row, err := h.svc.UpdateAdsTxtEntry(r.Context(), id, spec)
 	if err != nil {
-		writeSupplyError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	httpresponse.JSON(w, http.StatusOK, row)
@@ -185,7 +185,7 @@ func (h *Handler) deleteAdsTxtEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.svc.DeleteAdsTxtEntry(r.Context(), id); err != nil {
-		writeSupplyError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	httpresponse.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -199,7 +199,7 @@ func (h *Handler) getCampaignSupplyChain(w http.ResponseWriter, r *http.Request)
 	}
 	dto, err := h.svc.GetCampaignSupplyChain(r.Context(), campaignID)
 	if err != nil {
-		httpresponse.Error(w, http.StatusNotFound, "NOT_FOUND", "campaign not found")
+		writeServiceError(w, err, slog.String("campaign_id", campaignID.String()))
 		return
 	}
 	httpresponse.JSON(w, http.StatusOK, dto)
@@ -220,23 +220,10 @@ func (h *Handler) updateCampaignSupplyChain(w http.ResponseWriter, r *http.Reque
 	}
 	dto, err := h.svc.UpdateCampaignSupplyChain(r.Context(), campaignID, req.Nodes)
 	if err != nil {
-		writeSupplyError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	httpresponse.JSON(w, http.StatusOK, dto)
-}
-
-func writeSupplyError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, ErrSellerNotFound), errors.Is(err, ErrAdsTxtEntryNotFound):
-		httpresponse.Error(w, http.StatusNotFound, "NOT_FOUND", err.Error())
-	case errors.Is(err, ErrInvalidSellerType), errors.Is(err, ErrInvalidRelationship), errors.Is(err, ErrSupplyChainTooLong):
-		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
-	case errors.Is(err, ErrSellersJSONInvalid):
-		httpresponse.Error(w, http.StatusServiceUnavailable, "SUPPLY_INVALID", err.Error())
-	default:
-		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
-	}
 }
 
 func parsePathInt64(r *http.Request, name string) (int64, error) {

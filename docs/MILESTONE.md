@@ -72,7 +72,7 @@ M7.1 invoice cron: `pg_advisory_lock(hashtext(customer_id::text || billing_month
 
 Chaos M0: implement tests for `quota_dead_shard_release`, `autoscale_no_double_freeze`, `financial_recon_ops_alert`, `outbox_priority_lanes`, and `settlement_failed_notifier`. Document the new `chaos_proof` validations under `docs/reports/`. **Done:** see [CHAOS_M0.md](./reports/CHAOS_M0.md). **M0 summary (RU):** [MILESTONE_M0_RU.md](./reports/MILESTONE_M0_RU.md).
 
-## Phase M1 - Reporting & Read API
+## Phase M1 - Reporting & Read API [implemented]
 
 Introduce a new router prefix `/api/v1/*` next to `/admin/*` in `handler.go` or within a separate `handler_api.go` file. Authentication: reuse `AuthMiddleware` and RBAC permissions from `permissions.go`; enforce tenant isolation via `AuthenticatedUser.CustomerID` for role `U` (defined in `rbac.go`).
 

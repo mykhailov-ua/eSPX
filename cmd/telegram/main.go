@@ -1,4 +1,5 @@
 // Command telegram forwards Alertmanager webhook payloads to the Telegram Bot API.
+// Deprecated: prefer management alertmanager_webhook.go with notifier gRPC delivery (M7.6).
 package main
 
 import (
@@ -103,7 +104,7 @@ func main() {
 		}
 
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
 	server := &http.Server{

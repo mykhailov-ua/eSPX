@@ -8,10 +8,11 @@ import (
 	"espx/internal/ads"
 )
 
-// DeliveryOptimizerWorker runs periodic delivery tuning ticks (bid floor today; autoscale/pacing in M5.0).
+// DeliveryOptimizerWorker runs the unified M5.0 delivery pass (pacing, autoscale, MAB, bid floors).
 type DeliveryOptimizerWorker struct {
 	svc         *Service
 	syncWorkers []*ads.SyncWorker
+	lastMABRun  time.Time
 }
 
 // NewDeliveryOptimizerWorker binds the unified delivery optimizer to budget sync workers.
@@ -38,12 +39,18 @@ func (w *DeliveryOptimizerWorker) Start(ctx context.Context, interval time.Durat
 }
 
 func (w *DeliveryOptimizerWorker) tick(ctx context.Context) {
-	for _, sw := range w.syncWorkers {
-		if sw != nil {
-			sw.SyncAll(ctx)
-		}
+	runMAB := false
+	mabInterval := time.Duration(w.svc.cfg.MABIntervalMs) * time.Millisecond
+	if mabInterval <= 0 {
+		mabInterval = 15 * time.Minute
 	}
-	if _, err := w.svc.OptimizeBidFloors(ctx); err != nil {
-		slog.Error("bid floor optimizer failed", "error", err)
+	now := time.Now()
+	if w.lastMABRun.IsZero() || now.Sub(w.lastMABRun) >= mabInterval {
+		runMAB = true
+		w.lastMABRun = now
+	}
+
+	if err := w.svc.RunDeliveryOptimizerTick(ctx, w.syncWorkers, runMAB); err != nil {
+		slog.Error("delivery optimizer tick failed", "error", err, "run_mab", runMAB)
 	}
 }

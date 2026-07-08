@@ -3,10 +3,10 @@ package management
 import (
 	"context"
 	"log/slog"
-	"strings"
 	"time"
 
 	"espx/internal/ads/db"
+	"espx/internal/database"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -34,7 +34,7 @@ func (w *CampaignDrainWorker) Start(ctx context.Context, interval time.Duration)
 			return
 		case <-ticker.C:
 			if err := w.ProcessDraining(ctx); err != nil {
-				if strings.Contains(err.Error(), "closed pool") {
+				if database.IsShutdownError(err) {
 					return
 				}
 				slog.Error("failed to process draining campaigns", "error", err)

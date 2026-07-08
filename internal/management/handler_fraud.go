@@ -1,6 +1,7 @@
 package management
 
 import (
+	"log/slog"
 	"net/http"
 
 	"espx/pkg/cold"
@@ -23,7 +24,7 @@ func (h *Handler) getCampaignFraudConfig(w http.ResponseWriter, r *http.Request)
 	}
 	cfg, err := h.svc.GetCampaignFraudConfig(r.Context(), campaignID)
 	if err != nil {
-		httpresponse.Error(w, http.StatusNotFound, "NOT_FOUND", "campaign not found")
+		writeServiceError(w, err, slog.String("campaign_id", campaignID.String()))
 		return
 	}
 	httpresponse.JSON(w, http.StatusOK, cfg)
@@ -42,7 +43,7 @@ func (h *Handler) updateCampaignFraudConfig(w http.ResponseWriter, r *http.Reque
 	}
 	cfg, err := h.svc.UpdateCampaignFraudConfig(r.Context(), campaignID, req)
 	if err != nil {
-		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		writeServiceError(w, err, slog.String("campaign_id", campaignID.String()))
 		return
 	}
 	httpresponse.JSON(w, http.StatusOK, cfg)

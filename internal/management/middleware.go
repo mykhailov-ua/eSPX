@@ -2,8 +2,11 @@ package management
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"espx/internal/auth"
 	"espx/internal/config"
@@ -11,6 +14,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // contextKey is a private type for request-scoped context values to avoid key collisions.
@@ -40,17 +45,30 @@ func GetUser(ctx context.Context) (AuthenticatedUser, bool) {
 
 // AuthMiddleware validates tokens or admin API keys and enforces permission-based route access.
 type AuthMiddleware struct {
-	tokenMaker auth.Maker
-	rdb        redis.UniversalClient
-	cfg        *config.Config
+	tokenMaker    auth.Maker
+	rdb           redis.UniversalClient
+	cfg           *config.Config
+	authClient    *AuthClient
+	apiKeyLimiter *apiKeyRateLimiter
 }
 
 // NewAuthMiddleware constructs middleware that checks JWT cookies, revocations, and optional API keys.
-func NewAuthMiddleware(tokenMaker auth.Maker, rdb redis.UniversalClient, cfg *config.Config) *AuthMiddleware {
+func NewAuthMiddleware(tokenMaker auth.Maker, rdb redis.UniversalClient, cfg *config.Config, authClient *AuthClient) *AuthMiddleware {
+	rps := defaultAPIKeyRPS
+	burst := defaultAPIKeyBurst
+	if cfg != nil && cfg.SelfServeAPIKeyRPS > 0 {
+		rps = cfg.SelfServeAPIKeyRPS
+		burst = int(rps * 2)
+		if burst < 1 {
+			burst = defaultAPIKeyBurst
+		}
+	}
 	return &AuthMiddleware{
-		tokenMaker: tokenMaker,
-		rdb:        rdb,
-		cfg:        cfg,
+		tokenMaker:    tokenMaker,
+		rdb:           rdb,
+		cfg:           cfg,
+		authClient:    authClient,
+		apiKeyLimiter: newAPIKeyRateLimiter(rps, burst),
 	}
 }
 
@@ -58,6 +76,37 @@ func NewAuthMiddleware(tokenMaker auth.Maker, rdb redis.UniversalClient, cfg *co
 func (m *AuthMiddleware) RequirePermission(permission string) func(http.HandlerFunc) http.HandlerFunc {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
+			user, ok := m.authenticate(w, r)
+			if !ok {
+				return
+			}
+			if !HasPermission(user.Role, permission) {
+				httpresponse.Error(w, http.StatusForbidden, "FORBIDDEN", "forbidden: insufficient permissions")
+				return
+			}
+			ctx := context.WithValue(r.Context(), UserContextKey, user)
+			next(w, r.WithContext(ctx))
+		}
+	}
+}
+
+// RequireSelfServe wraps self-serve routes with session or API-key authentication.
+func (m *AuthMiddleware) RequireSelfServe(permission string) func(http.HandlerFunc) http.HandlerFunc {
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if key := strings.TrimSpace(r.Header.Get("X-API-Key")); key != "" {
+				user, ok := m.authenticateAPIKey(w, r, key)
+				if !ok {
+					return
+				}
+				if !HasPermission(user.Role, permission) {
+					httpresponse.Error(w, http.StatusForbidden, "FORBIDDEN", "forbidden: insufficient permissions")
+					return
+				}
+				ctx := context.WithValue(r.Context(), UserContextKey, user)
+				next(w, r.WithContext(ctx))
+				return
+			}
 			user, ok := m.authenticate(w, r)
 			if !ok {
 				return
@@ -95,6 +144,64 @@ func (m *AuthMiddleware) RequireAuth(allowedRoles ...string) func(http.HandlerFu
 			next(w, r.WithContext(ctx))
 		}
 	}
+}
+
+func apiKeyDigest(rawKey string) string {
+	sum := sha256.Sum256([]byte(rawKey))
+	return hex.EncodeToString(sum[:])
+}
+
+func (m *AuthMiddleware) authenticateAPIKey(w http.ResponseWriter, r *http.Request, rawKey string) (AuthenticatedUser, bool) {
+	if m.authClient == nil {
+		httpresponse.Error(w, http.StatusServiceUnavailable, "AUTH_UNAVAILABLE", "auth service not configured")
+		return AuthenticatedUser{}, false
+	}
+	if m.apiKeyLimiter != nil && !m.apiKeyLimiter.allow(apiKeyDigest(rawKey)) {
+		httpresponse.Error(w, http.StatusTooManyRequests, "TOO_MANY_REQUESTS", "api key rate limit exceeded")
+		return AuthenticatedUser{}, false
+	}
+
+	resp, err := m.authClient.VerifyAPIKey(r.Context(), rawKey)
+	if err != nil {
+		if st, ok := status.FromError(err); ok {
+			switch st.Code() {
+			case codes.Unauthenticated:
+				httpresponse.Error(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized: invalid api key")
+				return AuthenticatedUser{}, false
+			case codes.ResourceExhausted:
+				httpresponse.Error(w, http.StatusTooManyRequests, "TOO_MANY_REQUESTS", st.Message())
+				return AuthenticatedUser{}, false
+			}
+		}
+		slog.Error("api key verification failed", "error", err)
+		httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL", "failed to verify api key")
+		return AuthenticatedUser{}, false
+	}
+	if resp.User == nil {
+		httpresponse.Error(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized: invalid api key")
+		return AuthenticatedUser{}, false
+	}
+
+	userID, err := uuid.Parse(resp.User.Id)
+	if err != nil {
+		httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL", "invalid user id from auth")
+		return AuthenticatedUser{}, false
+	}
+	customerID := uuid.Nil
+	if resp.User.CustomerId != "" {
+		customerID, err = uuid.Parse(resp.User.CustomerId)
+		if err != nil {
+			httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL", "invalid customer id from auth")
+			return AuthenticatedUser{}, false
+		}
+	}
+
+	return AuthenticatedUser{
+		UserID:     userID,
+		Role:       NormalizeRole(resp.User.Role),
+		CustomerID: customerID,
+		AuthSource: "api_key",
+	}, true
 }
 
 // authenticate resolves the caller from a shared API key or session cookie before RBAC checks run.

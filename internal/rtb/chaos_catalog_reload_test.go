@@ -71,12 +71,12 @@ func TestChaos_rtb_catalog_reload(t *testing.T) {
 	assert.Greater(t, lookups.Load(), uint64(0))
 
 	logRtbChaosProof(t, "rtb_catalog_reload", map[string]string{
-		"subsystem":     "rtb_deal_index",
-		"baseline_ok":   "true",
-		"fault_type":    "concurrent_catalog_swap",
-		"workers":       "24",
-		"lookups":         itoaU64(lookups.Load()),
-		"panics":          "0",
-		"floor_stable":    "true",
+		"subsystem":    "rtb_deal_index",
+		"baseline_ok":  "true",
+		"fault_type":   "concurrent_catalog_swap",
+		"workers":      "24",
+		"lookups":      itoaU64(lookups.Load()),
+		"panics":       "0",
+		"floor_stable": "true",
 	})
 }

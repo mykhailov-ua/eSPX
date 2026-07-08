@@ -9,8 +9,8 @@ import (
 
 	"espx/internal/config"
 	"espx/internal/database"
-	"espx/pkg/lifecycle"
 	"espx/internal/logcompactor"
+	"espx/pkg/lifecycle"
 	"espx/pkg/logger"
 )
 

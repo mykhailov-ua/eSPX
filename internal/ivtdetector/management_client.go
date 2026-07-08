@@ -16,11 +16,6 @@ type BlacklistBlocker interface {
 	BlockIP(ctx context.Context, ip string) error
 }
 
-// suspiciousFinder loads candidate IPs from ClickHouse or test doubles.
-type suspiciousFinder interface {
-	FindSuspiciousIPs(ctx context.Context) ([]SuspiciousIP, error)
-}
-
 const blacklistSourceFraud = "fraud"
 
 // ManagementClient posts blacklist entries to the management admin API.

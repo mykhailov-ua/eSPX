@@ -22,6 +22,8 @@ const (
 	PaymentService_CreatePaymentIntent_FullMethodName = "/payment.PaymentService/CreatePaymentIntent"
 	PaymentService_GetPaymentIntent_FullMethodName    = "/payment.PaymentService/GetPaymentIntent"
 	PaymentService_ListPaymentIntents_FullMethodName  = "/payment.PaymentService/ListPaymentIntents"
+	PaymentService_ListDisputes_FullMethodName        = "/payment.PaymentService/ListDisputes"
+	PaymentService_ReplayWebhook_FullMethodName       = "/payment.PaymentService/ReplayWebhook"
 )
 
 // PaymentServiceClient is the client API for PaymentService service.
@@ -34,6 +36,10 @@ type PaymentServiceClient interface {
 	GetPaymentIntent(ctx context.Context, in *GetPaymentIntentRequest, opts ...grpc.CallOption) (*PaymentIntent, error)
 	// Support and billing review; paginated to avoid unbounded scans.
 	ListPaymentIntents(ctx context.Context, in *ListPaymentIntentsRequest, opts ...grpc.CallOption) (*ListPaymentIntentsResponse, error)
+	// Disputed intents for self-serve and support consoles.
+	ListDisputes(ctx context.Context, in *ListDisputesRequest, opts ...grpc.CallOption) (*ListDisputesResponse, error)
+	// Replays a stored webhook payload with idempotent settlement semantics.
+	ReplayWebhook(ctx context.Context, in *ReplayWebhookRequest, opts ...grpc.CallOption) (*ReplayWebhookResponse, error)
 }
 
 type paymentServiceClient struct {
@@ -74,6 +80,26 @@ func (c *paymentServiceClient) ListPaymentIntents(ctx context.Context, in *ListP
 	return out, nil
 }
 
+func (c *paymentServiceClient) ListDisputes(ctx context.Context, in *ListDisputesRequest, opts ...grpc.CallOption) (*ListDisputesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListDisputesResponse)
+	err := c.cc.Invoke(ctx, PaymentService_ListDisputes_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *paymentServiceClient) ReplayWebhook(ctx context.Context, in *ReplayWebhookRequest, opts ...grpc.CallOption) (*ReplayWebhookResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReplayWebhookResponse)
+	err := c.cc.Invoke(ctx, PaymentService_ReplayWebhook_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PaymentServiceServer is the server API for PaymentService service.
 // All implementations must embed UnimplementedPaymentServiceServer
 // for forward compatibility.
@@ -84,6 +110,10 @@ type PaymentServiceServer interface {
 	GetPaymentIntent(context.Context, *GetPaymentIntentRequest) (*PaymentIntent, error)
 	// Support and billing review; paginated to avoid unbounded scans.
 	ListPaymentIntents(context.Context, *ListPaymentIntentsRequest) (*ListPaymentIntentsResponse, error)
+	// Disputed intents for self-serve and support consoles.
+	ListDisputes(context.Context, *ListDisputesRequest) (*ListDisputesResponse, error)
+	// Replays a stored webhook payload with idempotent settlement semantics.
+	ReplayWebhook(context.Context, *ReplayWebhookRequest) (*ReplayWebhookResponse, error)
 	mustEmbedUnimplementedPaymentServiceServer()
 }
 
@@ -102,6 +132,12 @@ func (UnimplementedPaymentServiceServer) GetPaymentIntent(context.Context, *GetP
 }
 func (UnimplementedPaymentServiceServer) ListPaymentIntents(context.Context, *ListPaymentIntentsRequest) (*ListPaymentIntentsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListPaymentIntents not implemented")
+}
+func (UnimplementedPaymentServiceServer) ListDisputes(context.Context, *ListDisputesRequest) (*ListDisputesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListDisputes not implemented")
+}
+func (UnimplementedPaymentServiceServer) ReplayWebhook(context.Context, *ReplayWebhookRequest) (*ReplayWebhookResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReplayWebhook not implemented")
 }
 func (UnimplementedPaymentServiceServer) mustEmbedUnimplementedPaymentServiceServer() {}
 func (UnimplementedPaymentServiceServer) testEmbeddedByValue()                        {}
@@ -178,6 +214,42 @@ func _PaymentService_ListPaymentIntents_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PaymentService_ListDisputes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListDisputesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).ListDisputes(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_ListDisputes_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).ListDisputes(ctx, req.(*ListDisputesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PaymentService_ReplayWebhook_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReplayWebhookRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).ReplayWebhook(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_ReplayWebhook_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).ReplayWebhook(ctx, req.(*ReplayWebhookRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PaymentService_ServiceDesc is the grpc.ServiceDesc for PaymentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -196,6 +268,14 @@ var PaymentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListPaymentIntents",
 			Handler:    _PaymentService_ListPaymentIntents_Handler,
+		},
+		{
+			MethodName: "ListDisputes",
+			Handler:    _PaymentService_ListDisputes_Handler,
+		},
+		{
+			MethodName: "ReplayWebhook",
+			Handler:    _PaymentService_ReplayWebhook_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

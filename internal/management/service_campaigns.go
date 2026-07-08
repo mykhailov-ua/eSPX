@@ -2,7 +2,6 @@ package management
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -142,7 +141,7 @@ func (s *Service) GetCampaignDTO(ctx context.Context, id uuid.UUID) (CampaignDTO
 	q := db.New(s.GetPool())
 	c, err := q.GetCampaignFull(ctx, ads.ToUUID(id))
 	if err != nil {
-		return CampaignDTO{}, err
+		return CampaignDTO{}, mapNotFound(err, ErrCampaignNotFound)
 	}
 	return toCampaignDTO(c), nil
 }
@@ -173,7 +172,7 @@ func (s *Service) UpdateCampaignPacing(ctx context.Context, campaignID uuid.UUID
 	case "EVEN":
 		pacing = db.PacingModeTypeEVEN
 	default:
-		return CampaignDTO{}, fmt.Errorf("invalid pacing mode: %s", newMode)
+		return CampaignDTO{}, fmt.Errorf("%w: %s", ErrInvalidPacingMode, newMode)
 	}
 
 	var updatedCamp db.Campaign
@@ -182,7 +181,7 @@ func (s *Service) UpdateCampaignPacing(ctx context.Context, campaignID uuid.UUID
 
 		camp, err := q.GetCampaignForUpdate(ctx, ads.ToUUID(campaignID))
 		if err != nil {
-			return fmt.Errorf("campaign not found: %w", err)
+			return mapNotFound(err, ErrCampaignNotFound)
 		}
 
 		updatedCamp, err = q.UpdateCampaignPacing(ctx, db.UpdateCampaignPacingParams{
@@ -203,12 +202,12 @@ func (s *Service) UpdateCampaignPacing(ctx context.Context, campaignID uuid.UUID
 			"new_pacing_mode": string(pacing),
 		}, nil)
 
-		payloadBytes, err := json.Marshal(map[string]any{
+		payloadBytes, err := cold.MarshalJSON(map[string]any{
 			"campaign_id": campaignID.String(),
 			"pacing_mode": string(pacing),
 		})
 		if err != nil {
-			return fmt.Errorf("failed to marshal outbox payload: %w", err)
+			return fmt.Errorf("marshal update campaign pacing outbox payload: %w", err)
 		}
 
 		_, err = q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{

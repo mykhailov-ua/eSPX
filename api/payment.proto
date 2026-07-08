@@ -15,6 +15,12 @@ service PaymentService {
 
   // Support and billing review; paginated to avoid unbounded scans.
   rpc ListPaymentIntents(ListPaymentIntentsRequest) returns (ListPaymentIntentsResponse);
+
+  // Disputed intents for self-serve and support consoles.
+  rpc ListDisputes(ListDisputesRequest) returns (ListDisputesResponse);
+
+  // Replays a stored webhook payload with idempotent settlement semantics.
+  rpc ReplayWebhook(ReplayWebhookRequest) returns (ReplayWebhookResponse);
 }
 
 message CreatePaymentIntentRequest {
@@ -71,4 +77,33 @@ enum PaymentIntentStatus {
   PAYMENT_INTENT_STATUS_REFUNDED = 7;
   PAYMENT_INTENT_STATUS_SETTLEMENT_FAILED = 8;
   PAYMENT_INTENT_STATUS_DISPUTED = 9;
+}
+
+message ListDisputesRequest {
+  string customer_id = 1;
+  int32 limit = 2;
+  int32 offset = 3;
+}
+
+message DisputeRecord {
+  string intent_id = 1;
+  string customer_id = 2;
+  int64 amount_micro = 3;
+  string currency = 4;
+  string provider_dispute_id = 5;
+  google.protobuf.Timestamp updated_at = 6;
+}
+
+message ListDisputesResponse {
+  repeated DisputeRecord disputes = 1;
+  int64 total = 2;
+}
+
+message ReplayWebhookRequest {
+  string provider = 1;
+  string provider_event_id = 2;
+}
+
+message ReplayWebhookResponse {
+  string status = 1;
 }

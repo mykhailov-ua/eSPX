@@ -245,6 +245,15 @@ func (h *Handler) CreateAPIKey(ctx context.Context, req *pb.CreateAPIKeyRequest)
 	return resp, nil
 }
 
+// VerifyAPIKey authenticates machine clients presenting long-lived API secrets.
+func (h *Handler) VerifyAPIKey(ctx context.Context, req *pb.VerifyAPIKeyRequest) (*pb.VerifyAPIKeyResponse, error) {
+	user, err := h.service.VerifyAPIKey(ctx, req.GetApiKey())
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &pb.VerifyAPIKeyResponse{User: userToPB(user)}, nil
+}
+
 // ListAPIKeys lets owners audit active keys without receiving stored secrets again.
 func (h *Handler) ListAPIKeys(ctx context.Context, _ *pb.ListAPIKeysRequest) (*pb.ListAPIKeysResponse, error) {
 	user, err := h.requireAuthUser(ctx)
@@ -307,7 +316,7 @@ func mapError(err error) error {
 	if errors.Is(err, ErrRateLimitExceeded) {
 		return status.Error(codes.ResourceExhausted, err.Error())
 	}
-	if errors.Is(err, ErrInvalidCredentials) || errors.Is(err, ErrInvalidToken) || errors.Is(err, ErrExpiredToken) || errors.Is(err, ErrAccountLocked) || errors.Is(err, ErrSessionBlocked) || errors.Is(err, ErrEmailNotVerified) {
+	if errors.Is(err, ErrInvalidCredentials) || errors.Is(err, ErrInvalidToken) || errors.Is(err, ErrExpiredToken) || errors.Is(err, ErrAccountLocked) || errors.Is(err, ErrSessionBlocked) || errors.Is(err, ErrEmailNotVerified) || errors.Is(err, ErrInvalidAPIKey) {
 		return status.Error(codes.Unauthenticated, err.Error())
 	}
 	if errors.Is(err, ErrUserAlreadyExists) {

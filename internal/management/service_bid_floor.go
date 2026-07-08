@@ -13,18 +13,18 @@ import (
 
 // DealWinLossRate holds ClickHouse win/loss counts for one PMP deal.
 type DealWinLossRate struct {
-	DealID   string
-	Wins     uint64
-	Losses   uint64
-	WinRate  float64
-	SampleN  uint64
+	DealID  string
+	Wins    uint64
+	Losses  uint64
+	WinRate float64
+	SampleN uint64
 }
 
 // BidFloorRecommendationDTO is the optimizer output for one deal.
 type BidFloorRecommendationDTO struct {
-	DealID           string `json:"deal_id"`
-	BaseFloorMicro   int64  `json:"base_floor_micro"`
-	RecommendedMicro int64  `json:"recommended_floor_micro"`
+	DealID           string  `json:"deal_id"`
+	BaseFloorMicro   int64   `json:"base_floor_micro"`
+	RecommendedMicro int64   `json:"recommended_floor_micro"`
 	WinRate          float64 `json:"win_rate"`
 	SampleN          uint64  `json:"sample_n"`
 }

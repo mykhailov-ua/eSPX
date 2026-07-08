@@ -60,6 +60,11 @@ SELECT COALESCE(SUM(amount), 0)::bigint AS total_reversal_micro
 FROM balance_ledger
 WHERE payment_intent_id = $1 AND type = 'PAYMENT_CHARGEBACK_REVERSAL';
 
+-- name: ListLedgerChargebackEntryIDs :many
+SELECT id FROM balance_ledger
+WHERE payment_intent_id = $1 AND type = 'PAYMENT_CHARGEBACK'
+ORDER BY id;
+
 -- name: CreateStatusHistory :exec
 INSERT INTO campaign_status_history (campaign_id, old_status, new_status, reason)
 VALUES ($1, $2, $3, $4);
@@ -367,6 +372,12 @@ WHERE id = $1;
 INSERT INTO recon_discrepancies (
     run_id, campaign_id, customer_id, expected_spend, actual_spend, delta, redis_adjusted
 ) VALUES ($1, $2, $3, $4, $5, $6, $7);
+
+-- name: MaxCustomerReconLagMicro :one
+SELECT COALESCE(MAX(ABS(delta)), 0)::bigint AS max_lag_micro
+FROM recon_discrepancies
+WHERE customer_id = $1
+  AND created_at >= CURRENT_TIMESTAMP - INTERVAL '24 hours';
 
 -- name: SumCampaignStatsInRange :one
 SELECT

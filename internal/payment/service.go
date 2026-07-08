@@ -3,7 +3,6 @@ package payment
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -69,10 +68,16 @@ func (service *Service) CreatePaymentIntent(ctx context.Context, customerID uuid
 
 	provRef, checkoutURL, err := service.provider.CreateCheckout(ctx, amountMicro, currency, metadata, idempotencyKey)
 	if err != nil {
-		return CreateIntentResult{}, fmt.Errorf("failed to create checkout session: %w", err)
+		if errors.Is(err, ErrProviderNotConfigured) {
+			return CreateIntentResult{}, err
+		}
+		return CreateIntentResult{}, fmt.Errorf("%w: %w", ErrCheckoutUnavailable, err)
 	}
 
-	intentID, _ := uuid.NewV7()
+	intentID, err := uuid.NewV7()
+	if err != nil {
+		return CreateIntentResult{}, fmt.Errorf("generate payment intent id: %w", err)
+	}
 	metaBytes, err := mergeIntentMetadata(metadata, checkoutURL)
 	if err != nil {
 		return CreateIntentResult{}, fmt.Errorf("failed to encode intent metadata: %w", err)
@@ -119,14 +124,18 @@ func (service *Service) CreatePaymentIntent(ctx context.Context, customerID uuid
 func reconcileIdempotentIntent(existing db.PaymentPaymentIntent, customerID uuid.UUID, amountMicro int64, currency string) (CreateIntentResult, error) {
 	existCust := uuid.UUID(existing.CustomerID.Bytes)
 	if existCust != customerID || existing.AmountMicro != amountMicro || existing.Currency != currency {
-		return CreateIntentResult{}, fmt.Errorf("idempotency key conflict: existing intent has customer=%s amount=%d currency=%s", existCust, existing.AmountMicro, existing.Currency)
+		return CreateIntentResult{}, fmt.Errorf("%w: existing intent has customer=%s amount=%d currency=%s", ErrIdempotencyConflict, existCust, existing.AmountMicro, existing.Currency)
 	}
 	return CreateIntentResult{Intent: existing, CheckoutURL: checkoutURLFromIntent(existing)}, nil
 }
 
 // GetPaymentIntent is a thin read path for status polling and admin lookups.
 func (s *Service) GetPaymentIntent(ctx context.Context, intentID uuid.UUID) (db.PaymentPaymentIntent, error) {
-	return db.New(s.pool).GetPaymentIntent(ctx, pgtype.UUID{Bytes: intentID, Valid: true})
+	intent, err := db.New(s.pool).GetPaymentIntent(ctx, pgtype.UUID{Bytes: intentID, Valid: true})
+	if err != nil {
+		return db.PaymentPaymentIntent{}, mapNotFound(err, ErrPaymentIntentNotFound)
+	}
+	return intent, nil
 }
 
 // ListPaymentIntents returns paginated history because customer ledgers can accumulate many intents over time.
@@ -185,13 +194,12 @@ func (service *Service) ProcessStripeWebhook(ctx context.Context, eventID string
 	h.Write(payload)
 	payloadHash := h.Sum(nil)
 
-	var redacted map[string]any
-	_ = json.Unmarshal(payload, &redacted)
-	delete(redacted, "client_secret")
-	delete(redacted, "customer_details")
-	redactedBytes, _ := json.Marshal(redacted)
+	redactedBytes, err := cold.RedactStripeWebhookPayload(payload)
+	if err != nil {
+		return fmt.Errorf("redact stripe webhook payload: %w", err)
+	}
 
-	err := pgx.BeginFunc(ctx, service.pool, func(tx pgx.Tx) error {
+	err = pgx.BeginFunc(ctx, service.pool, func(tx pgx.Tx) error {
 		txQueries := db.New(tx)
 
 		_, err := txQueries.GetWebhookEvent(ctx, db.GetWebhookEventParams{
@@ -289,7 +297,10 @@ func (service *Service) ProcessStripeWebhook(ctx context.Context, eventID string
 				"provider":               "stripe",
 				"provider_ref":           providerRef,
 			}
-			payloadJSON, _ := json.Marshal(outboxPayload)
+			payloadJSON, err := cold.MarshalJSON(outboxPayload)
+			if err != nil {
+				return fmt.Errorf("marshal settle balance outbox payload: %w", err)
+			}
 			_, err = txQueries.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{
 				EventType: "SETTLE_BALANCE",
 				Payload:   payloadJSON,
@@ -313,13 +324,12 @@ func (service *Service) ProcessStripeRefundWebhook(ctx context.Context, eventID 
 	h.Write(payload)
 	payloadHash := h.Sum(nil)
 
-	var redacted map[string]any
-	_ = json.Unmarshal(payload, &redacted)
-	delete(redacted, "client_secret")
-	delete(redacted, "customer_details")
-	redactedBytes, _ := json.Marshal(redacted)
+	redactedBytes, err := cold.RedactStripeWebhookPayload(payload)
+	if err != nil {
+		return fmt.Errorf("redact stripe webhook payload: %w", err)
+	}
 
-	err := pgx.BeginFunc(ctx, service.pool, func(tx pgx.Tx) error {
+	err = pgx.BeginFunc(ctx, service.pool, func(tx pgx.Tx) error {
 		txQueries := db.New(tx)
 
 		_, err := txQueries.GetWebhookEvent(ctx, db.GetWebhookEventParams{
@@ -421,7 +431,10 @@ func (service *Service) ProcessStripeRefundWebhook(ctx context.Context, eventID 
 			return err
 		}
 
-		refundID, _ := uuid.NewV7()
+		refundID, err := uuid.NewV7()
+		if err != nil {
+			return fmt.Errorf("generate refund id: %w", err)
+		}
 		_, err = txQueries.CreatePaymentRefund(ctx, db.CreatePaymentRefundParams{
 			ID:               pgtype.UUID{Bytes: refundID, Valid: true},
 			PaymentIntentID:  intent.ID,
@@ -447,7 +460,10 @@ func (service *Service) ProcessStripeRefundWebhook(ctx context.Context, eventID 
 
 		intentUUID := uuid.UUID(intent.ID.Bytes)
 		customerUUID := uuid.UUID(intent.CustomerID.Bytes)
-		outboxPayload, _ := json.Marshal(reverseBalancePayload(intentUUID, customerUUID, refundAmountMicro, providerRefundID))
+		outboxPayload, err := cold.MarshalJSON(reverseBalancePayload(intentUUID, customerUUID, refundAmountMicro, providerRefundID))
+		if err != nil {
+			return fmt.Errorf("marshal reverse balance outbox payload: %w", err)
+		}
 		_, err = txQueries.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{
 			EventType: OutboxEventReverseBalance,
 			Payload:   outboxPayload,

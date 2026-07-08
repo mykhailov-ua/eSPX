@@ -191,6 +191,9 @@ type SendNotificationRequest struct {
 	DeliveryMode       DeliveryMode           `protobuf:"varint,5,opt,name=delivery_mode,json=deliveryMode,proto3,enum=notifier.DeliveryMode" json:"delivery_mode,omitempty"`
 	BroadcastProviders []Provider             `protobuf:"varint,6,rep,packed,name=broadcast_providers,json=broadcastProviders,proto3,enum=notifier.Provider" json:"broadcast_providers,omitempty"` // optional subset; empty = all configured providers
 	DedupKey           string                 `protobuf:"bytes,7,opt,name=dedup_key,json=dedupKey,proto3" json:"dedup_key,omitempty"`                                                              // optional; suppresses duplicate enqueue within cooldown window
+	TemplateId         string                 `protobuf:"bytes,8,opt,name=template_id,json=templateId,proto3" json:"template_id,omitempty"`                                                        // optional; render body from notifier_templates when set
+	TemplateVars       map[string]string      `protobuf:"bytes,9,rep,name=template_vars,json=templateVars,proto3" json:"template_vars,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	AttachmentUrl      string                 `protobuf:"bytes,10,opt,name=attachment_url,json=attachmentUrl,proto3" json:"attachment_url,omitempty"` // optional secure link appended to rendered body
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -270,6 +273,27 @@ func (x *SendNotificationRequest) GetBroadcastProviders() []Provider {
 func (x *SendNotificationRequest) GetDedupKey() string {
 	if x != nil {
 		return x.DedupKey
+	}
+	return ""
+}
+
+func (x *SendNotificationRequest) GetTemplateId() string {
+	if x != nil {
+		return x.TemplateId
+	}
+	return ""
+}
+
+func (x *SendNotificationRequest) GetTemplateVars() map[string]string {
+	if x != nil {
+		return x.TemplateVars
+	}
+	return nil
+}
+
+func (x *SendNotificationRequest) GetAttachmentUrl() string {
+	if x != nil {
+		return x.AttachmentUrl
 	}
 	return ""
 }
@@ -654,7 +678,7 @@ var File_notifier_proto protoreflect.FileDescriptor
 
 const file_notifier_proto_rawDesc = "" +
 	"\n" +
-	"\x0enotifier.proto\x12\bnotifier\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb0\x02\n" +
+	"\x0enotifier.proto\x12\bnotifier\x1a\x1fgoogle/protobuf/timestamp.proto\"\x93\x04\n" +
 	"\x17SendNotificationRequest\x12.\n" +
 	"\bprovider\x18\x01 \x01(\x0e2\x12.notifier.ProviderR\bprovider\x12\x1c\n" +
 	"\trecipient\x18\x02 \x01(\tR\trecipient\x12\x14\n" +
@@ -662,7 +686,15 @@ const file_notifier_proto_rawDesc = "" +
 	"\x04body\x18\x04 \x01(\tR\x04body\x12;\n" +
 	"\rdelivery_mode\x18\x05 \x01(\x0e2\x16.notifier.DeliveryModeR\fdeliveryMode\x12C\n" +
 	"\x13broadcast_providers\x18\x06 \x03(\x0e2\x12.notifier.ProviderR\x12broadcastProviders\x12\x1b\n" +
-	"\tdedup_key\x18\a \x01(\tR\bdedupKey\"g\n" +
+	"\tdedup_key\x18\a \x01(\tR\bdedupKey\x12\x1f\n" +
+	"\vtemplate_id\x18\b \x01(\tR\n" +
+	"templateId\x12X\n" +
+	"\rtemplate_vars\x18\t \x03(\v23.notifier.SendNotificationRequest.TemplateVarsEntryR\ftemplateVars\x12%\n" +
+	"\x0eattachment_url\x18\n" +
+	" \x01(\tR\rattachmentUrl\x1a?\n" +
+	"\x11TemplateVarsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"g\n" +
 	"\x1cSendNotificationBatchRequest\x12G\n" +
 	"\rnotifications\x18\x01 \x03(\v2!.notifier.SendNotificationRequestR\rnotifications\"i\n" +
 	"\x1dSendNotificationBatchResponse\x12H\n" +
@@ -727,7 +759,7 @@ func file_notifier_proto_rawDescGZIP() []byte {
 }
 
 var file_notifier_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_notifier_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_notifier_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_notifier_proto_goTypes = []any{
 	(Provider)(0),                         // 0: notifier.Provider
 	(NotificationStatus)(0),               // 1: notifier.NotificationStatus
@@ -739,33 +771,35 @@ var file_notifier_proto_goTypes = []any{
 	(*GetNotificationRequest)(nil),        // 7: notifier.GetNotificationRequest
 	(*GetNotificationResponse)(nil),       // 8: notifier.GetNotificationResponse
 	(*Notification)(nil),                  // 9: notifier.Notification
-	(*timestamppb.Timestamp)(nil),         // 10: google.protobuf.Timestamp
+	nil,                                   // 10: notifier.SendNotificationRequest.TemplateVarsEntry
+	(*timestamppb.Timestamp)(nil),         // 11: google.protobuf.Timestamp
 }
 var file_notifier_proto_depIdxs = []int32{
 	0,  // 0: notifier.SendNotificationRequest.provider:type_name -> notifier.Provider
 	2,  // 1: notifier.SendNotificationRequest.delivery_mode:type_name -> notifier.DeliveryMode
 	0,  // 2: notifier.SendNotificationRequest.broadcast_providers:type_name -> notifier.Provider
-	3,  // 3: notifier.SendNotificationBatchRequest.notifications:type_name -> notifier.SendNotificationRequest
-	6,  // 4: notifier.SendNotificationBatchResponse.notifications:type_name -> notifier.SendNotificationResponse
-	1,  // 5: notifier.SendNotificationResponse.status:type_name -> notifier.NotificationStatus
-	9,  // 6: notifier.GetNotificationResponse.notification:type_name -> notifier.Notification
-	0,  // 7: notifier.Notification.provider:type_name -> notifier.Provider
-	1,  // 8: notifier.Notification.status:type_name -> notifier.NotificationStatus
-	10, // 9: notifier.Notification.created_at:type_name -> google.protobuf.Timestamp
-	10, // 10: notifier.Notification.updated_at:type_name -> google.protobuf.Timestamp
-	2,  // 11: notifier.Notification.delivery_mode:type_name -> notifier.DeliveryMode
-	0,  // 12: notifier.Notification.broadcast_providers:type_name -> notifier.Provider
-	3,  // 13: notifier.NotifierService.SendNotification:input_type -> notifier.SendNotificationRequest
-	4,  // 14: notifier.NotifierService.SendNotificationBatch:input_type -> notifier.SendNotificationBatchRequest
-	7,  // 15: notifier.NotifierService.GetNotification:input_type -> notifier.GetNotificationRequest
-	6,  // 16: notifier.NotifierService.SendNotification:output_type -> notifier.SendNotificationResponse
-	5,  // 17: notifier.NotifierService.SendNotificationBatch:output_type -> notifier.SendNotificationBatchResponse
-	8,  // 18: notifier.NotifierService.GetNotification:output_type -> notifier.GetNotificationResponse
-	16, // [16:19] is the sub-list for method output_type
-	13, // [13:16] is the sub-list for method input_type
-	13, // [13:13] is the sub-list for extension type_name
-	13, // [13:13] is the sub-list for extension extendee
-	0,  // [0:13] is the sub-list for field type_name
+	10, // 3: notifier.SendNotificationRequest.template_vars:type_name -> notifier.SendNotificationRequest.TemplateVarsEntry
+	3,  // 4: notifier.SendNotificationBatchRequest.notifications:type_name -> notifier.SendNotificationRequest
+	6,  // 5: notifier.SendNotificationBatchResponse.notifications:type_name -> notifier.SendNotificationResponse
+	1,  // 6: notifier.SendNotificationResponse.status:type_name -> notifier.NotificationStatus
+	9,  // 7: notifier.GetNotificationResponse.notification:type_name -> notifier.Notification
+	0,  // 8: notifier.Notification.provider:type_name -> notifier.Provider
+	1,  // 9: notifier.Notification.status:type_name -> notifier.NotificationStatus
+	11, // 10: notifier.Notification.created_at:type_name -> google.protobuf.Timestamp
+	11, // 11: notifier.Notification.updated_at:type_name -> google.protobuf.Timestamp
+	2,  // 12: notifier.Notification.delivery_mode:type_name -> notifier.DeliveryMode
+	0,  // 13: notifier.Notification.broadcast_providers:type_name -> notifier.Provider
+	3,  // 14: notifier.NotifierService.SendNotification:input_type -> notifier.SendNotificationRequest
+	4,  // 15: notifier.NotifierService.SendNotificationBatch:input_type -> notifier.SendNotificationBatchRequest
+	7,  // 16: notifier.NotifierService.GetNotification:input_type -> notifier.GetNotificationRequest
+	6,  // 17: notifier.NotifierService.SendNotification:output_type -> notifier.SendNotificationResponse
+	5,  // 18: notifier.NotifierService.SendNotificationBatch:output_type -> notifier.SendNotificationBatchResponse
+	8,  // 19: notifier.NotifierService.GetNotification:output_type -> notifier.GetNotificationResponse
+	17, // [17:20] is the sub-list for method output_type
+	14, // [14:17] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_notifier_proto_init() }
@@ -779,7 +813,7 @@ func file_notifier_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_notifier_proto_rawDesc), len(file_notifier_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   7,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

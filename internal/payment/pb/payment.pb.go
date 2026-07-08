@@ -508,6 +508,298 @@ func (x *PaymentIntent) GetUpdatedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+type ListDisputesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CustomerId    string                 `protobuf:"bytes,1,opt,name=customer_id,json=customerId,proto3" json:"customer_id,omitempty"`
+	Limit         int32                  `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`
+	Offset        int32                  `protobuf:"varint,3,opt,name=offset,proto3" json:"offset,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListDisputesRequest) Reset() {
+	*x = ListDisputesRequest{}
+	mi := &file_payment_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListDisputesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListDisputesRequest) ProtoMessage() {}
+
+func (x *ListDisputesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_payment_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListDisputesRequest.ProtoReflect.Descriptor instead.
+func (*ListDisputesRequest) Descriptor() ([]byte, []int) {
+	return file_payment_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ListDisputesRequest) GetCustomerId() string {
+	if x != nil {
+		return x.CustomerId
+	}
+	return ""
+}
+
+func (x *ListDisputesRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+func (x *ListDisputesRequest) GetOffset() int32 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+type DisputeRecord struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	IntentId          string                 `protobuf:"bytes,1,opt,name=intent_id,json=intentId,proto3" json:"intent_id,omitempty"`
+	CustomerId        string                 `protobuf:"bytes,2,opt,name=customer_id,json=customerId,proto3" json:"customer_id,omitempty"`
+	AmountMicro       int64                  `protobuf:"varint,3,opt,name=amount_micro,json=amountMicro,proto3" json:"amount_micro,omitempty"`
+	Currency          string                 `protobuf:"bytes,4,opt,name=currency,proto3" json:"currency,omitempty"`
+	ProviderDisputeId string                 `protobuf:"bytes,5,opt,name=provider_dispute_id,json=providerDisputeId,proto3" json:"provider_dispute_id,omitempty"`
+	UpdatedAt         *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *DisputeRecord) Reset() {
+	*x = DisputeRecord{}
+	mi := &file_payment_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DisputeRecord) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DisputeRecord) ProtoMessage() {}
+
+func (x *DisputeRecord) ProtoReflect() protoreflect.Message {
+	mi := &file_payment_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DisputeRecord.ProtoReflect.Descriptor instead.
+func (*DisputeRecord) Descriptor() ([]byte, []int) {
+	return file_payment_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *DisputeRecord) GetIntentId() string {
+	if x != nil {
+		return x.IntentId
+	}
+	return ""
+}
+
+func (x *DisputeRecord) GetCustomerId() string {
+	if x != nil {
+		return x.CustomerId
+	}
+	return ""
+}
+
+func (x *DisputeRecord) GetAmountMicro() int64 {
+	if x != nil {
+		return x.AmountMicro
+	}
+	return 0
+}
+
+func (x *DisputeRecord) GetCurrency() string {
+	if x != nil {
+		return x.Currency
+	}
+	return ""
+}
+
+func (x *DisputeRecord) GetProviderDisputeId() string {
+	if x != nil {
+		return x.ProviderDisputeId
+	}
+	return ""
+}
+
+func (x *DisputeRecord) GetUpdatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return nil
+}
+
+type ListDisputesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Disputes      []*DisputeRecord       `protobuf:"bytes,1,rep,name=disputes,proto3" json:"disputes,omitempty"`
+	Total         int64                  `protobuf:"varint,2,opt,name=total,proto3" json:"total,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListDisputesResponse) Reset() {
+	*x = ListDisputesResponse{}
+	mi := &file_payment_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListDisputesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListDisputesResponse) ProtoMessage() {}
+
+func (x *ListDisputesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_payment_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListDisputesResponse.ProtoReflect.Descriptor instead.
+func (*ListDisputesResponse) Descriptor() ([]byte, []int) {
+	return file_payment_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ListDisputesResponse) GetDisputes() []*DisputeRecord {
+	if x != nil {
+		return x.Disputes
+	}
+	return nil
+}
+
+func (x *ListDisputesResponse) GetTotal() int64 {
+	if x != nil {
+		return x.Total
+	}
+	return 0
+}
+
+type ReplayWebhookRequest struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Provider        string                 `protobuf:"bytes,1,opt,name=provider,proto3" json:"provider,omitempty"`
+	ProviderEventId string                 `protobuf:"bytes,2,opt,name=provider_event_id,json=providerEventId,proto3" json:"provider_event_id,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *ReplayWebhookRequest) Reset() {
+	*x = ReplayWebhookRequest{}
+	mi := &file_payment_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReplayWebhookRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReplayWebhookRequest) ProtoMessage() {}
+
+func (x *ReplayWebhookRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_payment_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReplayWebhookRequest.ProtoReflect.Descriptor instead.
+func (*ReplayWebhookRequest) Descriptor() ([]byte, []int) {
+	return file_payment_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *ReplayWebhookRequest) GetProvider() string {
+	if x != nil {
+		return x.Provider
+	}
+	return ""
+}
+
+func (x *ReplayWebhookRequest) GetProviderEventId() string {
+	if x != nil {
+		return x.ProviderEventId
+	}
+	return ""
+}
+
+type ReplayWebhookResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Status        string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReplayWebhookResponse) Reset() {
+	*x = ReplayWebhookResponse{}
+	mi := &file_payment_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReplayWebhookResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReplayWebhookResponse) ProtoMessage() {}
+
+func (x *ReplayWebhookResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_payment_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReplayWebhookResponse.ProtoReflect.Descriptor instead.
+func (*ReplayWebhookResponse) Descriptor() ([]byte, []int) {
+	return file_payment_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *ReplayWebhookResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
 var File_payment_proto protoreflect.FileDescriptor
 
 const file_payment_proto_rawDesc = "" +
@@ -552,7 +844,29 @@ const file_payment_proto_rawDesc = "" +
 	"created_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
 	"updated_at\x18\n" +
-	" \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt*\x92\x03\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"d\n" +
+	"\x13ListDisputesRequest\x12\x1f\n" +
+	"\vcustomer_id\x18\x01 \x01(\tR\n" +
+	"customerId\x12\x14\n" +
+	"\x05limit\x18\x02 \x01(\x05R\x05limit\x12\x16\n" +
+	"\x06offset\x18\x03 \x01(\x05R\x06offset\"\xf7\x01\n" +
+	"\rDisputeRecord\x12\x1b\n" +
+	"\tintent_id\x18\x01 \x01(\tR\bintentId\x12\x1f\n" +
+	"\vcustomer_id\x18\x02 \x01(\tR\n" +
+	"customerId\x12!\n" +
+	"\famount_micro\x18\x03 \x01(\x03R\vamountMicro\x12\x1a\n" +
+	"\bcurrency\x18\x04 \x01(\tR\bcurrency\x12.\n" +
+	"\x13provider_dispute_id\x18\x05 \x01(\tR\x11providerDisputeId\x129\n" +
+	"\n" +
+	"updated_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"`\n" +
+	"\x14ListDisputesResponse\x122\n" +
+	"\bdisputes\x18\x01 \x03(\v2\x16.payment.DisputeRecordR\bdisputes\x12\x14\n" +
+	"\x05total\x18\x02 \x01(\x03R\x05total\"^\n" +
+	"\x14ReplayWebhookRequest\x12\x1a\n" +
+	"\bprovider\x18\x01 \x01(\tR\bprovider\x12*\n" +
+	"\x11provider_event_id\x18\x02 \x01(\tR\x0fproviderEventId\"/\n" +
+	"\x15ReplayWebhookResponse\x12\x16\n" +
+	"\x06status\x18\x01 \x01(\tR\x06status*\x92\x03\n" +
 	"\x13PaymentIntentStatus\x12%\n" +
 	"!PAYMENT_INTENT_STATUS_UNSPECIFIED\x10\x00\x12!\n" +
 	"\x1dPAYMENT_INTENT_STATUS_CREATED\x10\x01\x12*\n" +
@@ -563,11 +877,13 @@ const file_payment_proto_rawDesc = "" +
 	"\x1fPAYMENT_INTENT_STATUS_CANCELLED\x10\x06\x12\"\n" +
 	"\x1ePAYMENT_INTENT_STATUS_REFUNDED\x10\a\x12+\n" +
 	"'PAYMENT_INTENT_STATUS_SETTLEMENT_FAILED\x10\b\x12\"\n" +
-	"\x1ePAYMENT_INTENT_STATUS_DISPUTED\x10\t2\x9f\x02\n" +
+	"\x1ePAYMENT_INTENT_STATUS_DISPUTED\x10\t2\xbc\x03\n" +
 	"\x0ePaymentService\x12`\n" +
 	"\x13CreatePaymentIntent\x12#.payment.CreatePaymentIntentRequest\x1a$.payment.CreatePaymentIntentResponse\x12L\n" +
 	"\x10GetPaymentIntent\x12 .payment.GetPaymentIntentRequest\x1a\x16.payment.PaymentIntent\x12]\n" +
-	"\x12ListPaymentIntents\x12\".payment.ListPaymentIntentsRequest\x1a#.payment.ListPaymentIntentsResponseB\x1dZ\x1bespx/internal/payment/pb;pbb\x06proto3"
+	"\x12ListPaymentIntents\x12\".payment.ListPaymentIntentsRequest\x1a#.payment.ListPaymentIntentsResponse\x12K\n" +
+	"\fListDisputes\x12\x1c.payment.ListDisputesRequest\x1a\x1d.payment.ListDisputesResponse\x12N\n" +
+	"\rReplayWebhook\x12\x1d.payment.ReplayWebhookRequest\x1a\x1e.payment.ReplayWebhookResponseB\x1dZ\x1bespx/internal/payment/pb;pbb\x06proto3"
 
 var (
 	file_payment_proto_rawDescOnce sync.Once
@@ -582,7 +898,7 @@ func file_payment_proto_rawDescGZIP() []byte {
 }
 
 var file_payment_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_payment_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_payment_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_payment_proto_goTypes = []any{
 	(PaymentIntentStatus)(0),            // 0: payment.PaymentIntentStatus
 	(*CreatePaymentIntentRequest)(nil),  // 1: payment.CreatePaymentIntentRequest
@@ -591,27 +907,38 @@ var file_payment_proto_goTypes = []any{
 	(*ListPaymentIntentsRequest)(nil),   // 4: payment.ListPaymentIntentsRequest
 	(*ListPaymentIntentsResponse)(nil),  // 5: payment.ListPaymentIntentsResponse
 	(*PaymentIntent)(nil),               // 6: payment.PaymentIntent
-	nil,                                 // 7: payment.CreatePaymentIntentRequest.MetadataEntry
-	(*timestamppb.Timestamp)(nil),       // 8: google.protobuf.Timestamp
+	(*ListDisputesRequest)(nil),         // 7: payment.ListDisputesRequest
+	(*DisputeRecord)(nil),               // 8: payment.DisputeRecord
+	(*ListDisputesResponse)(nil),        // 9: payment.ListDisputesResponse
+	(*ReplayWebhookRequest)(nil),        // 10: payment.ReplayWebhookRequest
+	(*ReplayWebhookResponse)(nil),       // 11: payment.ReplayWebhookResponse
+	nil,                                 // 12: payment.CreatePaymentIntentRequest.MetadataEntry
+	(*timestamppb.Timestamp)(nil),       // 13: google.protobuf.Timestamp
 }
 var file_payment_proto_depIdxs = []int32{
-	7, // 0: payment.CreatePaymentIntentRequest.metadata:type_name -> payment.CreatePaymentIntentRequest.MetadataEntry
-	0, // 1: payment.CreatePaymentIntentResponse.status:type_name -> payment.PaymentIntentStatus
-	6, // 2: payment.ListPaymentIntentsResponse.intents:type_name -> payment.PaymentIntent
-	0, // 3: payment.PaymentIntent.status:type_name -> payment.PaymentIntentStatus
-	8, // 4: payment.PaymentIntent.created_at:type_name -> google.protobuf.Timestamp
-	8, // 5: payment.PaymentIntent.updated_at:type_name -> google.protobuf.Timestamp
-	1, // 6: payment.PaymentService.CreatePaymentIntent:input_type -> payment.CreatePaymentIntentRequest
-	3, // 7: payment.PaymentService.GetPaymentIntent:input_type -> payment.GetPaymentIntentRequest
-	4, // 8: payment.PaymentService.ListPaymentIntents:input_type -> payment.ListPaymentIntentsRequest
-	2, // 9: payment.PaymentService.CreatePaymentIntent:output_type -> payment.CreatePaymentIntentResponse
-	6, // 10: payment.PaymentService.GetPaymentIntent:output_type -> payment.PaymentIntent
-	5, // 11: payment.PaymentService.ListPaymentIntents:output_type -> payment.ListPaymentIntentsResponse
-	9, // [9:12] is the sub-list for method output_type
-	6, // [6:9] is the sub-list for method input_type
-	6, // [6:6] is the sub-list for extension type_name
-	6, // [6:6] is the sub-list for extension extendee
-	0, // [0:6] is the sub-list for field type_name
+	12, // 0: payment.CreatePaymentIntentRequest.metadata:type_name -> payment.CreatePaymentIntentRequest.MetadataEntry
+	0,  // 1: payment.CreatePaymentIntentResponse.status:type_name -> payment.PaymentIntentStatus
+	6,  // 2: payment.ListPaymentIntentsResponse.intents:type_name -> payment.PaymentIntent
+	0,  // 3: payment.PaymentIntent.status:type_name -> payment.PaymentIntentStatus
+	13, // 4: payment.PaymentIntent.created_at:type_name -> google.protobuf.Timestamp
+	13, // 5: payment.PaymentIntent.updated_at:type_name -> google.protobuf.Timestamp
+	13, // 6: payment.DisputeRecord.updated_at:type_name -> google.protobuf.Timestamp
+	8,  // 7: payment.ListDisputesResponse.disputes:type_name -> payment.DisputeRecord
+	1,  // 8: payment.PaymentService.CreatePaymentIntent:input_type -> payment.CreatePaymentIntentRequest
+	3,  // 9: payment.PaymentService.GetPaymentIntent:input_type -> payment.GetPaymentIntentRequest
+	4,  // 10: payment.PaymentService.ListPaymentIntents:input_type -> payment.ListPaymentIntentsRequest
+	7,  // 11: payment.PaymentService.ListDisputes:input_type -> payment.ListDisputesRequest
+	10, // 12: payment.PaymentService.ReplayWebhook:input_type -> payment.ReplayWebhookRequest
+	2,  // 13: payment.PaymentService.CreatePaymentIntent:output_type -> payment.CreatePaymentIntentResponse
+	6,  // 14: payment.PaymentService.GetPaymentIntent:output_type -> payment.PaymentIntent
+	5,  // 15: payment.PaymentService.ListPaymentIntents:output_type -> payment.ListPaymentIntentsResponse
+	9,  // 16: payment.PaymentService.ListDisputes:output_type -> payment.ListDisputesResponse
+	11, // 17: payment.PaymentService.ReplayWebhook:output_type -> payment.ReplayWebhookResponse
+	13, // [13:18] is the sub-list for method output_type
+	8,  // [8:13] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_payment_proto_init() }
@@ -625,7 +952,7 @@ func file_payment_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_payment_proto_rawDesc), len(file_payment_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   7,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

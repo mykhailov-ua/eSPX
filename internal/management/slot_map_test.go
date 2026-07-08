@@ -38,8 +38,8 @@ func TestSlotMapAPI_RBAC(t *testing.T) {
 	svc := NewService(pool, []redis.UniversalClient{rdb}, nil, cfg)
 	defer svc.Close()
 
-	authMW := NewAuthMiddleware(tokenMaker, rdb, cfg)
-	h := NewHandler(svc, cfg, authMW, nil, nil)
+	authMW := NewAuthMiddleware(tokenMaker, rdb, cfg, nil)
+	h := NewHandler(svc, cfg, authMW, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -95,7 +95,7 @@ func TestSlotMapAPI_markMigratingAndActivate(t *testing.T) {
 	rdbs := []redis.UniversalClient{rdb, rdb, rdb, rdb}
 	svc := NewService(pool, rdbs, nil, cfg)
 	defer svc.Close()
-	h := NewHandler(svc, cfg, nil, nil, nil)
+	h := NewHandler(svc, cfg, nil, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 

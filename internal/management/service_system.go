@@ -2,7 +2,6 @@ package management
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -51,7 +50,10 @@ func (s *Service) BlockIPWithTTL(ctx context.Context, ip string, source string, 
 		}
 		s.AuditLog(ctx, q, uid, "BLOCK_IP", "system", nil, map[string]string{"ip": ip, "source": reason}, nil)
 
-		payload, _ := json.Marshal(BlacklistPayload{Action: "add", IP: ip, Reason: reason})
+		payload, err := cold.MarshalJSON(BlacklistPayload{Action: "add", IP: ip, Reason: reason})
+		if err != nil {
+			return fmt.Errorf("marshal blacklist outbox payload: %w", err)
+		}
 		_, err = q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{
 			EventType: "UPDATE_BLACKLIST",
 			Payload:   payload,
@@ -77,7 +79,10 @@ func (s *Service) UnblockIP(ctx context.Context, ip string, source string) error
 		}
 		s.AuditLog(ctx, q, uid, "UNBLOCK_IP", "system", nil, map[string]string{"ip": ip, "source": reason}, nil)
 
-		payload, _ := json.Marshal(BlacklistPayload{Action: "remove", IP: ip, Reason: reason})
+		payload, err := cold.MarshalJSON(BlacklistPayload{Action: "remove", IP: ip, Reason: reason})
+		if err != nil {
+			return fmt.Errorf("marshal blacklist outbox payload: %w", err)
+		}
 		_, err = q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{
 			EventType: "UPDATE_BLACKLIST",
 			Payload:   payload,
@@ -109,8 +114,11 @@ func (s *Service) UpdateSettings(ctx context.Context, settings map[string]string
 			uid = u.UserID
 		}
 		s.AuditLog(ctx, q, uid, "UPDATE_SETTINGS", "system", nil, normalized, nil)
-		payloadBytes, _ := json.Marshal(SettingsPayload{Settings: normalized})
-		_, err := q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{EventType: "UPDATE_SETTINGS", Payload: payloadBytes})
+		payloadBytes, err := cold.MarshalJSON(SettingsPayload{Settings: normalized})
+		if err != nil {
+			return fmt.Errorf("marshal settings outbox payload: %w", err)
+		}
+		_, err = q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{EventType: "UPDATE_SETTINGS", Payload: payloadBytes})
 		return err
 	})
 }
@@ -272,7 +280,10 @@ func (s *Service) ToggleEmergencyBreaker(ctx context.Context, active bool, reaso
 		settings := map[string]string{
 			"emergency_breaker": val,
 		}
-		payloadBytes, _ := json.Marshal(SettingsPayload{Settings: settings})
+		payloadBytes, err := cold.MarshalJSON(SettingsPayload{Settings: settings})
+		if err != nil {
+			return fmt.Errorf("marshal emergency breaker outbox payload: %w", err)
+		}
 		_, err = q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{
 			EventType: "UPDATE_SETTINGS",
 			Payload:   payloadBytes,

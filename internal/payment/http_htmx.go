@@ -26,6 +26,7 @@ func (h *HTMXHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/payment/topup", h.handleTopupForm)
 	mux.HandleFunc("POST /ui/payment/intents", h.handleCreateIntent)
 	mux.HandleFunc("GET /ui/payment/intents/{id}", h.handleIntentStatus)
+	mux.HandleFunc("GET /ui/payment/return", h.handleCheckoutReturn)
 }
 
 // handleTopupForm returns a minimal form fragment so HTMX hosts can embed top-up without a separate frontend build.

@@ -70,6 +70,13 @@ func (o *SlotMigrationOrchestrator) tick(ctx context.Context) {
 		if o.svc.alerter != nil {
 			o.svc.alerter.AlertSlotMigrationError("drain", err)
 		}
+	} else {
+		pending, pendErr := o.svc.HasPendingSlotDrain(ctx)
+		if pendErr == nil && !pending {
+			if r5Err := o.svc.VerifySlotMigrationR5(ctx); r5Err != nil && o.svc.alerter != nil {
+				o.svc.alerter.AlertSlotMigrationError("r5_verify", r5Err)
+			}
+		}
 	}
 	o.svc.CheckStuckDrainJobs(ctx)
 }

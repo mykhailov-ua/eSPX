@@ -26,7 +26,7 @@ func integrationTestAuth(t *testing.T, rdb redis.UniversalClient, cfg *config.Co
 	if err != nil {
 		t.Fatalf("token maker: %v", err)
 	}
-	return NewAuthMiddleware(tokenMaker, rdb, cfg), tokenMaker
+	return NewAuthMiddleware(tokenMaker, rdb, cfg, nil), tokenMaker
 }
 
 // withSessionUser attaches a PASETO session cookie for integration tests exercising tenant RBAC.

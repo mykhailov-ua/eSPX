@@ -34,9 +34,15 @@ FROM api_keys ak
 JOIN users u ON ak.user_id = u.id
 WHERE ak.key_hash = $1 AND (ak.expires_at IS NULL OR ak.expires_at > NOW());
 
+-- name: GetAPIKeyByLookup :one
+SELECT ak.id, ak.user_id, ak.name, ak.key_hash, ak.expires_at, u.role, u.customer_id
+FROM api_keys ak
+JOIN users u ON ak.user_id = u.id
+WHERE ak.key_lookup = $1 AND (ak.expires_at IS NULL OR ak.expires_at > NOW());
+
 -- name: CreateAPIKey :one
-INSERT INTO api_keys (key_hash, user_id, name, expires_at)
-VALUES ($1, $2, $3, $4)
+INSERT INTO api_keys (key_hash, key_lookup, user_id, name, expires_at)
+VALUES ($1, $2, $3, $4, $5)
 RETURNING id, name, expires_at, created_at;
 
 -- name: ListUserAPIKeys :many

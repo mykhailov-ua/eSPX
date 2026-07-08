@@ -18,16 +18,16 @@ import (
 )
 
 const (
-	sentinelChaosShards          = 4
-	sentinelBudgetPreRemaining   = int64(900_000)
-	sentinelBudgetPreSyncDelta   = int64(5_000)
-	sentinelChaosMarkerKey       = "sentinel:chaos:marker"
-	sentinelChaosBudgetPreRemKey = "sentinel:chaos:budget:pre_remaining"
-	sentinelChaosBudgetPreSyncKey = "sentinel:chaos:budget:pre_sync"
+	sentinelChaosShards            = 4
+	sentinelBudgetPreRemaining     = int64(900_000)
+	sentinelBudgetPreSyncDelta     = int64(5_000)
+	sentinelChaosMarkerKey         = "sentinel:chaos:marker"
+	sentinelChaosBudgetPreRemKey   = "sentinel:chaos:budget:pre_remaining"
+	sentinelChaosBudgetPreSyncKey  = "sentinel:chaos:budget:pre_sync"
 	sentinelChaosBudgetCampaignKey = "sentinel:chaos:budget:campaign_id"
-	sentinelChaosLoadShard0ErrKey = "sentinel:chaos:load:shard0:errors"
-	sentinelChaosLoadShard0OKKey  = "sentinel:chaos:load:shard0:ok"
-	sentinelChaosLoadOtherOKKey   = "sentinel:chaos:load:other:ok"
+	sentinelChaosLoadShard0ErrKey  = "sentinel:chaos:load:shard0:errors"
+	sentinelChaosLoadShard0OKKey   = "sentinel:chaos:load:shard0:ok"
+	sentinelChaosLoadOtherOKKey    = "sentinel:chaos:load:other:ok"
 )
 
 func logSentinelChaosProof(t *testing.T, fault string, kv map[string]string) {

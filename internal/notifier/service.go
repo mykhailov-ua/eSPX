@@ -46,8 +46,9 @@ func (service *Service) SendNotification(ctx context.Context, req *pb.SendNotifi
 	if req.Recipient == "" {
 		return nil, ErrRecipientRequired
 	}
-	if req.Body == "" {
-		return nil, ErrBodyRequired
+	body, err := service.resolveNotificationBody(ctx, req)
+	if err != nil {
+		return nil, err
 	}
 	if service.rateLimiter != nil && !service.rateLimiter.allow(req.Recipient) {
 		return nil, ErrRateLimited
@@ -65,7 +66,7 @@ func (service *Service) SendNotification(ctx context.Context, req *pb.SendNotifi
 		}
 	}
 
-	notification, err := service.createNotification(ctx, req)
+	notification, err := service.createNotification(ctx, req, body)
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +128,7 @@ func (service *Service) findActiveByDedupKey(ctx context.Context, dedupKey strin
 	return existing, true, nil
 }
 
-func (service *Service) createNotification(ctx context.Context, req *pb.SendNotificationRequest) (db.NotifierNotification, error) {
+func (service *Service) createNotification(ctx context.Context, req *pb.SendNotificationRequest, body string) (db.NotifierNotification, error) {
 	dbProvider, err := MapPBProviderToDB(req.Provider)
 	if err != nil {
 		return db.NotifierNotification{}, err
@@ -151,16 +152,31 @@ func (service *Service) createNotification(ctx context.Context, req *pb.SendNoti
 	if req.DedupKey != "" {
 		dedupKey = pgtype.Text{String: req.DedupKey, Valid: true}
 	}
+	var templateID pgtype.Text
+	if req.TemplateId != "" {
+		templateID = pgtype.Text{String: req.TemplateId, Valid: true}
+	}
+	var attachmentURL pgtype.Text
+	if req.AttachmentUrl != "" {
+		attachmentURL = pgtype.Text{String: req.AttachmentUrl, Valid: true}
+	}
+	templateVars, err := marshalTemplateVarsJSON(req.TemplateVars)
+	if err != nil {
+		return db.NotifierNotification{}, err
+	}
 
 	notification, err := service.queries.CreateNotification(ctx, db.CreateNotificationParams{
 		ID:                 pgtype.UUID{Bytes: id, Valid: true},
 		Provider:           dbProvider,
 		Recipient:          req.Recipient,
 		Title:              title,
-		Body:               req.Body,
+		Body:               body,
 		DeliveryMode:       MapPBDeliveryModeToDB(req.DeliveryMode),
 		BroadcastProviders: broadcastProviders,
 		DedupKey:           dedupKey,
+		TemplateID:         templateID,
+		TemplateVars:       templateVars,
+		AttachmentUrl:      attachmentURL,
 	})
 	if err != nil {
 		return db.NotifierNotification{}, fmt.Errorf("enqueue notification: %w", err)

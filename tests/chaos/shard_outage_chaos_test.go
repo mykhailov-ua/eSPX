@@ -21,7 +21,7 @@ import (
 )
 
 // TestChaos_Shard0Outage automates CHAOS.md §6 scenario A: shard 0 down must not
-// stop tracking on shards 1–3; outbox stays PENDING until recovery.
+// stop tracking on shards 1-3; outbox stays PENDING until recovery.
 func TestChaos_Shard0Outage(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")
@@ -130,7 +130,7 @@ func TestChaos_Shard0Outage(t *testing.T) {
 
 	outboxWorker := management.NewOutboxWorker(svc)
 	processed, err := outboxWorker.ProcessOutboxWithCount(ctx, 10)
-	require.NoError(t, err)
+	require.Error(t, err)
 	require.Equal(t, 0, processed)
 	assert.Equal(t, "PENDING", outboxStatus(t, pool, eventID))
 

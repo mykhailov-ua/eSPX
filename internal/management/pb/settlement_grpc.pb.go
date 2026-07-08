@@ -24,6 +24,8 @@ const (
 	SettlementService_ApplyPaymentChargeback_FullMethodName         = "/settlement.SettlementService/ApplyPaymentChargeback"
 	SettlementService_ApplyPaymentChargebackReversal_FullMethodName = "/settlement.SettlementService/ApplyPaymentChargebackReversal"
 	SettlementService_GetLedgerEntry_FullMethodName                 = "/settlement.SettlementService/GetLedgerEntry"
+	SettlementService_BlockIP_FullMethodName                        = "/settlement.SettlementService/BlockIP"
+	SettlementService_BatchApplySettlement_FullMethodName           = "/settlement.SettlementService/BatchApplySettlement"
 )
 
 // SettlementServiceClient is the client API for SettlementService service.
@@ -40,6 +42,10 @@ type SettlementServiceClient interface {
 	ApplyPaymentChargebackReversal(ctx context.Context, in *ApplyPaymentChargebackReversalRequest, opts ...grpc.CallOption) (*ApplyPaymentChargebackReversalResponse, error)
 	// Read-only ledger lookup by payment_intent_id for payment financial recon.
 	GetLedgerEntry(ctx context.Context, in *GetLedgerEntryRequest, opts ...grpc.CallOption) (*GetLedgerEntryResponse, error)
+	// BlockIP enqueues a fraud blacklist update via management outbox (internal IVT path).
+	BlockIP(ctx context.Context, in *BlockIPRequest, opts ...grpc.CallOption) (*BlockIPResponse, error)
+	// BatchApplySettlement drains payment outbox rows after management outages (<=500 ops per call).
+	BatchApplySettlement(ctx context.Context, in *BatchApplySettlementRequest, opts ...grpc.CallOption) (*BatchApplySettlementResponse, error)
 }
 
 type settlementServiceClient struct {
@@ -100,6 +106,26 @@ func (c *settlementServiceClient) GetLedgerEntry(ctx context.Context, in *GetLed
 	return out, nil
 }
 
+func (c *settlementServiceClient) BlockIP(ctx context.Context, in *BlockIPRequest, opts ...grpc.CallOption) (*BlockIPResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BlockIPResponse)
+	err := c.cc.Invoke(ctx, SettlementService_BlockIP_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *settlementServiceClient) BatchApplySettlement(ctx context.Context, in *BatchApplySettlementRequest, opts ...grpc.CallOption) (*BatchApplySettlementResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BatchApplySettlementResponse)
+	err := c.cc.Invoke(ctx, SettlementService_BatchApplySettlement_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SettlementServiceServer is the server API for SettlementService service.
 // All implementations must embed UnimplementedSettlementServiceServer
 // for forward compatibility.
@@ -114,6 +140,10 @@ type SettlementServiceServer interface {
 	ApplyPaymentChargebackReversal(context.Context, *ApplyPaymentChargebackReversalRequest) (*ApplyPaymentChargebackReversalResponse, error)
 	// Read-only ledger lookup by payment_intent_id for payment financial recon.
 	GetLedgerEntry(context.Context, *GetLedgerEntryRequest) (*GetLedgerEntryResponse, error)
+	// BlockIP enqueues a fraud blacklist update via management outbox (internal IVT path).
+	BlockIP(context.Context, *BlockIPRequest) (*BlockIPResponse, error)
+	// BatchApplySettlement drains payment outbox rows after management outages (<=500 ops per call).
+	BatchApplySettlement(context.Context, *BatchApplySettlementRequest) (*BatchApplySettlementResponse, error)
 	mustEmbedUnimplementedSettlementServiceServer()
 }
 
@@ -138,6 +168,12 @@ func (UnimplementedSettlementServiceServer) ApplyPaymentChargebackReversal(conte
 }
 func (UnimplementedSettlementServiceServer) GetLedgerEntry(context.Context, *GetLedgerEntryRequest) (*GetLedgerEntryResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetLedgerEntry not implemented")
+}
+func (UnimplementedSettlementServiceServer) BlockIP(context.Context, *BlockIPRequest) (*BlockIPResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BlockIP not implemented")
+}
+func (UnimplementedSettlementServiceServer) BatchApplySettlement(context.Context, *BatchApplySettlementRequest) (*BatchApplySettlementResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BatchApplySettlement not implemented")
 }
 func (UnimplementedSettlementServiceServer) mustEmbedUnimplementedSettlementServiceServer() {}
 func (UnimplementedSettlementServiceServer) testEmbeddedByValue()                           {}
@@ -250,6 +286,42 @@ func _SettlementService_GetLedgerEntry_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SettlementService_BlockIP_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BlockIPRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SettlementServiceServer).BlockIP(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SettlementService_BlockIP_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SettlementServiceServer).BlockIP(ctx, req.(*BlockIPRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SettlementService_BatchApplySettlement_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BatchApplySettlementRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SettlementServiceServer).BatchApplySettlement(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SettlementService_BatchApplySettlement_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SettlementServiceServer).BatchApplySettlement(ctx, req.(*BatchApplySettlementRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SettlementService_ServiceDesc is the grpc.ServiceDesc for SettlementService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -276,6 +348,14 @@ var SettlementService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetLedgerEntry",
 			Handler:    _SettlementService_GetLedgerEntry_Handler,
+		},
+		{
+			MethodName: "BlockIP",
+			Handler:    _SettlementService_BlockIP_Handler,
+		},
+		{
+			MethodName: "BatchApplySettlement",
+			Handler:    _SettlementService_BatchApplySettlement_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

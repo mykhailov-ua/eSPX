@@ -6,6 +6,8 @@ source "$(cd "$(dirname "$0")/../_common" && pwd)/paths.sh"
 cd "$ROOT"
 
 bash "$SCRIPTS/codegen/validate_configs.sh"
+bash "$SCRIPTS/ci/check_comments.sh"
+make lint
 make test-alloc-gate
 make test
 make build

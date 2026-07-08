@@ -38,7 +38,7 @@ func NewProvider(cfg *config.Config) Provider {
 // LogProviderMode surfaces misconfiguration at boot because payment failures are hard to trace from UI alone.
 func LogProviderMode(cfg *config.Config) {
 	if StripeConfigured(cfg) {
-		slog.Info("payment provider mode", "provider", "stripe", "checkout_api", "pending_stripe_go")
+		slog.Info("payment provider mode", "provider", "stripe", "checkout_api", "stripe_go")
 		if string(cfg.StripeWebhookSecret) == "" {
 			slog.Warn("STRIPE_WEBHOOK_SECRET unset; POST /webhooks/stripe returns 503")
 		}

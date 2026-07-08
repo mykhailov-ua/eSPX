@@ -26,6 +26,7 @@ const (
 	filterRejectBidFloor
 	filterRejectTimeout
 	filterRejectFraud
+	filterRejectConsent
 	filterRejectInfra
 )
 
@@ -51,6 +52,7 @@ var filterRejectSpecs = [...]filterRejectSpec{
 	filterRejectBidFloor:         {http.StatusPaymentRequired, "bid floor not met", respBidFloorNotMet, "bid_floor"},
 	filterRejectTimeout:          {http.StatusGatewayTimeout, "filter timeout", respFilterTimeout, "filter_timeout"},
 	filterRejectFraud:            {http.StatusAccepted, "", nil, "fraud"},
+	filterRejectConsent:          {http.StatusNoContent, "", respConsentDenied, "consent_denied"},
 	filterRejectInfra:            {http.StatusServiceUnavailable, "service unavailable", respInfraUnavailable, "infra_unavailable"},
 }
 
@@ -59,11 +61,11 @@ type FraudReasonID uint8
 
 // Stable fraud_reason string values written to streams and fraud_events.
 const (
-	FraudReasonCodeDatacenterIP = "datacenter_ip"
-	FraudReasonCodeLowTTC       = "low_ttc"
-	FraudReasonCodeMissingImpTS = "missing_imp_ts"
-	FraudReasonCodeL3Blocklist  = "l3_blocklist"
-	FraudReasonCodeTLSBlocklist = "tls_blocklist"
+	FraudReasonCodeDatacenterIP   = "datacenter_ip"
+	FraudReasonCodeLowTTC         = "low_ttc"
+	FraudReasonCodeMissingImpTS   = "missing_imp_ts"
+	FraudReasonCodeL3Blocklist    = "l3_blocklist"
+	FraudReasonCodeTLSBlocklist   = "tls_blocklist"
 	FraudReasonCodeDeviceMismatch = "device_mismatch"
 )
 
@@ -93,12 +95,12 @@ type fraudReasonEntry struct {
 
 // fraudReasonRegistry maps signal IDs to stable codes and weighted score contributions.
 var fraudReasonRegistry = [fraudReasonCount]fraudReasonEntry{
-	FraudReasonNone:         {},
-	FraudReasonDatacenterIP: {code: FraudReasonCodeDatacenterIP, weight: 45, flags: fraudSignalL1High},
-	FraudReasonLowTTC:       {code: FraudReasonCodeLowTTC, weight: 45, flags: fraudSignalL1High},
-	FraudReasonMissingImpTS: {code: FraudReasonCodeMissingImpTS, weight: 35, flags: fraudSignalL2Weak},
-	FraudReasonL3Blocklist:  {code: FraudReasonCodeL3Blocklist, weight: 100, flags: fraudSignalL3},
-	FraudReasonTLSBlocklist: {code: FraudReasonCodeTLSBlocklist, weight: 45, flags: fraudSignalL1High},
+	FraudReasonNone:           {},
+	FraudReasonDatacenterIP:   {code: FraudReasonCodeDatacenterIP, weight: 45, flags: fraudSignalL1High},
+	FraudReasonLowTTC:         {code: FraudReasonCodeLowTTC, weight: 45, flags: fraudSignalL1High},
+	FraudReasonMissingImpTS:   {code: FraudReasonCodeMissingImpTS, weight: 35, flags: fraudSignalL2Weak},
+	FraudReasonL3Blocklist:    {code: FraudReasonCodeL3Blocklist, weight: 100, flags: fraudSignalL3},
+	FraudReasonTLSBlocklist:   {code: FraudReasonCodeTLSBlocklist, weight: 45, flags: fraudSignalL1High},
 	FraudReasonDeviceMismatch: {code: FraudReasonCodeDeviceMismatch, weight: 35, flags: fraudSignalL2Weak},
 }
 
@@ -153,6 +155,8 @@ func classifyFilterErr(err error) (filterRejectKind, bool) {
 		return filterRejectTimeout, true
 	case errors.Is(err, ErrFraudDetected):
 		return filterRejectFraud, true
+	case errors.Is(err, ErrConsentDenied):
+		return filterRejectConsent, true
 	case isInfraFilterErr(err):
 		return filterRejectInfra, true
 	default:
@@ -207,6 +211,9 @@ func (m *preboundTrackMetrics) recordFilterReject(kind filterRejectKind) {
 	case filterRejectFraud:
 		m.blockedFraud.Inc()
 		m.decisionFraud.Inc()
+	case filterRejectConsent:
+		m.blockedConsent.Inc()
+		m.decisionConsentDenied.Inc()
 	case filterRejectInfra:
 		m.blockedInfra.Inc()
 		m.decisionInfraUnavailable.Inc()

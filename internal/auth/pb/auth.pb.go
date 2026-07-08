@@ -863,6 +863,94 @@ func (x *APIKey) GetCreatedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+type VerifyAPIKeyRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ApiKey        string                 `protobuf:"bytes,1,opt,name=api_key,json=apiKey,proto3" json:"api_key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VerifyAPIKeyRequest) Reset() {
+	*x = VerifyAPIKeyRequest{}
+	mi := &file_auth_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VerifyAPIKeyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VerifyAPIKeyRequest) ProtoMessage() {}
+
+func (x *VerifyAPIKeyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VerifyAPIKeyRequest.ProtoReflect.Descriptor instead.
+func (*VerifyAPIKeyRequest) Descriptor() ([]byte, []int) {
+	return file_auth_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *VerifyAPIKeyRequest) GetApiKey() string {
+	if x != nil {
+		return x.ApiKey
+	}
+	return ""
+}
+
+type VerifyAPIKeyResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	User          *User                  `protobuf:"bytes,1,opt,name=user,proto3" json:"user,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VerifyAPIKeyResponse) Reset() {
+	*x = VerifyAPIKeyResponse{}
+	mi := &file_auth_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VerifyAPIKeyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VerifyAPIKeyResponse) ProtoMessage() {}
+
+func (x *VerifyAPIKeyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VerifyAPIKeyResponse.ProtoReflect.Descriptor instead.
+func (*VerifyAPIKeyResponse) Descriptor() ([]byte, []int) {
+	return file_auth_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *VerifyAPIKeyResponse) GetUser() *User {
+	if x != nil {
+		return x.User
+	}
+	return nil
+}
+
 // Password & email lifecycle
 type ChangePasswordRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -874,7 +962,7 @@ type ChangePasswordRequest struct {
 
 func (x *ChangePasswordRequest) Reset() {
 	*x = ChangePasswordRequest{}
-	mi := &file_auth_proto_msgTypes[16]
+	mi := &file_auth_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -886,7 +974,7 @@ func (x *ChangePasswordRequest) String() string {
 func (*ChangePasswordRequest) ProtoMessage() {}
 
 func (x *ChangePasswordRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[16]
+	mi := &file_auth_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -899,7 +987,7 @@ func (x *ChangePasswordRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChangePasswordRequest.ProtoReflect.Descriptor instead.
 func (*ChangePasswordRequest) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{16}
+	return file_auth_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ChangePasswordRequest) GetOldPassword() string {
@@ -924,7 +1012,7 @@ type ChangePasswordResponse struct {
 
 func (x *ChangePasswordResponse) Reset() {
 	*x = ChangePasswordResponse{}
-	mi := &file_auth_proto_msgTypes[17]
+	mi := &file_auth_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -936,7 +1024,7 @@ func (x *ChangePasswordResponse) String() string {
 func (*ChangePasswordResponse) ProtoMessage() {}
 
 func (x *ChangePasswordResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[17]
+	mi := &file_auth_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -949,7 +1037,7 @@ func (x *ChangePasswordResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChangePasswordResponse.ProtoReflect.Descriptor instead.
 func (*ChangePasswordResponse) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{17}
+	return file_auth_proto_rawDescGZIP(), []int{19}
 }
 
 type RequestEmailVerificationRequest struct {
@@ -960,7 +1048,7 @@ type RequestEmailVerificationRequest struct {
 
 func (x *RequestEmailVerificationRequest) Reset() {
 	*x = RequestEmailVerificationRequest{}
-	mi := &file_auth_proto_msgTypes[18]
+	mi := &file_auth_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -972,7 +1060,7 @@ func (x *RequestEmailVerificationRequest) String() string {
 func (*RequestEmailVerificationRequest) ProtoMessage() {}
 
 func (x *RequestEmailVerificationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[18]
+	mi := &file_auth_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -985,7 +1073,7 @@ func (x *RequestEmailVerificationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RequestEmailVerificationRequest.ProtoReflect.Descriptor instead.
 func (*RequestEmailVerificationRequest) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{18}
+	return file_auth_proto_rawDescGZIP(), []int{20}
 }
 
 type RequestEmailVerificationResponse struct {
@@ -999,7 +1087,7 @@ type RequestEmailVerificationResponse struct {
 
 func (x *RequestEmailVerificationResponse) Reset() {
 	*x = RequestEmailVerificationResponse{}
-	mi := &file_auth_proto_msgTypes[19]
+	mi := &file_auth_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1011,7 +1099,7 @@ func (x *RequestEmailVerificationResponse) String() string {
 func (*RequestEmailVerificationResponse) ProtoMessage() {}
 
 func (x *RequestEmailVerificationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[19]
+	mi := &file_auth_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1024,7 +1112,7 @@ func (x *RequestEmailVerificationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RequestEmailVerificationResponse.ProtoReflect.Descriptor instead.
 func (*RequestEmailVerificationResponse) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{19}
+	return file_auth_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *RequestEmailVerificationResponse) GetVerificationToken() string {
@@ -1043,7 +1131,7 @@ type ConfirmEmailVerificationRequest struct {
 
 func (x *ConfirmEmailVerificationRequest) Reset() {
 	*x = ConfirmEmailVerificationRequest{}
-	mi := &file_auth_proto_msgTypes[20]
+	mi := &file_auth_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1055,7 +1143,7 @@ func (x *ConfirmEmailVerificationRequest) String() string {
 func (*ConfirmEmailVerificationRequest) ProtoMessage() {}
 
 func (x *ConfirmEmailVerificationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[20]
+	mi := &file_auth_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1068,7 +1156,7 @@ func (x *ConfirmEmailVerificationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfirmEmailVerificationRequest.ProtoReflect.Descriptor instead.
 func (*ConfirmEmailVerificationRequest) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{20}
+	return file_auth_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *ConfirmEmailVerificationRequest) GetVerificationToken() string {
@@ -1086,7 +1174,7 @@ type ConfirmEmailVerificationResponse struct {
 
 func (x *ConfirmEmailVerificationResponse) Reset() {
 	*x = ConfirmEmailVerificationResponse{}
-	mi := &file_auth_proto_msgTypes[21]
+	mi := &file_auth_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1098,7 +1186,7 @@ func (x *ConfirmEmailVerificationResponse) String() string {
 func (*ConfirmEmailVerificationResponse) ProtoMessage() {}
 
 func (x *ConfirmEmailVerificationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[21]
+	mi := &file_auth_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1111,7 +1199,7 @@ func (x *ConfirmEmailVerificationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfirmEmailVerificationResponse.ProtoReflect.Descriptor instead.
 func (*ConfirmEmailVerificationResponse) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{21}
+	return file_auth_proto_rawDescGZIP(), []int{23}
 }
 
 var File_auth_proto protoreflect.FileDescriptor
@@ -1177,7 +1265,12 @@ const file_auth_proto_rawDesc = "" +
 	"\n" +
 	"expires_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\x129\n" +
 	"\n" +
-	"created_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"]\n" +
+	"created_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\".\n" +
+	"\x13VerifyAPIKeyRequest\x12\x17\n" +
+	"\aapi_key\x18\x01 \x01(\tR\x06apiKey\"6\n" +
+	"\x14VerifyAPIKeyResponse\x12\x1e\n" +
+	"\x04user\x18\x01 \x01(\v2\n" +
+	".auth.UserR\x04user\"]\n" +
 	"\x15ChangePasswordRequest\x12!\n" +
 	"\fold_password\x18\x01 \x01(\tR\voldPassword\x12!\n" +
 	"\fnew_password\x18\x02 \x01(\tR\vnewPassword\"\x18\n" +
@@ -1187,7 +1280,7 @@ const file_auth_proto_rawDesc = "" +
 	"\x12verification_token\x18\x01 \x01(\tR\x11verificationToken\"P\n" +
 	"\x1fConfirmEmailVerificationRequest\x12-\n" +
 	"\x12verification_token\x18\x01 \x01(\tR\x11verificationToken\"\"\n" +
-	" ConfirmEmailVerificationResponse2\xf7\x05\n" +
+	" ConfirmEmailVerificationResponse2\xbe\x06\n" +
 	"\vAuthService\x129\n" +
 	"\bRegister\x12\x15.auth.RegisterRequest\x1a\x16.auth.RegisterResponse\x120\n" +
 	"\x05Login\x12\x12.auth.LoginRequest\x1a\x13.auth.LoginResponse\x12B\n" +
@@ -1195,7 +1288,8 @@ const file_auth_proto_rawDesc = "" +
 	"\fRefreshToken\x12\x19.auth.RefreshTokenRequest\x1a\x1a.auth.RefreshTokenResponse\x12B\n" +
 	"\vRevokeToken\x12\x18.auth.RevokeTokenRequest\x1a\x19.auth.RevokeTokenResponse\x12E\n" +
 	"\fCreateAPIKey\x12\x19.auth.CreateAPIKeyRequest\x1a\x1a.auth.CreateAPIKeyResponse\x12B\n" +
-	"\vListAPIKeys\x12\x18.auth.ListAPIKeysRequest\x1a\x19.auth.ListAPIKeysResponse\x12K\n" +
+	"\vListAPIKeys\x12\x18.auth.ListAPIKeysRequest\x1a\x19.auth.ListAPIKeysResponse\x12E\n" +
+	"\fVerifyAPIKey\x12\x19.auth.VerifyAPIKeyRequest\x1a\x1a.auth.VerifyAPIKeyResponse\x12K\n" +
 	"\x0eChangePassword\x12\x1b.auth.ChangePasswordRequest\x1a\x1c.auth.ChangePasswordResponse\x12i\n" +
 	"\x18RequestEmailVerification\x12%.auth.RequestEmailVerificationRequest\x1a&.auth.RequestEmailVerificationResponse\x12i\n" +
 	"\x18ConfirmEmailVerification\x12%.auth.ConfirmEmailVerificationRequest\x1a&.auth.ConfirmEmailVerificationResponseB\x1aZ\x18espx/internal/auth/pb;pbb\x06proto3"
@@ -1212,7 +1306,7 @@ func file_auth_proto_rawDescGZIP() []byte {
 	return file_auth_proto_rawDescData
 }
 
-var file_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
+var file_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
 var file_auth_proto_goTypes = []any{
 	(*RegisterRequest)(nil),                  // 0: auth.RegisterRequest
 	(*RegisterResponse)(nil),                 // 1: auth.RegisterResponse
@@ -1230,48 +1324,53 @@ var file_auth_proto_goTypes = []any{
 	(*ListAPIKeysRequest)(nil),               // 13: auth.ListAPIKeysRequest
 	(*ListAPIKeysResponse)(nil),              // 14: auth.ListAPIKeysResponse
 	(*APIKey)(nil),                           // 15: auth.APIKey
-	(*ChangePasswordRequest)(nil),            // 16: auth.ChangePasswordRequest
-	(*ChangePasswordResponse)(nil),           // 17: auth.ChangePasswordResponse
-	(*RequestEmailVerificationRequest)(nil),  // 18: auth.RequestEmailVerificationRequest
-	(*RequestEmailVerificationResponse)(nil), // 19: auth.RequestEmailVerificationResponse
-	(*ConfirmEmailVerificationRequest)(nil),  // 20: auth.ConfirmEmailVerificationRequest
-	(*ConfirmEmailVerificationResponse)(nil), // 21: auth.ConfirmEmailVerificationResponse
-	(*timestamppb.Timestamp)(nil),            // 22: google.protobuf.Timestamp
+	(*VerifyAPIKeyRequest)(nil),              // 16: auth.VerifyAPIKeyRequest
+	(*VerifyAPIKeyResponse)(nil),             // 17: auth.VerifyAPIKeyResponse
+	(*ChangePasswordRequest)(nil),            // 18: auth.ChangePasswordRequest
+	(*ChangePasswordResponse)(nil),           // 19: auth.ChangePasswordResponse
+	(*RequestEmailVerificationRequest)(nil),  // 20: auth.RequestEmailVerificationRequest
+	(*RequestEmailVerificationResponse)(nil), // 21: auth.RequestEmailVerificationResponse
+	(*ConfirmEmailVerificationRequest)(nil),  // 22: auth.ConfirmEmailVerificationRequest
+	(*ConfirmEmailVerificationResponse)(nil), // 23: auth.ConfirmEmailVerificationResponse
+	(*timestamppb.Timestamp)(nil),            // 24: google.protobuf.Timestamp
 }
 var file_auth_proto_depIdxs = []int32{
 	4,  // 0: auth.LoginResponse.user:type_name -> auth.User
-	22, // 1: auth.User.created_at:type_name -> google.protobuf.Timestamp
+	24, // 1: auth.User.created_at:type_name -> google.protobuf.Timestamp
 	4,  // 2: auth.VerifyTokenResponse.user:type_name -> auth.User
-	22, // 3: auth.CreateAPIKeyRequest.expires_at:type_name -> google.protobuf.Timestamp
-	22, // 4: auth.CreateAPIKeyResponse.expires_at:type_name -> google.protobuf.Timestamp
+	24, // 3: auth.CreateAPIKeyRequest.expires_at:type_name -> google.protobuf.Timestamp
+	24, // 4: auth.CreateAPIKeyResponse.expires_at:type_name -> google.protobuf.Timestamp
 	15, // 5: auth.ListAPIKeysResponse.keys:type_name -> auth.APIKey
-	22, // 6: auth.APIKey.expires_at:type_name -> google.protobuf.Timestamp
-	22, // 7: auth.APIKey.created_at:type_name -> google.protobuf.Timestamp
-	0,  // 8: auth.AuthService.Register:input_type -> auth.RegisterRequest
-	2,  // 9: auth.AuthService.Login:input_type -> auth.LoginRequest
-	5,  // 10: auth.AuthService.VerifyToken:input_type -> auth.VerifyTokenRequest
-	7,  // 11: auth.AuthService.RefreshToken:input_type -> auth.RefreshTokenRequest
-	9,  // 12: auth.AuthService.RevokeToken:input_type -> auth.RevokeTokenRequest
-	11, // 13: auth.AuthService.CreateAPIKey:input_type -> auth.CreateAPIKeyRequest
-	13, // 14: auth.AuthService.ListAPIKeys:input_type -> auth.ListAPIKeysRequest
-	16, // 15: auth.AuthService.ChangePassword:input_type -> auth.ChangePasswordRequest
-	18, // 16: auth.AuthService.RequestEmailVerification:input_type -> auth.RequestEmailVerificationRequest
-	20, // 17: auth.AuthService.ConfirmEmailVerification:input_type -> auth.ConfirmEmailVerificationRequest
-	1,  // 18: auth.AuthService.Register:output_type -> auth.RegisterResponse
-	3,  // 19: auth.AuthService.Login:output_type -> auth.LoginResponse
-	6,  // 20: auth.AuthService.VerifyToken:output_type -> auth.VerifyTokenResponse
-	8,  // 21: auth.AuthService.RefreshToken:output_type -> auth.RefreshTokenResponse
-	10, // 22: auth.AuthService.RevokeToken:output_type -> auth.RevokeTokenResponse
-	12, // 23: auth.AuthService.CreateAPIKey:output_type -> auth.CreateAPIKeyResponse
-	14, // 24: auth.AuthService.ListAPIKeys:output_type -> auth.ListAPIKeysResponse
-	17, // 25: auth.AuthService.ChangePassword:output_type -> auth.ChangePasswordResponse
-	19, // 26: auth.AuthService.RequestEmailVerification:output_type -> auth.RequestEmailVerificationResponse
-	21, // 27: auth.AuthService.ConfirmEmailVerification:output_type -> auth.ConfirmEmailVerificationResponse
-	18, // [18:28] is the sub-list for method output_type
-	8,  // [8:18] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	24, // 6: auth.APIKey.expires_at:type_name -> google.protobuf.Timestamp
+	24, // 7: auth.APIKey.created_at:type_name -> google.protobuf.Timestamp
+	4,  // 8: auth.VerifyAPIKeyResponse.user:type_name -> auth.User
+	0,  // 9: auth.AuthService.Register:input_type -> auth.RegisterRequest
+	2,  // 10: auth.AuthService.Login:input_type -> auth.LoginRequest
+	5,  // 11: auth.AuthService.VerifyToken:input_type -> auth.VerifyTokenRequest
+	7,  // 12: auth.AuthService.RefreshToken:input_type -> auth.RefreshTokenRequest
+	9,  // 13: auth.AuthService.RevokeToken:input_type -> auth.RevokeTokenRequest
+	11, // 14: auth.AuthService.CreateAPIKey:input_type -> auth.CreateAPIKeyRequest
+	13, // 15: auth.AuthService.ListAPIKeys:input_type -> auth.ListAPIKeysRequest
+	16, // 16: auth.AuthService.VerifyAPIKey:input_type -> auth.VerifyAPIKeyRequest
+	18, // 17: auth.AuthService.ChangePassword:input_type -> auth.ChangePasswordRequest
+	20, // 18: auth.AuthService.RequestEmailVerification:input_type -> auth.RequestEmailVerificationRequest
+	22, // 19: auth.AuthService.ConfirmEmailVerification:input_type -> auth.ConfirmEmailVerificationRequest
+	1,  // 20: auth.AuthService.Register:output_type -> auth.RegisterResponse
+	3,  // 21: auth.AuthService.Login:output_type -> auth.LoginResponse
+	6,  // 22: auth.AuthService.VerifyToken:output_type -> auth.VerifyTokenResponse
+	8,  // 23: auth.AuthService.RefreshToken:output_type -> auth.RefreshTokenResponse
+	10, // 24: auth.AuthService.RevokeToken:output_type -> auth.RevokeTokenResponse
+	12, // 25: auth.AuthService.CreateAPIKey:output_type -> auth.CreateAPIKeyResponse
+	14, // 26: auth.AuthService.ListAPIKeys:output_type -> auth.ListAPIKeysResponse
+	17, // 27: auth.AuthService.VerifyAPIKey:output_type -> auth.VerifyAPIKeyResponse
+	19, // 28: auth.AuthService.ChangePassword:output_type -> auth.ChangePasswordResponse
+	21, // 29: auth.AuthService.RequestEmailVerification:output_type -> auth.RequestEmailVerificationResponse
+	23, // 30: auth.AuthService.ConfirmEmailVerification:output_type -> auth.ConfirmEmailVerificationResponse
+	20, // [20:31] is the sub-list for method output_type
+	9,  // [9:20] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_auth_proto_init() }
@@ -1285,7 +1384,7 @@ func file_auth_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_auth_proto_rawDesc), len(file_auth_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   22,
+			NumMessages:   24,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

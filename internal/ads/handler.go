@@ -190,7 +190,7 @@ func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, filterEngin
 		}
 
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	})
 
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
@@ -222,7 +222,7 @@ func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, filterEngin
 			r.Body = http.MaxBytesReader(w, r.Body, cfg.MaxRequestBodySize)
 		}
 
-		id, _ := NewFastUUID()
+		id := NewFastUUID()
 		wReqID := bufPool.Get().(*bufWrapper)
 		wReqID.buf = wReqID.buf[:0]
 		wReqID.buf = appendUUID(wReqID.buf, id)
@@ -354,6 +354,10 @@ func NewRouter(cfg *config.Config, registry domain.CampaignRegistry, filterEngin
 				spec := filterRejectSpecs[outcome.RejectKind]
 				domain.EventPool.Put(evt)
 				recordHTTPFilterReject(outcome.RejectKind)
+				if outcome.RejectKind == filterRejectConsent {
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
 				if outcome.RejectKind == filterRejectInfra {
 					w.Header().Set("Retry-After", "1")
 				}
@@ -488,6 +492,7 @@ var (
 	respCampaignNotFound   = []byte("HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 17\r\nConnection: keep-alive\r\n\r\ncampaign not found")
 	respBidFloorNotMet     = []byte("HTTP/1.1 402 Payment Required\r\nContent-Type: text/plain\r\nContent-Length: 17\r\nConnection: keep-alive\r\n\r\nbid floor not met")
 	respFilterTimeout      = []byte("HTTP/1.1 504 Gateway Timeout\r\nContent-Type: text/plain\r\nContent-Length: 15\r\nConnection: keep-alive\r\n\r\nfilter timeout")
+	respConsentDenied      = []byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n")
 	respInternalError      = []byte("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\nContent-Length: 14\r\nConnection: keep-alive\r\n\r\ninternal error")
 	respBadRequestClose    = []byte("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
 	respNotFound           = []byte("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n")
@@ -755,7 +760,7 @@ func writeHTTPTrackAccepted(w http.ResponseWriter, wReqID *bufWrapper, requestID
 		out := bufSlice[:n]
 		w.Header()["Content-Type"] = contentTypeProtoHeader
 		w.WriteHeader(http.StatusAccepted)
-		w.Write(out)
+		_, _ = w.Write(out)
 		*bufSlicePtr = bufSlice
 		responseBytesPool.Put(bufSlicePtr)
 		return
@@ -774,7 +779,7 @@ func writeHTTPTrackAccepted(w http.ResponseWriter, wReqID *bufWrapper, requestID
 		buf.WriteByte('"')
 	}
 	buf.WriteByte('}')
-	w.Write(buf.Bytes())
+	_, _ = w.Write(buf.Bytes())
 }
 
 // OnBoot stores the gnet engine handle for graceful shutdown.
@@ -1145,7 +1150,7 @@ func (h *AdsPacketHandler) React(req parsedHTTPRequest, c gnet.Conn) gnet.Action
 	ip := extractClientIPGnet(ctx, &req, c, h.cfg.TrustedProxies)
 	ua := unsafeString(req.UserAgent)
 
-	id, _ := NewFastUUID()
+	id := NewFastUUID()
 
 	wReqID := &ctx.wReqID
 	wReqID.buf = wReqID.buf[:0]

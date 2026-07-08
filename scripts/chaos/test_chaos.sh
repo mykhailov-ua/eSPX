@@ -17,6 +17,9 @@ go test -count=1 -v -run 'Chaos' -timeout 20m \
 	./internal/auth/... \
 	./internal/ads/... \
 	./internal/payment/... \
+	./internal/billing/... \
+	./internal/notifier/... \
+	./internal/ivtdetector/... \
 	./pkg/broker/server/... \
 	./internal/management/... \
 	./internal/edge/perimeter/... \

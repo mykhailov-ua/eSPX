@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"hash/fnv"
+	"log/slog"
 	"sync/atomic"
 	"time"
 
@@ -19,6 +20,18 @@ type brandCreativeEntry struct {
 	Weight int32  `json:"weight"`
 }
 
+type brandCreativeMapSnapshot struct {
+	byBrand map[uuid.UUID][]brandCreativeEntry
+}
+
+func (s *BrandCreativeStore) brandCreativeSnapshot() *brandCreativeMapSnapshot {
+	v, ok := s.cache.Load().(*brandCreativeMapSnapshot)
+	if !ok || v == nil {
+		return &brandCreativeMapSnapshot{}
+	}
+	return v
+}
+
 // BrandCreativeStore caches brand creatives in memory for click landing URL selection.
 type BrandCreativeStore struct {
 	rdb   redis.UniversalClient
@@ -28,7 +41,7 @@ type BrandCreativeStore struct {
 // NewBrandCreativeStore creates an empty in-memory creative cache backed by Redis.
 func NewBrandCreativeStore(rdb redis.UniversalClient) *BrandCreativeStore {
 	s := &BrandCreativeStore{rdb: rdb}
-	s.cache.Store(make(map[uuid.UUID][]brandCreativeEntry))
+	s.cache.Store(&brandCreativeMapSnapshot{byBrand: make(map[uuid.UUID][]brandCreativeEntry)})
 	return s
 }
 
@@ -42,22 +55,23 @@ func (s *BrandCreativeStore) LoadFromRedis(ctx context.Context, brandID uuid.UUI
 		return
 	}
 	var entries []brandCreativeEntry
-	if json.Unmarshal(raw, &entries) != nil {
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		brandCreativeReplicaParseErrors.Inc()
+		slog.Warn("brand creative replica corrupt", "brand_id", brandID, "error", err)
 		return
 	}
-	m, _ := s.cache.Load().(map[uuid.UUID][]brandCreativeEntry)
-	next := make(map[uuid.UUID][]brandCreativeEntry, len(m)+1)
-	for k, v := range m {
+	current := s.brandCreativeSnapshot().byBrand
+	next := make(map[uuid.UUID][]brandCreativeEntry, len(current)+1)
+	for k, v := range current {
 		next[k] = v
 	}
 	next[brandID] = entries
-	s.cache.Store(next)
+	s.cache.Store(&brandCreativeMapSnapshot{byBrand: next})
 }
 
 // SelectLandingURL returns a deterministic weighted creative URL for a user.
 func (s *BrandCreativeStore) SelectLandingURL(brandID uuid.UUID, userID string) string {
-	m, _ := s.cache.Load().(map[uuid.UUID][]brandCreativeEntry)
-	entries := m[brandID]
+	entries := s.brandCreativeSnapshot().byBrand[brandID]
 	if len(entries) == 0 {
 		return ""
 	}

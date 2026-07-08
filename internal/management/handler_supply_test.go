@@ -37,7 +37,7 @@ func TestSupplyAPI_CRUDAndExport(t *testing.T) {
 	cfg.Management.SupplyExportPath = exportDir
 
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
-	h := NewHandler(svc, cfg, nil, nil, nil)
+	h := NewHandler(svc, cfg, nil, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -169,7 +169,7 @@ func TestSupplyAPI_RBAC(t *testing.T) {
 	}
 	authMW, tokenMaker := integrationTestAuth(t, rdb, cfg)
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
-	h := NewHandler(svc, cfg, authMW, nil, nil)
+	h := NewHandler(svc, cfg, authMW, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 

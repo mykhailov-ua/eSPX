@@ -37,7 +37,7 @@ func TestAPI_GetCampaignStats_PostgresOnly(t *testing.T) {
 	}
 	authMW, tokenMaker := integrationTestAuth(t, rdb, cfg)
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
-	h := NewHandler(svc, cfg, authMW, nil, nil)
+	h := NewHandler(svc, cfg, authMW, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -99,7 +99,7 @@ func TestAPI_GetCampaignStats_TenantIsolation(t *testing.T) {
 	}
 	authMW, tokenMaker := integrationTestAuth(t, rdb, cfg)
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
-	h := NewHandler(svc, cfg, authMW, nil, nil)
+	h := NewHandler(svc, cfg, authMW, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -145,7 +145,7 @@ func TestAPI_GetCampaignStats_ClickHouseStaleOK(t *testing.T) {
 	authMW, tokenMaker := integrationTestAuth(t, rdb, cfg)
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
 	svc.SetClickHouse(conn)
-	h := NewHandler(svc, cfg, authMW, nil, nil)
+	h := NewHandler(svc, cfg, authMW, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -190,7 +190,7 @@ func TestAPI_GetCampaignStats_InvalidGranularity(t *testing.T) {
 
 	cfg := &config.Config{AdminAPIKey: "test-secret"}
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
-	h := NewHandler(svc, cfg, nil, nil, nil)
+	h := NewHandler(svc, cfg, nil, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 

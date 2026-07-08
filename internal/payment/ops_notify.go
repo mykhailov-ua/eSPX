@@ -8,11 +8,6 @@ import (
 	notifierpb "espx/internal/notifier/pb"
 )
 
-type opsAlertTarget struct {
-	Provider  notifierpb.Provider
-	Recipient string
-}
-
 func resolveOpsAlertTarget(cfg *config.Config) (notifierpb.Provider, string, bool) {
 	if cfg == nil {
 		return notifierpb.Provider_PROVIDER_UNSPECIFIED, "", false

@@ -121,6 +121,7 @@ func (registry *Registry) UpdateCampaigns(campaigns []CampaignData) {
 		if targetingEnabled {
 			buildTargetingIndex(registries[shardIdx])
 		}
+		sortRegistryBuckets(registries[shardIdx])
 	}
 
 	registry.publishCatalog(registries)

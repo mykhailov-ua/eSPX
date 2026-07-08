@@ -187,6 +187,88 @@ func (h *SettlementHandler) GetLedgerEntry(ctx context.Context, req *pb.GetLedge
 	return resp, nil
 }
 
+const batchSettlementMaxItems = 500
+
+func (h *SettlementHandler) BlockIP(ctx context.Context, req *pb.BlockIPRequest) (*pb.BlockIPResponse, error) {
+	if err := h.requireSettlementToken(ctx); err != nil {
+		return nil, err
+	}
+	if req.GetIp() == "" {
+		return nil, status.Error(codes.InvalidArgument, "ip required")
+	}
+	source := req.GetSource()
+	if source == "" {
+		source = "fraud"
+	}
+	if err := h.service.BlockIP(ctx, req.GetIp(), source); err != nil {
+		return nil, status.Errorf(codes.Internal, "block ip: %v", err)
+	}
+	return &pb.BlockIPResponse{Enqueued: true}, nil
+}
+
+func (h *SettlementHandler) BatchApplySettlement(ctx context.Context, req *pb.BatchApplySettlementRequest) (*pb.BatchApplySettlementResponse, error) {
+	if err := h.requireSettlementToken(ctx); err != nil {
+		return nil, err
+	}
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request required")
+	}
+	total := len(req.Credits) + len(req.Refunds) + len(req.Chargebacks) + len(req.ChargebackReversals)
+	if total == 0 {
+		return nil, status.Error(codes.InvalidArgument, "batch empty")
+	}
+	if total > batchSettlementMaxItems {
+		return nil, status.Errorf(codes.InvalidArgument, "batch exceeds %d items", batchSettlementMaxItems)
+	}
+
+	resp := &pb.BatchApplySettlementResponse{}
+	for _, item := range req.Credits {
+		creditResp, err := h.ApplyPaymentCredit(ctx, item)
+		resp.CreditResults = append(resp.CreditResults, batchItemFromCredit(creditResp, err))
+	}
+	for _, item := range req.Refunds {
+		refundResp, err := h.ApplyPaymentRefund(ctx, item)
+		resp.RefundResults = append(resp.RefundResults, batchItemFromRefund(refundResp, err))
+	}
+	for _, item := range req.Chargebacks {
+		cbResp, err := h.ApplyPaymentChargeback(ctx, item)
+		resp.ChargebackResults = append(resp.ChargebackResults, batchItemFromChargeback(cbResp, err))
+	}
+	for _, item := range req.ChargebackReversals {
+		revResp, err := h.ApplyPaymentChargebackReversal(ctx, item)
+		resp.ChargebackReversalResults = append(resp.ChargebackReversalResults, batchItemFromChargebackReversal(revResp, err))
+	}
+	return resp, nil
+}
+
+func batchItemFromCredit(resp *pb.ApplyPaymentCreditResponse, err error) *pb.BatchSettlementItemResult {
+	if err != nil {
+		return &pb.BatchSettlementItemResult{Error: err.Error()}
+	}
+	return &pb.BatchSettlementItemResult{Applied: resp.GetApplied(), LedgerEntryId: resp.GetLedgerEntryId()}
+}
+
+func batchItemFromRefund(resp *pb.ApplyPaymentRefundResponse, err error) *pb.BatchSettlementItemResult {
+	if err != nil {
+		return &pb.BatchSettlementItemResult{Error: err.Error()}
+	}
+	return &pb.BatchSettlementItemResult{Applied: resp.GetApplied(), LedgerEntryId: resp.GetLedgerEntryId()}
+}
+
+func batchItemFromChargeback(resp *pb.ApplyPaymentChargebackResponse, err error) *pb.BatchSettlementItemResult {
+	if err != nil {
+		return &pb.BatchSettlementItemResult{Error: err.Error()}
+	}
+	return &pb.BatchSettlementItemResult{Applied: resp.GetApplied(), LedgerEntryId: resp.GetLedgerEntryId()}
+}
+
+func batchItemFromChargebackReversal(resp *pb.ApplyPaymentChargebackReversalResponse, err error) *pb.BatchSettlementItemResult {
+	if err != nil {
+		return &pb.BatchSettlementItemResult{Error: err.Error()}
+	}
+	return &pb.BatchSettlementItemResult{Applied: resp.GetApplied(), LedgerEntryId: resp.GetLedgerEntryId()}
+}
+
 func (h *SettlementHandler) requireSettlementToken(ctx context.Context) error {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {

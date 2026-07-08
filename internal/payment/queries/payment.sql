@@ -199,3 +199,21 @@ SELECT * FROM payment.payment_outbox
 WHERE status = 'DEAD'
 ORDER BY created_at DESC
 LIMIT 500;
+
+-- name: ListDisputedPaymentIntents :many
+SELECT * FROM payment.payment_intents
+WHERE status = 'DISPUTED'
+  AND (sqlc.narg('customer_id')::uuid IS NULL OR customer_id = sqlc.narg('customer_id')::uuid)
+ORDER BY updated_at DESC
+LIMIT $1 OFFSET $2;
+
+-- name: CountDisputedPaymentIntents :one
+SELECT COUNT(*) FROM payment.payment_intents
+WHERE status = 'DISPUTED'
+  AND (sqlc.narg('customer_id')::uuid IS NULL OR customer_id = sqlc.narg('customer_id')::uuid);
+
+-- name: GetLatestDisputeForIntent :one
+SELECT * FROM payment.payment_disputes
+WHERE payment_intent_id = $1
+ORDER BY updated_at DESC
+LIMIT 1;

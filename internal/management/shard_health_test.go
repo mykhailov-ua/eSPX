@@ -106,7 +106,7 @@ func TestHandler_OpsShards_requiresPermShardsRead(t *testing.T) {
 
 	cfg := &config.Config{AdminAPIKey: "test-secret"}
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
-	h := NewHandler(svc, cfg, nil, nil, nil)
+	h := NewHandler(svc, cfg, nil, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -142,9 +142,9 @@ func TestHandler_OpsShards_roleUserForbidden(t *testing.T) {
 	tokenMaker, err := auth.NewPasetoMaker(string(cfg.TokenSymmetricKey))
 	require.NoError(t, err)
 
-	authMdl := NewAuthMiddleware(tokenMaker, rdb, cfg)
+	authMdl := NewAuthMiddleware(tokenMaker, rdb, cfg, nil)
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
-	h := NewHandler(svc, cfg, authMdl, nil, nil)
+	h := NewHandler(svc, cfg, authMdl, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 

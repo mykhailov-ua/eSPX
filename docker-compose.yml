@@ -337,6 +337,8 @@ services:
       dockerfile: Dockerfile
     entrypoint: ["/management"]
     network_mode: "${NET_MODE:-host}"
+    profiles:
+      - chaos
     env_file:
       - .env
     environment:
@@ -381,6 +383,8 @@ services:
       dockerfile: Dockerfile
     entrypoint: ["/notifier"]
     network_mode: "${NET_MODE:-host}"
+    profiles:
+      - chaos
     env_file:
       - .env
     environment:
@@ -411,6 +415,8 @@ services:
       dockerfile: Dockerfile
     entrypoint: ["/ivt-detector"]
     network_mode: "${NET_MODE:-host}"
+    profiles:
+      - chaos
     env_file:
       - .env
     environment:
@@ -445,6 +451,8 @@ services:
       dockerfile: Dockerfile
     entrypoint: ["/payment"]
     network_mode: "${NET_MODE:-host}"
+    profiles:
+      - chaos
     env_file:
       - .env
     environment:
@@ -477,6 +485,8 @@ services:
       dockerfile: Dockerfile
     entrypoint: ["/billing"]
     network_mode: "${NET_MODE:-host}"
+    profiles:
+      - chaos
     env_file:
       - .env
     environment:

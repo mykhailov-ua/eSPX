@@ -93,3 +93,10 @@ DELETE FROM brand_creatives WHERE id = $1;
 SELECT * FROM brand_creatives
 WHERE brand_id = $1 AND status = 'ACTIVE'
 ORDER BY created_at ASC;
+
+-- name: ListDistinctBrandsWithActiveCreatives :many
+SELECT DISTINCT brand_id FROM brand_creatives WHERE status = 'ACTIVE';
+
+-- name: ListCampaignIDsByBrand :many
+SELECT id FROM campaigns
+WHERE brand_id = $1 AND deleted_at IS NULL AND status IN ('ACTIVE', 'PAUSED');

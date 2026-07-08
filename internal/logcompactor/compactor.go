@@ -133,7 +133,7 @@ func (c *Compactor) runLeaderPass(ctx context.Context) error {
 		if !acquired {
 			return nil
 		}
-		defer c.leader.Release()
+		defer func() { _ = c.leader.Release() }()
 	}
 	if err := c.recoverStuckSegments(ctx); err != nil {
 		return err

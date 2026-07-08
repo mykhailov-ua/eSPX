@@ -2,7 +2,6 @@ package management
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -26,11 +25,14 @@ func (s *Service) CreateCampaign(ctx context.Context, spec CampaignCreateSpec) (
 		return uuid.Nil, err
 	}
 
-	campaignID, _ := uuid.NewV7()
+	campaignID, err := uuid.NewV7()
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("generate campaign id: %w", err)
+	}
 	now := time.Now()
 	initialStatus := resolveScheduleStatus(now, spec.StartAt, spec.EndAt)
 
-	err := pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
+	err = pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 		existing, err := q.GetLedgerByHashForUpdate(ctx, pgtype.Text{String: spec.IdempotencyKey, Valid: true})
 		if err == nil {
@@ -38,17 +40,17 @@ func (s *Service) CreateCampaign(ctx context.Context, spec CampaignCreateSpec) (
 				campaignID = uuid.UUID(existing.CampaignID.Bytes)
 				return nil
 			}
-			return fmt.Errorf("incomplete idempotency ledger row for key %q", spec.IdempotencyKey)
+			return fmt.Errorf("%w ledger row for key %q", ErrIncompleteIdempotency, spec.IdempotencyKey)
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("idempotency lookup failed: %w", err)
 		}
 		cust, err := q.GetCustomerForUpdate(ctx, ads.ToUUID(spec.CustomerID))
 		if err != nil {
-			return fmt.Errorf("customer not found: %w", err)
+			return mapNotFound(err, ErrCustomerNotFound)
 		}
 		if cust.Balance+cust.AllowedOverdraft < spec.BudgetLimit {
-			return fmt.Errorf("insufficient balance")
+			return ErrInsufficientBalance
 		}
 
 		var brandIDParam pgtype.UUID
@@ -56,10 +58,10 @@ func (s *Service) CreateCampaign(ctx context.Context, spec CampaignCreateSpec) (
 		if spec.BrandID != nil {
 			brand, err := q.GetBrand(ctx, ads.ToUUID(*spec.BrandID))
 			if err != nil {
-				return fmt.Errorf("brand not found: %w", err)
+				return mapNotFound(err, ErrBrandNotFound)
 			}
 			if uuid.UUID(brand.CustomerID.Bytes) != spec.CustomerID {
-				return fmt.Errorf("brand belongs to another customer")
+				return ErrBrandBelongsToAnotherCustomer
 			}
 			brandIDParam = ads.ToUUID(*spec.BrandID)
 			brandFcapKey = "fcap:b:" + spec.BrandID.String()
@@ -139,12 +141,18 @@ func (s *Service) CreateCampaign(ctx context.Context, spec CampaignCreateSpec) (
 func (s *Service) emitCampaignLifecycleOutbox(ctx context.Context, q db.Querier, campaignID uuid.UUID, status db.CampaignStatusType, budgetLimit int64) error {
 	switch status {
 	case db.CampaignStatusTypeACTIVE:
-		payload, _ := json.Marshal(CampaignPayload{CampaignID: campaignID.String(), BudgetLimit: budgetLimit})
-		_, err := q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{EventType: "CREATE_CAMPAIGN", Payload: payload})
+		payload, err := cold.MarshalJSON(CampaignPayload{CampaignID: campaignID.String(), BudgetLimit: budgetLimit})
+		if err != nil {
+			return fmt.Errorf("marshal create campaign outbox payload: %w", err)
+		}
+		_, err = q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{EventType: "CREATE_CAMPAIGN", Payload: payload})
 		return err
 	case db.CampaignStatusTypePAUSED:
-		payload, _ := json.Marshal(CampaignPayload{CampaignID: campaignID.String()})
-		_, err := q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{EventType: "PAUSE_CAMPAIGN", Payload: payload})
+		payload, err := cold.MarshalJSON(CampaignPayload{CampaignID: campaignID.String()})
+		if err != nil {
+			return fmt.Errorf("marshal pause campaign outbox payload: %w", err)
+		}
+		_, err = q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{EventType: "PAUSE_CAMPAIGN", Payload: payload})
 		return err
 	default:
 		return nil
@@ -157,13 +165,13 @@ func (s *Service) PauseCampaign(ctx context.Context, campaignID uuid.UUID, reaso
 		q := db.New(tx)
 		camp, err := q.GetCampaignForUpdate(ctx, ads.ToUUID(campaignID))
 		if err != nil {
-			return fmt.Errorf("campaign not found: %w", err)
+			return mapNotFound(err, ErrCampaignNotFound)
 		}
 		if camp.Status == db.CampaignStatusTypePAUSED {
 			return nil
 		}
 		if camp.Status != db.CampaignStatusTypeACTIVE {
-			return fmt.Errorf("campaign cannot be paused in status %s", camp.Status)
+			return fmt.Errorf("%w in status %s", ErrCampaignCannotBePaused, camp.Status)
 		}
 
 		_, err = q.PauseCampaign(ctx, ads.ToUUID(campaignID))
@@ -186,7 +194,10 @@ func (s *Service) PauseCampaign(ctx context.Context, campaignID uuid.UUID, reaso
 		}
 		s.AuditLog(ctx, q, uid, "PAUSE_CAMPAIGN", "campaign", &campaignID, map[string]any{"reason": reason}, nil)
 
-		payload, _ := json.Marshal(CampaignPayload{CampaignID: campaignID.String()})
+		payload, err := cold.MarshalJSON(CampaignPayload{CampaignID: campaignID.String()})
+		if err != nil {
+			return fmt.Errorf("marshal pause campaign outbox payload: %w", err)
+		}
 		_, err = q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{EventType: "PAUSE_CAMPAIGN", Payload: payload})
 		return err
 	})
@@ -198,10 +209,10 @@ func (s *Service) ResumeCampaign(ctx context.Context, campaignID uuid.UUID, reas
 		q := db.New(tx)
 		camp, err := q.GetCampaignForUpdate(ctx, ads.ToUUID(campaignID))
 		if err != nil {
-			return fmt.Errorf("campaign not found: %w", err)
+			return mapNotFound(err, ErrCampaignNotFound)
 		}
 		if camp.Status != db.CampaignStatusTypePAUSED {
-			return fmt.Errorf("campaign is not paused")
+			return ErrCampaignNotPaused
 		}
 
 		now := time.Now()
@@ -213,7 +224,7 @@ func (s *Service) ResumeCampaign(ctx context.Context, campaignID uuid.UUID, reas
 			endAt = &camp.EndAt.Time
 		}
 		if resolveScheduleStatus(now, startAt, endAt) != db.CampaignStatusTypeACTIVE {
-			return fmt.Errorf("campaign is outside scheduled delivery window")
+			return ErrCampaignOutsideSchedule
 		}
 
 		_, err = q.ResumeCampaign(ctx, ads.ToUUID(campaignID))
@@ -236,7 +247,10 @@ func (s *Service) ResumeCampaign(ctx context.Context, campaignID uuid.UUID, reas
 		}
 		s.AuditLog(ctx, q, uid, "RESUME_CAMPAIGN", "campaign", &campaignID, map[string]any{"reason": reason}, nil)
 
-		payload, _ := json.Marshal(CampaignPayload{CampaignID: campaignID.String(), BudgetLimit: camp.BudgetLimit})
+		payload, err := cold.MarshalJSON(CampaignPayload{CampaignID: campaignID.String(), BudgetLimit: camp.BudgetLimit})
+		if err != nil {
+			return fmt.Errorf("marshal resume campaign outbox payload: %w", err)
+		}
 		_, err = q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{EventType: "RESUME_CAMPAIGN", Payload: payload})
 		return err
 	})
@@ -275,12 +289,15 @@ func (s *Service) UpdateCampaignSchedule(ctx context.Context, campaignID uuid.UU
 			"start_at": startAt, "end_at": endAt, "daypart_hours": daypartHours,
 		}, nil)
 
-		payload, _ := json.Marshal(map[string]any{
+		payload, err := cold.MarshalJSON(map[string]any{
 			"campaign_id":   campaignID.String(),
 			"start_at":      startAt,
 			"end_at":        endAt,
 			"daypart_hours": daypartHours,
 		})
+		if err != nil {
+			return fmt.Errorf("marshal update campaign schedule outbox payload: %w", err)
+		}
 		_, err = q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{EventType: "UPDATE_CAMPAIGN_SCHEDULE", Payload: payload})
 		if err != nil {
 			return err
@@ -370,10 +387,10 @@ func (s *Service) ListCampaignTemplates(ctx context.Context, customerID uuid.UUI
 func (s *Service) CreateCampaignFromTemplate(ctx context.Context, templateID uuid.UUID, customerID uuid.UUID, name string, budgetLimit *int64, idempotencyKey string) (uuid.UUID, error) {
 	tmpl, err := db.New(s.GetPool()).GetCampaignTemplate(ctx, ads.ToUUID(templateID))
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("template not found: %w", err)
+		return uuid.Nil, mapNotFound(err, ErrTemplateNotFound)
 	}
 	if uuid.UUID(tmpl.CustomerID.Bytes) != customerID {
-		return uuid.Nil, fmt.Errorf("template belongs to another customer")
+		return uuid.Nil, ErrTemplateBelongsToAnotherCustomer
 	}
 
 	limit := tmpl.BudgetLimit
@@ -443,13 +460,13 @@ func (s *Service) SaveCampaignAsTemplate(ctx context.Context, campaignID uuid.UU
 // UpsertBrandCreative creates a weighted landing URL variant and queues a Redis sync via cold.
 func (s *Service) UpsertBrandCreative(ctx context.Context, brandID uuid.UUID, name, landingURL string, weight int32, status string) (uuid.UUID, error) {
 	if weight <= 0 {
-		return uuid.Nil, fmt.Errorf("weight must be positive")
+		return uuid.Nil, ErrWeightMustBePositive
 	}
 	if status == "" {
 		status = "ACTIVE"
 	}
 	if status != "ACTIVE" && status != "PAUSED" {
-		return uuid.Nil, fmt.Errorf("status must be ACTIVE or PAUSED")
+		return uuid.Nil, ErrCreativeStatusInvalid
 	}
 
 	creativeID, err := uuid.NewV7()
@@ -460,7 +477,7 @@ func (s *Service) UpsertBrandCreative(ctx context.Context, brandID uuid.UUID, na
 	err = pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 		if _, err := q.GetBrand(ctx, ads.ToUUID(brandID)); err != nil {
-			return fmt.Errorf("brand not found: %w", err)
+			return mapNotFound(err, ErrBrandNotFound)
 		}
 		_, err := q.CreateBrandCreative(ctx, db.CreateBrandCreativeParams{
 			ID:         ads.ToUUID(creativeID),
@@ -493,7 +510,7 @@ func (s *Service) UpdateBrandCreative(ctx context.Context, creativeID uuid.UUID,
 		q := db.New(tx)
 		existing, err := q.GetBrandCreative(ctx, ads.ToUUID(creativeID))
 		if err != nil {
-			return fmt.Errorf("creative not found: %w", err)
+			return mapNotFound(err, ErrCreativeNotFound)
 		}
 		_, err = q.UpdateBrandCreative(ctx, db.UpdateBrandCreativeParams{
 			ID:         ads.ToUUID(creativeID),
@@ -515,7 +532,7 @@ func (s *Service) DeleteBrandCreative(ctx context.Context, creativeID uuid.UUID)
 		q := db.New(tx)
 		existing, err := q.GetBrandCreative(ctx, ads.ToUUID(creativeID))
 		if err != nil {
-			return fmt.Errorf("creative not found: %w", err)
+			return mapNotFound(err, ErrCreativeNotFound)
 		}
 		if err := q.DeleteBrandCreative(ctx, ads.ToUUID(creativeID)); err != nil {
 			return err
@@ -526,8 +543,11 @@ func (s *Service) DeleteBrandCreative(ctx context.Context, creativeID uuid.UUID)
 
 // emitBrandCreativesOutbox queues a Redis refresh of weighted creatives for a brand.
 func (s *Service) emitBrandCreativesOutbox(ctx context.Context, q db.Querier, brandID uuid.UUID) error {
-	payload, _ := json.Marshal(map[string]string{"brand_id": brandID.String()})
-	_, err := q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{EventType: "SYNC_BRAND_CREATIVES", Payload: payload})
+	payload, err := cold.MarshalJSON(map[string]string{"brand_id": brandID.String()})
+	if err != nil {
+		return fmt.Errorf("marshal sync brand creatives outbox payload: %w", err)
+	}
+	_, err = q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{EventType: "SYNC_BRAND_CREATIVES", Payload: payload})
 	return err
 }
 

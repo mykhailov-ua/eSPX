@@ -2,14 +2,15 @@ package management
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"espx/internal/ads"
 	"espx/internal/ads/db"
+	"espx/internal/database"
+	"espx/pkg/cold"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -81,7 +82,7 @@ func (w *OutboxWorker) Start(ctx context.Context, interval time.Duration) {
 				if ctx.Err() != nil {
 					return
 				}
-				if strings.Contains(err.Error(), "closed pool") {
+				if database.IsShutdownError(err) {
 					return
 				}
 				slog.Error("outbox polling loop iteration failed, retrying in 2s", "error", err)
@@ -107,7 +108,7 @@ func (w *OutboxWorker) reclaimStaleProcessing(ctx context.Context) {
 		WHERE status = 'PROCESSING'
 		  AND processing_started_at IS NOT NULL
 		  AND processing_started_at < NOW() - INTERVAL '1 minute'`)
-	if err != nil && ctx.Err() == nil && !strings.Contains(err.Error(), "closed pool") {
+	if err != nil && ctx.Err() == nil && !database.IsShutdownError(err) {
 		slog.Error("failed to reclaim stale outbox events", "error", err)
 	}
 }
@@ -154,11 +155,13 @@ func (w *OutboxWorker) ProcessOutboxWithCount(ctx context.Context, limit int32) 
 
 	processedIDs := make([]int64, 0, len(events))
 	revertIDs := make([]int64, 0, len(events))
+	var batchErrs []error
 
 	for _, ev := range events {
 		if err := w.handleOutboxEvent(opCtx, ctx, ev); err != nil {
 			slog.Warn("redis outbox processing failed for event, marking for revert", "id", ev.ID, "error", err)
 			revertIDs = append(revertIDs, ev.ID)
+			batchErrs = append(batchErrs, fmt.Errorf("outbox event %d: %w", ev.ID, err))
 			continue
 		}
 		processedIDs = append(processedIDs, ev.ID)
@@ -168,6 +171,7 @@ func (w *OutboxWorker) ProcessOutboxWithCount(ctx context.Context, limit int32) 
 		_, err = w.svc.GetPool().Exec(opCtx, "UPDATE outbox_events SET status = 'PROCESSED' WHERE id = ANY($1)", processedIDs)
 		if err != nil {
 			slog.Error("failed to mark outbox events as processed", "error", err)
+			batchErrs = append(batchErrs, fmt.Errorf("mark outbox processed: %w", err))
 		}
 	}
 
@@ -178,7 +182,12 @@ func (w *OutboxWorker) ProcessOutboxWithCount(ctx context.Context, limit int32) 
 			WHERE id = ANY($1)`, revertIDs)
 		if err != nil {
 			slog.Error("failed to revert failed outbox events", "error", err)
+			batchErrs = append(batchErrs, fmt.Errorf("revert outbox failed: %w", err))
 		}
+	}
+
+	if len(batchErrs) > 0 {
+		return len(processedIDs), errors.Join(batchErrs...)
 	}
 
 	return len(processedIDs), nil
@@ -253,7 +262,7 @@ func (w *OutboxWorker) applyBlacklistPayload(ctx context.Context, p BlacklistPay
 
 // syncBrandCreativesToRedis publishes weighted creative lists for hot-path rotation.
 func (w *OutboxWorker) syncBrandCreativesToRedis(ctx context.Context, brandIDStr string) error {
-	brandID, err := uuid.Parse(brandIDStr)
+	brandID, err := cold.ParseUUID(brandIDStr)
 	if err != nil {
 		return err
 	}
@@ -274,7 +283,7 @@ func (w *OutboxWorker) syncBrandCreativesToRedis(ctx context.Context, brandIDStr
 			Weight: r.Weight,
 		}
 	}
-	payload, err := json.Marshal(entries)
+	payload, err := cold.MarshalJSON(entries)
 	if err != nil {
 		return err
 	}

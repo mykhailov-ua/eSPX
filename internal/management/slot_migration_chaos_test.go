@@ -91,11 +91,6 @@ func setupSlotMigrationChaos(t *testing.T, rdbs []redis.UniversalClient) (*Servi
 	return svc, pool, context.Background()
 }
 
-// seededShardForSlot returns shard_id from v1 seed map (slot % 4).
-func seededShardForSlot(slot int16) int16 {
-	return int16(int(slot) % 4)
-}
-
 func buildFourRedisShards(base redis.UniversalClient, customize func(rdbs []redis.UniversalClient)) []redis.UniversalClient {
 	rdbs := []redis.UniversalClient{base, base, base, base}
 	if customize != nil {
@@ -307,7 +302,7 @@ func TestChaos_SlotMigrationConcurrentCopySameSlot(t *testing.T) {
 	})
 }
 
-// TestChaos_SlotMigrationConcurrentActivate serializes cutover — only one activate wins.
+// TestChaos_SlotMigrationConcurrentActivate serializes cutover - only one activate wins.
 func TestChaos_SlotMigrationConcurrentActivate(t *testing.T) {
 	if testing.Short() {
 		t.Skip("chaos integration test")

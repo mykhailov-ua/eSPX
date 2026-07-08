@@ -34,7 +34,7 @@ func TestRtbDealsAPI_CRUDAndOutbox(t *testing.T) {
 		TokenSymmetricKey: "01234567890123456789012345678901",
 	}
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
-	h := NewHandler(svc, cfg, nil, nil, nil)
+	h := NewHandler(svc, cfg, nil, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -135,7 +135,7 @@ func TestRtbDealsAPI_duplicateDealID(t *testing.T) {
 
 	cfg := &config.Config{AdminAPIKey: "test-secret"}
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
-	h := NewHandler(svc, cfg, nil, nil, nil)
+	h := NewHandler(svc, cfg, nil, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -166,7 +166,7 @@ func TestRtbDealsAPI_duplicateDealID(t *testing.T) {
 func TestRtbShadowDiffAPI(t *testing.T) {
 	cfg := &config.Config{AdminAPIKey: "test-secret"}
 	svc := newBareService(t, nil, nil, cfg)
-	h := NewHandler(svc, cfg, nil, nil, nil)
+	h := NewHandler(svc, cfg, nil, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -195,7 +195,7 @@ func TestRtbDealsAPI_invalidSeats(t *testing.T) {
 
 	cfg := &config.Config{AdminAPIKey: "test-secret"}
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
-	h := NewHandler(svc, cfg, nil, nil, nil)
+	h := NewHandler(svc, cfg, nil, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 

@@ -2,8 +2,8 @@ package management
 
 import (
 	"context"
-	"strings"
 
+	"espx/internal/database"
 	"espx/internal/metrics"
 )
 
@@ -23,7 +23,7 @@ func (w *OutboxWorker) recordOutboxLagMetrics(ctx context.Context) {
 		FROM outbox_events
 		WHERE status = 'PENDING'`).Scan(&pending, &oldestSeconds)
 	if err != nil {
-		if ctx.Err() != nil || strings.Contains(err.Error(), "closed pool") {
+		if ctx.Err() != nil || database.IsShutdownError(err) {
 			return
 		}
 		return

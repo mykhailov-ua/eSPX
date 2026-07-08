@@ -1,7 +1,21 @@
 -- name: CreateNotification :one
 INSERT INTO notifier.notifications (
-  id, provider, recipient, title, body, status, delivery_mode, broadcast_providers, dedup_key
-) VALUES ($1, $2, $3, $4, $5, 'PENDING', $6, $7, $8)
+  id, provider, recipient, title, body, status, delivery_mode, broadcast_providers, dedup_key,
+  template_id, template_vars, attachment_url
+) VALUES ($1, $2, $3, $4, $5, 'PENDING', $6, $7, $8, $9, $10, $11)
+RETURNING *;
+
+-- name: GetTemplate :one
+SELECT * FROM notifier.templates WHERE id = $1;
+
+-- name: RetryNotification :one
+UPDATE notifier.notifications
+SET status = 'PENDING',
+    retry_count = 0,
+    error_message = NULL,
+    claimed_at = NULL,
+    updated_at = now()
+WHERE id = $1 AND status = 'FAILED'
 RETURNING *;
 
 -- name: FindActiveNotificationByDedupKey :one

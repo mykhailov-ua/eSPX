@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"syscall"
-	"time"
 )
 
 // FileLeaderLock provides single-writer leader election via POSIX flock.
@@ -62,15 +61,4 @@ func (lock *FileLeaderLock) Release() error {
 // Path returns the lock file path.
 func (lock *FileLeaderLock) Path() string {
 	return lock.path
-}
-
-// leaderWaitBackoff returns how long a standby instance sleeps before retrying.
-func leaderWaitBackoff(interval time.Duration) time.Duration {
-	if interval <= 0 {
-		return time.Second
-	}
-	if interval > 5*time.Second {
-		return 5 * time.Second
-	}
-	return interval
 }

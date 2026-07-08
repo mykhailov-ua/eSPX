@@ -28,7 +28,7 @@ func TestWarmCampaignBudgetAPI(t *testing.T) {
 
 	cfg := &config.Config{AdminAPIKey: "test-secret"}
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
-	h := NewHandler(svc, cfg, nil, nil, nil)
+	h := NewHandler(svc, cfg, nil, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -69,7 +69,7 @@ func TestWarmCampaignBudget_noOutboxOrPubsub(t *testing.T) {
 	channel := "campaigns:warm-budget-test"
 	cfg := &config.Config{AdminAPIKey: "test-secret", CampaignUpdateChannel: channel}
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
-	h := NewHandler(svc, cfg, nil, nil, nil)
+	h := NewHandler(svc, cfg, nil, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 

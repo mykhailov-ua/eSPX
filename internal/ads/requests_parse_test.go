@@ -133,6 +133,49 @@ func TestAdEvent_UnmarshalVT_ZeroAlloc(t *testing.T) {
 	}
 }
 
+func testProtoTrackBodyExtraRepeated(t testing.TB) []byte {
+	t.Helper()
+	id := uuid.New()
+	evt := &pb.AdEvent{
+		CampaignId: id[:],
+		EventType:  []byte("click"),
+		Metadata: &pb.EventMetadata{
+			ClickId:     []byte("test-click"),
+			UserId:      []byte("user123"),
+			ExtraKeys:   [][]byte{[]byte("slot"), []byte("cpm")},
+			ExtraValues: [][]byte{[]byte("top"), []byte("1.25")},
+		},
+	}
+	body, err := evt.MarshalVT()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func TestAdEvent_UnmarshalVT_ExtraRepeated_ZeroAlloc(t *testing.T) {
+	body := testProtoTrackBodyExtraRepeated(t)
+	var evt pb.AdEvent
+	evt.Metadata = &pb.EventMetadata{}
+
+	for i := 0; i < 100; i++ {
+		resetPooledAdEvent(&evt)
+		if err := evt.UnmarshalVT(body); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	avg := testing.AllocsPerRun(100, func() {
+		resetPooledAdEvent(&evt)
+		if err := evt.UnmarshalVT(body); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if avg > 0 {
+		t.Fatalf("AdEvent.UnmarshalVT extra repeated allocated %f times per run, want 0", avg)
+	}
+}
+
 func BenchmarkTrackRequest_ParseJSON(b *testing.B) {
 	data := testTrackRequestJSON(b)
 	var req TrackRequest

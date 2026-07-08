@@ -37,7 +37,7 @@ func TestHandlerAudit_pagination(t *testing.T) {
 		svc.AuditLog(ctx, nil, adminID, "PAGINATION_TEST", "system", nil, map[string]int{"i": i}, nil)
 	}
 
-	h := NewHandler(svc, cfg, nil, nil, nil)
+	h := NewHandler(svc, cfg, nil, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 

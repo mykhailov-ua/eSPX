@@ -2,12 +2,12 @@ package management
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"espx/internal/ads"
 	"espx/internal/ads/db"
 	"espx/internal/domain"
+	"espx/pkg/cold"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -48,10 +48,10 @@ func campaignFraudConfigFromRow(id uuid.UUID, row db.Campaign) CampaignFraudConf
 
 func validateFraudThresholds(pass, suspect, ivt, block uint8) error {
 	if pass > 100 || suspect > 100 || ivt > 100 || block > 100 {
-		return fmt.Errorf("fraud thresholds must be between 0 and 100")
+		return errValidation("fraud thresholds must be between 0 and 100")
 	}
 	if pass > suspect || suspect > ivt || ivt > block {
-		return fmt.Errorf("fraud thresholds must be ordered: pass <= suspect <= ivt <= block")
+		return errValidation("fraud thresholds must be ordered: pass <= suspect <= ivt <= block")
 	}
 	return nil
 }
@@ -60,7 +60,7 @@ func validateFraudThresholds(pass, suspect, ivt, block uint8) error {
 func (s *Service) GetCampaignFraudConfig(ctx context.Context, campaignID uuid.UUID) (CampaignFraudConfigDTO, error) {
 	row, err := db.New(s.GetPool()).GetCampaignFull(ctx, ads.ToUUID(campaignID))
 	if err != nil {
-		return CampaignFraudConfigDTO{}, err
+		return CampaignFraudConfigDTO{}, mapNotFound(err, ErrCampaignNotFound)
 	}
 	return campaignFraudConfigFromRow(campaignID, row), nil
 }
@@ -73,7 +73,7 @@ func (s *Service) UpdateCampaignFraudConfig(ctx context.Context, campaignID uuid
 		q := db.New(tx)
 		locked, err := q.GetCampaignForUpdate(ctx, ads.ToUUID(campaignID))
 		if err != nil {
-			return err
+			return mapNotFound(err, ErrCampaignNotFound)
 		}
 
 		pass := uint8(locked.FraudThresholdPass)
@@ -132,7 +132,10 @@ func (s *Service) UpdateCampaignFraudConfig(ctx context.Context, campaignID uuid
 			"behavior_flags":          flags,
 		}, nil)
 
-		payload, _ := json.Marshal(map[string]string{"campaign_id": campaignID.String()})
+		payload, err := cold.MarshalJSON(map[string]string{"campaign_id": campaignID.String()})
+		if err != nil {
+			return fmt.Errorf("marshal update campaign fraud outbox payload: %w", err)
+		}
 		_, err = q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{
 			EventType: "UPDATE_CAMPAIGN_FRAUD",
 			Payload:   payload,

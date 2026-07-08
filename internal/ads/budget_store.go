@@ -2,7 +2,6 @@ package ads
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 	"sync"
 	"time"
@@ -130,12 +129,12 @@ func (m *RedisBudgetManager) CheckAndSpend(ctx context.Context, customerID, camp
 
 		if res == -1 {
 			if i > 0 {
-				return false, fmt.Errorf("budget cache miss on retry")
+				return false, ErrBudgetExhausted
 			}
 
 			camp, err := m.campaignRepo.GetByID(ctx, campaignID)
 			if err != nil {
-				return false, fmt.Errorf("failed to load campaign from db on cache miss: %w", err)
+				return false, err
 			}
 
 			remaining := camp.BudgetLimit - camp.CurrentSpend
@@ -150,5 +149,5 @@ func (m *RedisBudgetManager) CheckAndSpend(ctx context.Context, customerID, camp
 		return res == 1, nil
 	}
 
-	return false, fmt.Errorf("budget cache miss on retry")
+	return false, ErrBudgetExhausted
 }

@@ -208,14 +208,14 @@ func TestChaos_AdsRedisStopStartTrackRecovery(t *testing.T) {
 	AssertBudgetInvariant(t, context.Background(), infra.Pool, infra.Redis, stack.CampaignID)
 
 	logChaosProof(t, "redis_stop_start_recovery", map[string]string{
-		"subsystem":         "ads_ingest",
-		"op":                "track",
-		"baseline_ok":       "true",
-		"recovered":         strconv.FormatBool(recovered),
-		"health_degraded":   strconv.FormatFloat(trackerHealthDegradedMetric(t), 'f', 0, 64),
-		"breaker_shard0":    strconv.FormatFloat(redisBreakerStateMetric(t, chaosRedisShardLabel), 'f', 0, 64),
-		"steady_state":      "ad_tracker_health_degraded=0,ad_redis_breaker_state=closed",
-		"fault_verify":      "redis_container_stopped_then_started",
+		"subsystem":       "ads_ingest",
+		"op":              "track",
+		"baseline_ok":     "true",
+		"recovered":       strconv.FormatBool(recovered),
+		"health_degraded": strconv.FormatFloat(trackerHealthDegradedMetric(t), 'f', 0, 64),
+		"breaker_shard0":  strconv.FormatFloat(redisBreakerStateMetric(t, chaosRedisShardLabel), 'f', 0, 64),
+		"steady_state":    "ad_tracker_health_degraded=0,ad_redis_breaker_state=closed",
+		"fault_verify":    "redis_container_stopped_then_started",
 	})
 }
 

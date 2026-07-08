@@ -90,7 +90,15 @@ type Config struct {
 	SettlementInternalToken         Secret
 	StripeSecretKey                 Secret
 	StripeWebhookSecret             Secret
+	StripeCheckoutSuccessURL        string
+	StripeCheckoutCancelURL         string
 	PaymentFinancialReconIntervalMs int
+
+	SelfServeMaxActiveCampaigns int
+	SelfServeMaxCreatesPerDay   int
+	SelfServeBudgetMinMicro     int64
+	SelfServeBudgetMaxMicro     int64
+	SelfServeAPIKeyRPS          float64
 	Management                      struct {
 		RetentionDays               int
 		CancellationFeePercent      float64
@@ -132,11 +140,22 @@ type Config struct {
 
 	PacingToleranceMargin float64
 
-	CreditScoringMinAgeDays     float64
-	CreditScoringMatureAgeDays  float64
-	CreditScoringMidTierPercent int64
-	CreditScoringMaturePercent  int64
-	CreditScoringMaxCap         int64
+	CreditScoringMinAgeDays          float64
+	CreditScoringMatureAgeDays       float64
+	CreditScoringMidTierPercent     int64
+	CreditScoringMaturePercent      int64
+	CreditScoringMaxCap             int64
+	CreditScoringReconLagThreshold  int64
+	CreditScoringReconLagPenaltyPct int64
+
+	MABIntervalMs      int
+	MABMinImpressions  int64
+	MABLookbackDays    int
+
+	ConsentHMACSecret       Secret
+	ConsentRetentionMonths  int
+	ConsentUpdateChannel    string
+	ErasureWorkerIntervalMs int
 
 	Lifecycle struct {
 		ShutdownTimeoutMs int
@@ -210,6 +229,8 @@ type Config struct {
 		RetentionSentDays          int
 		RetentionFailedDays        int
 		RetentionIntervalHours     int
+		InvoiceRecipient           string
+		InvoiceProvider            string
 		AdminBaseURL               string
 		WorkerConcurrency          int
 		DedupCooldownSec           int
@@ -241,9 +262,10 @@ type Config struct {
 	}
 
 	Billing struct {
-		Port        string
-		ServerHost  string
-		MetricsPort string
+		Port                 string
+		ServerHost           string
+		MetricsPort          string
+		InvoiceWorkerEnabled bool
 	}
 
 	BillingInternalToken Secret
@@ -355,11 +377,20 @@ func Load() (*Config, error) {
 		BidFloorMinMicro:                getEnvMicro("BID_FLOOR_MIN_MICRO", 1000),
 		DealFloorRefreshIntervalMs:      getEnvInt("DEAL_FLOOR_REFRESH_INTERVAL_MS", 60_000),
 		PacingToleranceMargin:           getEnvFloat("PACING_TOLERANCE_MARGIN", 0.15),
-		CreditScoringMinAgeDays:         getEnvFloat("CREDIT_SCORING_MIN_AGE_DAYS", 7.0),
-		CreditScoringMatureAgeDays:      getEnvFloat("CREDIT_SCORING_MATURE_AGE_DAYS", 30.0),
-		CreditScoringMidTierPercent:     getEnvInt64("CREDIT_SCORING_MID_TIER_PERCENT", 15),
-		CreditScoringMaturePercent:      getEnvInt64("CREDIT_SCORING_MATURE_PERCENT", 30),
-		CreditScoringMaxCap:             getEnvMicro("CREDIT_SCORING_MAX_CAP", 10000.0),
+		CreditScoringMinAgeDays:          getEnvFloat("CREDIT_SCORING_MIN_AGE_DAYS", 7.0),
+		CreditScoringMatureAgeDays:       getEnvFloat("CREDIT_SCORING_MATURE_AGE_DAYS", 30.0),
+		CreditScoringMidTierPercent:      getEnvInt64("CREDIT_SCORING_MID_TIER_PERCENT", 15),
+		CreditScoringMaturePercent:       getEnvInt64("CREDIT_SCORING_MATURE_PERCENT", 30),
+		CreditScoringMaxCap:              getEnvMicro("CREDIT_SCORING_MAX_CAP", 10000.0),
+		CreditScoringReconLagThreshold:   getEnvMicro("CREDIT_SCORING_RECON_LAG_THRESHOLD_MICRO", 100.0),
+		CreditScoringReconLagPenaltyPct:  getEnvInt64("CREDIT_SCORING_RECON_LAG_PENALTY_PCT", 50),
+		MABIntervalMs:                    getEnvInt("MAB_INTERVAL_MS", 900_000),
+		MABMinImpressions:                getEnvInt64("MAB_MIN_IMPRESSIONS", 1000),
+		MABLookbackDays:                  getEnvInt("MAB_LOOKBACK_DAYS", 90),
+		ConsentHMACSecret:                Secret(os.Getenv("CONSENT_HMAC_SECRET")),
+		ConsentRetentionMonths:           getEnvInt("CONSENT_RETENTION_MONTHS", 13),
+		ConsentUpdateChannel:             envOrDefault("CONSENT_UPDATE_CHANNEL", "consent:update"),
+		ErasureWorkerIntervalMs:          getEnvInt("ERASURE_WORKER_INTERVAL_MS", 60_000),
 		PaymentServerPort:               os.Getenv("PAYMENT_SERVER_PORT"),
 		PaymentServerHost:               os.Getenv("PAYMENT_SERVER_HOST"),
 		PaymentMetricsPort:              os.Getenv("PAYMENT_METRICS_PORT"),
@@ -370,7 +401,14 @@ func Load() (*Config, error) {
 		SettlementInternalToken:         Secret(os.Getenv("SETTLEMENT_INTERNAL_TOKEN")),
 		StripeSecretKey:                 Secret(os.Getenv("STRIPE_SECRET_KEY")),
 		StripeWebhookSecret:             Secret(os.Getenv("STRIPE_WEBHOOK_SECRET")),
+		StripeCheckoutSuccessURL:        os.Getenv("STRIPE_CHECKOUT_SUCCESS_URL"),
+		StripeCheckoutCancelURL:         os.Getenv("STRIPE_CHECKOUT_CANCEL_URL"),
 		PaymentFinancialReconIntervalMs: getEnvInt("PAYMENT_FINANCIAL_RECON_INTERVAL_MS", 0),
+		SelfServeMaxActiveCampaigns:     getEnvInt("SELF_SERVE_MAX_ACTIVE_CAMPAIGNS", 500),
+		SelfServeMaxCreatesPerDay:       getEnvInt("SELF_SERVE_MAX_CREATES_PER_DAY", 50),
+		SelfServeBudgetMinMicro:         getEnvMicro("SELF_SERVE_BUDGET_MIN_MICRO", 1.0),
+		SelfServeBudgetMaxMicro:         getEnvMicro("SELF_SERVE_BUDGET_MAX_MICRO", 1_000_000.0),
+		SelfServeAPIKeyRPS:              getEnvFloat("SELF_SERVE_API_KEY_RPS", 30),
 	}
 
 	cfg.Logger.Dir = os.Getenv("LOGGER_DIR")
@@ -459,7 +497,7 @@ func Load() (*Config, error) {
 		cfg.Notifier.MetricsPort = "8086"
 	}
 	cfg.Notifier.RetentionSentDays = getEnvInt("NOTIFIER_RETENTION_SENT_DAYS", 30)
-	cfg.Notifier.RetentionFailedDays = getEnvInt("NOTIFIER_RETENTION_FAILED_DAYS", 90)
+	cfg.Notifier.RetentionFailedDays = getEnvInt("NOTIFIER_RETENTION_FAILED_DAYS", 7)
 	cfg.Notifier.RetentionIntervalHours = getEnvInt("NOTIFIER_RETENTION_INTERVAL_HOURS", 24)
 	cfg.Notifier.AdminBaseURL = os.Getenv("NOTIFIER_ADMIN_BASE_URL")
 	if cfg.Notifier.AdminBaseURL == "" {
@@ -471,6 +509,16 @@ func Load() (*Config, error) {
 	cfg.Notifier.GroupParallelism = getEnvInt("NOTIFIER_GROUP_PARALLELISM", 2)
 	cfg.Notifier.RateLimitPerMinute = getEnvInt("NOTIFIER_RATE_LIMIT_PER_MINUTE", 60)
 	cfg.Notifier.TelegramRateLimitPerMinute = getEnvInt("NOTIFIER_TELEGRAM_RATE_LIMIT", 20)
+	cfg.Notifier.InvoiceRecipient = os.Getenv("BILLING_INVOICE_NOTIFY_RECIPIENT")
+	invoiceProvider := os.Getenv("BILLING_INVOICE_NOTIFY_PROVIDER")
+	switch strings.ToUpper(invoiceProvider) {
+	case "SLACK":
+		cfg.Notifier.InvoiceProvider = "SLACK"
+	case "SMTP":
+		cfg.Notifier.InvoiceProvider = "SMTP"
+	default:
+		cfg.Notifier.InvoiceProvider = "TELEGRAM"
+	}
 
 	cfg.IVT.Enabled = getEnvBool("IVT_DETECTOR_ENABLED", true)
 	cfg.IVT.ScanIntervalMs = getEnvInt("IVT_DETECTOR_SCAN_INTERVAL_MS", 300000)
@@ -493,6 +541,7 @@ func Load() (*Config, error) {
 	if cfg.Billing.MetricsPort == "" {
 		cfg.Billing.MetricsPort = "9092"
 	}
+	cfg.Billing.InvoiceWorkerEnabled = getEnvBool("BILLING_INVOICE_WORKER_ENABLED", true)
 	cfg.BillingInternalToken = Secret(os.Getenv("BILLING_INTERNAL_TOKEN"))
 
 	if len(cfg.AllowedOrigins) == 1 && cfg.AllowedOrigins[0] == "" {
@@ -613,6 +662,13 @@ func Load() (*Config, error) {
 	if cfg.PaymentWebhookPort == "" {
 		// Separate HTTP port isolates Stripe webhook ingress from management admin traffic.
 		cfg.PaymentWebhookPort = "8187"
+	}
+	paymentHTTPBase := "http://127.0.0.1:" + cfg.PaymentWebhookPort
+	if cfg.StripeCheckoutSuccessURL == "" {
+		cfg.StripeCheckoutSuccessURL = paymentHTTPBase + "/ui/payment/return?status=success&session_id={CHECKOUT_SESSION_ID}"
+	}
+	if cfg.StripeCheckoutCancelURL == "" {
+		cfg.StripeCheckoutCancelURL = paymentHTTPBase + "/ui/payment/return?status=cancelled"
 	}
 	if cfg.SettlementServerPort == "" {
 		cfg.SettlementServerPort = "51053"

@@ -41,9 +41,7 @@ func (stub *stubPaymentNotifierClient) SendNotificationBatch(
 ) (*notifierpb.SendNotificationBatchResponse, error) {
 	stub.mu.Lock()
 	defer stub.mu.Unlock()
-	for _, item := range in.Notifications {
-		stub.requests = append(stub.requests, item)
-	}
+	stub.requests = append(stub.requests, in.Notifications...)
 	return &notifierpb.SendNotificationBatchResponse{}, nil
 }
 

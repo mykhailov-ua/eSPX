@@ -39,7 +39,7 @@ func (s *Service) GetCustomerBalance(ctx context.Context, customerID uuid.UUID) 
 	q := db.New(s.GetPool())
 	cust, err := q.GetCustomerByID(ctx, ads.ToUUID(customerID))
 	if err != nil {
-		return CustomerBalanceDTO{}, err
+		return CustomerBalanceDTO{}, mapNotFound(err, ErrCustomerNotFound)
 	}
 
 	rows, err := q.ListCustomerLedgerByIDDesc(ctx, ads.ToUUID(customerID))

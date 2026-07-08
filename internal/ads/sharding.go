@@ -63,9 +63,8 @@ func (s *StaticSlotSharder) StoreSlotMap(table *[1024]uint16) {
 	if table == nil {
 		return
 	}
-	var copy slotTable
-	copy = slotTable(*table)
-	s.slots.Store(&copy)
+	var tableCopy slotTable = slotTable(*table)
+	s.slots.Store(&tableCopy)
 }
 
 // SetActiveVersion records the Postgres map version loaded into this sharder (cold path).

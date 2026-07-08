@@ -1,7 +1,6 @@
 package management
 
 import (
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -23,6 +22,7 @@ func (h *Handler) registerDeliveryRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/campaigns/{id}/pause", h.limit(h.perm(h.pauseCampaign, PermCampaignsWrite)))
 	mux.HandleFunc("POST /admin/campaigns/{id}/resume", h.limit(h.perm(h.resumeCampaign, PermCampaignsWrite)))
 	mux.HandleFunc("POST /admin/campaigns/{id}/schedule", h.limit(h.perm(h.updateCampaignSchedule, PermCampaignsWrite)))
+	mux.HandleFunc("POST /admin/campaigns/{id}/warm-budget", h.limit(h.perm(h.warmCampaignBudget, PermCampaignsWrite)))
 
 	mux.HandleFunc("POST /admin/brands/{id}/creatives", h.limit(h.perm(h.createBrandCreative, PermBrandsWrite)))
 	mux.HandleFunc("GET /admin/brands/{id}/creatives", h.limit(h.perm(h.listBrandCreatives, PermBrandsRead)))
@@ -72,7 +72,7 @@ func (h *Handler) createCampaignTemplate(w http.ResponseWriter, r *http.Request)
 	}
 	budgetMicro, err := parseBudgetMicro(req.BudgetLimitMicro, budgetLegacy, hasBudget)
 	if err != nil {
-		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		writeServiceError(w, err)
 		return
 	}
 	dailyLegacy := 0.0
@@ -82,7 +82,7 @@ func (h *Handler) createCampaignTemplate(w http.ResponseWriter, r *http.Request)
 	}
 	dailyMicro, err := parseMoneyMicro(req.DailyBudgetMicro, dailyLegacy, hasDaily, "daily_budget")
 	if err != nil {
-		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		writeServiceError(w, err)
 		return
 	}
 	id, err := h.svc.CreateCampaignTemplate(r.Context(), req.CustomerID, req.Name, budgetMicro, pacing, dailyMicro, req.Timezone, req.FreqLimit, req.FreqWindow, req.TargetCountries, req.BrandID, req.DaypartHours)
@@ -97,7 +97,12 @@ func (h *Handler) createCampaignTemplate(w http.ResponseWriter, r *http.Request)
 func (h *Handler) listCampaignTemplates(w http.ResponseWriter, r *http.Request) {
 	var custID uuid.UUID
 	if cStr := r.URL.Query().Get("customer_id"); cStr != "" {
-		custID, _ = uuid.Parse(cStr)
+		var parseErr error
+		custID, parseErr = uuid.Parse(cStr)
+		if parseErr != nil {
+			httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid customer_id")
+			return
+		}
 	}
 	if u, ok := GetUser(r.Context()); ok && u.IsUser() {
 		custID = u.CustomerID
@@ -127,13 +132,13 @@ func (h *Handler) createCampaignFromTemplate(w http.ResponseWriter, r *http.Requ
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
-	var req struct {
+	req, err := cold.DecodeBody[struct {
 		CustomerID       uuid.UUID `json:"customer_id"`
 		Name             string    `json:"name"`
 		BudgetLimitMicro *int64    `json:"budget_limit_micro"`
 		BudgetLimit      *float64  `json:"budget_limit"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
+	}](body)
+	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
@@ -147,10 +152,14 @@ func (h *Handler) createCampaignFromTemplate(w http.ResponseWriter, r *http.Requ
 	}
 	budgetMicro, err := optionalBudgetMicro(req.BudgetLimitMicro, req.BudgetLimit)
 	if err != nil {
-		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		writeServiceError(w, err)
 		return
 	}
-	hash := h.svc.GenerateIdempotencyHash(req.CustomerID, body)
+	hash, err := h.svc.GenerateIdempotencyHash(req.CustomerID, body)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
 	id, err := h.svc.CreateCampaignFromTemplate(r.Context(), templateID, req.CustomerID, req.Name, budgetMicro, hash)
 	if err != nil {
 		writeServiceError(w, err)

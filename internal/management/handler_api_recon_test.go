@@ -29,7 +29,7 @@ func TestAPI_ListReconRuns_Management(t *testing.T) {
 	cfg := &config.Config{AdminAPIKey: "test-secret"}
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
 	svc.SetPaymentPool(pool)
-	h := NewHandler(svc, cfg, nil, nil, nil)
+	h := NewHandler(svc, cfg, nil, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 

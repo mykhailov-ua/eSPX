@@ -46,6 +46,8 @@ if [[ "$RUN_PROTO" -eq 1 ]]; then
 	# buf out: gen is relative to api/; running from repo root would write to $ROOT/gen.
 	( cd "$ROOT/api" && go run github.com/bufbuild/buf/cmd/buf@latest generate --template buf.gen.yml . )
 	safe_sync_proto_gen
+	echo "gen: patch vtproto hot path..."
+	( cd "$ROOT" && go run ./scripts/codegen/patch_vtproto_hotpath )
 fi
 
 if [[ "$RUN_BPF" -eq 1 ]]; then

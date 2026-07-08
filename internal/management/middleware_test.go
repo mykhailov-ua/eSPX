@@ -25,7 +25,7 @@ func TestAuthMiddleware_RequireAuth(t *testing.T) {
 	tokenMaker, err := auth.NewPasetoMaker(string(cfg.TokenSymmetricKey))
 	require.NoError(t, err)
 
-	m := NewAuthMiddleware(tokenMaker, nil, cfg)
+	m := NewAuthMiddleware(tokenMaker, nil, cfg, nil)
 
 	targetHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		u, ok := GetUser(r.Context())
@@ -141,7 +141,7 @@ func TestAuthMiddleware_RedisOutage(t *testing.T) {
 	tokenMaker, err := auth.NewPasetoMaker(string(cfg.TokenSymmetricKey))
 	require.NoError(t, err)
 
-	m := NewAuthMiddleware(tokenMaker, rdb, cfg)
+	m := NewAuthMiddleware(tokenMaker, rdb, cfg, nil)
 
 	targetHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

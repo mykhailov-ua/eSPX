@@ -1,9 +1,7 @@
 package management
 
 import (
-	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"espx/internal/ads"
@@ -25,7 +23,7 @@ func (h *Handler) registerRtbRoutes(mux *http.ServeMux) {
 func (h *Handler) listRtbDeals(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.svc.ListRtbDeals(r.Context())
 	if err != nil {
-		writeRtbDealError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	httpresponse.JSON(w, http.StatusOK, map[string]any{"deals": rows})
@@ -39,7 +37,7 @@ func (h *Handler) getRtbDeal(w http.ResponseWriter, r *http.Request) {
 	}
 	row, err := h.svc.GetRtbDeal(r.Context(), id)
 	if err != nil {
-		writeRtbDealError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	httpresponse.JSON(w, http.StatusOK, row)
@@ -53,7 +51,7 @@ func (h *Handler) createRtbDeal(w http.ResponseWriter, r *http.Request) {
 	}
 	row, err := h.svc.CreateRtbDeal(r.Context(), spec)
 	if err != nil {
-		writeRtbDealError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	httpresponse.JSON(w, http.StatusCreated, row)
@@ -72,7 +70,7 @@ func (h *Handler) updateRtbDeal(w http.ResponseWriter, r *http.Request) {
 	}
 	row, err := h.svc.UpdateRtbDeal(r.Context(), id, spec)
 	if err != nil {
-		writeRtbDealError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	httpresponse.JSON(w, http.StatusOK, row)
@@ -85,7 +83,7 @@ func (h *Handler) deleteRtbDeal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.svc.DeleteRtbDeal(r.Context(), id); err != nil {
-		writeRtbDealError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	httpresponse.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -117,20 +115,4 @@ func parseDurationQuery(r *http.Request, key string, fallback time.Duration) tim
 		return fallback
 	}
 	return d
-}
-
-func writeRtbDealError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, ErrRtbDealNotFound), errors.Is(err, ErrDealCustomerMissing):
-		httpresponse.Error(w, http.StatusNotFound, "NOT_FOUND", err.Error())
-	case errors.Is(err, ErrInvalidDealPacing), errors.Is(err, ErrDuplicateDealID), errors.Is(err, ErrInvalidDealSeats):
-		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
-	default:
-		msg := err.Error()
-		if strings.Contains(msg, "required") || strings.Contains(msg, "must be") {
-			httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", msg)
-			return
-		}
-		writeServiceError(w, err)
-	}
 }

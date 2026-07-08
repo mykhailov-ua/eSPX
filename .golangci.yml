@@ -16,6 +16,12 @@ linters-settings:
     rules:
       - name: exported
         disabled: true
+  staticcheck:
+    # R11.2: SA9003 empty branch, SA4017 crypto/rand misuse (+ default staticcheck suite).
+    checks:
+      - all
+      - SA9003
+      - SA4017
 
 issues:
   exclude-rules:
@@ -23,6 +29,9 @@ issues:
       linters:
         - errcheck
         - revive
-    - text: 'Error return value of .((os\.)?std(out|err)\..*|.*Close|.*Flush|.*Write).* is not checked'
+    - path: '(/|^)(.*/)?pb/'
+      linters:
+        - errcheck
+    - path: '(/|^)(.*/)?db/'
       linters:
         - errcheck

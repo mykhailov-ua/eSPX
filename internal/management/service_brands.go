@@ -2,7 +2,6 @@ package management
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -48,7 +47,7 @@ func (s *Service) CreateBrand(ctx context.Context, customerID uuid.UUID, name st
 	q := db.New(s.GetPool())
 	_, err = q.GetCustomerByID(ctx, ads.ToUUID(customerID))
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("customer not found: %w", err)
+		return uuid.Nil, mapNotFound(err, ErrCustomerNotFound)
 	}
 
 	_, err = q.CreateBrand(ctx, db.CreateBrandParams{
@@ -68,7 +67,7 @@ func (s *Service) GetBrandDTO(ctx context.Context, id uuid.UUID) (BrandDTO, erro
 	q := db.New(s.GetPool())
 	b, err := q.GetBrand(ctx, ads.ToUUID(id))
 	if err != nil {
-		return BrandDTO{}, err
+		return BrandDTO{}, mapNotFound(err, ErrBrandNotFound)
 	}
 	return toBrandDTO(b), nil
 }
@@ -91,7 +90,7 @@ func (s *Service) ConfigureBrandFcap(ctx context.Context, brandID uuid.UUID, lim
 
 		brand, err := q.GetBrandForUpdate(ctx, ads.ToUUID(brandID))
 		if err != nil {
-			return fmt.Errorf("brand not found: %w", err)
+			return mapNotFound(err, ErrBrandNotFound)
 		}
 
 		err = q.ConfigureBrandFcap(ctx, db.ConfigureBrandFcapParams{
@@ -103,13 +102,13 @@ func (s *Service) ConfigureBrandFcap(ctx context.Context, brandID uuid.UUID, lim
 			return fmt.Errorf("failed to update brand fcap limits: %w", err)
 		}
 
-		payloadBytes, err := json.Marshal(map[string]any{
+		payloadBytes, err := cold.MarshalJSON(map[string]any{
 			"brand_id":    brandID.String(),
 			"freq_limit":  limit,
 			"freq_window": window,
 		})
 		if err != nil {
-			return fmt.Errorf("failed to marshal outbox event payload: %w", err)
+			return fmt.Errorf("marshal configure brand fcap outbox payload: %w", err)
 		}
 
 		_, err = q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{

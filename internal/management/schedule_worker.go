@@ -3,8 +3,9 @@ package management
 import (
 	"context"
 	"log/slog"
-	"strings"
 	"time"
+
+	"espx/internal/database"
 )
 
 // ScheduleWorker drives automatic pause and resume when campaigns enter or leave their delivery windows.
@@ -29,7 +30,7 @@ func (w *ScheduleWorker) Start(ctx context.Context) {
 			return
 		case <-ticker.C:
 			if err := w.svc.ProcessScheduleTick(ctx); err != nil {
-				if strings.Contains(err.Error(), "closed pool") {
+				if database.IsShutdownError(err) {
 					return
 				}
 				slog.Error("schedule worker tick failed", "error", err)

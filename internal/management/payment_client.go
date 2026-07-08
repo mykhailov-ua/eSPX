@@ -65,3 +65,28 @@ func (c *PaymentClient) CreatePaymentIntent(ctx context.Context, customerID stri
 		Metadata:       meta,
 	})
 }
+
+// ListDisputes returns disputed payment intents from the payment service.
+func (c *PaymentClient) ListDisputes(ctx context.Context, customerID string, limit, offset int32) (*paymentpb.ListDisputesResponse, error) {
+	if c == nil || c.client == nil {
+		return nil, fmt.Errorf("payment client not configured")
+	}
+	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-internal-token", c.token)
+	return c.client.ListDisputes(grpcCtx, &paymentpb.ListDisputesRequest{
+		CustomerId: customerID,
+		Limit:      limit,
+		Offset:     offset,
+	})
+}
+
+// ReplayWebhook re-drives a stored provider webhook event through the payment pipeline.
+func (c *PaymentClient) ReplayWebhook(ctx context.Context, provider, providerEventID string) (*paymentpb.ReplayWebhookResponse, error) {
+	if c == nil || c.client == nil {
+		return nil, fmt.Errorf("payment client not configured")
+	}
+	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-internal-token", c.token)
+	return c.client.ReplayWebhook(grpcCtx, &paymentpb.ReplayWebhookRequest{
+		Provider:        provider,
+		ProviderEventId: providerEventID,
+	})
+}

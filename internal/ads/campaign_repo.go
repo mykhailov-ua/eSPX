@@ -78,7 +78,23 @@ func campaignFromDBRow(row db.Campaign) *domain.Campaign {
 		FraudThresholdBlock:   uint8(row.FraudThresholdBlock),
 		GhostIVTEnabled:       row.GhostIvtEnabled,
 		BehaviorFlags:         domain.BehaviorFlags(row.BehaviorFlags),
+		RequireConsentPurposes: row.RequireConsentPurposes,
 	}
+}
+
+// dbQuerier exposes the backing DBTX so sync workers can commit spend with sync_idempotency.
+type dbQuerier struct {
+	db.Querier
+	dbtx db.DBTX
+}
+
+func (q *dbQuerier) DB() db.DBTX {
+	return q.dbtx
+}
+
+// NewCampaignRepoWithDB wraps querier with a DB handle for idempotent sync flushes.
+func NewCampaignRepoWithDB(dbtx db.DBTX, queries db.Querier) *CampaignRepo {
+	return &CampaignRepo{queries: &dbQuerier{Querier: queries, dbtx: dbtx}}
 }
 
 // CampaignRepo loads campaigns and applies idempotent budget sync updates from Redis.
@@ -198,6 +214,11 @@ type CustomerRepo struct {
 
 func NewCustomerRepo(queries db.Querier) *CustomerRepo {
 	return &CustomerRepo{queries: queries}
+}
+
+// NewCustomerRepoWithDB wraps querier with a DB handle for idempotent sync flushes.
+func NewCustomerRepoWithDB(dbtx db.DBTX, queries db.Querier) *CustomerRepo {
+	return &CustomerRepo{queries: &dbQuerier{Querier: queries, dbtx: dbtx}}
 }
 
 func (r *CustomerRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Customer, error) {

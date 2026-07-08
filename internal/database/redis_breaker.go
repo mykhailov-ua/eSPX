@@ -145,6 +145,10 @@ func IsNetworkOrSystemError(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return true
+	}
 	var netErr net.Error
 	if errors.As(err, &netErr) {
 		return true

@@ -13,7 +13,7 @@ type Limiter interface {
 	Allow(ctx context.Context, key string, limit int, window time.Duration) (bool, error)
 }
 
-// RedisLimiter counts attempts in Redis for simple per-key rate limiting outside login lockout.
+// RedisLimiter counts attempts in Redis for per-key rate limiting outside login lockout.
 type RedisLimiter struct {
 	rdb *redis.Client
 }

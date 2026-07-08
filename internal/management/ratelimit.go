@@ -82,6 +82,42 @@ func (h *Handler) limitByIP(next http.HandlerFunc) http.HandlerFunc {
 const customerExportRPS = 1.0
 const customerExportBurst = 3
 
+const defaultAPIKeyRPS = 30.0
+const defaultAPIKeyBurst = 60
+
+// apiKeyRateLimiter throttles self-serve machine clients per API key digest.
+type apiKeyRateLimiter struct {
+	mu      sync.Mutex
+	limit   rate.Limit
+	burst   int
+	entries map[string]*rate.Limiter
+}
+
+func newAPIKeyRateLimiter(rps float64, burst int) *apiKeyRateLimiter {
+	if rps <= 0 {
+		rps = defaultAPIKeyRPS
+	}
+	if burst <= 0 {
+		burst = defaultAPIKeyBurst
+	}
+	return &apiKeyRateLimiter{
+		limit:   rate.Limit(rps),
+		burst:   burst,
+		entries: make(map[string]*rate.Limiter),
+	}
+}
+
+func (l *apiKeyRateLimiter) allow(keyDigest string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	lim, ok := l.entries[keyDigest]
+	if !ok {
+		lim = rate.NewLimiter(l.limit, l.burst)
+		l.entries[keyDigest] = lim
+	}
+	return lim.Allow()
+}
+
 // customerRateLimiter throttles CSV export per customer so one tenant cannot exhaust gateway capacity.
 type customerRateLimiter struct {
 	mu      sync.Mutex

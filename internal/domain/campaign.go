@@ -60,6 +60,9 @@ type Campaign struct {
 	EndAt        *time.Time
 	DaypartHours map[int16]struct{}
 
+	// RequireConsentPurposes is a 16-bit mask of required consent purpose bits (M6.3).
+	RequireConsentPurposes int16
+
 	// Fraud tier upper bounds (0-100); block tier is scores > FraudThresholdIVT up to 100.
 	FraudThresholdPass    uint8
 	FraudThresholdSuspect uint8

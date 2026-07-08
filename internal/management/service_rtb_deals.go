@@ -2,7 +2,6 @@ package management
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -21,7 +20,7 @@ import (
 var (
 	ErrRtbDealNotFound     = errors.New("rtb deal not found")
 	ErrInvalidDealPacing   = rtb.ErrInvalidDealPacing
-	ErrDuplicateDealID    = errors.New("deal_id already exists")
+	ErrDuplicateDealID     = errors.New("deal_id already exists")
 	ErrDealCustomerMissing = errors.New("customer not found")
 	ErrInvalidDealSeats    = errors.New("seats must be at least 1")
 )
@@ -85,9 +84,9 @@ func toRtbDealDTO(r db.RtbDeal) RtbDealDTO {
 func parseDealCustomerID(raw string) (uuid.UUID, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return uuid.Nil, fmt.Errorf("customer_id is required")
+		return uuid.Nil, errValidation("customer_id is required")
 	}
-	return uuid.Parse(raw)
+	return cold.ParseUUID(raw)
 }
 
 func isUniqueViolation(err error) bool {
@@ -106,7 +105,7 @@ func normalizeDealSeats(seats int32) (int32, error) {
 }
 
 func (s *Service) enqueueRtbCatalogReload(ctx context.Context, q db.Querier, trigger string) error {
-	payload, err := json.Marshal(RtbCatalogReloadPayload{Trigger: trigger})
+	payload, err := cold.MarshalJSON(RtbCatalogReloadPayload{Trigger: trigger})
 	if err != nil {
 		return err
 	}
@@ -154,10 +153,10 @@ func (s *Service) CreateRtbDeal(ctx context.Context, spec RtbDealCreateSpec) (Rt
 		return RtbDealDTO{}, err
 	}
 	if strings.TrimSpace(spec.DealID) == "" {
-		return RtbDealDTO{}, fmt.Errorf("deal_id is required")
+		return RtbDealDTO{}, errValidation("deal_id is required")
 	}
 	if spec.FloorMicro < 0 {
-		return RtbDealDTO{}, fmt.Errorf("floor_micro must be non-negative")
+		return RtbDealDTO{}, errValidation("floor_micro must be non-negative")
 	}
 	seats, err := normalizeDealSeats(spec.Seats)
 	if err != nil {
@@ -214,10 +213,10 @@ func (s *Service) UpdateRtbDeal(ctx context.Context, id int64, spec RtbDealUpdat
 		return RtbDealDTO{}, err
 	}
 	if strings.TrimSpace(spec.DealID) == "" {
-		return RtbDealDTO{}, fmt.Errorf("deal_id is required")
+		return RtbDealDTO{}, errValidation("deal_id is required")
 	}
 	if spec.FloorMicro < 0 {
-		return RtbDealDTO{}, fmt.Errorf("floor_micro must be non-negative")
+		return RtbDealDTO{}, errValidation("floor_micro must be non-negative")
 	}
 	seats, err := normalizeDealSeats(spec.Seats)
 	if err != nil {

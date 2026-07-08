@@ -69,8 +69,11 @@ func TestE2E_Idempotency(t *testing.T) {
 	require.NoError(t, err)
 
 	registry := testutil.NewAdsRegistry(t, queries)
-	registry.SetBudgetWarmer(ads.NewBudgetCacheWarmer([]redis.UniversalClient{rdb}, sharder))
+	budgetWarmer := ads.NewBudgetCacheWarmer([]redis.UniversalClient{rdb}, sharder)
+	registry.SetBudgetWarmer(budgetWarmer)
 	_, err = registry.Sync(ctx)
+	require.NoError(t, err)
+	_, err = budgetWarmer.WarmFromRegistry(ctx, registry)
 	require.NoError(t, err)
 
 	budgetKey := "budget:campaign:" + campaignID.String()
@@ -79,8 +82,8 @@ func TestE2E_Idempotency(t *testing.T) {
 	require.Equal(t, int64(budgetLimitMicro), initialBudget)
 
 	store := ads.NewPostgresStore(queries, 1*time.Second)
-	campaignRepo := ads.NewCampaignRepo(queries)
-	customerRepo := ads.NewCustomerRepo(queries)
+	campaignRepo := ads.NewCampaignRepoWithDB(pool, queries)
+	customerRepo := ads.NewCustomerRepoWithDB(pool, queries)
 	streamName := "test-idempotency-stream"
 
 	unifiedFilter := ads.NewUnifiedFilter(

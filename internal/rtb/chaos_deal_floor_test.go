@@ -58,12 +58,12 @@ func TestChaos_rtb_deal_floor(t *testing.T) {
 	assert.Equal(t, uint64(workers/2), blocks.Load())
 
 	logRtbChaosProof(t, "rtb_deal_floor", map[string]string{
-		"subsystem":       "rtb_auction",
-		"baseline_ok":     "true",
-		"fault_type":      "elevated_publisher_floor",
-		"workers":         "24",
-		"floor_blocks":    itoaU64(blocks.Load()),
-		"floor_clears":    itoaU64(wins.Load()),
-		"min_bid_reject":  reasonHigh.String(),
+		"subsystem":      "rtb_auction",
+		"baseline_ok":    "true",
+		"fault_type":     "elevated_publisher_floor",
+		"workers":        "24",
+		"floor_blocks":   itoaU64(blocks.Load()),
+		"floor_clears":   itoaU64(wins.Load()),
+		"min_bid_reject": reasonHigh.String(),
 	})
 }

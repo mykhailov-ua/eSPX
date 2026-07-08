@@ -24,8 +24,8 @@ type CheckpointRecord struct {
 
 // CheckpointStore persists compaction progress across restarts.
 type CheckpointStore struct {
-	path string
-	mu   sync.Mutex
+	path     string
+	mu       sync.Mutex
 	bySource map[string]CheckpointRecord
 }
 

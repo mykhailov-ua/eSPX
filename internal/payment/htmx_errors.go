@@ -25,31 +25,40 @@ func MapHTMXError(err error) (status int, code, message string) {
 		return 0, "", ""
 	}
 
-	msg := err.Error()
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return StatusNotFound, CodeNotFound, "Payment resource was not found."
-	case strings.Contains(msg, "idempotency key conflict"):
+	case errors.Is(err, ErrIdempotencyConflict):
 		return StatusConflict, CodeConflict, "This payment request conflicts with an earlier attempt. Start a new checkout."
-	case strings.Contains(msg, "amount_micro must be greater than zero"),
-		strings.Contains(msg, "amount is required"),
-		strings.Contains(msg, "amount must be positive"):
+	case errors.Is(err, ErrInvalidAmount):
 		return StatusValidation, CodeInvalidAmount, "Enter a valid payment amount."
-	case strings.Contains(msg, "invalid customer id"),
-		strings.Contains(msg, "customer not found"):
+	case errors.Is(err, ErrInvalidCustomerID):
 		return StatusNotFound, CodeInvalidCustomer, "Account not found."
-	case strings.Contains(msg, "idempotency_key is required"),
-		strings.Contains(msg, "invalid request body"),
-		strings.Contains(msg, "invalid intent id"):
+	case errors.Is(err, ErrCustomerNotFound):
+		return StatusNotFound, CodeInvalidCustomer, "Account not found."
+	case errors.Is(err, ErrInvalidRequestBody), errors.Is(err, ErrInvalidIntentID):
 		return StatusValidation, CodeInvalidInput, "Check your payment details and try again."
-	case strings.Contains(msg, "failed to create checkout session"),
-		strings.Contains(msg, "stripe provider not configured"),
-		strings.Contains(msg, "provider"):
+	case errors.Is(err, ErrCheckoutUnavailable), errors.Is(err, ErrProviderNotConfigured):
 		return StatusUnavailable, CodeUnavailable, "Payments are temporarily unavailable. Try again shortly."
-	case strings.Contains(msg, "forbidden"),
-		strings.Contains(msg, "unauthorized"):
-		return StatusForbidden, CodeForbidden, "You are not allowed to perform this payment."
 	default:
-		return StatusFailed, CodeFailed, "Something went wrong processing your payment. Try again or contact support."
 	}
+
+	var v validationError
+	if errors.As(err, &v) {
+		switch string(v) {
+		case "amount is required", "amount must be positive", "amount_micro must be greater than zero":
+			return StatusValidation, CodeInvalidAmount, "Enter a valid payment amount."
+		case "invalid customer id", "customer not found":
+			return StatusNotFound, CodeInvalidCustomer, "Account not found."
+		case "invalid request body", "invalid intent id", "idempotency_key is required":
+			return StatusValidation, CodeInvalidInput, "Check your payment details and try again."
+		}
+	}
+
+	msg := err.Error()
+	if strings.Contains(msg, "forbidden") || strings.Contains(msg, "unauthorized") {
+		return StatusForbidden, CodeForbidden, "You are not allowed to perform this payment."
+	}
+
+	return StatusFailed, CodeFailed, "Something went wrong processing your payment. Try again or contact support."
 }

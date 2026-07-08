@@ -19,6 +19,9 @@ func (h *Handler) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/customers/{id}/balance", h.limit(h.perm(h.getCustomerBalance, PermCustomersRead)))
 	mux.HandleFunc("GET /api/v1/customers/{id}/balance/export", h.limit(h.limitExportByCustomer(h.perm(h.exportCustomerBalance, PermCustomersRead))))
 	mux.HandleFunc("GET /api/v1/recon/runs", h.limit(h.perm(h.listReconRuns, PermAuditRead)))
+	mux.HandleFunc("GET /api/v1/disputes", h.limit(h.perm(h.listDisputes, PermCustomersRead)))
+	mux.HandleFunc("POST /api/v1/forecast/campaign", h.limit(h.perm(h.forecastCampaign, PermCampaignsRead)))
+	mux.HandleFunc("POST /api/v1/consent", h.limit(h.postConsent))
 }
 
 // getCampaignStats handles GET /api/v1/campaigns/{id}/stats.
@@ -37,7 +40,7 @@ func (h *Handler) getCampaignStats(w http.ResponseWriter, r *http.Request) {
 
 	from, to, granularity, err := parseStatsQuery(r)
 	if err != nil {
-		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		writeServiceError(w, err)
 		return
 	}
 

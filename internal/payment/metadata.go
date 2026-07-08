@@ -1,9 +1,8 @@
 package payment
 
 import (
-	"encoding/json"
-
 	"espx/internal/payment/db"
+	"espx/pkg/cold"
 )
 
 const metadataCheckoutURLKey = "checkout_url"
@@ -18,13 +17,13 @@ func mergeIntentMetadata(base map[string]string, checkoutURL string) ([]byte, er
 	if checkoutURL != "" {
 		meta[metadataCheckoutURLKey] = checkoutURL
 	}
-	return json.Marshal(meta)
+	return cold.MarshalJSON(meta)
 }
 
 // checkoutURLFromIntent recovers the stored redirect for idempotent create responses.
 func checkoutURLFromIntent(intent db.PaymentPaymentIntent) string {
 	var meta map[string]string
-	if err := json.Unmarshal(intent.Metadata, &meta); err != nil {
+	if err := cold.UnmarshalJSON(intent.Metadata, &meta); err != nil {
 		return ""
 	}
 	return meta[metadataCheckoutURLKey]

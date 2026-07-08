@@ -77,7 +77,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	authMiddleware := management.NewAuthMiddleware(tokenMaker, rdbs[0], cfg)
+	mgmtAuthClient := management.NewAuthClient(authClient)
+	authMiddleware := management.NewAuthMiddleware(tokenMaker, rdbs[0], cfg, mgmtAuthClient)
 	authHandler := management.NewAuthHandler(authClient, tokenMaker, rdbs[0], cfg, authMiddleware)
 
 	svc := management.NewService(pool, rdbs, sharder, cfg)
@@ -121,18 +122,37 @@ func main() {
 		slog.Info("started quota manager", "mode", cfg.QuotaMode, "chunk_size", cfg.QuotaChunkSize, "refill_threshold_pct", cfg.QuotaRefillThresholdPct)
 	}
 
-	pacingInterval := time.Duration(cfg.Management.PacingIntervalMs) * time.Millisecond
-	svc.StartPacingController(syncWorkers, pacingInterval)
-	slog.Info("started pacing controller", "interval", pacingInterval)
+	if cfg.DeliveryOptimizerIntervalMs > 0 {
+		optimizerInterval := time.Duration(cfg.DeliveryOptimizerIntervalMs) * time.Millisecond
+		svc.StartDeliveryOptimizerWorker(syncWorkers, optimizerInterval)
+		slog.Info("started delivery optimizer worker", "interval", optimizerInterval, "mab_interval_ms", cfg.MABIntervalMs)
+	} else {
+		pacingInterval := time.Duration(cfg.Management.PacingIntervalMs) * time.Millisecond
+		svc.StartPacingController(syncWorkers, pacingInterval)
+		slog.Info("started pacing controller", "interval", pacingInterval)
 
-	if cfg.AutoscaleIntervalMs > 0 {
-		autoscaleInterval := time.Duration(cfg.AutoscaleIntervalMs) * time.Millisecond
-		svc.StartAutoscaleBudgetWorker(syncWorkers, autoscaleInterval)
-		slog.Info("started autoscale budget worker", "interval", autoscaleInterval)
+		if cfg.AutoscaleIntervalMs > 0 {
+			autoscaleInterval := time.Duration(cfg.AutoscaleIntervalMs) * time.Millisecond
+			svc.StartAutoscaleBudgetWorker(syncWorkers, autoscaleInterval)
+			slog.Info("started autoscale budget worker", "interval", autoscaleInterval)
+		}
 	}
 
 	svc.StartAuditCleaner(management.Days(cfg.Management.RetentionDays))
 	slog.Info("started audit cleaner", "retention_days", cfg.Management.RetentionDays)
+
+	svc.StartBackgroundWorker(func() {
+		management.NewConsentRetentionWorker(svc).Start(ctx)
+	})
+	slog.Info("started consent retention worker", "retention_months", cfg.ConsentRetentionMonths)
+
+	if cfg.ErasureWorkerIntervalMs > 0 {
+		erasureInterval := time.Duration(cfg.ErasureWorkerIntervalMs) * time.Millisecond
+		svc.StartBackgroundWorker(func() {
+			management.NewErasureWorker(svc).Start(ctx, erasureInterval)
+		})
+		slog.Info("started privacy erasure worker", "interval", erasureInterval)
+	}
 
 	if cfg.Management.BlacklistJanitorEnabled {
 		janitorInterval := time.Duration(cfg.Management.BlacklistJanitorIntervalSec) * time.Second
@@ -202,7 +222,7 @@ func main() {
 		slog.Info("started slot migration orchestrator", "interval", migrationInterval)
 	}
 
-	mgmtHandler := management.NewHandler(svc, cfg, authMiddleware, paymentClient, billingClient)
+	mgmtHandler := management.NewHandler(svc, cfg, authMiddleware, mgmtAuthClient, paymentClient, billingClient)
 
 	mux := http.NewServeMux()
 	management.RegisterOpsRoutes(mux, pool, rdbs)

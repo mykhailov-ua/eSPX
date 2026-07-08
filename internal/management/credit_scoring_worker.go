@@ -49,8 +49,13 @@ func (w *CreditScoringWorker) EvaluateAll(ctx context.Context) error {
 	}
 
 	for _, r := range rows {
-		overdraft := w.calculateOverdraft(float64(r.AgeDays), r.TopupSum30d)
 		customerID := uuid.UUID(r.ID.Bytes)
+		reconLag, err := queries.MaxCustomerReconLagMicro(opCtx, r.ID)
+		if err != nil {
+			slog.Error("failed to read recon lag for customer", "customer_id", customerID, "error", err)
+			reconLag = 0
+		}
+		overdraft := w.calculateOverdraft(float64(r.AgeDays), r.TopupSum30d, reconLag)
 
 		if err := w.svc.UpdateOverdraft(opCtx, customerID, overdraft); err != nil {
 			slog.Error("failed to update overdraft for customer", "customer_id", customerID, "error", err)
@@ -60,8 +65,8 @@ func (w *CreditScoringWorker) EvaluateAll(ctx context.Context) error {
 	return nil
 }
 
-// calculateOverdraft derives the allowed overdraft from account age and recent top-up volume with configured caps.
-func (w *CreditScoringWorker) calculateOverdraft(ageDays float64, topupSum int64) int64 {
+// calculateOverdraft derives allowed overdraft from account age, top-ups, and PG–Redis recon lag (M5.8).
+func (w *CreditScoringWorker) calculateOverdraft(ageDays float64, topupSum int64, reconLagMicro int64) int64 {
 	if ageDays < w.svc.cfg.CreditScoringMinAgeDays {
 		return 0
 	}
@@ -76,6 +81,18 @@ func (w *CreditScoringWorker) calculateOverdraft(ageDays float64, topupSum int64
 	maxCap := w.svc.cfg.CreditScoringMaxCap
 	if overdraft > maxCap {
 		overdraft = maxCap
+	}
+
+	threshold := w.svc.cfg.CreditScoringReconLagThreshold
+	if threshold > 0 && reconLagMicro > threshold {
+		penalty := w.svc.cfg.CreditScoringReconLagPenaltyPct
+		if penalty < 0 {
+			penalty = 0
+		}
+		if penalty > 100 {
+			penalty = 100
+		}
+		overdraft = overdraft * (100 - penalty) / 100
 	}
 
 	return overdraft

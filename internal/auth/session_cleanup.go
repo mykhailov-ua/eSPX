@@ -3,8 +3,9 @@ package auth
 import (
 	"context"
 	"log/slog"
-	"strings"
 	"time"
+
+	"espx/internal/database"
 )
 
 // SessionCleanupWorker reclaims stale session rows so refresh-token storage does not grow without bound.
@@ -28,7 +29,7 @@ func (w *SessionCleanupWorker) Start(ctx context.Context, interval time.Duration
 			return
 		case <-ticker.C:
 			if err := w.Cleanup(ctx); err != nil {
-				if strings.Contains(err.Error(), "closed pool") || strings.Contains(err.Error(), "client is closed") {
+				if database.IsShutdownError(err) {
 					return
 				}
 				slog.Error("failed to cleanup expired or blocked sessions", "error", err)

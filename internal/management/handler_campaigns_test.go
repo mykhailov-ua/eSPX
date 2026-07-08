@@ -39,7 +39,7 @@ func TestManagementAPI_Campaigns(t *testing.T) {
 	authMW, tokenMaker := integrationTestAuth(t, rdb, cfg)
 	svc := NewService(pool, []redis.UniversalClient{rdb}, nil, cfg)
 	defer svc.Close()
-	h := NewHandler(svc, cfg, authMW, nil, nil)
+	h := NewHandler(svc, cfg, authMW, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 

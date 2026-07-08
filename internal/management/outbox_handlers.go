@@ -56,6 +56,12 @@ func (w *OutboxWorker) handleOutboxEvent(opCtx, ctx context.Context, ev db.Outbo
 		return w.handleUpdateSupplyFiles(ctx, ev.Payload)
 	case "RELOAD_RTB_CATALOG":
 		return w.handleReloadRtbCatalog(ctx, ev.Payload)
+	case "SYNC_USER_CONSENT":
+		return w.handleSyncUserConsent(ctx, ev.Payload)
+	case "UPDATE_CAMPAIGN_CONSENT":
+		return w.handleUpdateCampaignConsent(ctx, ev.Payload)
+	case "PURGE_USER_DATA":
+		return w.handlePurgeUserData(ctx, ev.Payload)
 	default:
 		return fmt.Errorf("unknown outbox event type: %s", ev.EventType)
 	}
@@ -90,7 +96,10 @@ func (w *OutboxWorker) handlePauseCampaign(ctx context.Context, payload []byte) 
 	if p.CampaignID == "" {
 		return nil
 	}
-	campUUID, _ := uuid.Parse(p.CampaignID)
+	campUUID, err := uuid.Parse(p.CampaignID)
+	if err != nil {
+		return fmt.Errorf("invalid campaign id in payload: %w", err)
+	}
 	return w.deleteCampaignBudgetAndPublish(ctx, p.CampaignID, campUUID)
 }
 
@@ -100,7 +109,10 @@ func (w *OutboxWorker) handleResumeCampaign(ctx context.Context, payload []byte)
 	if p.CampaignID == "" {
 		return nil
 	}
-	campUUID, _ := uuid.Parse(p.CampaignID)
+	campUUID, err := uuid.Parse(p.CampaignID)
+	if err != nil {
+		return fmt.Errorf("invalid campaign id in payload: %w", err)
+	}
 	return w.setCampaignBudgetAndPublish(ctx, p, campUUID)
 }
 
@@ -111,7 +123,7 @@ func (w *OutboxWorker) handleUpdateCampaignSchedule(ctx context.Context, payload
 		return nil
 	}
 	if _, err := uuid.Parse(p.CampaignID); err != nil {
-		return nil
+		return fmt.Errorf("invalid campaign id in payload: %w", err)
 	}
 	return w.svc.publishCampaignUpdate(ctx, p.CampaignID)
 }
@@ -123,7 +135,7 @@ func (w *OutboxWorker) handleUpdateCampaignFraud(ctx context.Context, payload []
 		return nil
 	}
 	if _, err := uuid.Parse(p.CampaignID); err != nil {
-		return nil
+		return fmt.Errorf("invalid campaign id in payload: %w", err)
 	}
 	return w.svc.publishCampaignUpdate(ctx, p.CampaignID)
 }
@@ -143,7 +155,10 @@ func (w *OutboxWorker) handleCancelCampaign(ctx context.Context, payload []byte)
 	if p.CampaignID == "" {
 		return nil
 	}
-	campUUID, _ := uuid.Parse(p.CampaignID)
+	campUUID, err := uuid.Parse(p.CampaignID)
+	if err != nil {
+		return fmt.Errorf("invalid campaign id in payload: %w", err)
+	}
 	return w.deleteCampaignBudgetAndPublish(ctx, p.CampaignID, campUUID)
 }
 
@@ -153,12 +168,15 @@ func (w *OutboxWorker) handleUpdateCampaignPacing(ctx context.Context, payload [
 	if p.CampaignID == "" {
 		return nil
 	}
-	campUUID, _ := uuid.Parse(p.CampaignID)
+	campUUID, err := uuid.Parse(p.CampaignID)
+	if err != nil {
+		return fmt.Errorf("invalid campaign id in payload: %w", err)
+	}
 	rdb := w.svc.getRDB(campUUID)
 	if rdb == nil {
 		return nil
 	}
-	_, err := rdb.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+	_, err = rdb.Pipelined(ctx, func(pipe redis.Pipeliner) error {
 		pipe.HSet(ctx, fmt.Sprintf("campaign:settings:%s", p.CampaignID), "pacing_mode", p.PacingMode)
 		return nil
 	})
@@ -267,4 +285,47 @@ func (w *OutboxWorker) deleteCampaignBudgetAndPublish(ctx context.Context, campa
 		return err
 	}
 	return w.svc.publishCampaignUpdate(ctx, campaignIDStr)
+}
+
+type userConsentOutboxPayload struct {
+	UserIDHash string `json:"user_id_hash"`
+	Purposes   int16  `json:"purposes"`
+}
+
+type purgeUserDataPayload struct {
+	ErasureID     string `json:"erasure_id"`
+	UserIDHash    string `json:"user_id_hash"`
+	SubjectUserID string `json:"subject_user_id"`
+}
+
+func (w *OutboxWorker) handleSyncUserConsent(ctx context.Context, payload []byte) error {
+	p, err := cold.UnmarshalStrict[userConsentOutboxPayload](payload)
+	if err != nil {
+		return err
+	}
+	return w.svc.SyncUserConsentToRedis(ctx, p.UserIDHash, p.Purposes)
+}
+
+func (w *OutboxWorker) handleUpdateCampaignConsent(ctx context.Context, payload []byte) error {
+	p := cold.UnmarshalLenient[campaignIDPayload](payload)
+	if p.CampaignID == "" {
+		return nil
+	}
+	if _, err := uuid.Parse(p.CampaignID); err != nil {
+		return fmt.Errorf("invalid campaign id in payload: %w", err)
+	}
+	return w.svc.publishCampaignUpdate(ctx, p.CampaignID)
+}
+
+func (w *OutboxWorker) handlePurgeUserData(ctx context.Context, payload []byte) error {
+	p, err := cold.UnmarshalStrict[purgeUserDataPayload](payload)
+	if err != nil {
+		return err
+	}
+	erasureID, err := uuid.Parse(p.ErasureID)
+	if err != nil {
+		return err
+	}
+	purgeErr := w.svc.PurgeUserDataRedis(ctx, p.UserIDHash, p.SubjectUserID)
+	return w.svc.MarkErasureRedisPurgeDone(ctx, erasureID, purgeErr)
 }

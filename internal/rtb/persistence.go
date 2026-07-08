@@ -208,6 +208,7 @@ func (registry *Registry) LoadSnapshot(path string) error {
 			}
 
 			buildGeoIndex(reg)
+			sortRegistryBuckets(reg)
 			shards[i] = reg
 		} else {
 			shards[i] = &CampaignAuctionRegistry{}

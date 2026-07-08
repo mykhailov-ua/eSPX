@@ -79,6 +79,13 @@ func main() {
 	}
 	registry.StartWatch(ctx, rdbs[0], channel)
 
+	consentChannel := cfg.ConsentUpdateChannel
+	if consentChannel == "" {
+		consentChannel = ads.ConsentDefaultUpdateChannel
+	}
+	consentStore := ads.NewConsentStore(rdbs[0])
+	consentStore.StartWatch(ctx, rdbs[0], consentChannel)
+
 	campaignRepo := ads.NewCampaignRepo(queries)
 	sharder := ads.NewJumpHashSharder(len(rdbs))
 
@@ -100,6 +107,7 @@ func main() {
 	go settingsWatcher.Start(ctx, time.Second)
 
 	breakerFilter := ads.NewEmergencyBreakerFilter(settingsWatcher)
+	consentFilter := ads.NewConsentFilter(registry, consentStore)
 
 	unifiedFilter := ads.NewUnifiedFilter(
 		rdbs,
@@ -124,6 +132,7 @@ func main() {
 		l3Filter,
 		fraudFilter,
 		deviceFilter,
+		consentFilter,
 		unifiedFilter,
 	)
 

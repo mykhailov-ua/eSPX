@@ -3,6 +3,7 @@ package payment
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"espx/internal/config"
+	"espx/internal/database"
 	"espx/internal/management/pb"
 	"espx/internal/payment/db"
 
@@ -135,7 +137,7 @@ func (outboxWorker *OutboxWorker) reclaimStaleProcessing(ctx context.Context) {
 		WHERE status = 'PROCESSING'
 		  AND lease_until IS NOT NULL
 		  AND lease_until < now()`)
-	if err != nil && ctx.Err() == nil && !strings.Contains(err.Error(), "closed pool") {
+	if err != nil && ctx.Err() == nil && !database.IsShutdownError(err) {
 		slog.Error("failed to reclaim stale payment outbox outboxEventents", "error", err)
 	}
 }
@@ -175,6 +177,7 @@ func (outboxWorker *OutboxWorker) ProcessOutbox(ctx context.Context, limit int32
 	}
 
 	successCount := 0
+	var batchErrs []error
 	for _, outboxEvent := range outboxEventents {
 		if err := outboxWorker.handleOutboxEvent(ctx, outboxEvent); err != nil {
 			slog.Error("failed to handle outbox outboxEventent", "id", outboxEvent.ID, "error", err)
@@ -183,6 +186,7 @@ func (outboxWorker *OutboxWorker) ProcessOutbox(ctx context.Context, limit int32
 				outboxWorker.resetSettlementClient()
 			}
 			outboxWorker.markOutboxEventRetryable(ctx, outboxEvent, err)
+			batchErrs = append(batchErrs, fmt.Errorf("outbox event %d: %w", outboxEvent.ID, err))
 			continue
 		}
 		if PostSettlementMarkHook != nil {
@@ -190,17 +194,22 @@ func (outboxWorker *OutboxWorker) ProcessOutbox(ctx context.Context, limit int32
 				slog.Error("post-settlement hook failed", "id", outboxEvent.ID, "error", hookErr)
 				SettlementErrorsTotal.Inc()
 				outboxWorker.markOutboxEventRetryable(ctx, outboxEvent, hookErr)
+				batchErrs = append(batchErrs, fmt.Errorf("outbox event %d post-settlement hook: %w", outboxEvent.ID, hookErr))
 				continue
 			}
 		}
 		if err := outboxWorker.markOutboxProcessedWithRetry(ctx, outboxEvent.ID); err != nil {
 			slog.Error("failed to mark outbox outboxEventent processed", "id", outboxEvent.ID, "error", err)
+			batchErrs = append(batchErrs, fmt.Errorf("mark outbox processed %d: %w", outboxEvent.ID, err))
 			continue
 		}
 		successCount++
 	}
 
 	outboxWorker.refreshOutboxPendingGauge(ctx)
+	if len(batchErrs) > 0 {
+		return successCount, errors.Join(batchErrs...)
+	}
 	return successCount, nil
 }
 
@@ -306,13 +315,19 @@ func (outboxWorker *OutboxWorker) markOutboxEventRetryable(ctx context.Context, 
 
 			var payload SettleBalancePayload
 			if outboxEvent.EventType == "SETTLE_BALANCE" {
-				if err := json.Unmarshal(outboxEvent.Payload, &payload); err == nil {
-					intentUUID, _ := uuid.Parse(payload.PaymentIntentID)
-					_, _ = txQueries.UpdatePaymentIntentStatus(ctx, db.UpdatePaymentIntentStatusParams{
+				if err := json.Unmarshal(outboxEvent.Payload, &payload); err != nil {
+					slog.Warn("settlement failed outbox payload decode", "error", err, "outbox_id", outboxEvent.ID)
+				} else {
+					intentUUID, parseErr := uuid.Parse(payload.PaymentIntentID)
+					if parseErr != nil {
+						slog.Warn("settlement failed outbox invalid intent id", "error", parseErr, "outbox_id", outboxEvent.ID)
+					} else if _, updateErr := txQueries.UpdatePaymentIntentStatus(ctx, db.UpdatePaymentIntentStatusParams{
 						ID:          pgtype.UUID{Bytes: intentUUID, Valid: true},
 						Status:      db.PaymentPaymentIntentStatusSETTLEMENTFAILED,
 						ProviderRef: pgtype.Text{String: payload.ProviderRef, Valid: true},
-					})
+					}); updateErr != nil {
+						return fmt.Errorf("mark intent settlement failed: %w", updateErr)
+					}
 				}
 			}
 		} else {

@@ -16,14 +16,14 @@ import (
 
 // decryptedSegmentReader streams plaintext audit records from an encrypted segment file.
 type decryptedSegmentReader struct {
-	file   *os.File
-	aesgcm cipher.AEAD
+	file    *os.File
+	aesgcm  cipher.AEAD
 	decoder *zstd.Decoder
-	buf    []byte
-	off    int
-	done   bool
-	header [4]byte
-	nonce  [12]byte
+	buf     []byte
+	off     int
+	done    bool
+	header  [4]byte
+	nonce   [12]byte
 }
 
 // openPlaintextSegment opens a hot segment as a plaintext record stream.

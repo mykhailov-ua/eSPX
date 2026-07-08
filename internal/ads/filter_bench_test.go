@@ -14,8 +14,10 @@ import (
 
 type errGeoProvider struct{}
 
+var errGeoLookupFailed = errors.New("geo lookup failed")
+
 func (errGeoProvider) GetCountry(ip string) (string, error) {
-	return "", errors.New("geo lookup failed")
+	return "", errGeoLookupFailed
 }
 func (errGeoProvider) IsAnonymous(ip string) (bool, error) { return false, nil }
 func (errGeoProvider) Close() error                        { return nil }

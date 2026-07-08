@@ -19,9 +19,12 @@ import (
 
 // Service owns invoice generation and ledger aggregation in strict pgx transactions.
 type Service struct {
-	pool    *pgxpool.Pool
-	queries *db.Queries
-	tax     *TaxCalculator
+	pool           *pgxpool.Pool
+	queries        *db.Queries
+	tax            *TaxCalculator
+	deliverer      InvoiceDeliverer
+	driftAlerter   DriftAlerter
+	invoiceBaseURL string
 }
 
 func NewService(pool *pgxpool.Pool) *Service {
@@ -32,6 +35,39 @@ func NewService(pool *pgxpool.Pool) *Service {
 	}
 }
 
+// SetInvoiceDeliverer configures post-generation PDF delivery.
+func (service *Service) SetInvoiceDeliverer(deliverer InvoiceDeliverer, baseURL string) {
+	if service == nil {
+		return
+	}
+	service.deliverer = deliverer
+	service.invoiceBaseURL = baseURL
+}
+
+// SetDriftAlerter configures ops alerts on ledger invariant failures.
+func (service *Service) SetDriftAlerter(alerter DriftAlerter) {
+	if service == nil {
+		return
+	}
+	service.driftAlerter = alerter
+}
+
+// ListCustomerIDs returns customer ids for monthly invoice sweeps.
+func (service *Service) ListCustomerIDs(ctx context.Context, limit, offset int32) ([]uuid.UUID, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := service.queries.ListCustomerIDs(ctx, db.ListCustomerIDsParams{Limit: limit, Offset: offset})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]uuid.UUID, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, uuid.UUID(row.Bytes))
+	}
+	return out, nil
+}
+
 // GenerateInvoice aggregates ledger spend for one customer and calendar month.
 func (service *Service) GenerateInvoice(ctx context.Context, customerID uuid.UUID, billingMonth time.Time) (*pb.Invoice, error) {
 	if err := validateBillingMonth(billingMonth); err != nil {
@@ -40,6 +76,9 @@ func (service *Service) GenerateInvoice(ctx context.Context, customerID uuid.UUI
 	if err := CheckLedgerBalanceInvariant(ctx, service.pool, customerID); err != nil {
 		LedgerDriftTotal.Inc()
 		InvoiceErrorsTotal.WithLabelValues("ledger_drift").Inc()
+		if service.driftAlerter != nil {
+			service.driftAlerter.AlertLedgerDrift(ctx, customerID.String(), err)
+		}
 		return nil, err
 	}
 

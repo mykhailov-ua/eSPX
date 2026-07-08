@@ -2,6 +2,7 @@ package management
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -10,12 +11,12 @@ import (
 )
 
 func TestMapServiceError(t *testing.T) {
-	status, code, msg := mapServiceError(errors.New("customer not found"))
+	status, code, msg := mapServiceError(ErrCustomerNotFound)
 	assert.Equal(t, http.StatusNotFound, status)
 	assert.Equal(t, "NOT_FOUND", code)
 	assert.Equal(t, "resource not found", msg)
 
-	status, code, msg = mapServiceError(errors.New("insufficient balance"))
+	status, code, msg = mapServiceError(ErrInsufficientBalance)
 	assert.Equal(t, http.StatusBadRequest, status)
 	assert.Equal(t, "BAD_REQUEST", code)
 	assert.Equal(t, "insufficient balance", msg)
@@ -29,6 +30,11 @@ func TestMapServiceError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, status)
 	assert.Equal(t, "INTERNAL_ERROR", code)
 	assert.Equal(t, "internal error", msg)
+
+	status, code, msg = mapServiceError(fmt.Errorf("%w: ASAP", ErrInvalidPacingMode))
+	assert.Equal(t, http.StatusBadRequest, status)
+	assert.Equal(t, "BAD_REQUEST", code)
+	assert.Contains(t, msg, "invalid pacing mode")
 }
 
 func TestParseMoneyMicro(t *testing.T) {

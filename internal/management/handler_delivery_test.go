@@ -36,7 +36,7 @@ func TestManagementAPI_DeliveryRoutes(t *testing.T) {
 		CampaignUpdateChannel: "test:delivery-routes",
 	}
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
-	h := NewHandler(svc, cfg, nil, nil, nil)
+	h := NewHandler(svc, cfg, nil, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -214,9 +214,9 @@ func TestManagementAPI_RoleUserForbiddenSettings(t *testing.T) {
 	tokenMaker, err := auth.NewPasetoMaker(string(cfg.TokenSymmetricKey))
 	require.NoError(t, err)
 
-	authMdl := NewAuthMiddleware(tokenMaker, rdb, cfg)
+	authMdl := NewAuthMiddleware(tokenMaker, rdb, cfg, nil)
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
-	h := NewHandler(svc, cfg, authMdl, nil, nil)
+	h := NewHandler(svc, cfg, authMdl, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -255,9 +255,9 @@ func TestManagementAPI_RoleUserForbiddenBlacklist(t *testing.T) {
 	tokenMaker, err := auth.NewPasetoMaker(string(cfg.TokenSymmetricKey))
 	require.NoError(t, err)
 
-	authMdl := NewAuthMiddleware(tokenMaker, rdb, cfg)
+	authMdl := NewAuthMiddleware(tokenMaker, rdb, cfg, nil)
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
-	h := NewHandler(svc, cfg, authMdl, nil, nil)
+	h := NewHandler(svc, cfg, authMdl, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -287,9 +287,9 @@ func TestManagementAPI_RoleUserForbiddenEmergencyBreaker(t *testing.T) {
 	tokenMaker, err := auth.NewPasetoMaker(string(cfg.TokenSymmetricKey))
 	require.NoError(t, err)
 
-	authMdl := NewAuthMiddleware(tokenMaker, rdb, cfg)
+	authMdl := NewAuthMiddleware(tokenMaker, rdb, cfg, nil)
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
-	h := NewHandler(svc, cfg, authMdl, nil, nil)
+	h := NewHandler(svc, cfg, authMdl, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 

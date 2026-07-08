@@ -79,7 +79,7 @@ func (h *Handler) exportCustomerBalance(w http.ResponseWriter, r *http.Request) 
 
 	cursor, err := parseExportCursor(r)
 	if err != nil {
-		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		writeServiceError(w, err)
 		return
 	}
 

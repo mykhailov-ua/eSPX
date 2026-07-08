@@ -59,7 +59,7 @@ func (p *RealShardMetricsProvider) GetMetrics(ctx context.Context, shardID int16
 	if err == nil {
 		sys := parseInfoFloat64(cpuInfo, "used_cpu_sys")
 		user := parseInfoFloat64(cpuInfo, "used_cpu_user")
-		metrics.CPUUsage = (sys + user) * 10.0 // Simple proxy for CPU load
+		metrics.CPUUsage = (sys + user) * 10.0 // scaled sys+user CPU ticks as load proxy
 		if metrics.CPUUsage > 100.0 {
 			metrics.CPUUsage = 100.0
 		}

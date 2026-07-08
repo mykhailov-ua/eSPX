@@ -10,7 +10,6 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -52,19 +51,16 @@ func (s *Service) SetClickHouse(conn driver.Conn) {
 // GetCampaignStats merges Postgres spend and counters with ClickHouse hourly MVs.
 func (s *Service) GetCampaignStats(ctx context.Context, campaignID uuid.UUID, from, to time.Time, granularity string) (CampaignStatsDTO, error) {
 	if granularity != "hour" {
-		return CampaignStatsDTO{}, fmt.Errorf("unsupported granularity: %s", granularity)
+		return CampaignStatsDTO{}, fmt.Errorf("%w: %s", ErrUnsupportedGranularity, granularity)
 	}
 	if !to.After(from) {
-		return CampaignStatsDTO{}, fmt.Errorf("invalid time range: to must be after from")
+		return CampaignStatsDTO{}, fmt.Errorf("%w: to must be after from", ErrInvalidTimeRange)
 	}
 
 	q := db.New(s.GetPool())
 	camp, err := q.GetCampaign(ctx, ads.ToUUID(campaignID))
 	if err != nil {
-		if err == pgx.ErrNoRows {
-			return CampaignStatsDTO{}, pgx.ErrNoRows
-		}
-		return CampaignStatsDTO{}, err
+		return CampaignStatsDTO{}, mapNotFound(err, ErrCampaignNotFound)
 	}
 
 	stats, err := q.SumCampaignStatsInRange(ctx, db.SumCampaignStatsInRangeParams{

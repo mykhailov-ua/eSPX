@@ -9,10 +9,10 @@ import (
 )
 
 const (
-	compactingSuffix  = ".compacting"
-	evacuatingSuffix  = ".log.zst.evacuating"
-	warmTmpSuffix     = ".tmp"
-	filteredTmpExt    = ".filtered.tmp"
+	compactingSuffix = ".compacting"
+	evacuatingSuffix = ".log.zst.evacuating"
+	warmTmpSuffix    = ".tmp"
+	filteredTmpExt   = ".filtered.tmp"
 )
 
 // hotKeyFromCompacting derives the original hot segment name from a claimed path.

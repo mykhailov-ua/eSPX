@@ -1008,8 +1008,7 @@ func (m *EventMetadata) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.ExtraKeys = append(m.ExtraKeys, make([]byte, postIndex-iNdEx))
-			copy(m.ExtraKeys[len(m.ExtraKeys)-1], dAtA[iNdEx:postIndex])
+			m.ExtraKeys = appendReuseBytes(m.ExtraKeys, dAtA[iNdEx:postIndex])
 			iNdEx = postIndex
 		case 6:
 			if wireType != 2 {
@@ -1074,8 +1073,7 @@ func (m *EventMetadata) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.ExtraValues = append(m.ExtraValues, make([]byte, postIndex-iNdEx))
-			copy(m.ExtraValues[len(m.ExtraValues)-1], dAtA[iNdEx:postIndex])
+			m.ExtraValues = appendReuseBytes(m.ExtraValues, dAtA[iNdEx:postIndex])
 			iNdEx = postIndex
 		default:
 			iNdEx = preIndex

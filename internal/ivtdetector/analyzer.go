@@ -17,12 +17,12 @@ type SuspiciousIP struct {
 
 // AnalyzerConfig tunes ClickHouse window and detection thresholds.
 type AnalyzerConfig struct {
-	Window           time.Duration
-	MinClicks        uint64
-	MinImpressions   uint64
-	ClickToImpRatio  float64
-	MinIPsPerUA      uint64
-	MinEventsPerIP   uint64
+	Window          time.Duration
+	MinClicks       uint64
+	MinImpressions  uint64
+	ClickToImpRatio float64
+	MinIPsPerUA     uint64
+	MinEventsPerIP  uint64
 }
 
 // DefaultAnalyzerConfig returns production-oriented thresholds for IVT clustering.
@@ -50,26 +50,8 @@ func NewAnalyzer(conn driver.Conn, cfg AnalyzerConfig) *Analyzer {
 
 // FindSuspiciousIPs returns deduplicated candidates from all enabled detection rules.
 func (analyzer *Analyzer) FindSuspiciousIPs(ctx context.Context) ([]SuspiciousIP, error) {
-	if analyzer == nil || analyzer.conn == nil {
-		return nil, fmt.Errorf("analyzer: nil connection")
-	}
-
-	windowSec := int64(analyzer.cfg.Window / time.Second)
-	if windowSec <= 0 {
-		windowSec = int64(time.Hour / time.Second)
-	}
-
-	highCTR, err := analyzer.findHighClickToImpRatio(ctx, windowSec)
-	if err != nil {
-		return nil, err
-	}
-
-	fingerprint, err := analyzer.findSharedFingerprintClusters(ctx, windowSec)
-	if err != nil {
-		return nil, err
-	}
-
-	return mergeSuspiciousIPs(highCTR, fingerprint), nil
+	reg := NewAnalyzerRegistry(analyzer.conn, analyzer.cfg, nil)
+	return reg.FindSuspiciousIPs(ctx)
 }
 
 func (analyzer *Analyzer) findHighClickToImpRatio(ctx context.Context, windowSec int64) ([]SuspiciousIP, error) {
@@ -199,21 +181,4 @@ HAVING count() >= 1`
 		return nil, fmt.Errorf("iterate shared fingerprint rows: %w", err)
 	}
 	return out, nil
-}
-
-func mergeSuspiciousIPs(groups ...[]SuspiciousIP) []SuspiciousIP {
-	seen := make(map[string]SuspiciousIP)
-	for _, group := range groups {
-		for _, candidate := range group {
-			existing, ok := seen[candidate.IP]
-			if !ok || candidate.Score > existing.Score {
-				seen[candidate.IP] = candidate
-			}
-		}
-	}
-	out := make([]SuspiciousIP, 0, len(seen))
-	for _, candidate := range seen {
-		out = append(out, candidate)
-	}
-	return out
 }

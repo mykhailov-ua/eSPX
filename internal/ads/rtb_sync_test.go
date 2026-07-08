@@ -27,10 +27,10 @@ func TestBuildRtbInputsFromRegistry_customerPoolAndHybridBid(t *testing.T) {
 		TargetCountries: map[string]struct{}{"US": {}},
 	}
 	registry := &Registry{}
-	registry.data.Store(map[uuid.UUID]campaignInfo{
+	registry.data.Store(&campaignMapSnapshot{byID: map[uuid.UUID]campaignInfo{
 		campA.ID: {campaign: campA, status: db.CampaignStatusTypeACTIVE},
 		campB.ID: {campaign: campB, status: db.CampaignStatusTypeACTIVE},
-	})
+	}})
 
 	metaByID := map[uuid.UUID]*CampaignMeta{
 		campA.ID: {ID: campA.ID, BidMicro: 300, CTR: 0.1, RemainingBudget: 800, TotalBudget: 1000},
@@ -57,9 +57,9 @@ func TestSyncRtbCatalog_hybridOverridesBid(t *testing.T) {
 		BudgetLimit: 5000, TargetCountries: map[string]struct{}{"US": {}},
 	}
 	registry := &Registry{}
-	registry.data.Store(map[uuid.UUID]campaignInfo{
+	registry.data.Store(&campaignMapSnapshot{byID: map[uuid.UUID]campaignInfo{
 		id: {campaign: camp, status: db.CampaignStatusTypeACTIVE},
-	})
+	}})
 
 	SyncRtbCatalog(context.Background(), registry, catalog, cfg, hybrid, RtbBudgetSync{})
 

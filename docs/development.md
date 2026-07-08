@@ -259,7 +259,25 @@ See [MILESTONE.md](./MILESTONE.md) M4.3 / M4.6.
 BILLING_SERVER_PORT=51054
 BILLING_SERVER_HOST=127.0.0.1
 BILLING_INTERNAL_TOKEN=...   # management to billing gRPC (x-internal-token)
+BILLING_INVOICE_WORKER_ENABLED=true
+BILLING_INVOICE_NOTIFY_RECIPIENT=...   # optional; falls back to TELEGRAM_CHAT_ID
 ```
+
+#### Internal token rotation (M7.18)
+
+Per-service gRPC callers authenticate with metadata `x-internal-token`. Rotate in this order to avoid downtime:
+
+1. Generate a new secret per service (`openssl rand -hex 32`).
+2. Deploy **servers** with both old and new tokens accepted (dual-verify window) or brief maintenance window.
+3. Update **clients** (`payment` → `SETTLEMENT_INTERNAL_TOKEN`, `management` → `BILLING_INTERNAL_TOKEN`, `ivt-detector` → `SETTLEMENT_INTERNAL_TOKEN` for `BlockIP`).
+4. Remove the old token from server config after all clients report healthy.
+5. Record rotation date in your ops runbook.
+
+| Token env | Server | Clients |
+|-----------|--------|---------|
+| `SETTLEMENT_INTERNAL_TOKEN` | management settlement gRPC | payment outbox, ivt-detector |
+| `PAYMENT_INTERNAL_TOKEN` | payment gRPC | management |
+| `BILLING_INTERNAL_TOKEN` | billing gRPC | management |
 
 Apply schema: `internal/billing/migrations/00001_init_billing_schema.sql` (goose Up section).
 

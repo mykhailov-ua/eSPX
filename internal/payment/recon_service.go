@@ -2,13 +2,13 @@ package payment
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
 	"espx/internal/payment/db"
+	"espx/pkg/cold"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -86,7 +86,10 @@ func (recon *ReconService) Run(ctx context.Context, periodStart, periodEnd time.
 	err = pgx.BeginFunc(ctx, recon.paymentPool, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		for _, f := range findings {
-			detailBytes, _ := json.Marshal(f.Detail)
+			detailBytes, err := cold.MarshalJSON(f.Detail)
+			if err != nil {
+				return fmt.Errorf("marshal recon finding detail: %w", err)
+			}
 			var intentUUID pgtype.UUID
 			if f.PaymentIntentID != uuid.Nil {
 				intentUUID = pgtype.UUID{Bytes: f.PaymentIntentID, Valid: true}
@@ -95,7 +98,7 @@ func (recon *ReconService) Run(ctx context.Context, periodStart, periodEnd time.
 			if f.CustomerID != uuid.Nil {
 				custUUID = pgtype.UUID{Bytes: f.CustomerID, Valid: true}
 			}
-			_, err := q.CreateFinancialReconFinding(ctx, db.CreateFinancialReconFindingParams{
+			_, err = q.CreateFinancialReconFinding(ctx, db.CreateFinancialReconFindingParams{
 				RunID:              run.ID,
 				Kind:               f.Kind,
 				PaymentIntentID:    intentUUID,
@@ -120,9 +123,9 @@ func (recon *ReconService) Run(ctx context.Context, periodStart, periodEnd time.
 			}
 		}
 		return q.CompleteFinancialReconRun(ctx, db.CompleteFinancialReconRunParams{
-			ID:              run.ID,
-			FindingsCount:   int32(len(findings)),
-			IntentsChecked:  int32(intentsChecked),
+			ID:             run.ID,
+			FindingsCount:  int32(len(findings)),
+			IntentsChecked: int32(intentsChecked),
 		})
 	})
 	if err != nil {
@@ -212,11 +215,11 @@ func (recon *ReconService) collectFindings(ctx context.Context) ([]FinancialReco
 
 		if intent.Status == db.PaymentPaymentIntentStatusSETTLEMENTFAILED {
 			findings = append(findings, FinancialReconFinding{
-				Kind:              db.PaymentFinancialFindingKindSETTLEMENTFAILEDINTENT,
-				PaymentIntentID:   intentID,
-				CustomerID:        customerID,
+				Kind:               db.PaymentFinancialFindingKindSETTLEMENTFAILEDINTENT,
+				PaymentIntentID:    intentID,
+				CustomerID:         customerID,
 				PaymentAmountMicro: intent.AmountMicro,
-				Detail:            map[string]any{"status": string(intent.Status)},
+				Detail:             map[string]any{"status": string(intent.Status)},
 			})
 			continue
 		}
@@ -225,18 +228,18 @@ func (recon *ReconService) collectFindings(ctx context.Context) ([]FinancialReco
 		switch {
 		case !hasTopup || topupMicro == 0:
 			findings = append(findings, FinancialReconFinding{
-				Kind:              db.PaymentFinancialFindingKindMISSINGLEDGERTOPUP,
-				PaymentIntentID:   intentID,
-				CustomerID:        customerID,
+				Kind:               db.PaymentFinancialFindingKindMISSINGLEDGERTOPUP,
+				PaymentIntentID:    intentID,
+				CustomerID:         customerID,
 				PaymentAmountMicro: intent.AmountMicro,
 				LedgerAmountMicro:  topupMicro,
 				DeltaMicro:         intent.AmountMicro - topupMicro,
 			})
 		case topupMicro != intent.AmountMicro:
 			findings = append(findings, FinancialReconFinding{
-				Kind:              db.PaymentFinancialFindingKindTOPUPAMOUNTMISMATCH,
-				PaymentIntentID:   intentID,
-				CustomerID:        customerID,
+				Kind:               db.PaymentFinancialFindingKindTOPUPAMOUNTMISMATCH,
+				PaymentIntentID:    intentID,
+				CustomerID:         customerID,
 				PaymentAmountMicro: intent.AmountMicro,
 				LedgerAmountMicro:  topupMicro,
 				DeltaMicro:         intent.AmountMicro - topupMicro,
@@ -247,9 +250,9 @@ func (recon *ReconService) collectFindings(ctx context.Context) ([]FinancialReco
 			ledgerRefund := refundLedger[intentID]
 			if payRefund != ledgerRefund {
 				findings = append(findings, FinancialReconFinding{
-					Kind:              db.PaymentFinancialFindingKindREFUNDLEDGERDRIFT,
-					PaymentIntentID:   intentID,
-					CustomerID:        customerID,
+					Kind:               db.PaymentFinancialFindingKindREFUNDLEDGERDRIFT,
+					PaymentIntentID:    intentID,
+					CustomerID:         customerID,
 					PaymentAmountMicro: payRefund,
 					LedgerAmountMicro:  ledgerRefund,
 					DeltaMicro:         payRefund - ledgerRefund,
@@ -260,9 +263,9 @@ func (recon *ReconService) collectFindings(ctx context.Context) ([]FinancialReco
 		if dp, ok := disputeByIntent[intentID]; ok {
 			if dp.withdrawn > 0 && chargebackLedger[intentID] != dp.withdrawn {
 				findings = append(findings, FinancialReconFinding{
-					Kind:              db.PaymentFinancialFindingKindCHARGEBACKLEDGERDRIFT,
-					PaymentIntentID:   intentID,
-					CustomerID:        customerID,
+					Kind:               db.PaymentFinancialFindingKindCHARGEBACKLEDGERDRIFT,
+					PaymentIntentID:    intentID,
+					CustomerID:         customerID,
 					PaymentAmountMicro: dp.withdrawn,
 					LedgerAmountMicro:  chargebackLedger[intentID],
 					DeltaMicro:         dp.withdrawn - chargebackLedger[intentID],
@@ -270,9 +273,9 @@ func (recon *ReconService) collectFindings(ctx context.Context) ([]FinancialReco
 			}
 			if dp.reinstated > 0 && reversalLedger[intentID] != dp.reinstated {
 				findings = append(findings, FinancialReconFinding{
-					Kind:              db.PaymentFinancialFindingKindCHARGEBACKREVERSALDRIFT,
-					PaymentIntentID:   intentID,
-					CustomerID:        customerID,
+					Kind:               db.PaymentFinancialFindingKindCHARGEBACKREVERSALDRIFT,
+					PaymentIntentID:    intentID,
+					CustomerID:         customerID,
 					PaymentAmountMicro: dp.reinstated,
 					LedgerAmountMicro:  reversalLedger[intentID],
 					DeltaMicro:         dp.reinstated - reversalLedger[intentID],
@@ -287,7 +290,7 @@ func (recon *ReconService) collectFindings(ctx context.Context) ([]FinancialReco
 				Kind:              db.PaymentFinancialFindingKindORPHANLEDGERTOPUP,
 				PaymentIntentID:   intentID,
 				LedgerAmountMicro: topupMicro,
-				DeltaMicro:         topupMicro,
+				DeltaMicro:        topupMicro,
 				Detail:            map[string]any{"orphan_topup_micro": topupMicro},
 			})
 		}
@@ -299,13 +302,13 @@ func (recon *ReconService) collectFindings(ctx context.Context) ([]FinancialReco
 	}
 	for _, row := range deadOutbox {
 		findings = append(findings, FinancialReconFinding{
-			Kind: db.PaymentFinancialFindingKindDEADOUTBOX,
+			Kind:               db.PaymentFinancialFindingKindDEADOUTBOX,
 			PaymentAmountMicro: 0,
 			Detail: map[string]any{
-				"outbox_id":    row.ID,
-				"event_type":   row.EventType,
-				"last_error":   row.LastError.String,
-				"attempts":     row.Attempts,
+				"outbox_id":  row.ID,
+				"event_type": row.EventType,
+				"last_error": row.LastError.String,
+				"attempts":   row.Attempts,
 			},
 		})
 	}

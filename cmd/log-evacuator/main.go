@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"espx/internal/config"
-	"espx/pkg/lifecycle"
 	"espx/internal/logevacuator"
+	"espx/pkg/lifecycle"
 )
 
 func main() {

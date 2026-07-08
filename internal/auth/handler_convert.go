@@ -1,8 +1,6 @@
 package auth
 
 import (
-	"strings"
-
 	"espx/internal/auth/db"
 	"espx/internal/auth/pb"
 
@@ -10,14 +8,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
-
-func normalizeEmail(email string) string {
-	return strings.ToLower(strings.TrimSpace(email))
-}
-
-func toPgUUID(u uuid.UUID) pgtype.UUID {
-	return pgtype.UUID{Bytes: u, Valid: true}
-}
 
 func uuidFromPg(u pgtype.UUID) uuid.UUID {
 	return uuid.UUID(u.Bytes)

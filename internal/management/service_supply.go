@@ -2,7 +2,6 @@ package management
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -179,10 +178,10 @@ func validateSupplyChainNodes(nodes []SupplyChainNode) error {
 	}
 	for i, n := range nodes {
 		if strings.TrimSpace(n.ASI) == "" || strings.TrimSpace(n.SID) == "" {
-			return fmt.Errorf("supply chain node %d: asi and sid are required", i)
+			return errValidation(fmt.Sprintf("supply chain node %d: asi and sid are required", i))
 		}
 		if n.HP != 0 && n.HP != 1 {
-			return fmt.Errorf("supply chain node %d: hp must be 0 or 1", i)
+			return errValidation(fmt.Sprintf("supply chain node %d: hp must be 0 or 1", i))
 		}
 	}
 	return nil
@@ -190,7 +189,7 @@ func validateSupplyChainNodes(nodes []SupplyChainNode) error {
 
 func (s *Service) enqueueSupplyFilesUpdate(ctx context.Context, q db.Querier, trigger string) error {
 	invalidateSellersJSONCache()
-	payload, err := json.Marshal(SupplyFilesPayload{Trigger: trigger})
+	payload, err := cold.MarshalJSON(SupplyFilesPayload{Trigger: trigger})
 	if err != nil {
 		return err
 	}
@@ -232,7 +231,7 @@ func (s *Service) CreateSeller(ctx context.Context, spec SellerCreateSpec) (Sell
 		return SellerDTO{}, err
 	}
 	if strings.TrimSpace(spec.SellerID) == "" || strings.TrimSpace(spec.Domain) == "" {
-		return SellerDTO{}, fmt.Errorf("seller_id and domain are required")
+		return SellerDTO{}, errValidation("seller_id and domain are required")
 	}
 
 	var out SellerDTO
@@ -274,7 +273,7 @@ func (s *Service) UpdateSeller(ctx context.Context, id int64, spec SellerUpdateS
 		return SellerDTO{}, err
 	}
 	if strings.TrimSpace(spec.SellerID) == "" || strings.TrimSpace(spec.Domain) == "" {
-		return SellerDTO{}, fmt.Errorf("seller_id and domain are required")
+		return SellerDTO{}, errValidation("seller_id and domain are required")
 	}
 
 	var out SellerDTO
@@ -355,7 +354,7 @@ func (s *Service) CreateAdsTxtEntry(ctx context.Context, spec AdsTxtEntryCreateS
 		return AdsTxtEntryDTO{}, err
 	}
 	if strings.TrimSpace(spec.Domain) == "" || strings.TrimSpace(spec.PublisherAccountID) == "" {
-		return AdsTxtEntryDTO{}, fmt.Errorf("domain and publisher_account_id are required")
+		return AdsTxtEntryDTO{}, errValidation("domain and publisher_account_id are required")
 	}
 
 	var out AdsTxtEntryDTO
@@ -396,7 +395,7 @@ func (s *Service) UpdateAdsTxtEntry(ctx context.Context, id int64, spec AdsTxtEn
 		return AdsTxtEntryDTO{}, err
 	}
 	if strings.TrimSpace(spec.Domain) == "" || strings.TrimSpace(spec.PublisherAccountID) == "" {
-		return AdsTxtEntryDTO{}, fmt.Errorf("domain and publisher_account_id are required")
+		return AdsTxtEntryDTO{}, errValidation("domain and publisher_account_id are required")
 	}
 
 	var out AdsTxtEntryDTO
@@ -453,7 +452,7 @@ func (s *Service) DeleteAdsTxtEntry(ctx context.Context, id int64) error {
 func (s *Service) GetCampaignSupplyChain(ctx context.Context, campaignID uuid.UUID) (CampaignSupplyChainDTO, error) {
 	row, err := db.New(s.GetPool()).GetCampaignFull(ctx, ads.ToUUID(campaignID))
 	if err != nil {
-		return CampaignSupplyChainDTO{}, err
+		return CampaignSupplyChainDTO{}, mapNotFound(err, ErrCampaignNotFound)
 	}
 	nodes, err := parseSupplyChainNodes(row.SupplyChainNodes)
 	if err != nil {
@@ -471,7 +470,7 @@ func (s *Service) UpdateCampaignSupplyChain(ctx context.Context, campaignID uuid
 		return CampaignSupplyChainDTO{}, err
 	}
 
-	nodesJSON, err := json.Marshal(nodes)
+	nodesJSON, err := cold.MarshalJSON(nodes)
 	if err != nil {
 		return CampaignSupplyChainDTO{}, err
 	}
@@ -521,7 +520,7 @@ func parseSupplyChainNodes(raw []byte) ([]SupplyChainNode, error) {
 		return []SupplyChainNode{}, nil
 	}
 	var nodes []SupplyChainNode
-	if err := json.Unmarshal(raw, &nodes); err != nil {
+	if err := cold.UnmarshalJSON(raw, &nodes); err != nil {
 		return nil, err
 	}
 	return nodes, nil
@@ -598,7 +597,7 @@ func (s *Service) BuildSellersJSON(ctx context.Context) ([]byte, error) {
 	if err := validateSellersJSON(doc); err != nil {
 		return nil, err
 	}
-	return json.Marshal(doc)
+	return cold.MarshalJSON(doc)
 }
 
 // GetSellersJSON returns sellers.json with a 60-second in-memory cache.

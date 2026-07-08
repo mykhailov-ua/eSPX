@@ -49,7 +49,7 @@ func TestChaos_APITenantIsolation(t *testing.T) {
 	cfg.Management.RateLimitBurst = 10_000
 	authMW, tokenMaker := integrationTestAuth(t, rdb, cfg)
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
-	h := NewHandler(svc, cfg, authMW, nil, nil)
+	h := NewHandler(svc, cfg, authMW, nil, nil, nil)
 	h.customerLimiter = newCustomerRateLimiter()
 	h.customerLimiter.limit = 1000
 	h.customerLimiter.burst = 128
@@ -146,7 +146,7 @@ func TestChaos_APIChLagStaleOK(t *testing.T) {
 	authMW, tokenMaker := integrationTestAuth(t, rdb, cfg)
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
 	svc.SetClickHouse(conn)
-	h := NewHandler(svc, cfg, authMW, nil, nil)
+	h := NewHandler(svc, cfg, authMW, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -245,7 +245,7 @@ func TestChaos_LedgerExportCursor(t *testing.T) {
 	cfg.Management.RateLimitRPS = 100_000
 	cfg.Management.RateLimitBurst = 10_000
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
-	h := NewHandler(svc, cfg, nil, nil, nil)
+	h := NewHandler(svc, cfg, nil, nil, nil, nil)
 	h.customerLimiter = newCustomerRateLimiter()
 	h.customerLimiter.limit = 1000
 	h.customerLimiter.burst = 64

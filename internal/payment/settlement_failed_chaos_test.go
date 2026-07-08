@@ -57,12 +57,12 @@ func TestChaos_SettlementFailedNotifier(t *testing.T) {
 	require.Len(t, stub.snapshot(), 1, "cooldown should suppress duplicate alert for same intent")
 
 	logChaosProof(t, "settlement_failed_notifier", map[string]string{
-		"subsystem":    "payment_outbox",
-		"intent_id":    seed.IntentID.String(),
-		"notified":     "true",
-		"dedup_key":    requests[0].DedupKey,
-		"baseline_ok":  "true",
-		"fault_type":   "missing_customer",
+		"subsystem":   "payment_outbox",
+		"intent_id":   seed.IntentID.String(),
+		"notified":    "true",
+		"dedup_key":   requests[0].DedupKey,
+		"baseline_ok": "true",
+		"fault_type":  "missing_customer",
 	})
 }
 

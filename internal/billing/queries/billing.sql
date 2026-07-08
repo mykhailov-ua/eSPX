@@ -9,12 +9,21 @@ FROM balance_ledger
 WHERE customer_id = $1;
 
 -- name: SumCustomerSpendInWindow :one
-SELECT COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END), 0)::bigint AS spend_micro
+SELECT COALESCE(SUM(
+  CASE
+    WHEN type = 'FEE' AND amount < 0 THEN -amount
+    WHEN type IN ('RECONCILIATION_ADJUST', 'PAYMENT_REFUND') THEN -amount
+    ELSE 0
+  END
+), 0)::bigint AS spend_micro
 FROM balance_ledger
 WHERE customer_id = $1
   AND created_at >= $2
   AND created_at < $3
-  AND type IN ('FEE', 'RECONCILIATION_ADJUST');
+  AND type IN ('FEE', 'RECONCILIATION_ADJUST', 'PAYMENT_REFUND');
+
+-- name: ListCustomerIDs :many
+SELECT id FROM customers ORDER BY id LIMIT $1 OFFSET $2;
 
 -- name: SumCustomerLedgerByTypeInWindow :many
 SELECT type::text AS ledger_type,

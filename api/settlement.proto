@@ -19,6 +19,12 @@ service SettlementService {
 
   // Read-only ledger lookup by payment_intent_id for payment financial recon.
   rpc GetLedgerEntry(GetLedgerEntryRequest) returns (GetLedgerEntryResponse);
+
+  // BlockIP enqueues a fraud blacklist update via management outbox (internal IVT path).
+  rpc BlockIP(BlockIPRequest) returns (BlockIPResponse);
+
+  // BatchApplySettlement drains payment outbox rows after management outages (<=500 ops per call).
+  rpc BatchApplySettlement(BatchApplySettlementRequest) returns (BatchApplySettlementResponse);
 }
 
 message ApplyPaymentCreditRequest {
@@ -96,4 +102,33 @@ message GetLedgerEntryResponse {
   int64 refund_total_micro = 3;
   int64 chargeback_total_micro = 4;
   int64 chargeback_reversal_total_micro = 5;
+}
+
+message BlockIPRequest {
+  string ip = 1;
+  string source = 2; // e.g. "fraud"
+}
+
+message BlockIPResponse {
+  bool enqueued = 1;
+}
+
+message BatchApplySettlementRequest {
+  repeated ApplyPaymentCreditRequest credits = 1;
+  repeated ApplyPaymentRefundRequest refunds = 2;
+  repeated ApplyPaymentChargebackRequest chargebacks = 3;
+  repeated ApplyPaymentChargebackReversalRequest chargeback_reversals = 4;
+}
+
+message BatchSettlementItemResult {
+  bool applied = 1;
+  int64 ledger_entry_id = 2;
+  string error = 3; // empty on success
+}
+
+message BatchApplySettlementResponse {
+  repeated BatchSettlementItemResult credit_results = 1;
+  repeated BatchSettlementItemResult refund_results = 2;
+  repeated BatchSettlementItemResult chargeback_results = 3;
+  repeated BatchSettlementItemResult chargeback_reversal_results = 4;
 }

@@ -26,6 +26,7 @@ const (
 	AuthService_RevokeToken_FullMethodName              = "/auth.AuthService/RevokeToken"
 	AuthService_CreateAPIKey_FullMethodName             = "/auth.AuthService/CreateAPIKey"
 	AuthService_ListAPIKeys_FullMethodName              = "/auth.AuthService/ListAPIKeys"
+	AuthService_VerifyAPIKey_FullMethodName             = "/auth.AuthService/VerifyAPIKey"
 	AuthService_ChangePassword_FullMethodName           = "/auth.AuthService/ChangePassword"
 	AuthService_RequestEmailVerification_FullMethodName = "/auth.AuthService/RequestEmailVerification"
 	AuthService_ConfirmEmailVerification_FullMethodName = "/auth.AuthService/ConfirmEmailVerification"
@@ -45,6 +46,8 @@ type AuthServiceClient interface {
 	// Raw secret returned once at creation; hashing stays in auth service, not callers.
 	CreateAPIKey(ctx context.Context, in *CreateAPIKeyRequest, opts ...grpc.CallOption) (*CreateAPIKeyResponse, error)
 	ListAPIKeys(ctx context.Context, in *ListAPIKeysRequest, opts ...grpc.CallOption) (*ListAPIKeysResponse, error)
+	// Machine clients authenticate self-serve HTTP with X-API-Key.
+	VerifyAPIKey(ctx context.Context, in *VerifyAPIKeyRequest, opts ...grpc.CallOption) (*VerifyAPIKeyResponse, error)
 	// Old-password check blocks takeover when a session is already compromised.
 	ChangePassword(ctx context.Context, in *ChangePasswordRequest, opts ...grpc.CallOption) (*ChangePasswordResponse, error)
 	// Short-lived single-use token; email delivery is caller responsibility in production.
@@ -130,6 +133,16 @@ func (c *authServiceClient) ListAPIKeys(ctx context.Context, in *ListAPIKeysRequ
 	return out, nil
 }
 
+func (c *authServiceClient) VerifyAPIKey(ctx context.Context, in *VerifyAPIKeyRequest, opts ...grpc.CallOption) (*VerifyAPIKeyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VerifyAPIKeyResponse)
+	err := c.cc.Invoke(ctx, AuthService_VerifyAPIKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *authServiceClient) ChangePassword(ctx context.Context, in *ChangePasswordRequest, opts ...grpc.CallOption) (*ChangePasswordResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ChangePasswordResponse)
@@ -174,6 +187,8 @@ type AuthServiceServer interface {
 	// Raw secret returned once at creation; hashing stays in auth service, not callers.
 	CreateAPIKey(context.Context, *CreateAPIKeyRequest) (*CreateAPIKeyResponse, error)
 	ListAPIKeys(context.Context, *ListAPIKeysRequest) (*ListAPIKeysResponse, error)
+	// Machine clients authenticate self-serve HTTP with X-API-Key.
+	VerifyAPIKey(context.Context, *VerifyAPIKeyRequest) (*VerifyAPIKeyResponse, error)
 	// Old-password check blocks takeover when a session is already compromised.
 	ChangePassword(context.Context, *ChangePasswordRequest) (*ChangePasswordResponse, error)
 	// Short-lived single-use token; email delivery is caller responsibility in production.
@@ -209,6 +224,9 @@ func (UnimplementedAuthServiceServer) CreateAPIKey(context.Context, *CreateAPIKe
 }
 func (UnimplementedAuthServiceServer) ListAPIKeys(context.Context, *ListAPIKeysRequest) (*ListAPIKeysResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListAPIKeys not implemented")
+}
+func (UnimplementedAuthServiceServer) VerifyAPIKey(context.Context, *VerifyAPIKeyRequest) (*VerifyAPIKeyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VerifyAPIKey not implemented")
 }
 func (UnimplementedAuthServiceServer) ChangePassword(context.Context, *ChangePasswordRequest) (*ChangePasswordResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ChangePassword not implemented")
@@ -366,6 +384,24 @@ func _AuthService_ListAPIKeys_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AuthService_VerifyAPIKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VerifyAPIKeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthServiceServer).VerifyAPIKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuthService_VerifyAPIKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthServiceServer).VerifyAPIKey(ctx, req.(*VerifyAPIKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _AuthService_ChangePassword_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ChangePasswordRequest)
 	if err := dec(in); err != nil {
@@ -454,6 +490,10 @@ var AuthService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListAPIKeys",
 			Handler:    _AuthService_ListAPIKeys_Handler,
+		},
+		{
+			MethodName: "VerifyAPIKey",
+			Handler:    _AuthService_VerifyAPIKey_Handler,
 		},
 		{
 			MethodName: "ChangePassword",

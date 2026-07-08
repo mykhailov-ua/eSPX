@@ -3,6 +3,7 @@ package management
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -55,10 +56,12 @@ func RegisterOpsRoutes(mux *http.ServeMux, pool *pgxpool.Pool, rdbs []redis.Univ
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(ads.OpsSlotMapResponse{
+		if err := json.NewEncoder(w).Encode(ads.OpsSlotMapResponse{
 			Version:       active,
 			ActiveVersion: active,
 			Slots:         slots,
-		})
+		}); err != nil {
+			slog.Error("ops slot map encode failed", "error", err)
+		}
 	})
 }

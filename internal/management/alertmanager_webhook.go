@@ -2,7 +2,6 @@ package management
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +12,7 @@ import (
 	"espx/internal/config"
 	"espx/internal/metrics"
 	notifierpb "espx/internal/notifier/pb"
+	"espx/pkg/cold"
 )
 
 // AlertmanagerAlert mirrors one Alertmanager notification in webhook JSON.
@@ -89,7 +89,7 @@ func (h *AlertmanagerWebhook) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var payload AlertmanagerPayload
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if err := cold.UnmarshalJSON(body, &payload); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}

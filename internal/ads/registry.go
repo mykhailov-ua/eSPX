@@ -10,16 +10,28 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
 	"espx/internal/ads/db"
 	"espx/internal/domain"
 	"espx/internal/metrics"
+	"github.com/google/uuid"
 	redis "github.com/redis/go-redis/v9"
 )
 
 type campaignInfo struct {
 	campaign *domain.Campaign
 	status   db.CampaignStatusType
+}
+
+type campaignMapSnapshot struct {
+	byID map[uuid.UUID]campaignInfo
+}
+
+func (r *Registry) campaignMapSnapshot() *campaignMapSnapshot {
+	v, ok := r.data.Load().(*campaignMapSnapshot)
+	if !ok || v == nil {
+		return &campaignMapSnapshot{}
+	}
+	return v
 }
 
 type campaignReplicaDTO struct {
@@ -47,7 +59,7 @@ type campaignReplicaDTO struct {
 // Writes (Add, Sync) clone the map under mu and publish a new pointer for readers.
 type Registry struct {
 	repo          db.Querier
-	data          atomic.Value // holds map[uuid.UUID]campaignInfo
+	data          atomic.Value // holds *campaignMapSnapshot
 	manuallyAdded map[uuid.UUID]bool
 	mu            sync.Mutex // guards writes (updates to data map, manuallyAdded)
 	replicaPath   string
@@ -61,7 +73,7 @@ func NewRegistry(repo db.Querier) *Registry {
 		repo:          repo,
 		replicaPath:   "campaigns_replica.json",
 	}
-	r.data.Store(make(map[uuid.UUID]campaignInfo, 100_000))
+	r.data.Store(&campaignMapSnapshot{byID: make(map[uuid.UUID]campaignInfo, 100_000)})
 	return r
 }
 
@@ -79,7 +91,7 @@ func (r *Registry) UpdateAndWarmCampaign(ctx context.Context, id uuid.UUID) erro
 		return err
 	}
 	r.mu.Lock()
-	currentMap, _ := r.data.Load().(map[uuid.UUID]campaignInfo)
+	currentMap := r.campaignMapSnapshot().byID
 	newMap := make(map[uuid.UUID]campaignInfo, len(currentMap)+1)
 	for k, v := range currentMap {
 		newMap[k] = v
@@ -92,7 +104,7 @@ func (r *Registry) UpdateAndWarmCampaign(ctx context.Context, id uuid.UUID) erro
 		info.campaign.DailyBudgetMicroAny = camp.DailyBudgetMicro
 		newMap[id] = info
 	}
-	r.data.Store(newMap)
+	r.data.Store(&campaignMapSnapshot{byID: newMap})
 	w := r.budgetWarmer
 	r.mu.Unlock()
 	if w == nil {
@@ -109,20 +121,12 @@ func (r *Registry) SetReplicaPath(path string) {
 }
 
 func (r *Registry) Exists(id uuid.UUID) bool {
-	m, _ := r.data.Load().(map[uuid.UUID]campaignInfo)
-	if m == nil {
-		return false
-	}
-	info, ok := m[id]
+	info, ok := r.campaignMapSnapshot().byID[id]
 	return ok && info.status == db.CampaignStatusTypeACTIVE
 }
 
 func (r *Registry) GetCustomerID(campaignID uuid.UUID) (uuid.UUID, bool) {
-	m, _ := r.data.Load().(map[uuid.UUID]campaignInfo)
-	if m == nil {
-		return uuid.Nil, false
-	}
-	info, ok := m[campaignID]
+	info, ok := r.campaignMapSnapshot().byID[campaignID]
 	if !ok {
 		return uuid.Nil, false
 	}
@@ -130,11 +134,7 @@ func (r *Registry) GetCustomerID(campaignID uuid.UUID) (uuid.UUID, bool) {
 }
 
 func (r *Registry) GetCampaign(id uuid.UUID) (*domain.Campaign, bool) {
-	m, _ := r.data.Load().(map[uuid.UUID]campaignInfo)
-	if m == nil {
-		return nil, false
-	}
-	info, ok := m[id]
+	info, ok := r.campaignMapSnapshot().byID[id]
 	if !ok {
 		return nil, false
 	}
@@ -143,7 +143,7 @@ func (r *Registry) GetCampaign(id uuid.UUID) (*domain.Campaign, bool) {
 
 // ActiveCampaigns returns a snapshot of active campaigns for RTB sync and budget warm paths.
 func (r *Registry) ActiveCampaigns() []*domain.Campaign {
-	m, _ := r.data.Load().(map[uuid.UUID]campaignInfo)
+	m := r.campaignMapSnapshot().byID
 	if len(m) == 0 {
 		return nil
 	}
@@ -204,6 +204,7 @@ func (r *Registry) Add(id, customerID uuid.UUID, brandID *uuid.UUID, brandFcapKe
 			FreqWindow:          freqWindow,
 			FreqWindowAny:       freqWindow,
 			TargetCountries:     countries,
+			Status:              domain.CampaignStatusActive,
 			BudgetCampaignKey:   "budget:campaign:" + idStr,
 			CampaignSyncKey:     "budget:sync:campaign:" + idStr,
 			CustomerSyncKey:     "budget:sync:customer:" + customerIDStr,
@@ -216,7 +217,7 @@ func (r *Registry) Add(id, customerID uuid.UUID, brandID *uuid.UUID, brandFcapKe
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	currentMap, _ := r.data.Load().(map[uuid.UUID]campaignInfo)
+	currentMap := r.campaignMapSnapshot().byID
 	newMap := make(map[uuid.UUID]campaignInfo, len(currentMap)+1)
 	for k, v := range currentMap {
 		newMap[k] = v
@@ -224,7 +225,7 @@ func (r *Registry) Add(id, customerID uuid.UUID, brandID *uuid.UUID, brandFcapKe
 
 	newMap[id] = info
 	r.manuallyAdded[id] = true
-	r.data.Store(newMap)
+	r.data.Store(&campaignMapSnapshot{byID: newMap})
 
 	if err := r.saveReplica(newMap); err != nil {
 		slog.Error("failed to save local file replica in Add", "error", err)
@@ -238,12 +239,12 @@ func (r *Registry) Sync(ctx context.Context) (int, error) {
 	if err != nil {
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		currentMap, _ := r.data.Load().(map[uuid.UUID]campaignInfo)
+		currentMap := r.campaignMapSnapshot().byID
 		if len(currentMap) == 0 {
 			slog.Warn("postgres sync failed and memory cache is empty, attempting to load from local file replica")
-			if loadedMap, loadErr := r.loadReplica(); loadErr == nil {
-				r.data.Store(loadedMap)
-				return len(loadedMap), nil
+			if loaded, loadErr := r.loadReplica(); loadErr == nil {
+				r.data.Store(loaded)
+				return len(loaded.byID), nil
 			} else {
 				slog.Error("failed to load from local file replica", "error", loadErr)
 			}
@@ -265,59 +266,9 @@ func (r *Registry) Sync(ctx context.Context) (int, error) {
 			}
 		}
 
-		loc, err := time.LoadLocation(row.Timezone)
-		if err != nil {
-			slog.Warn("failed to load location, fallback to UTC", "campaign", id, "timezone", row.Timezone)
-			loc = time.UTC
-		}
-
-		customerID := uuid.UUID(row.CustomerID.Bytes)
-		dailyBudgetMicro := row.DailyBudget
-
-		var brandIDPtr *uuid.UUID
-		if row.BrandID.Valid {
-			brandID := uuid.UUID(row.BrandID.Bytes)
-			brandIDPtr = &brandID
-		}
-
-		idStr := id.String()
-		customerIDStr := customerID.String()
-
-		var fcapPrefix string
-		if row.BrandFcapKey != "" {
-			fcapPrefix = row.BrandFcapKey + ":u:"
-		} else {
-			fcapPrefix = "fcap:c:" + idStr + ":u:"
-		}
-
 		fresh[id] = campaignInfo{
-			campaign: &domain.Campaign{
-				ID:                  id,
-				IDStr:               idStr,
-				IDStrAny:            idStr,
-				CustomerID:          customerID,
-				CustomerIDStr:       customerIDStr,
-				CustomerIDStrAny:    customerIDStr,
-				BrandID:             brandIDPtr,
-				BrandFcapKey:        row.BrandFcapKey,
-				PacingMode:          domain.PacingMode(row.PacingMode),
-				DailyBudget:         row.DailyBudget,
-				DailyBudgetMicro:    dailyBudgetMicro,
-				DailyBudgetMicroAny: dailyBudgetMicro,
-				Timezone:            row.Timezone,
-				Location:            loc,
-				FreqLimit:           row.FreqLimit.Int32,
-				FreqLimitAny:        row.FreqLimit.Int32,
-				FreqWindow:          row.FreqWindow.Int32,
-				FreqWindowAny:       row.FreqWindow.Int32,
-				TargetCountries:     SliceToMap(row.TargetCountries),
-				BudgetCampaignKey:   "budget:campaign:" + idStr,
-				CampaignSyncKey:     "budget:sync:campaign:" + idStr,
-				CustomerSyncKey:     "budget:sync:customer:" + customerIDStr,
-				FcapKeyPrefix:       fcapPrefix,
-				DailySpendKeyPrefix: "budget:daily_spent:campaign:" + idStr + ":",
-			},
-			status: row.Status,
+			campaign: campaignFromDBRow(row),
+			status:   row.Status,
 		}
 	}
 
@@ -327,14 +278,14 @@ func (r *Registry) Sync(ctx context.Context) (int, error) {
 	for id := range fresh {
 		delete(r.manuallyAdded, id)
 	}
-	currentMap, _ := r.data.Load().(map[uuid.UUID]campaignInfo)
+	currentMap := r.campaignMapSnapshot().byID
 	for id := range r.manuallyAdded {
 		if info, ok := currentMap[id]; ok {
 			fresh[id] = info
 		}
 	}
 
-	r.data.Store(fresh)
+	r.data.Store(&campaignMapSnapshot{byID: fresh})
 
 	if err := r.saveReplica(fresh); err != nil {
 		slog.Error("failed to save local file replica in Sync", "error", err)
@@ -410,7 +361,7 @@ func (r *Registry) saveReplica(m map[uuid.UUID]campaignInfo) error {
 	return os.Rename(tempFile, r.replicaPath)
 }
 
-func (r *Registry) loadReplica() (map[uuid.UUID]campaignInfo, error) {
+func (r *Registry) loadReplica() (*campaignMapSnapshot, error) {
 	data, err := os.ReadFile(r.replicaPath)
 	if err != nil {
 		if !strings.HasPrefix(r.replicaPath, "/tmp/") {
@@ -485,7 +436,7 @@ func (r *Registry) loadReplica() (map[uuid.UUID]campaignInfo, error) {
 			status: db.CampaignStatusType(dto.RegistryStatus),
 		}
 	}
-	return m, nil
+	return &campaignMapSnapshot{byID: m}, nil
 }
 
 func (r *Registry) StartSync(ctx context.Context, interval time.Duration) {

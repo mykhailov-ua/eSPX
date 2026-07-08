@@ -265,17 +265,3 @@ func filterDeadlineExceeded(ctx context.Context) bool {
 	}
 	return false
 }
-
-// filterDeadlineRemaining returns remaining filter budget for Redis timeouts.
-// The bool is true when ctx carries a deadline, including when rem is zero.
-func filterDeadlineRemaining(ctx context.Context) (time.Duration, bool) {
-	d, ok := filterDeadlineMonoFromContext(ctx)
-	if !ok {
-		return 0, false
-	}
-	rem := d - monotonicNano()
-	if rem <= 0 {
-		return 0, true
-	}
-	return time.Duration(rem), true
-}

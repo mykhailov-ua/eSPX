@@ -9,6 +9,7 @@ import (
 
 	"espx/internal/ads"
 	"espx/internal/ads/db"
+
 	"github.com/google/uuid"
 	redis "github.com/redis/go-redis/v9"
 )
@@ -198,7 +199,7 @@ func (qm *QuotaManager) warmActiveCampaignQuotas(ctx context.Context) {
 
 			slog.Info("initializing quota for campaign", "campaign_id", campaignID, "shadow", shadow)
 			idempotencyKey := fmt.Sprintf("init-quota-%s", campaignID)
-			res, err := qm.quotaRepo.ReserveChunk(ctx, qm.svc.sharder, campaignID, qm.chunkSize, idempotencyKey)
+			_, err = qm.quotaRepo.ReserveChunk(ctx, qm.svc.sharder, campaignID, qm.chunkSize, idempotencyKey)
 			if err != nil {
 				_ = rdb.Del(ctx, lockKey).Err()
 				if !errors.Is(err, ads.ErrQuotaBudgetExceeded) {
@@ -208,9 +209,6 @@ func (qm *QuotaManager) warmActiveCampaignQuotas(ctx context.Context) {
 			}
 
 			actualChunk := qm.chunkSize
-			if res.AlreadyApplied {
-				// Proceed with chunkSize
-			}
 
 			if shadow {
 				_ = rdb.Del(ctx, lockKey).Err()

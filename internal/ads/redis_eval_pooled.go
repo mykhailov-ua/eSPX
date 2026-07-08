@@ -15,6 +15,7 @@ var (
 	evalShaCmdAny any = "evalsha"
 	evalCmdAny    any = "eval"
 	numKeys15Any  any = unifiedFilterKeyCount
+	numKeys1Any   any = 1
 )
 
 // evalWirePool recycles EVALSHA wire argument slices (3 + keys + argv).

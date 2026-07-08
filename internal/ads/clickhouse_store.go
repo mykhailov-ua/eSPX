@@ -17,11 +17,6 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
-// isGhostTelemetry routes IVT ghost events separately from billable fraud telemetry.
-func isGhostTelemetry(e *domain.Event) bool {
-	return e != nil && e.GhostEvent
-}
-
 // isFraudTelemetry routes non-ghost fraud signals to the fraud_events table.
 func isFraudTelemetry(e *domain.Event) bool {
 	if e == nil || e.GhostEvent {

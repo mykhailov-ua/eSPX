@@ -2,7 +2,6 @@ package management
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -23,12 +22,13 @@ type Handler struct {
 	ipLimiter       *ipRateLimiter
 	customerLimiter *customerRateLimiter
 	authMiddleware  *AuthMiddleware
+	authClient      *AuthClient
 	payment         *PaymentClient
 	billing         *BillingClient
 }
 
 // NewHandler constructs the admin HTTP handler with per-IP rate limits from config.
-func NewHandler(svc *Service, cfg *config.Config, authMiddleware *AuthMiddleware, paymentClient *PaymentClient, billingClient *BillingClient) *Handler {
+func NewHandler(svc *Service, cfg *config.Config, authMiddleware *AuthMiddleware, authClient *AuthClient, paymentClient *PaymentClient, billingClient *BillingClient) *Handler {
 	rps := 10.0
 	burst := 50
 	if cfg != nil {
@@ -41,6 +41,7 @@ func NewHandler(svc *Service, cfg *config.Config, authMiddleware *AuthMiddleware
 		ipLimiter:       newIPRateLimiter(rps, burst),
 		customerLimiter: newCustomerRateLimiter(),
 		authMiddleware:  authMiddleware,
+		authClient:      authClient,
 		payment:         paymentClient,
 		billing:         billingClient,
 	}
@@ -57,6 +58,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/brands/{id}/fcap", h.limit(h.perm(h.configureBrandFcap, PermBrandsWrite)))
 	mux.HandleFunc("DELETE /admin/campaigns/{id}", h.limit(h.perm(h.cancelCampaign, PermCampaignsWrite)))
 	mux.HandleFunc("POST /admin/campaigns/{id}/pacing", h.limit(h.perm(h.updateCampaignPacing, PermCampaignsWrite)))
+	mux.HandleFunc("POST /admin/campaigns/{id}/consent-requirements", h.limit(h.perm(h.postCampaignConsentRequirements, PermCampaignsWrite)))
+	mux.HandleFunc("POST /admin/privacy/erasure", h.limit(h.perm(h.postPrivacyErasure, PermAuditRead)))
 
 	mux.HandleFunc("POST /admin/settings", h.limit(h.perm(h.updateSettings, PermSettingsWrite)))
 	mux.HandleFunc("POST /admin/blacklist", h.limit(h.perm(h.blockIP, PermBlacklistWrite)))
@@ -69,6 +72,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/customers/{id}/ledger", h.limit(h.perm(h.getCustomerLedger, PermCustomersRead)))
 	mux.HandleFunc("GET /admin/customers/{id}/billing", h.limit(h.perm(h.getCustomerBillingDashboard, PermCustomersRead)))
 	mux.HandleFunc("POST /admin/customers/{id}/billing/invoices", h.limit(h.perm(h.generateCustomerInvoice, PermCustomersWrite)))
+	mux.HandleFunc("POST /admin/payment/webhooks/replay", h.limit(h.perm(h.replayPaymentWebhook, PermAuditRead)))
 
 	mux.HandleFunc("GET /admin/campaigns", h.limit(h.perm(h.listCampaigns, PermCampaignsRead)))
 	mux.HandleFunc("GET /admin/campaigns/{id}", h.limit(h.perm(h.getCampaign, PermCampaignsRead)))
@@ -83,6 +87,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	h.registerRtbRoutes(mux)
 	h.registerOpsRoutes(mux)
 	h.registerAPIRoutes(mux)
+	h.registerSelfServeRoutes(mux)
+	registerNotificationRoutes(mux, h)
 }
 
 // limit wraps handlers with a per-client IP token bucket.
@@ -123,14 +129,14 @@ func (h *Handler) createCustomer(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
-	var req struct {
+	req, err := cold.DecodeBody[struct {
 		ID           uuid.UUID `json:"id"`
 		Name         string    `json:"name"`
 		BalanceMicro *int64    `json:"balance_micro"`
 		Balance      *float64  `json:"balance"`
 		Currency     string    `json:"currency"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
+	}](body)
+	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
@@ -148,7 +154,7 @@ func (h *Handler) createCustomer(w http.ResponseWriter, r *http.Request) {
 	}
 	balanceMicro, err := parseMoneyMicro(req.BalanceMicro, legacy, hasLegacy, "balance")
 	if err != nil {
-		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		writeServiceError(w, err)
 		return
 	}
 	if err := h.svc.CreateCustomer(r.Context(), req.ID, req.Name, balanceMicro, req.Currency); err != nil {
@@ -171,11 +177,11 @@ func (h *Handler) topUpBalance(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
-	var req struct {
+	req, err := cold.DecodeBody[struct {
 		AmountMicro *int64   `json:"amount_micro"`
 		Amount      *float64 `json:"amount"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
+	}](body)
+	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
@@ -185,11 +191,19 @@ func (h *Handler) topUpBalance(w http.ResponseWriter, r *http.Request) {
 		legacy = *req.Amount
 	}
 	amountMicro, err := parseMoneyMicro(req.AmountMicro, legacy, hasLegacy, "amount")
-	if err != nil || amountMicro <= 0 {
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	if amountMicro <= 0 {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "amount is required")
 		return
 	}
-	hash := h.svc.GenerateIdempotencyHash(customerID, req)
+	hash, err := h.svc.GenerateIdempotencyHash(customerID, req)
+	if err != nil {
+		writeServiceError(w, err, slog.String("customer_id", customerID.String()))
+		return
+	}
 	if err := h.svc.TopUpBalance(r.Context(), customerID, amountMicro, hash); err != nil {
 		writeServiceError(w, err, slog.String("customer_id", customerID.String()))
 		return
@@ -204,7 +218,7 @@ func (h *Handler) createCampaign(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "failed to read request body")
 		return
 	}
-	var req struct {
+	req, err := cold.DecodeBody[struct {
 		CustomerID       uuid.UUID  `json:"customer_id"`
 		BrandID          *uuid.UUID `json:"brand_id,omitempty"`
 		Name             string     `json:"name"`
@@ -220,8 +234,8 @@ func (h *Handler) createCampaign(w http.ResponseWriter, r *http.Request) {
 		StartAt          *time.Time `json:"start_at,omitempty"`
 		EndAt            *time.Time `json:"end_at,omitempty"`
 		DaypartHours     []int16    `json:"daypart_hours,omitempty"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
+	}](body)
+	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
@@ -254,7 +268,7 @@ func (h *Handler) createCampaign(w http.ResponseWriter, r *http.Request) {
 	}
 	budgetLimitMicro, err := parseBudgetMicro(req.BudgetLimitMicro, budgetLegacy, hasBudgetLegacy)
 	if err != nil {
-		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		writeServiceError(w, err)
 		return
 	}
 	dailyLegacy := 0.0
@@ -264,11 +278,15 @@ func (h *Handler) createCampaign(w http.ResponseWriter, r *http.Request) {
 	}
 	dailyBudgetMicro, err := parseMoneyMicro(req.DailyBudgetMicro, dailyLegacy, hasDailyLegacy, "daily_budget")
 	if err != nil {
-		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		writeServiceError(w, err)
 		return
 	}
 
-	hash := h.svc.GenerateIdempotencyHash(req.CustomerID, body)
+	hash, err := h.svc.GenerateIdempotencyHash(req.CustomerID, body)
+	if err != nil {
+		writeServiceError(w, err, slog.String("customer_id", req.CustomerID.String()))
+		return
+	}
 	id, err := h.svc.CreateCampaign(r.Context(), CampaignCreateSpec{
 		CustomerID:      req.CustomerID,
 		BrandID:         req.BrandID,
@@ -300,11 +318,10 @@ func (h *Handler) cancelCampaign(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid campaign id")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, cold.DefaultMaxBody)
-	var req struct {
+	req, err := cold.DecodeRequest[struct {
 		Reason string `json:"reason"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	}](w, r, cold.DefaultMaxBody)
+	if err != nil {
 		slog.Warn("failed to decode cancel campaign request", "error", err)
 	}
 
@@ -433,7 +450,8 @@ func (h *Handler) unblockIP(w http.ResponseWriter, r *http.Request) {
 // listAudit handles GET /admin/audit for compliance review of admin actions.
 func (h *Handler) listAudit(w http.ResponseWriter, r *http.Request) {
 	limit, offset := parseAPIPagination(r)
-	logs, total, err := h.svc.ListAuditLogs(r.Context(), limit, offset)
+	redact := r.URL.Query().Get("redact_pii") == "true"
+	logs, total, err := h.svc.ListAuditLogsRedacted(r.Context(), limit, offset, redact)
 	if err != nil {
 		slog.Error("failed to list audit logs", "error", err)
 		httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", "internal error")
@@ -488,7 +506,7 @@ func (h *Handler) getCustomer(w http.ResponseWriter, r *http.Request) {
 
 	customer, err := h.svc.GetCustomerDTO(r.Context(), customerID)
 	if err != nil {
-		httpresponse.Error(w, http.StatusNotFound, "NOT_FOUND", "customer not found")
+		writeServiceError(w, err, slog.String("customer_id", customerID.String()))
 		return
 	}
 
@@ -557,7 +575,7 @@ func (h *Handler) getCampaign(w http.ResponseWriter, r *http.Request) {
 
 	campaign, err := h.svc.GetCampaignDTO(r.Context(), campaignID)
 	if err != nil {
-		httpresponse.Error(w, http.StatusNotFound, "NOT_FOUND", "campaign not found")
+		writeServiceError(w, err, slog.String("campaign_id", campaignID.String()))
 		return
 	}
 
@@ -709,7 +727,7 @@ func (h *Handler) configureBrandFcap(w http.ResponseWriter, r *http.Request) {
 	if ok && u.IsUser() {
 		brand, errBrand := h.svc.GetBrandDTO(r.Context(), brandID)
 		if errBrand != nil {
-			httpresponse.Error(w, http.StatusNotFound, "NOT_FOUND", "brand not found")
+			writeServiceError(w, errBrand, slog.String("brand_id", brandID.String()))
 			return
 		}
 		if brand.CustomerID != u.CustomerID.String() {

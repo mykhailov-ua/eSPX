@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -151,6 +150,13 @@ func (s *Service) StartAutoscaleBudgetWorker(syncWorkers []*ads.SyncWorker, inte
 	})
 }
 
+// StartDeliveryOptimizerWorker runs the unified M5.0 delivery pass (pacing, autoscale, MAB, bid floors).
+func (s *Service) StartDeliveryOptimizerWorker(syncWorkers []*ads.SyncWorker, interval time.Duration) {
+	s.startWorker(func() {
+		NewDeliveryOptimizerWorker(s, syncWorkers).Start(s.ctx, interval)
+	})
+}
+
 // GetCampaign loads the full campaign row for internal authorization and lifecycle checks.
 func (s *Service) GetCampaign(ctx context.Context, id uuid.UUID) (db.Campaign, error) {
 	return db.New(s.pool).GetCampaignFull(ctx, ads.ToUUID(id))
@@ -171,12 +177,15 @@ func (s *Service) CreateCustomer(ctx context.Context, id uuid.UUID, name string,
 }
 
 // GenerateIdempotencyHash derives a stable key from customer identity and request payload for safe retries.
-func (s *Service) GenerateIdempotencyHash(customerID uuid.UUID, params any) string {
-	b, _ := json.Marshal(params)
+func (s *Service) GenerateIdempotencyHash(customerID uuid.UUID, params any) (string, error) {
+	b, err := cold.MarshalJSON(params)
+	if err != nil {
+		return "", fmt.Errorf("idempotency hash params: %w", err)
+	}
 	h := sha256.New()
 	h.Write([]byte(customerID.String()))
 	h.Write(b)
-	return hex.EncodeToString(h.Sum(nil))
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // TopUpBalance credits a customer account idempotently and records the ledger entry.
@@ -285,7 +294,7 @@ func (s *Service) ApplyPaymentCredit(ctx context.Context, customerID uuid.UUID, 
 // ApplyPaymentRefund debits a customer account idempotently after a Stripe refund webhook.
 func (s *Service) ApplyPaymentRefund(ctx context.Context, customerID uuid.UUID, amountMicro int64, ledgerIdempotencyKey string, paymentIntentID uuid.UUID, provider string, providerRefundID string) (bool, int64, error) {
 	if amountMicro <= 0 {
-		return false, 0, fmt.Errorf("refund amount must be positive")
+		return false, 0, errValidation("refund amount must be positive")
 	}
 
 	var ledgerEntryID int64
@@ -384,7 +393,7 @@ func (s *Service) applyPaymentChargebackMovement(
 	isDebit bool,
 ) (bool, int64, error) {
 	if amountMicro <= 0 {
-		return false, 0, fmt.Errorf("chargeback amount must be positive")
+		return false, 0, errValidation("chargeback amount must be positive")
 	}
 
 	var ledgerEntryID int64
@@ -510,7 +519,10 @@ func (s *Service) CancelCampaign(ctx context.Context, campaignID uuid.UUID, reas
 			Reason:     pgtype.Text{String: reason, Valid: true},
 		})
 		if err == nil {
-			payloadBytes, _ := json.Marshal(CampaignPayload{CampaignID: campaignID.String()})
+			payloadBytes, marshalErr := cold.MarshalJSON(CampaignPayload{CampaignID: campaignID.String()})
+			if marshalErr != nil {
+				return fmt.Errorf("marshal cancel campaign outbox payload: %w", marshalErr)
+			}
 			_, err = q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{EventType: "CANCEL_CAMPAIGN", Payload: payloadBytes})
 		}
 		return err
@@ -765,7 +777,10 @@ func (s *Service) UpdateOverdraft(ctx context.Context, id uuid.UUID, newOverdraf
 						availableLimit = availableLimit + remaining
 					}
 
-					payloadBytes, _ := json.Marshal(CampaignPayload{CampaignID: uuid.UUID(locked.ID.Bytes).String()})
+					payloadBytes, marshalErr := cold.MarshalJSON(CampaignPayload{CampaignID: uuid.UUID(locked.ID.Bytes).String()})
+					if marshalErr != nil {
+						return fmt.Errorf("marshal pause campaign outbox payload: %w", marshalErr)
+					}
 					_, err = q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{
 						EventType: "PAUSE_CAMPAIGN",
 						Payload:   payloadBytes,

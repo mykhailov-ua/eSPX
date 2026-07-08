@@ -1,7 +1,6 @@
 package management
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -38,7 +37,7 @@ func (h *Handler) getSlotMap(w http.ResponseWriter, r *http.Request) {
 
 	dto, err := h.svc.GetSlotMap(r.Context(), version, includeSlots)
 	if err != nil {
-		writeSlotMapError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	httpresponse.JSON(w, http.StatusOK, dto)
@@ -50,15 +49,15 @@ func (h *Handler) createSlotMapVersion(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
-	var req struct {
+	req, err := cold.DecodeBody[struct {
 		BaseVersion *int32 `json:"base_version"`
 		Overrides   []struct {
 			Slot    int16  `json:"slot"`
 			ShardID int16  `json:"shard_id"`
 			State   string `json:"state"`
 		} `json:"overrides"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
+	}](body)
+	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON")
 		return
 	}
@@ -83,7 +82,7 @@ func (h *Handler) createSlotMapVersion(w http.ResponseWriter, r *http.Request) {
 
 	newVersion, err := h.svc.CreateSlotMapVersion(r.Context(), adminID, req.BaseVersion, overrides)
 	if err != nil {
-		writeSlotMapError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	httpresponse.JSON(w, http.StatusCreated, map[string]any{
@@ -103,11 +102,11 @@ func (h *Handler) markSlotMapMigrating(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
-	var req struct {
+	req, err := cold.DecodeBody[struct {
 		Slots       []int16 `json:"slots"`
 		TargetShard int16   `json:"target_shard"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
+	}](body)
+	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON")
 		return
 	}
@@ -122,7 +121,7 @@ func (h *Handler) markSlotMapMigrating(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.svc.MarkSlotMapMigrating(r.Context(), adminID, version, req.Slots, req.TargetShard); err != nil {
-		writeSlotMapError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	httpresponse.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -141,7 +140,7 @@ func (h *Handler) activateSlotMapVersion(w http.ResponseWriter, r *http.Request)
 	}
 
 	if err := h.svc.ActivateSlotMapVersion(r.Context(), adminID, version); err != nil {
-		writeSlotMapError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	httpresponse.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -155,7 +154,7 @@ func (h *Handler) getSlotMigrations(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := h.svc.GetSlotMigrations(r.Context(), version)
 	if err != nil {
-		writeSlotMapError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	httpresponse.JSON(w, http.StatusOK, map[string]any{"migrations": rows})
@@ -168,7 +167,7 @@ func (h *Handler) copySlotMigration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.svc.CopyAllMigratingSlots(r.Context(), version); err != nil {
-		writeSlotMapError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	httpresponse.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -180,10 +179,10 @@ func (h *Handler) rollbackSlotMap(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
-	var req struct {
+	req, err := cold.DecodeBody[struct {
 		PreviousVersion int32 `json:"previous_version"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
+	}](body)
+	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON")
 		return
 	}
@@ -192,23 +191,10 @@ func (h *Handler) rollbackSlotMap(w http.ResponseWriter, r *http.Request) {
 		adminID = u.UserID
 	}
 	if err := h.svc.RollbackSlotMapVersion(r.Context(), adminID, req.PreviousVersion); err != nil {
-		writeSlotMapError(w, err)
+		writeServiceError(w, err)
 		return
 	}
 	httpresponse.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-func writeSlotMapError(w http.ResponseWriter, err error) {
-	switch err {
-	case ads.ErrSlotMapVersionNotFound:
-		httpresponse.Error(w, http.StatusNotFound, "NOT_FOUND", err.Error())
-	case ads.ErrSlotMapIncomplete, ads.ErrSlotMapInvalidSlot, ads.ErrSlotMapInvalidShard:
-		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
-	case ErrSlotMigrationNotReady, ads.ErrSlotMapAlreadyActive:
-		httpresponse.Error(w, http.StatusConflict, "CONFLICT", err.Error())
-	default:
-		httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL", err.Error())
-	}
 }
 
 func parsePathInt32(r *http.Request, name string) (int32, error) {

@@ -10,9 +10,9 @@ import (
 
 	"espx/internal/config"
 	"espx/internal/database"
-	"espx/pkg/lifecycle"
 	"espx/internal/notifier"
 	"espx/internal/notifier/pb"
+	"espx/pkg/lifecycle"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"

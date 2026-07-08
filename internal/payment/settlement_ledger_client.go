@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sync"
 
-	mgmtpb "espx/internal/management/pb"
 	"espx/internal/config"
+	mgmtpb "espx/internal/management/pb"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
@@ -33,7 +33,7 @@ type PaymentIntentLedger struct {
 	RefundMicro             int64
 	ChargebackMicro         int64
 	ChargebackReversalMicro int64
-	HasTopup               bool
+	HasTopup                bool
 }
 
 // GetPaymentIntentLedger loads ledger totals for one payment intent via settlement gRPC.

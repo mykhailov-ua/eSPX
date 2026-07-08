@@ -55,7 +55,6 @@ func ParseOpenRTB3Payload(payload []byte) (minBid int64, deviceType uint8, categ
 	if openrtbIdx == -1 {
 		return 0, 0, 0, false
 	}
-	isOpenRTB = true
 
 	minBid = 0
 	deviceType = 1

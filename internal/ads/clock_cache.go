@@ -90,7 +90,7 @@ func init() {
 }
 
 // NewFastUUID generates click IDs without crypto/rand or uuid library overhead.
-func NewFastUUID() (uuid.UUID, error) {
+func NewFastUUID() uuid.UUID {
 	seq := atomic.AddUint64(&idSequence, 1)
 	now := cachedUnixMilli.Load()
 
@@ -119,5 +119,5 @@ func NewFastUUID() (uuid.UUID, error) {
 	u[6] = (u[6] & 0x0f) | 0x70
 	u[8] = (u[8] & 0x3f) | 0x80
 
-	return u, nil
+	return u
 }

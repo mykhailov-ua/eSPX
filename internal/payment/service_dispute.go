@@ -3,7 +3,6 @@ package payment
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -48,13 +47,12 @@ func (service *Service) ProcessStripeDisputeWebhook(
 	h.Write(payload)
 	payloadHash := h.Sum(nil)
 
-	var redacted map[string]any
-	_ = json.Unmarshal(payload, &redacted)
-	delete(redacted, "client_secret")
-	delete(redacted, "customer_details")
-	redactedBytes, _ := json.Marshal(redacted)
+	redactedBytes, err := cold.RedactStripeWebhookPayload(payload)
+	if err != nil {
+		return fmt.Errorf("redact stripe webhook payload: %w", err)
+	}
 
-	err := pgx.BeginFunc(ctx, service.pool, func(tx pgx.Tx) error {
+	err = pgx.BeginFunc(ctx, service.pool, func(tx pgx.Tx) error {
 		txQueries := db.New(tx)
 
 		_, err := txQueries.GetWebhookEvent(ctx, db.GetWebhookEventParams{
@@ -121,7 +119,10 @@ func (service *Service) ProcessStripeDisputeWebhook(
 			if hasDispute {
 				break
 			}
-			disputeID, _ := uuid.NewV7()
+			disputeID, err := uuid.NewV7()
+			if err != nil {
+				return fmt.Errorf("generate dispute id: %w", err)
+			}
 			amount := disputeAmountMicro
 			if amount <= 0 {
 				amount = intent.AmountMicro
@@ -188,9 +189,12 @@ func (service *Service) ProcessStripeDisputeWebhook(
 					return err
 				}
 			}
-			outboxPayload, _ := json.Marshal(applyChargebackPayload(
+			outboxPayload, err := cold.MarshalJSON(applyChargebackPayload(
 				uuid.UUID(intent.ID.Bytes), uuid.UUID(intent.CustomerID.Bytes), delta, providerDisputeID,
 			))
+			if err != nil {
+				return fmt.Errorf("marshal apply chargeback outbox payload: %w", err)
+			}
 			_, err = txQueries.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{
 				EventType: OutboxEventApplyChargeback,
 				Payload:   outboxPayload,
@@ -218,9 +222,12 @@ func (service *Service) ProcessStripeDisputeWebhook(
 			if err != nil {
 				return err
 			}
-			outboxPayload, _ := json.Marshal(reverseChargebackPayload(
+			outboxPayload, err := cold.MarshalJSON(reverseChargebackPayload(
 				uuid.UUID(intent.ID.Bytes), uuid.UUID(intent.CustomerID.Bytes), delta, providerDisputeID,
 			))
+			if err != nil {
+				return fmt.Errorf("marshal reverse chargeback outbox payload: %w", err)
+			}
 			_, err = txQueries.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{
 				EventType: OutboxEventReverseChargeback,
 				Payload:   outboxPayload,
@@ -277,12 +284,15 @@ func lockIntentByProviderRef(ctx context.Context, tx pgx.Tx, paymentIntentRef st
 }
 
 func (service *Service) ensureDisputeRow(ctx context.Context, q db.Querier, intent db.PaymentPaymentIntent, providerDisputeID string, amountMicro int64) error {
-	disputeID, _ := uuid.NewV7()
+	disputeID, err := uuid.NewV7()
+	if err != nil {
+		return fmt.Errorf("generate dispute id: %w", err)
+	}
 	amount := amountMicro
 	if amount <= 0 {
 		amount = intent.AmountMicro
 	}
-	_, err := q.CreatePaymentDispute(ctx, db.CreatePaymentDisputeParams{
+	_, err = q.CreatePaymentDispute(ctx, db.CreatePaymentDisputeParams{
 		ID:                pgtype.UUID{Bytes: disputeID, Valid: true},
 		PaymentIntentID:   intent.ID,
 		Provider:          "stripe",

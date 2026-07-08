@@ -16,6 +16,7 @@ import (
 	"espx/internal/auth/pb"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/prometheus/client_golang/prometheus"
@@ -33,6 +34,7 @@ var (
 	ErrSessionBlocked     = errors.New("session is blocked")
 	ErrPasswordReuse      = errors.New("password reuse not allowed")
 	ErrEmailNotVerified   = errors.New("email not verified")
+	ErrInvalidAPIKey      = errors.New("invalid api key")
 )
 
 // idempotentResultError carries a cached refresh rotation result out of a transaction without treating it as a failure.
@@ -633,7 +635,10 @@ func (service *Service) ChangePassword(ctx context.Context, userID uuid.UUID, ol
 	}
 
 	for _, oldHash := range historyHashes {
-		matchHist, _ := VerifyPassword(newPassword, oldHash)
+		matchHist, verifyHistErr := VerifyPassword(newPassword, oldHash)
+		if verifyHistErr != nil && !errors.Is(verifyHistErr, ErrInsecureHashParameters) {
+			return verifyHistErr
+		}
 		if matchHist {
 			service.AuditLog(ctx, userID, "PASSWORD_REUSE_REJECTED", "user", userID.String(), clientIP, userAgent,
 				map[string]any{"reason": "password_reuse_detected"}, nil)
@@ -693,6 +698,7 @@ func (service *Service) CreateAPIKey(ctx context.Context, userID uuid.UUID, name
 
 	row, err := service.repo.CreateAPIKey(ctx, db.CreateAPIKeyParams{
 		KeyHash:   keyHash,
+		KeyLookup: pgtype.Text{String: apiKeyLookup(rawKey), Valid: true},
 		UserID:    pgtype.UUID{Bytes: userID, Valid: true},
 		Name:      name,
 		ExpiresAt: exp,
@@ -710,6 +716,39 @@ func (service *Service) CreateAPIKey(ctx context.Context, userID uuid.UUID, name
 // ListUserAPIKeys exposes metadata only; stored secrets are never retrievable after creation.
 func (service *Service) ListUserAPIKeys(ctx context.Context, userID uuid.UUID) ([]db.ListUserAPIKeysRow, error) {
 	return service.repo.ListUserAPIKeys(ctx, pgtype.UUID{Bytes: userID, Valid: true})
+}
+
+// VerifyAPIKey resolves a presented secret to the owning user via lookup index and argon2 verification.
+func (service *Service) VerifyAPIKey(ctx context.Context, rawKey string) (db.User, error) {
+	rawKey = strings.TrimSpace(rawKey)
+	if rawKey == "" {
+		return db.User{}, ErrInvalidAPIKey
+	}
+
+	row, err := service.repo.GetAPIKeyByLookup(ctx, pgtype.Text{String: apiKeyLookup(rawKey), Valid: true})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return db.User{}, ErrInvalidAPIKey
+		}
+		return db.User{}, err
+	}
+
+	match, err := VerifyPassword(rawKey, row.KeyHash)
+	if err != nil || !match {
+		return db.User{}, ErrInvalidAPIKey
+	}
+
+	user, err := service.repo.GetUserByID(ctx, row.UserID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return db.User{}, ErrInvalidAPIKey
+		}
+		return db.User{}, err
+	}
+	if user.IsBlocked {
+		return db.User{}, ErrAccountLocked
+	}
+	return user, nil
 }
 
 // RequestEmailVerification stores a short-lived token in Redis to prove mailbox ownership out of band.

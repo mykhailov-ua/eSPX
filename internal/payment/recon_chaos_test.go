@@ -113,11 +113,11 @@ func TestChaos_FinancialReconDeadOutbox(t *testing.T) {
 	require.Equal(t, 1, countReconFindingsByKind(t, infra.Pool, summary.RunID, db.PaymentFinancialFindingKindDEADOUTBOX))
 
 	logChaosProof(t, "financial_recon_dead_outbox", map[string]string{
-		"subsystem":      "payment_financial_recon",
-		"dead_outbox":    itoaPaymentChaos(summary.DeadOutboxRows),
-		"findings":       itoaPaymentChaos(summary.FindingsCount),
-		"baseline_ok":    "true",
-		"fault_type":     "dead_outbox",
+		"subsystem":   "payment_financial_recon",
+		"dead_outbox": itoaPaymentChaos(summary.DeadOutboxRows),
+		"findings":    itoaPaymentChaos(summary.FindingsCount),
+		"baseline_ok": "true",
+		"fault_type":  "dead_outbox",
 	})
 }
 
@@ -178,11 +178,11 @@ func TestChaos_FinancialReconSettlementFailedIntent(t *testing.T) {
 	require.Equal(t, 1, countReconFindingsByKind(t, infra.Pool, summary.RunID, db.PaymentFinancialFindingKindSETTLEMENTFAILEDINTENT))
 
 	logChaosProof(t, "financial_recon_settlement_failed", map[string]string{
-		"subsystem":          "payment_financial_recon",
-		"settlement_failed":  itoaPaymentChaos(summary.SettlementFailed),
-		"findings":           itoaPaymentChaos(summary.FindingsCount),
-		"baseline_ok":        "true",
-		"fault_type":         "settlement_failed",
+		"subsystem":         "payment_financial_recon",
+		"settlement_failed": itoaPaymentChaos(summary.SettlementFailed),
+		"findings":          itoaPaymentChaos(summary.FindingsCount),
+		"baseline_ok":       "true",
+		"fault_type":        "settlement_failed",
 	})
 }
 
@@ -254,10 +254,10 @@ func TestChaos_FinancialReconOpsAlert(t *testing.T) {
 	require.Contains(t, requests[0].Body, "MISSING_LEDGER_TOPUP")
 
 	logChaosProof(t, "financial_recon_ops_alert", map[string]string{
-		"subsystem":    "payment_financial_recon",
-		"findings":     itoaPaymentChaos(summary.FindingsCount),
-		"notified":     "true",
-		"baseline_ok":  "true",
-		"fault_type":   "missing_topup",
+		"subsystem":   "payment_financial_recon",
+		"findings":    itoaPaymentChaos(summary.FindingsCount),
+		"notified":    "true",
+		"baseline_ok": "true",
+		"fault_type":  "missing_topup",
 	})
 }

@@ -81,6 +81,9 @@ func (registry *Registry) rankCandidates(
 		}
 
 		score := effectiveScore(bid, reg.CTRPPM[i])
+		if winnerIdx >= 0 && secondBid >= 0 && score < maxScore {
+			break
+		}
 		if score > maxScore {
 			if winnerIdx >= 0 {
 				secondBid = reg.Bids[winnerIdx]

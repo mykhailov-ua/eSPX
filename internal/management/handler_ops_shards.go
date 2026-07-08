@@ -13,7 +13,7 @@ func (h *Handler) registerOpsRoutes(mux *http.ServeMux) {
 func (h *Handler) getShardHealth(w http.ResponseWriter, r *http.Request) {
 	report, err := h.svc.GetShardHealth(r.Context())
 	if err != nil {
-		httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL", err.Error())
+		writeServiceError(w, err)
 		return
 	}
 	httpresponse.JSON(w, http.StatusOK, report)

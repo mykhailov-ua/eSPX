@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"espx/internal/config"
@@ -25,15 +26,6 @@ func main() {
 	if !cfg.IVTDetectorEnabled() {
 		slog.Error("ivt detector requires IVT_DETECTOR_ENABLED=true and CH_DSN")
 		os.Exit(1)
-	}
-	if string(cfg.AdminAPIKey) == "" {
-		slog.Error("ADMIN_API_KEY is required for management blacklist enqueue")
-		os.Exit(1)
-	}
-
-	managementURL := cfg.ManagementURL
-	if managementURL == "" {
-		managementURL = "http://127.0.0.1:" + cfg.ManagementPort
 	}
 
 	ctx, stop := lifecycle.NotifyContext(context.Background())
@@ -67,16 +59,44 @@ func main() {
 		Analyzer:           analyzerCfg,
 	}
 
+	var blocker ivtdetector.BlacklistBlocker
+	settlementTarget := cfg.SettlementServerHost + ":" + cfg.SettlementServerPort
+	if string(cfg.SettlementInternalToken) != "" {
+		grpcClient, conn, grpcErr := ivtdetector.NewGRPCManagementClient(settlementTarget, string(cfg.SettlementInternalToken))
+		if grpcErr != nil {
+			slog.Error("failed to connect to management settlement gRPC", "error", grpcErr)
+			os.Exit(1)
+		}
+		defer func() { _ = conn.Close() }()
+		blocker = grpcClient
+		slog.Info("ivt detector using settlement gRPC BlockIP", "target", settlementTarget)
+	} else {
+		managementURL := cfg.ManagementURL
+		if managementURL == "" {
+			managementURL = "http://127.0.0.1:" + cfg.ManagementPort
+		}
+		if string(cfg.AdminAPIKey) == "" {
+			slog.Error("SETTLEMENT_INTERNAL_TOKEN or ADMIN_API_KEY required for blacklist enqueue")
+			os.Exit(1)
+		}
+		blocker = ivtdetector.NewManagementClient(managementURL, string(cfg.AdminAPIKey), 10*time.Second)
+		slog.Warn("ivt detector using legacy HTTP blacklist; prefer SETTLEMENT_INTERNAL_TOKEN")
+	}
+
+	asn := &ivtdetector.StaticASNClassifier{
+		DatacenterPrefixes: strings.Split(os.Getenv("IVT_DATACENTER_PREFIXES"), ","),
+	}
+	registry := ivtdetector.NewAnalyzerRegistry(chConn, analyzerCfg, asn)
+
 	detector := ivtdetector.NewDetector(
-		ivtdetector.NewAnalyzer(chConn, analyzerCfg),
+		registry,
 		ivtdetector.NewIdempotencyStore(pool),
-		ivtdetector.NewManagementClient(managementURL, string(cfg.AdminAPIKey), 10*time.Second),
+		blocker,
 		pool,
 		detectorCfg,
 	)
 
 	slog.Info("starting ivt detector",
-		"management_url", managementURL,
 		"scan_interval_ms", cfg.IVT.ScanIntervalMs,
 		"window_sec", cfg.IVT.WindowSec,
 	)

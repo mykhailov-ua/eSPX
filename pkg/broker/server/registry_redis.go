@@ -35,7 +35,7 @@ func NewRedisTopicStore(rdb redis.UniversalClient) *RedisTopicStore {
 	return &RedisTopicStore{rdb: rdb}
 }
 
-// Load returns all name→id mappings stored in Redis.
+// Load returns all name->id mappings stored in Redis.
 func (s *RedisTopicStore) Load(ctx context.Context) (protocol.RegistrySnapshot, error) {
 	snap := protocol.RegistrySnapshot{
 		Version: 1,

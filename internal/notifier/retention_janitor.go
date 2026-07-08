@@ -25,7 +25,7 @@ func NewRetentionJanitor(pool *pgxpool.Pool, interval time.Duration, sentDays, f
 		sentDays = 30
 	}
 	if failedDays <= 0 {
-		failedDays = 90
+		failedDays = 7
 	}
 	return &RetentionJanitor{
 		pool:            pool,

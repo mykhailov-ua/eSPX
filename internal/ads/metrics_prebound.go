@@ -25,6 +25,7 @@ type preboundTrackMetrics struct {
 	decisionBidFloor         prometheus.Counter
 	decisionFilterTimeout    prometheus.Counter
 	decisionFraud            prometheus.Counter
+	decisionConsentDenied    prometheus.Counter
 	decisionInfraUnavailable prometheus.Counter
 
 	blockedEmergencyBreaker prometheus.Counter
@@ -39,6 +40,7 @@ type preboundTrackMetrics struct {
 	blockedBidFloor         prometheus.Counter
 	blockedFilterTimeout    prometheus.Counter
 	blockedFraud            prometheus.Counter
+	blockedConsent          prometheus.Counter
 	blockedInfra            prometheus.Counter
 }
 
@@ -61,6 +63,7 @@ func newPreboundTrackMetrics() preboundTrackMetrics {
 		decisionBidFloor:         metrics.FilterDecisions.WithLabelValues("bid_floor"),
 		decisionFilterTimeout:    metrics.FilterDecisions.WithLabelValues("filter_timeout"),
 		decisionFraud:            metrics.FilterDecisions.WithLabelValues("fraud"),
+		decisionConsentDenied:    metrics.FilterDecisions.WithLabelValues("consent_denied"),
 		decisionInfraUnavailable: metrics.FilterDecisions.WithLabelValues("infra_unavailable"),
 
 		blockedEmergencyBreaker: metrics.FilterBlockedTotal.WithLabelValues("emergency_breaker"),
@@ -75,6 +78,7 @@ func newPreboundTrackMetrics() preboundTrackMetrics {
 		blockedBidFloor:         metrics.FilterBlockedTotal.WithLabelValues("bid_floor"),
 		blockedFilterTimeout:    metrics.FilterBlockedTotal.WithLabelValues("filter_timeout"),
 		blockedFraud:            metrics.FilterBlockedTotal.WithLabelValues("fraud"),
+		blockedConsent:          metrics.FilterBlockedTotal.WithLabelValues("consent_denied"),
 		blockedInfra:            metrics.FilterBlockedTotal.WithLabelValues("infra_unavailable"),
 	}
 }

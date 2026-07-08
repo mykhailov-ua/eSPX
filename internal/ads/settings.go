@@ -13,22 +13,22 @@ import (
 
 // DynamicConfig holds runtime-tunable limits pushed from the management plane.
 type DynamicConfig struct {
-	Version              int64  `json:"version"`
-	RateLimitPerMin      int    `json:"rate_limit_per_min"`
-	RateLimitWindow      int    `json:"rate_limit_window_ms"`
-	ClickAmount          int64  `json:"click_amount"`
-	ImpressionAmount     int64  `json:"impression_amount"`
-	EmergencyBreaker     bool   `json:"emergency_breaker"`
-	FraudRLSuspectPct    int    `json:"fraud_rl_suspect_pct"`
-	FraudRLIVTPct        int    `json:"fraud_rl_ivt_pct"`
-	FraudRLBlockPct      int    `json:"fraud_rl_block_pct"`
-	FraudRLRetrySuspect  int    `json:"fraud_rl_retry_suspect_sec"`
-	FraudRLRetryIVT      int    `json:"fraud_rl_retry_ivt_sec"`
-	FraudRLRetryBlock    int    `json:"fraud_rl_retry_block_sec"`
-	ASNCDNWhitelist      string `json:"asn_cdn_whitelist"`
-	ASNMobileWhitelist   string `json:"asn_mobile_whitelist"`
-	TLSHashBlocklist     string `json:"tls_hash_blocklist"`
-	RtbBudgetAuthority   string `json:"rtb_budget_authority"`
+	Version             int64  `json:"version"`
+	RateLimitPerMin     int    `json:"rate_limit_per_min"`
+	RateLimitWindow     int    `json:"rate_limit_window_ms"`
+	ClickAmount         int64  `json:"click_amount"`
+	ImpressionAmount    int64  `json:"impression_amount"`
+	EmergencyBreaker    bool   `json:"emergency_breaker"`
+	FraudRLSuspectPct   int    `json:"fraud_rl_suspect_pct"`
+	FraudRLIVTPct       int    `json:"fraud_rl_ivt_pct"`
+	FraudRLBlockPct     int    `json:"fraud_rl_block_pct"`
+	FraudRLRetrySuspect int    `json:"fraud_rl_retry_suspect_sec"`
+	FraudRLRetryIVT     int    `json:"fraud_rl_retry_ivt_sec"`
+	FraudRLRetryBlock   int    `json:"fraud_rl_retry_block_sec"`
+	ASNCDNWhitelist     string `json:"asn_cdn_whitelist"`
+	ASNMobileWhitelist  string `json:"asn_mobile_whitelist"`
+	TLSHashBlocklist    string `json:"tls_hash_blocklist"`
+	RtbBudgetAuthority  string `json:"rtb_budget_authority"`
 }
 
 // SettingsChangeListener runs after a new dynamic config snapshot is stored.

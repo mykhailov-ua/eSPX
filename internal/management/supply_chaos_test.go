@@ -37,7 +37,7 @@ func TestChaos_SellersJSONInvalid(t *testing.T) {
 	cfg.Management.SupplyExportPath = exportDir
 
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
-	h := NewHandler(svc, cfg, nil, nil, nil)
+	h := NewHandler(svc, cfg, nil, nil, nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
