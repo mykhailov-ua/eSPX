@@ -82,6 +82,53 @@ func TestChaos_ClockDriftMonotonicTTC(t *testing.T) {
 	})
 }
 
+// TestChaos_ClockDrift_UDPTimePacket proves UDP coarse-time resync does not break monotonic TTC after wall drift.
+func TestChaos_ClockDrift_UDPTimePacket(t *testing.T) {
+	if testing.Short() {
+		t.Skip("chaos integration test")
+	}
+
+	infra, cleanup := setupAdsChaosInfra(t)
+	defer cleanup()
+
+	stack := startAdsIngestStackWithFilterTimeout(t, infra, "ads-chaos-udp-clock", 100)
+	defer stack.Close(t)
+	stack.UnifiedFilter.SetTTCMin(clockDriftTTCMin)
+
+	const userID = "udp-clock-user"
+	require.Equal(t, http.StatusAccepted, postChaosImpression(t, stack.Handler, stack.CampaignID, userID))
+
+	time.Sleep(clockDriftWallSleep)
+
+	restore, driftMethod, err := applyChaosClockDrift(time.Duration(clockDriftSeconds) * time.Second)
+	require.NoError(t, err)
+	defer restore()
+
+	// Inject UDP coarse-time aligned with shifted wall (within +50ms clamp).
+	shiftedMs := cachedUnixMilli.Load()
+	hdr := &UDPHeader{
+		CoarseTimeNs: shiftedMs * int64(time.Millisecond),
+		EpochID:      2,
+	}
+	var limits UDPControlLimits
+	limits.NumShards = 1
+	limits.Limits[0] = 50_000
+	applyUDPCoarseTime(hdr.CoarseTimeNs)
+
+	deadlineCtx := attachFilterDeadline(context.Background(), clockDriftFilterTimeout)
+	require.False(t, filterDeadlineExceeded(deadlineCtx))
+
+	status := postChaosTrack(t, stack.Handler, stack.CampaignID, "click", userID, uuid.NewString())
+	require.Equal(t, http.StatusAccepted, status)
+
+	logChaosProof(t, "clock_drift_udp_time", map[string]string{
+		"drift_seconds": strconv.Itoa(clockDriftSeconds),
+		"drift_method":  driftMethod,
+		"udp_clamp_ms":  "50",
+		"ttc_passed":    "true",
+	})
+}
+
 // applyChaosClockDrift shifts system time when privileged, otherwise cached wall clock for TTC.
 func applyChaosClockDrift(d time.Duration) (restore func(), method string, err error) {
 	if restore, err := shiftSystemClock(d); err == nil {

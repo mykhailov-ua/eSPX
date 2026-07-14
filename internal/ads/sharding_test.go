@@ -119,6 +119,7 @@ func TestJumpHashSharder_NilUUID(t *testing.T) {
 func BenchmarkJumpHashSharder_10(b *testing.B) {
 	s := NewJumpHashSharder(10)
 	id := uuid.New()
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = s.GetShard(id)
@@ -129,9 +130,30 @@ func BenchmarkJumpHashSharder_10(b *testing.B) {
 func BenchmarkJumpHashSharder_1024(b *testing.B) {
 	s := NewJumpHashSharder(1024)
 	id := uuid.New()
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = s.GetShard(id)
+	}
+}
+
+// BenchmarkCRC32Castagnoli isolates hardware CRC used by StaticSlotSharder routing.
+func BenchmarkCRC32Castagnoli(b *testing.B) {
+	id := uuid.New()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = crc32Castagnoli(&id)
+	}
+}
+
+// BenchmarkCampaignSlotIndex measures slot index for migration / autoscale cohorts.
+func BenchmarkCampaignSlotIndex(b *testing.B) {
+	id := uuid.New()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = CampaignSlotIndex(id)
 	}
 }
 
@@ -306,17 +328,16 @@ func TestStaticSlotSharder_StoreSlotMap_concurrent(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		for {
+		for n := 0; ; n++ {
 			select {
 			case <-done:
 				return
 			default:
-				var table [1024]uint16
+				var table slotTable
 				for i := range table {
 					table[i] = uint16((i + 1) % 4)
 				}
-				s.StoreSlotMap(&table)
-				s.SetActiveVersion(2)
+				s.SwapSnapshot(int32((n%100)+1), &table, int64(n))
 			}
 		}
 	}()

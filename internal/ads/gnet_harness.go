@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net"
 	"strconv"
+	"time"
 
 	"github.com/panjf2000/gnet/v2"
 )
@@ -169,8 +170,25 @@ func PostTrackGnet(h *AdsPacketHandler, body []byte, contentType, accept string)
 
 // PostTrackGnetJSON is a shortcut for JSON track requests.
 func PostTrackGnetJSON(h *AdsPacketHandler, body []byte) (int, []byte) {
+	return PostTrackGnetJSONWait(h, body, 0)
+}
+
+// PostTrackGnetJSONWait runs POST /track and polls until the worker pool writes a response or timeout.
+// timeout 0 uses 5s. Required for concurrent chaos load tests using the async gnet worker pool.
+func PostTrackGnetJSONWait(h *AdsPacketHandler, body []byte, timeout time.Duration) (int, []byte) {
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
 	_, conn := ServeGnetHarness(h, BuildGnetPostTrackJSON(body))
-	return ParseGnetHTTPStatus(conn.Written()), conn.Written()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		written := conn.Written()
+		if len(written) > 0 {
+			return ParseGnetHTTPStatus(written), written
+		}
+		time.Sleep(50 * time.Microsecond)
+	}
+	return 0, nil
 }
 
 // GetHealthGnet sends GET /health through OnTraffic.

@@ -23,34 +23,31 @@ func LoadActiveSlotMap(
 		return 0, fmt.Errorf("slot map loader: nil sharder")
 	}
 	if pool == nil {
-		sharder.ReloadFromModulo(fallbackBuckets)
+		sharder.SwapSnapshot(0, buildSlotTable(fallbackBuckets), 0)
 		return 0, fmt.Errorf("slot map loader: nil pool")
 	}
 
 	repo := NewSlotMapRepo(pool)
 	version, err := repo.GetActiveVersion(ctx)
 	if err != nil {
-		sharder.ReloadFromModulo(fallbackBuckets)
-		sharder.SetActiveVersion(0)
+		sharder.SwapSnapshot(0, buildSlotTable(fallbackBuckets), 0)
 		return 0, fmt.Errorf("slot map meta: %w", err)
 	}
 
 	rows, err := repo.ListVersion(ctx, version)
 	if err != nil {
-		sharder.ReloadFromModulo(fallbackBuckets)
-		sharder.SetActiveVersion(0)
+		sharder.SwapSnapshot(0, buildSlotTable(fallbackBuckets), 0)
 		return version, err
 	}
 
 	table, err := TableFromRows(rows)
 	if err != nil {
-		sharder.ReloadFromModulo(fallbackBuckets)
-		sharder.SetActiveVersion(0)
+		sharder.SwapSnapshot(0, buildSlotTable(fallbackBuckets), 0)
 		return version, err
 	}
 
-	sharder.StoreSlotMap(table)
-	sharder.SetActiveVersion(version)
+	st := slotTable(*table)
+	sharder.SwapSnapshot(version, &st, 0)
 	slog.Info("loaded active slot map from postgres", "version", version, "buckets", fallbackBuckets)
 	return version, nil
 }

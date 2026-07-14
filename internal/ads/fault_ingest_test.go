@@ -261,14 +261,14 @@ func TestPinnedWorkerPool_queueFullReject(t *testing.T) {
 	}()
 
 	started := make(chan struct{})
-	require.True(t, pool.Submit(func() {
+	require.True(t, pool.Submit(func(_ int) {
 		close(started)
 		<-unblock
 	}))
 	<-started
 
-	require.True(t, pool.Submit(func() { <-unblock }))
-	require.False(t, pool.Submit(func() {}))
+	require.True(t, pool.Submit(func(_ int) { <-unblock }))
+	require.False(t, pool.Submit(func(_ int) {}))
 }
 
 func TestAdsPacketHandler_workerPoolSaturated_rejectsAndCounts(t *testing.T) {
@@ -283,12 +283,12 @@ func TestAdsPacketHandler_workerPoolSaturated_rejectsAndCounts(t *testing.T) {
 	}()
 
 	started := make(chan struct{})
-	require.True(t, pool.Submit(func() {
+	require.True(t, pool.Submit(func(_ int) {
 		close(started)
 		<-unblock
 	}))
 	<-started
-	require.True(t, pool.Submit(func() { <-unblock }))
+	require.True(t, pool.Submit(func(_ int) { <-unblock }))
 
 	h := NewAdsPacketHandler(cfg, &mockRegistry{}, nil, nil, nil, NewJumpHashSharder(1), "fraud", nil)
 	h.SetWorkerPool(pool)

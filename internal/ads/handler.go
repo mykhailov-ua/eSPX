@@ -88,6 +88,7 @@ type connContext struct {
 	wTime    bufWrapper
 	remoteIP string
 	shardID  int
+	workerID int
 }
 
 // init materializes HTTP status label strings once so gnet track metrics avoid per-request strconv.
@@ -526,6 +527,14 @@ type AdsPacketHandler struct {
 	trackProc             trackProcessor
 	contextPool           sync.Pool
 	workerPool            *PinnedWorkerPool
+	udpControl            *UDPControl
+}
+
+// SetUDPControl attaches the UDP ingress limit controller (optional; M2).
+func (h *AdsPacketHandler) SetUDPControl(ctrl *UDPControl) {
+	if h != nil {
+		h.udpControl = ctrl
+	}
 }
 
 // SetLogger attaches the audit log writer for accepted gnet track events.
@@ -923,8 +932,9 @@ func (h *AdsPacketHandler) OnTraffic(c gnet.Conn) (action gnet.Action) {
 				ctx.shardID = int(h.loggerShardCounter.Add(1) % uint64(len(h.logger.Shards())))
 			}
 
-			submitted := h.workerPool.Submit(func() {
+			submitted := h.workerPool.Submit(func(workerID int) {
 				defer requestBufferPool.Put(reqBufPtr)
+				ctx.workerID = workerID
 				c.SetContext(ctx)
 				_, reqParsed, err := h.parseHTTP(reqBytes)
 				if err != nil {
@@ -1174,6 +1184,17 @@ func (h *AdsPacketHandler) React(req parsedHTTPRequest, c gnet.Conn) gnet.Action
 	evt.TLSHash = unsafeString(req.TLSHash)
 	evt.SecCHUA = unsafeString(req.SecCHUA)
 	evt.AcceptLang = unsafeString(req.AcceptLang)
+
+	if h.udpControl != nil {
+		shard := h.sharder.GetShard(evt.CampaignID)
+		workerID := ctx.workerID
+		if !h.udpControl.TryIngress(shard, workerID) {
+			h.write(c, respRateLimit, ctx)
+			h.recordMetrics(startMono, http.StatusTooManyRequests)
+			h.trackMetrics.recordFilterReject(filterRejectRateLimit)
+			return gnet.None
+		}
+	}
 
 	if h.filterEngine != nil {
 		outcome := processTrack(h.trackProc, evt, fields.deviceType)

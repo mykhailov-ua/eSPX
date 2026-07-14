@@ -22,18 +22,25 @@ func isNoScriptErr(err error) bool {
 	return strings.Contains(err.Error(), "NOSCRIPT")
 }
 
-// PreloadScripts warms EVALSHA on every shard to avoid NOSCRIPT latency on first requests.
+// PreloadScripts warms EVALSHA for filter_full and budget_fast on every shard.
 func (f *UnifiedFilter) PreloadScripts(ctx context.Context) error {
-	if f == nil || f.script == nil {
-		return fmt.Errorf("unified filter script is nil")
+	if f == nil || f.script == nil || f.fastScript == nil {
+		return fmt.Errorf("unified filter scripts are nil")
 	}
 	for i, rdb := range f.rdbs {
 		shard := strconv.Itoa(i)
 		if err := f.script.Load(ctx, rdb).Err(); err != nil {
 			metrics.RedisLuaScriptLoaded.WithLabelValues(shard).Set(0)
-			return fmt.Errorf("preload unified filter script shard %d: %w", i, err)
+			metrics.RedisLuaFastScriptLoaded.WithLabelValues(shard).Set(0)
+			return fmt.Errorf("preload filter full script shard %d: %w", i, err)
+		}
+		if err := f.fastScript.Load(ctx, rdb).Err(); err != nil {
+			metrics.RedisLuaScriptLoaded.WithLabelValues(shard).Set(0)
+			metrics.RedisLuaFastScriptLoaded.WithLabelValues(shard).Set(0)
+			return fmt.Errorf("preload budget fast script shard %d: %w", i, err)
 		}
 		metrics.RedisLuaScriptLoaded.WithLabelValues(shard).Set(1)
+		metrics.RedisLuaFastScriptLoaded.WithLabelValues(shard).Set(1)
 	}
 	return nil
 }

@@ -26,9 +26,10 @@ const (
 
 // fraudAccumulator collects weighted fraud signals during one FilterEngine.Check pass.
 type fraudAccumulator struct {
-	score   uint32
-	signals [maxFraudSignals]FraudReasonID
-	count   uint8
+	score        uint32
+	signals      [maxFraudSignals]FraudReasonID
+	count        uint8
+	boostApplied bool
 }
 
 var fraudAccPool = sync.Pool{
@@ -40,6 +41,7 @@ var fraudAccPool = sync.Pool{
 func (a *fraudAccumulator) reset() {
 	a.score = 0
 	a.count = 0
+	a.boostApplied = false
 }
 
 func (a *fraudAccumulator) has(id FraudReasonID) bool {
@@ -106,6 +108,13 @@ func attachFilterDeadline(ctx context.Context, timeout time.Duration) context.Co
 	}
 	deadlineMono := monotonicNano() + timeout.Nanoseconds()
 	return context.WithValue(ctx, filterDeadlineKey{}, deadlineMono)
+}
+
+// setFilterDeadlineOnEvent stores the filter deadline on evt (zero allocs; production path).
+func setFilterDeadlineOnEvent(evt *domain.Event, timeout time.Duration) {
+	if evt != nil && timeout > 0 {
+		evt.FilterDeadlineMono = monotonicNano() + timeout.Nanoseconds()
+	}
 }
 
 // attachFraudAccumulator binds a pooled accumulator to evt.Scratch for the current Check pass.

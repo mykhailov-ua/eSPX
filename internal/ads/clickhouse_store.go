@@ -17,12 +17,12 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
-// isFraudTelemetry routes non-ghost fraud signals to the fraud_events table.
+// isFraudTelemetry routes fraud signals and ghost events to the fraud_events table.
 func isFraudTelemetry(e *domain.Event) bool {
-	if e == nil || e.GhostEvent {
+	if e == nil {
 		return false
 	}
-	return e.FraudReason != "" || e.FraudScore > 0
+	return e.GhostEvent || e.FraudReason != "" || e.FraudScore > 0
 }
 
 // fraudGhostFlag maps ghost_event to ClickHouse UInt8 without per-row heap allocation.

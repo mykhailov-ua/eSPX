@@ -209,12 +209,13 @@ func BenchmarkUnifiedFilter_Check_RealRedis(b *testing.B) {
 		UserID:     "bench",
 		CampaignID: campID,
 	}
-	checkCtx := attachFilterDeadline(ctx, time.Second)
+	setFilterDeadlineOnEvent(evt, time.Second)
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		evt.ClickID = ""
-		if err := f.Check(checkCtx, evt); err != nil {
+		if err := f.Check(ctx, evt); err != nil {
 			b.Fatal(err)
 		}
 	}

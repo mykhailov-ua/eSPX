@@ -72,6 +72,9 @@ func init() {
 			if clockRefreshPaused.Load() {
 				continue
 			}
+			if until := clockTickPausedUntil.Load(); until > 0 && monotonicNano() < until {
+				continue
+			}
 			ms := time.Now().UnixMilli()
 			cachedUnixMilli.Store(ms)
 			cachedUnixMilliAny.Store(ms)

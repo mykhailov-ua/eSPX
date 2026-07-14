@@ -3,6 +3,7 @@ package ads
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -271,18 +272,20 @@ func BenchmarkUnifiedFilter_Check_QuotaMode(b *testing.B) {
 	campID := uuid.New()
 	seedCampaignQuota(b, ctx, rdb, campID, 900_000_000_000)
 
+	evt := &domain.Event{
+		Type:       "click",
+		IP:         "203.0.113.16",
+		UserID:     "quota-bench",
+		CampaignID: campID,
+	}
+	setFilterDeadlineOnEvent(evt, time.Second)
+
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		evt := &domain.Event{
-			Type:       "click",
-			IP:         "203.0.113.16",
-			UserID:     fmt.Sprintf("quota-bench-%d", i),
-			CampaignID: campID,
-			ClickID:    fmt.Sprintf("q-%d", i),
-		}
-		checkCtx := attachFilterDeadline(ctx, time.Second)
-		if err := f.Check(checkCtx, evt); err != nil {
+		n := strconv.AppendInt(evt.ClickIDBuf[:0], int64(i), 10)
+		evt.ClickID = unsafeString(n)
+		if err := f.Check(ctx, evt); err != nil {
 			b.Fatal(err)
 		}
 	}

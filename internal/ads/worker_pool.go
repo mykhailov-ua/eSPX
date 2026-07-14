@@ -148,21 +148,27 @@ func NewPinnedWorkerPool(size int, queueSize int) *PinnedWorkerPool {
 	return p
 }
 
+// bindWorkerTask captures workerID by value for MPSC queue closures.
+func bindWorkerTask(workerID int, fn func(int)) func() {
+	return func() { fn(workerID) }
+}
+
 // Submit schedules fn on the next worker; returns false when all queues are saturated.
-func (p *PinnedWorkerPool) Submit(fn func()) bool {
+func (p *PinnedWorkerPool) Submit(fn func(workerID int)) bool {
 	if atomic.LoadInt32(&p.closed) == 1 {
 		return false
 	}
 	p.wg.Add(1)
 
 	idx := atomic.AddUint64(&p.round, 1) % uint64(len(p.workers))
-	if p.workers[idx].queue.Push(fn) {
+	if p.workers[idx].queue.Push(bindWorkerTask(p.workers[idx].id, fn)) {
 		return true
 	}
 
 	for i := 1; i < len(p.workers); i++ {
 		nextIdx := (idx + uint64(i)) % uint64(len(p.workers))
-		if p.workers[nextIdx].queue.Push(fn) {
+		w := p.workers[nextIdx]
+		if w.queue.Push(bindWorkerTask(w.id, fn)) {
 			return true
 		}
 	}

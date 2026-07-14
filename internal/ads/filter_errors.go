@@ -151,6 +151,8 @@ func classifyFilterErr(err error) (filterRejectKind, bool) {
 		return filterRejectCampaignNotFound, true
 	case errors.Is(err, ErrBidFloorNotMet):
 		return filterRejectBidFloor, true
+	case errors.Is(err, ErrMigrationFenced):
+		return filterRejectInfra, true
 	case errors.Is(err, context.DeadlineExceeded):
 		return filterRejectTimeout, true
 	case errors.Is(err, ErrFraudDetected):

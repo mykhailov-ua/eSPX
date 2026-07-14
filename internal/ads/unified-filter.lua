@@ -2,8 +2,9 @@
 -- No KEYS, BLPOP/BRPOP, WAIT, or other O(N)/blocking commands — Lua must not stall the ingest path.
 -- KEYS[1..12]: rate, dup, budget:campaign, idempotency, sync, dirty, stream, daily, fcap, imp_ts.
 -- KEYS[13..15] (Phase 1.3 quotas): budget:quota, budget:refill_lock, budget:refill_needed.
+-- KEYS[16..17] (M1 fences): budget:migration_fence, budget:frozen.
 -- ARGV[25..27]: quota_enabled ("1"/"0"), chunk_size, refill_threshold_pct.
--- Returns: -1 budget miss, 0 ok, 1 rate, 2 dup, 3 budget, 4 pacing, 5 fcap, 6 low_ttc, 7 missing_imp_ts, 10 TTC bypass.
+-- Returns: -1 budget miss, 0 ok, 1 rate, 2 dup, 3 budget, 4 pacing, 5 fcap, 6 low_ttc, 7 missing_imp_ts, 10 TTC bypass, 11 debit fenced.
 
 local quota_enabled = ARGV[25] == "1"
 local chunk_size = tonumber(ARGV[26]) or 0
@@ -36,6 +37,11 @@ end
 
 if idem_exists then
     return 0
+end
+
+local barriers = redis.call("MGET", KEYS[16], KEYS[17])
+if barriers[1] or barriers[2] then
+    return 11
 end
 
 local evt_type = ARGV[10] or ""

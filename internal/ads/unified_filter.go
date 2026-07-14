@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
-	"errors"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -58,11 +57,11 @@ var (
 
 // unifiedCheckScratch holds pooled buffers for one UnifiedFilter.Check without defer.
 type unifiedCheckScratch struct {
-	wRL, wDup, wIdem, wDate, wDS, wFcap, wImpTS, wQuota, wRefillLock bufWrapper
-	args                                                             []any
-	wrappers                                                         UnifiedStringWrappers
-	keyVals                                                          [unifiedFilterKeyCount]StringVal
-	keyArgs                                                          [unifiedFilterKeyCount]any
+	wRL, wDup, wIdem, wDate, wDS, wFcap, wImpTS, wQuota, wRefillLock, wFence, wFrozen bufWrapper
+	args                                                                              []any
+	wrappers                                                                          UnifiedStringWrappers
+	keyVals                                                                           [unifiedFilterKeyCount]StringVal
+	keyArgs                                                                           [unifiedFilterKeyCount]any
 }
 
 var unifiedScratchPool = sync.Pool{
@@ -79,6 +78,8 @@ var unifiedScratchPool = sync.Pool{
 		s.wImpTS.buf = make([]byte, 0, 128)
 		s.wQuota.buf = make([]byte, 0, 128)
 		s.wRefillLock.buf = make([]byte, 0, 128)
+		s.wFence.buf = make([]byte, 0, 128)
+		s.wFrozen.buf = make([]byte, 0, 128)
 		for i := range s.keyVals {
 			s.keyArgs[i] = &s.keyVals[i]
 		}
@@ -116,6 +117,7 @@ var hourAnyCache [25]any
 // init fills hourAnyCache so Lua args avoid per-request boxing allocations.
 func init() {
 	unifiedFilterLuaAny = unifiedFilterLua
+	budgetFastLuaAny = budgetFastLua
 	for i := 0; i <= 24; i++ {
 		hourAnyCache[i] = i
 	}
@@ -179,10 +181,16 @@ type UnifiedFilter struct {
 	localQuotaCache              *LocalQuotaCache
 	dbLookupTimeout              time.Duration
 	luaMetricsSeq                atomic.Uint64
+	fastScript                   *redis.Script
+	fastScriptHashAny            any
+	fastPathEnabled              atomic.Bool
 
-	luaDurationObservers []prometheus.Observer
-	luaNoScriptCounters  []prometheus.Counter
-	redisObservability   redisShardObservability
+	luaDurationObservers     []prometheus.Observer
+	luaFastDurationObservers []prometheus.Observer
+	luaFastPathCounters      []prometheus.Counter
+	luaFullPathCounters      []prometheus.Counter
+	luaNoScriptCounters      []prometheus.Counter
+	redisObservability       redisShardObservability
 }
 
 // SetTTCMin configures click fraud time-to-click thresholds for the Lua script.
@@ -277,12 +285,15 @@ func NewUnifiedFilter(
 	maxStreamLen int,
 ) *UnifiedFilter {
 	script := redis.NewScript(unifiedFilterLua)
+	fastScript := redis.NewScript(budgetFastLua)
 	return &UnifiedFilter{
 		rdbs:                         rdbs,
 		sharder:                      sharder,
 		script:                       script,
 		scriptHash:                   script.Hash(),
 		scriptHashAny:                script.Hash(),
+		fastScript:                   fastScript,
+		fastScriptHashAny:            fastScript.Hash(),
 		registry:                     registry,
 		repo:                         repo,
 		rateLimit:                    rateLimit,
@@ -311,6 +322,9 @@ func NewUnifiedFilter(
 		quotaMode:                    "off",
 		localQuotaCache:              NewLocalQuotaCache(),
 		luaDurationObservers:         newRedisLuaObservers(len(rdbs)),
+		luaFastDurationObservers:     newRedisLuaTierObservers(len(rdbs)),
+		luaFastPathCounters:          newRedisLuaPathCounters(len(rdbs), true),
+		luaFullPathCounters:          newRedisLuaPathCounters(len(rdbs), false),
 		luaNoScriptCounters:          newRedisLuaNoScriptCounters(len(rdbs)),
 		redisObservability:           newRedisShardObservability(len(rdbs), luaMetricsSampleMask),
 		dbLookupTimeout:              2 * time.Second,
@@ -320,6 +334,11 @@ func NewUnifiedFilter(
 // SetMetricsSampleMask configures downsampling for per-campaign Redis observability counters.
 func (f *UnifiedFilter) SetMetricsSampleMask(mask int) {
 	f.redisObservability.sampleMask = histogramSampleMaskFromConfig(mask)
+}
+
+// SetLuaFastPathEnabled toggles Tier B budget-fast.lua routing for eligible events.
+func (f *UnifiedFilter) SetLuaFastPathEnabled(v bool) {
+	f.fastPathEnabled.Store(v)
 }
 
 // SetQuotaConfig enables distributed quota keys in unified-filter.lua.
@@ -477,7 +496,7 @@ func (f *UnifiedFilter) checkGeoBidFloor(evt *domain.Event) error {
 
 // Check runs unified Lua; on budget cache miss reloads from registry before Postgres.
 func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
-	nowNano := time.Now().UnixNano()
+	nowNano := monotonicNano()
 	if f.quotaMode == "live" && f.localQuotaCache.IsBlocked(evt.CampaignID, nowNano) {
 		metrics.TrackerLocalQuotaBlockTotal.Inc()
 		return ErrBudgetExhausted
@@ -517,7 +536,14 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *domain.Event) error {
 
 	scratch := unifiedScratchPool.Get().(*unifiedCheckScratch)
 	scratch.acquire()
-	err := f.runUnifiedLua(ctx, evt, campInfo, amount, rdb, scratch)
+	var err error
+	if f.fastPathEnabled.Load() && !f.needsFullLuaPath(evt, campInfo) {
+		fastScratch := budgetFastScratchPool.Get().(*budgetFastScratch)
+		err = f.runBudgetFastLua(ctx, evt, campInfo, amount, rdb, fastScratch)
+		budgetFastScratchPool.Put(fastScratch)
+	} else {
+		err = f.runUnifiedLua(ctx, evt, campInfo, amount, rdb, scratch)
+	}
 	scratch.release()
 	unifiedScratchPool.Put(scratch)
 	return err
@@ -604,6 +630,18 @@ func (f *UnifiedFilter) runUnifiedLua(
 	wRefillLock.buf = appendUUID(wRefillLock.buf, evt.CampaignID)
 	refillLockKey := unsafeString(wRefillLock.buf)
 
+	wFence := &scratch.wFence
+	wFence.buf = wFence.buf[:0]
+	wFence.buf = append(wFence.buf, MigrationFenceKeyPrefix...)
+	wFence.buf = appendUUID(wFence.buf, evt.CampaignID)
+	migrationFenceKey := unsafeString(wFence.buf)
+
+	wFrozen := &scratch.wFrozen
+	wFrozen.buf = wFrozen.buf[:0]
+	wFrozen.buf = append(wFrozen.buf, BudgetFrozenKeyPrefix...)
+	wFrozen.buf = appendUUID(wFrozen.buf, evt.CampaignID)
+	budgetFrozenKey := unsafeString(wFrozen.buf)
+
 	kv := scratch.keyVals[:]
 	kv[0].s = rlKey
 	kv[1].s = dupKey
@@ -615,12 +653,16 @@ func (f *UnifiedFilter) runUnifiedLua(
 	kv[11].s = impTSKey
 	kv[12].s = quotaKey
 	kv[13].s = refillLockKey
+	kv[14].s = migrationFenceKey
+	kv[15].s = budgetFrozenKey
 
 	keyArgs := scratch.keyArgs
 	keyArgs[6] = &dirtyCampaignsKeyVal
 	keyArgs[7] = &dirtyCustomersKeyVal
 	keyArgs[8] = &f.streamKeyVal
 	keyArgs[14] = &refillNeededKeyVal
+	keyArgs[15] = &kv[14]
+	keyArgs[16] = &kv[15]
 	if evt.UserID != "" {
 		kv[10].s = unsafeString(wFcap.buf)
 		keyArgs[10] = &kv[10]
@@ -685,6 +727,7 @@ func (f *UnifiedFilter) runUnifiedLua(
 			luaStart = monotonicNano()
 		}
 		f.redisObservability.recordLuaOp(shard, evt.CampaignID, sampleLua)
+		incRedisLuaTier(f.luaFullPathCounters, shard)
 		res, err := f.evalScript(ctx, rdb, shard, keyArgs, args)
 
 		if sampleLua {
@@ -696,83 +739,18 @@ func (f *UnifiedFilter) runUnifiedLua(
 		}
 
 		if res == -1 {
-			metrics.BudgetCacheMissTotal.Inc()
-			if filterDeadlineExceededEvt(evt, ctx) {
-				return context.DeadlineExceeded
-			}
-			if i > 0 {
-				return ErrBudgetExhausted
-			}
-
-			recovered, recErr := tryRecoverBudgetFromRegistry(ctx, rdb, f.registry, evt.CampaignID, budgetSourceKey)
+			retry, recErr := f.recoverBudgetAfterMiss(ctx, evt, rdb, budgetSourceKey, i)
 			if recErr != nil {
 				return recErr
 			}
-			if recovered {
+			if retry {
 				continue
 			}
-
-			dbTimeout := f.dbLookupTimeout
-			if rem, ok := filterDeadlineRemainingEvt(evt, ctx); ok {
-				if rem <= 0 {
-					return context.DeadlineExceeded
-				}
-				if rem < dbTimeout {
-					dbTimeout = rem
-				}
-			}
-
-			metrics.BudgetCacheMissPGTotal.Inc()
-			dbCtx, cancel := context.WithTimeout(ctx, dbTimeout)
-			camp, err := f.repo.GetByID(dbCtx, evt.CampaignID)
-			cancel()
-			if err != nil {
-				if errors.Is(err, context.DeadlineExceeded) {
-					return context.DeadlineExceeded
-				}
-				return err
-			}
-
-			remaining := camp.BudgetLimit - camp.CurrentSpend
-			if remaining < 0 {
-				remaining = 0
-			}
-
-			if err := warmBudgetKeyNX(ctx, rdb, budgetSourceKey, remaining); err != nil {
-				return err
-			}
-			continue
+			return ErrBudgetExhausted
 		}
 
-		switch res {
-		case 1:
-			return ErrRateLimitExceeded
-		case 2:
-			return ErrDuplicateEvent
-		case 3:
-			if f.quotaMode == "live" {
-				f.localQuotaCache.Block(evt.CampaignID, time.Now().UnixNano())
-			}
-			return ErrBudgetExhausted
-		case 4:
-			return ErrPacingExhausted
-		case 5:
-			return ErrFreqLimitExceeded
-		case 6:
-			addFraudSignal(evt, FraudReasonLowTTC)
-			return nil
-		case 7:
-			addFraudSignal(evt, FraudReasonMissingImpTS)
-			return nil
-		case 10:
-			metrics.TTCBypassTotal.Inc()
-			metrics.EventsProcessed.Inc()
-			f.recordAcceptedSpendIfDebited(shard, evt.CampaignID, amount, sampleLua)
-			return nil
-		default:
-			metrics.EventsProcessed.Inc()
-			f.recordAcceptedSpendIfDebited(shard, evt.CampaignID, amount, sampleLua)
-			return nil
+		if handled, handleErr := f.handleLuaResult(ctx, evt, campInfo, amount, rdb, budgetSourceKey, shard, res, sampleLua); handled {
+			return handleErr
 		}
 	}
 

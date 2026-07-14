@@ -216,8 +216,10 @@ func BenchmarkUnifiedFilter_Check(b *testing.B) {
 		CampaignID: uuid.New(),
 		ClickID:    "click123",
 	}
+	setFilterDeadlineOnEvent(evt, time.Second)
 	ctx := context.Background()
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = f.Check(ctx, evt)

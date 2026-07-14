@@ -183,6 +183,7 @@ func main() {
 	unifiedFilter.SetTTCFailClosed(cfg.TTCFailClosed)
 	unifiedFilter.SetMetricsSampleMask(cfg.MetricsHistogramSampleMask)
 	unifiedFilter.SetQuotaConfig(cfg.QuotaMode, cfg.QuotaChunkSize, cfg.QuotaRefillThresholdPct)
+	unifiedFilter.SetLuaFastPathEnabled(cfg.LuaFastPathEnabled)
 	if cfg.TTCFailClosed {
 		slog.Info("TTC fail-closed enabled: clicks without impression timestamp are rejected")
 	}
@@ -190,6 +191,7 @@ func main() {
 
 	creativeStore := ads.NewBrandCreativeStore(rdbs[0])
 	filterEngine := ads.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, breakerFilter, geoFilter, scheduleFilter, l3Filter, fraudFilter, deviceFilter, consentFilter, unifiedFilter)
+	filterEngine.SetSettingsWatcher(settingsWatcher)
 
 	var rtbCatalog *ads.RtbCatalog
 	var rtbHybrid *ads.HybridBalancer
@@ -249,6 +251,15 @@ func main() {
 	}
 
 	gnetHandler := ads.NewAdsPacketHandler(cfg, registry, filterEngine, pool, rdbs, sharder, cfg.FraudStreamName, creativeStore)
+	if udpCtrl := ads.NewUDPControlFromConfig(cfg, len(rdbs)); udpCtrl != nil {
+		if err := udpCtrl.Start(ctx); err != nil {
+			slog.Error("udp control start failed", "error", err)
+			os.Exit(1)
+		}
+		defer udpCtrl.Close()
+		gnetHandler.SetUDPControl(udpCtrl)
+		slog.Info("udp ingress control enabled", "fail_closed", cfg.UDPFailClosed)
+	}
 	gnetHandler.ConfigureIngestGeo(geoProvider)
 	if rtbCatalog != nil {
 		gnetHandler.ConfigureRtb(rtbCatalog, geoProvider, unifiedFilter, settingsWatcher)

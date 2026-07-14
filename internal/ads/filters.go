@@ -25,6 +25,7 @@ var (
 	ErrFraudDetected          = errors.New("fraud detected")
 	ErrEmergencyBreakerActive = errors.New("service temporarily unavailable (emergency breaker active)")
 	ErrBidFloorNotMet         = errors.New("bid floor not met")
+	ErrMigrationFenced        = errors.New("campaign debit fenced")
 )
 
 // bufWrapper holds a reusable byte buffer for zero-allocation Redis key construction.
@@ -201,6 +202,7 @@ type FilterEngine struct {
 	filters  []EventFilter
 	timeout  time.Duration
 	registry domain.CampaignRegistry
+	watcher  *SettingsWatcher
 }
 
 // NewFilterEngine composes filters with a monotonic deadline enforced between checks.
@@ -213,6 +215,11 @@ func (e *FilterEngine) SetRegistry(registry domain.CampaignRegistry) {
 	e.registry = registry
 }
 
+// SetSettingsWatcher attaches the settings watcher used for ML score boosts.
+func (e *FilterEngine) SetSettingsWatcher(watcher *SettingsWatcher) {
+	e.watcher = watcher
+}
+
 // Check runs filters in order until one rejects or the deadline expires.
 // Production tracker stores the monotonic deadline on evt.FilterDeadlineMono (zero allocs).
 func (e *FilterEngine) Check(ctx context.Context, evt *domain.Event) error {
@@ -220,6 +227,14 @@ func (e *FilterEngine) Check(ctx context.Context, evt *domain.Event) error {
 		evt.FilterDeadlineMono = monotonicNano() + e.timeout.Nanoseconds()
 	}
 	acc := attachFraudAccumulator(evt)
+
+	var boost uint8
+	if e.watcher != nil && evt != nil {
+		boosts := e.watcher.GetMLBoosts()
+		if boosts != nil {
+			boost = boosts.Boosts[evt.CampaignID]
+		}
+	}
 
 	var retErr error
 	for _, f := range e.filters {
@@ -232,7 +247,7 @@ func (e *FilterEngine) Check(ctx context.Context, evt *domain.Event) error {
 			if e.registry != nil && evt != nil {
 				camp, _ = e.registry.GetCampaign(evt.CampaignID)
 			}
-			layer, err := applyFraudLayerDecision(evt, acc, camp)
+			layer, err := applyFraudLayerDecision(evt, acc, camp, boost)
 			if err != nil {
 				retErr = err
 				break
@@ -257,7 +272,7 @@ func (e *FilterEngine) Check(ctx context.Context, evt *domain.Event) error {
 		if e.registry != nil && evt != nil {
 			camp, _ = e.registry.GetCampaign(evt.CampaignID)
 		}
-		layer, err := applyFraudLayerDecision(evt, acc, camp)
+		layer, err := applyFraudLayerDecision(evt, acc, camp, boost)
 		if err != nil {
 			retErr = err
 		} else if layer == FraudLayerL1Reject {

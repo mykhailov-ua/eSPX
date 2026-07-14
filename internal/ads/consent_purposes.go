@@ -7,10 +7,10 @@ import (
 
 // Consent purpose bit flags (16-bit mask, M6.2–M6.3).
 const (
-	ConsentPurposeAdStorage       int16 = 1 << 0
-	ConsentPurposeAnalytics       int16 = 1 << 1
-	ConsentRedisKeyPrefix               = "consent:user:"
-	ConsentDefaultUpdateChannel           = "consent:update"
+	ConsentPurposeAdStorage     int16 = 1 << 0
+	ConsentPurposeAnalytics     int16 = 1 << 1
+	ConsentRedisKeyPrefix             = "consent:user:"
+	ConsentDefaultUpdateChannel       = "consent:update"
 )
 
 // HashUserID derives a stable SHA-256 digest for consent and erasure keys.

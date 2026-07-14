@@ -16,7 +16,7 @@ func TestPinnedWorkerPool(t *testing.T) {
 
 	wg.Add(numTasks)
 	for i := 0; i < numTasks; i++ {
-		submitted := pool.Submit(func() {
+		submitted := pool.Submit(func(_ int) {
 			atomic.AddInt64(&counter, 1)
 			wg.Done()
 		})
@@ -52,7 +52,7 @@ func BenchmarkPinnedWorkerPool(b *testing.B) {
 
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				pool.Submit(func() {})
+				pool.Submit(func(_ int) {})
 			}
 		})
 	}

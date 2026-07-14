@@ -256,9 +256,25 @@ func startAdsIngestStackWithRedisMetrics(t *testing.T, infra *adsChaosInfra, str
 	})
 }
 
+func (o adsIngestStackOpts) maxWorkersOrDefault() int {
+	if o.maxWorkers > 0 {
+		return o.maxWorkers
+	}
+	return 2
+}
+
+func (o adsIngestStackOpts) rateLimitOrDefault() int {
+	if o.rateLimit > 0 {
+		return o.rateLimit
+	}
+	return 1000
+}
+
 type adsIngestStackOpts struct {
 	filterTimeoutMs int
 	redisMetrics    bool
+	maxWorkers      int
+	rateLimit       int
 }
 
 func startAdsIngestStackOpts(t *testing.T, infra *adsChaosInfra, stream string, opts adsIngestStackOpts) *adsIngestStack {
@@ -269,7 +285,7 @@ func startAdsIngestStackOpts(t *testing.T, infra *adsChaosInfra, stream string, 
 		EventBatchSize:     10,
 		EventFlushMs:       100,
 		StatsFlushMs:       100,
-		MaxWorkers:         2,
+		MaxWorkers:         opts.maxWorkersOrDefault(),
 		WriteTimeoutMs:     2000,
 		FilterTimeoutMs:    opts.filterTimeoutMs,
 		MaxRequestBodySize: 1024 * 1024,
@@ -283,12 +299,13 @@ func startAdsIngestStackOpts(t *testing.T, infra *adsChaosInfra, stream string, 
 
 	store := NewPostgresStore(infra.Queries, 1*time.Second)
 	campaignRepo := NewCampaignRepo(infra.Queries)
+	rateLimit := opts.rateLimitOrDefault()
 	unifiedFilter := NewUnifiedFilter(
 		[]redis.UniversalClient{infra.Redis},
 		NewJumpHashSharder(1),
 		registry,
 		campaignRepo,
-		1000,
+		rateLimit,
 		time.Minute,
 		45*time.Second,
 		24*time.Hour,
