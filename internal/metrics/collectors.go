@@ -186,7 +186,24 @@ var (
 	}, []string{"shard"})
 	RedisLuaScriptLoaded = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "ad_redis_lua_script_loaded",
-		Help: "1 if unified-filter.lua is loaded on shard via SCRIPT LOAD, else 0",
+		Help: "1 if filter_full (unified-filter) Lua is loaded on shard via SCRIPT LOAD, else 0",
+	}, []string{"shard"})
+	RedisLuaFastScriptLoaded = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ad_redis_lua_fast_script_loaded",
+		Help: "1 if budget_fast Lua is loaded on shard via SCRIPT LOAD, else 0",
+	}, []string{"shard"})
+	RedisLuaFastPathTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ad_redis_lua_fast_path_total",
+		Help: "Unified filter checks routed to budget_fast.lua",
+	}, []string{"shard"})
+	RedisLuaFullPathTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ad_redis_lua_full_path_total",
+		Help: "Unified filter checks routed to filter_full (unified-filter) Lua",
+	}, []string{"shard"})
+	RedisLuaFastDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "ad_redis_lua_fast_duration_seconds",
+		Help:    "Execution duration of budget_fast Lua filters",
+		Buckets: []float64{0.0001, 0.00025, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.025, 0.05},
 	}, []string{"shard"})
 	RedisOpsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ad_redis_ops_total",
@@ -449,5 +466,96 @@ var (
 	TrackerLocalQuotaBlockTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ad_tracker_local_quota_block_total",
 		Help: "Total number of events blocked locally by tracker quota cache",
+	})
+
+	UDPControlPacketsReceivedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_udp_control_packets_received_total",
+		Help: "UDP control datagrams received on tracker",
+	})
+	UDPControlPacketsAppliedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_udp_control_packets_applied_total",
+		Help: "UDP control datagrams applied to ingress snapshot",
+	})
+	UDPControlCorruptTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_udp_control_corrupt_total",
+		Help: "Malformed or invalid UDP control datagrams dropped",
+	})
+	UDPControlStaleDropTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_udp_control_stale_drop_total",
+		Help: "Out-of-order UDP epochs dropped (epoch <= current)",
+	})
+	UDPControlStaleTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_udp_control_stale_total",
+		Help: "UDP control channel marked STALE (no valid packet for 2x sync interval)",
+	})
+	UDPControlRecoveredTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_udp_control_recovered_total",
+		Help: "UDP control channel recovered from STALE to OK",
+	})
+	UDPControlGapTightenTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_udp_control_gap_tighten_total",
+		Help: "Epoch gap applied immediately because limits tightened",
+	})
+	UDPControlLoosenBlockedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_udp_control_loosen_blocked_total",
+		Help: "Epoch gap loosen rejected without CONFIG_SNAPSHOT",
+	})
+	UDPControlSnapshotAppliedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_udp_control_snapshot_applied_total",
+		Help: "CONFIG_SNAPSHOT epochs applied after gap or request",
+	})
+	UDPControlConfigRequestTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_udp_control_config_request_total",
+		Help: "CONFIG_REQUEST datagrams sent by tracker",
+	})
+	UDPControlEpochLag = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "ad_udp_control_epoch_lag",
+		Help: "Management epoch minus tracker applied epoch",
+	})
+	UDPControlPublishTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_udp_control_publish_total",
+		Help: "QUOTA_EPOCH / CONFIG_SNAPSHOT bursts sent by management",
+	})
+	UDPIngressAcquireTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_udp_ingress_acquire_total",
+		Help: "Ingress quota checks passed (lock-free per worker cell)",
+	})
+	UDPIngressRejectTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_udp_ingress_reject_total",
+		Help: "Ingress quota rejections when per-shard worker cell exceeds epoch limit",
+	})
+
+	QuotaDriftDetectedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_quota_drift_detected_total",
+		Help: "Campaign quota PG vs Redis drift events beyond chunk_size",
+	})
+	QuotaRepairEnqueuedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_quota_repair_enqueued_total",
+		Help: "QUOTA_REPAIR outbox events enqueued by ReconWorker",
+	})
+	QuotaRepairAppliedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_quota_repair_applied_total",
+		Help: "QUOTA_REPAIR outbox events applied successfully",
+	})
+	QuotaDeadShardReleaseTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_quota_dead_shard_release_total",
+		Help: "PG quota rows released after dead-shard quorum confirmed",
+	})
+
+	ProcessorStreamLagSeconds = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "ad_processor_stream_lag_seconds",
+		Help: "Current stream processing lag in seconds",
+	})
+	MicroBatchPaused = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "ad_micro_batch_paused",
+		Help: "Whether the micro-batch scoring is paused due to stream lag (1=paused, 0=running)",
+	})
+	MicroBatchProcessedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_micro_batch_processed_total",
+		Help: "Total number of events processed by the micro-batcher",
+	})
+	MicroBatchBoostsWrittenTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_micro_batch_boosts_written_total",
+		Help: "Total number of score boosts written to Redis from the micro-batcher",
 	})
 )

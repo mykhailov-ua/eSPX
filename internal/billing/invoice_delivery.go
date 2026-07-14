@@ -52,16 +52,16 @@ func (d *NotifierInvoiceDeliverer) DeliverInvoice(
 
 	title := fmt.Sprintf("Invoice %s", month)
 	_, err := d.client.SendNotification(ctx, &notifierpb.SendNotificationRequest{
-		Provider:     d.provider,
-		Recipient:    d.recipient,
-		Title:        title,
-		TemplateId:   "invoice_monthly",
+		Provider:   d.provider,
+		Recipient:  d.recipient,
+		Title:      title,
+		TemplateId: "invoice_monthly",
 		TemplateVars: map[string]string{
-			"customer_id":  customerID,
-			"invoice_id":   invoiceID,
+			"customer_id":   customerID,
+			"invoice_id":    invoiceID,
 			"billing_month": month,
-			"currency":     currency,
-			"total_micro":  fmt.Sprintf("%d", totalMicro),
+			"currency":      currency,
+			"total_micro":   fmt.Sprintf("%d", totalMicro),
 		},
 		AttachmentUrl: pdfURL,
 		DedupKey:      fmt.Sprintf("invoice:%s", invoiceID),

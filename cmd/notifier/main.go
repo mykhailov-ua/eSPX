@@ -14,8 +14,6 @@ import (
 	"espx/internal/notifier/pb"
 	"espx/pkg/lifecycle"
 
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/collectors"
 	google_grpc "google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 )
@@ -40,11 +38,12 @@ func main() {
 	}
 	defer pool.Close()
 
+	if err := notifier.ApplyMigrations(ctx, pool); err != nil {
+		slog.Error("failed to apply notifier schema migrations", "error", err)
+		os.Exit(1)
+	}
+
 	notifier.RegisterMetrics()
-	prometheus.MustRegister(
-		collectors.NewGoCollector(),
-		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-	)
 	notifier.SetAdminBaseURL(cfg.Notifier.AdminBaseURL)
 	bundle := notifier.NewProviderBundleFromConfig(cfg)
 	svc := notifier.NewServiceWithOptions(pool, bundle.Providers, notifier.ServiceOptionsFromConfig(cfg))
@@ -54,7 +53,7 @@ func main() {
 	go notifier.StartCircuitBreakerMetricsScraper(ctx, bundle.Breakers, 15*time.Second)
 
 	retentionInterval := time.Duration(cfg.Notifier.RetentionIntervalHours) * time.Hour
-	notifier.NewRetentionJanitor(
+	go notifier.NewRetentionJanitor(
 		pool,
 		retentionInterval,
 		cfg.Notifier.RetentionSentDays,

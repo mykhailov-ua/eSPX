@@ -27,29 +27,95 @@ Request flow: Nginx (:8180) load-balances `/track` to tracker replicas (:8181-81
 | `broker` | — | mmap log broker (not in compose; optional log evacuation) |
 | `dlq`, `admin` | — | Operator CLIs |
 
-## Redis Topology
+## Redis Sharding Strategy
 
-Six standalone Redis masters (not Redis Cluster). Campaign-scoped keys colocate on one shard via `StaticSlotSharder`: `crc32Castagnoli(campaignID) & 1023`, then `slot % N`.
+Client-sharded standalone Redis masters (**not Redis Cluster**). Production locks **`N = 4`** shards (`config.ExpectedRedisShardCount`; `ENV=production` rejects `len(REDIS_ADDRS) != 4`). Lua scripts require multi-key atomicity on one instance; cluster hash tags would not remove cross-shard coordination for global config.
+
+Full design, chaos profile, and rollout: **[Sharding Strategy](docs/SHARDING_STRATEGY.md)**.
+
+### Campaign → shard routing
+
+All budget, filter, and stream keys route by **`campaign_id` only** (composite `campaign_id + user_id` is for edge rate limiting, not shard pick):
+
+```
+slot  = crc32_castagnoli(campaign_id) & 1023    // 1024 fixed slots
+shard = slot_table[slot]                        // precomputed; default slot % N
+```
+
+| Component | Implementation |
+| :--- | :--- |
+| Go tracker / processor | `StaticSlotSharder` (`internal/ads/sharding.go`) — 1024-entry table behind `atomic.Value`; cold-path reload via `StoreSlotMap` / `SwapSnapshot` |
+| Nginx edge | `deploy/nginx/lua/edge-slot-map.lua` — same Castagnoli CRC + slot table (must match Go) |
+| Slot index (migration) | `CampaignSlotIndex(id)` — `crc32 & 1023` for cohort copy / autoscale |
+| Legacy (do not use in prod) | `JumpHashSharder` — different distribution; management and tracker must share `StaticSlotSharder` |
+
+Hot-path `GetShard` is **~5.6 ns/op, 0 allocs/op** (amd64 HW CRC). Shard count does not change lookup cost.
+
+### Control plane (async, off hot path)
+
+| Mechanism | Role |
+| :--- | :--- |
+| **Outbox** (`management`) | Replicate `config:values`, blacklist, campaign keys to every shard; priority lanes for pause/freeze (M1) |
+| **Slot map** (`slot_map_versions` PG) | Draft → MIGRATING → ACTIVE; `SlotMigrationOrchestrator` copies keys; trackers reload table atomically |
+| **Migration fence** (`MIGRATION_FENCE_ENABLED`) | Lua rejects debit when `migration_gen` mismatches PG — no dual debit during copy |
+| **UDP quotas** (`UDP_CONTROL_ENABLED`) | Management `:8190` → tracker `:8191`: per-shard RPS epochs, `CONFIG_SNAPSHOT` / `CONFIG_REQUEST`; ingress gate only (never writes `budget:*`) |
+| **Quota repair** (`QUOTA_MODE=live`, `QUOTA_AUTO_REPAIR`) | PG↔Redis drift auto-repair; dead-shard reservation release with quorum |
+| **Registry invalidation** | `campaigns:update` pub/sub on **shard 0** → tracker in-memory reload |
+
+**Degradation:** per-shard circuit breakers, Sentinel failover (~10–15 s), UDP STALE → canary ingress floor (fail-closed). Recovery runbook: [Runtime §5](docs/RUNTIME.md).
+
+### Tiered Lua (M4)
+
+| Tier | Script | When |
+| :--- | :--- | :--- |
+| A | Go pre-gates | Geo, schedule, fraud, emergency breaker — 0 Redis RTT |
+| B | `budget_fast.lua` | Impressions with warmed budget (`LUA_FAST_PATH_ENABLED`) |
+| C | `unified-filter.lua` | Clicks, TTC, fcap, full debit + stream XADD |
+
+One `EVALSHA` per accepted event; financial debit stays atomic in Lua.
+
+### Key layout
 
 | Pattern | Scope | Purpose |
 | :--- | :--- | :--- |
 | `budget:campaign:{id}` | Shard-local | Live remaining budget (micro-units) |
-| `budget:sync:*`, `budget:dirty_*` | Shard-local | PG sync deltas and dirty sets |
+| `budget:sync:*`, `budget:dirty_*`, `budget:migration_gen:{id}` | Shard-local | PG sync deltas, dirty sets, migration fence |
 | `dup:*`, `idempotency:click:*` | Shard-local | Dedup and idempotency |
 | `fcap:*`, `imp_ts:*` | Shard-local | Frequency cap, time-to-click |
 | `ad:events:stream` | Shard-local | Ingestion stream (one namespace per shard) |
 | `config:values`, `blacklist:*` | All shards | Replicated global state |
 | `brand:creatives:{id}` | All shards | Creative rotation payload |
 
-**Why client sharding, not Cluster:** Lua scripts require multi-key atomicity within a single Redis instance. Cluster would force hash tags on every key and still complicate global replication. Fixed N=4 shards give predictable blast radius (one shard down affects ~1/N campaigns) without slot migration machinery.
+**Shard-0 conventions** (by policy, not hash): `campaigns:update` pub/sub, auth lockout, brand creatives. Campaign budget keys still follow `StaticSlotSharder(campaign_id)`.
 
-**Why StaticSlot over JumpHash:** O(1) table lookup, no branches, no float math on the hot path. Trade-off: changing N remaps ~100% of keys (vs ~1/N for JumpHash). Production policy locks N=6; resize requires blue/green key migration.
+### Why StaticSlot over JumpHash
 
-**Sentinel:** Go services (`ConnectRedisShards`) and Nginx Lua use Sentinel when `REDIS_SENTINEL_ADDRS` is set. Empty sentinel addrs fall back to direct `REDIS_ADDRS`.
+| | StaticSlot | JumpHash |
+| :--- | :--- | :--- |
+| Hot-path cost | O(1) table + HW CRC, no float math | Loop over buckets |
+| Resize blast radius | ~67% campaigns remap on N change | ~1/N remap |
+| Ops model | Fixed N=4; resize = slot migration project | Better for elastic N |
+
+Production uses **fixed slot map + orchestrated migration**, not live JumpHash resharding.
+
+### Sentinel and clients
+
+Go services (`ConnectRedisShards`) and Nginx Lua resolve masters via Sentinel when `REDIS_SENTINEL_ADDRS` is set; otherwise direct `REDIS_ADDRS`. Smoke: `scripts/redis/verify_redis_topology.sh`.
+
+### Rollout flags (staging defaults)
+
+| Flag | Staging | Purpose |
+| :--- | :--- | :--- |
+| `MIGRATION_FENCE_ENABLED` | `true` | Lua migration_gen reject |
+| `UDP_CONTROL_ENABLED` | `true` | UDP control plane + ingress gate |
+| `QUOTA_MODE` / `QUOTA_AUTO_REPAIR` | `live` / `true` | Distributed quota + repair |
+| `LUA_FAST_PATH_ENABLED` | `false` | Tier B fast Lua (canary after soak) |
+
+Apply: `bash scripts/deploy/k8s_staging_apply.sh` (see SHARDING_STRATEGY §9.6).
 
 ## Unified Filter (Lua)
 
-`internal/ads/filter/unified.lua` embedded via `//go:embed`, preloaded with `SCRIPT LOAD` at tracker startup, invoked via `EVALSHA` with `EVAL` fallback on `NOSCRIPT`.
+`internal/ads/unified-filter.lua` (Tier C) and `budget_fast.lua` (Tier B) embedded via `//go:embed`, preloaded with `SCRIPT LOAD` at tracker startup, invoked via `EVALSHA` with `EVAL` fallback on `NOSCRIPT`. Router in `UnifiedFilter.Check` picks tier by event type and flags.
 
 Single atomic script per event: MGET budget state, TTC check, pacing, fcap, rate limit, dedup SET NX, budget decrement, sync delta, stream XADD.
 
@@ -71,7 +137,8 @@ Single atomic script per event: MGET budget state, TTC check, pacing, fcap, rate
 | :--- | :--- | :--- | :--- |
 | Serialization | Protobuf + vtproto | Pool-backed marshal/unmarshal; `bytes` fields slice from socket buffers | Schema evolution requires buf generate + deploy coordination |
 | Networking | gnet + pinned worker pool | Event-driven I/O; MPSC ring offload for parse/filter work | More complex than net/http; stdlib router kept for tests only |
-| Sharding | StaticSlot (1024 slots) | Bitwise mask + precomputed table; fits L1 | Cluster resize is a migration project, not a config change |
+| Sharding | StaticSlot (1024 slots → N masters) | HW CRC + atomic slot table; edge/Go parity | Resize = slot migration, not config flip |
+| Ingress control | UDP epoch quotas + padded atomics | Sub-second per-shard RPS without HTTP on hot path | Fail-closed when STALE; budget stays in Lua/PG |
 | Budget | int64 micro-units (10^6) | No float rounding in Lua INCRBY or PG ledger | Display layer must divide; overflow range is ample for ad spend |
 | Outbox | `SKIP LOCKED` polling | Short PG transactions; Redis I/O outside TX boundary | Latency floor = poll interval (20ms mgmt, 100ms payment); no LISTEN/NOTIFY push |
 | Rate limiting | INCR + EXPIRE in Lua | Atomic without separate Lua script per concern | Per-IP counter lives on campaign shard, not IP shard |
@@ -106,4 +173,5 @@ Local workflows use `Makefile`, optional [Task](Taskfile.yml), and categorized `
 ## Documentation
 
 - [Architecture](docs/architecture.md) — subsystem workflows, Lua key layout, failover, limitations
+- [Sharding Strategy](docs/SHARDING_STRATEGY.md) — slot map, UDP control plane, tiered Lua, chaos/load validation (M1–M6)
 - [Development](docs/development.md) — setup, ports, scripts, runbooks, perf gate, CI

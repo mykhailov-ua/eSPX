@@ -49,6 +49,8 @@ require (
 	github.com/aws/smithy-go v1.27.3 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/prometheus/common v0.66.1 // indirect
+	github.com/yalue/onnxruntime_go v1.31.0 // indirect
+	github.com/zhongdai/go-lgbm v0.1.2 // indirect
 )
 
 require (

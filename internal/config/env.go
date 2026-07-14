@@ -99,7 +99,7 @@ type Config struct {
 	SelfServeBudgetMinMicro     int64
 	SelfServeBudgetMaxMicro     int64
 	SelfServeAPIKeyRPS          float64
-	Management                      struct {
+	Management                  struct {
 		RetentionDays               int
 		CancellationFeePercent      float64
 		ReconIntervalMs             int
@@ -140,17 +140,17 @@ type Config struct {
 
 	PacingToleranceMargin float64
 
-	CreditScoringMinAgeDays          float64
-	CreditScoringMatureAgeDays       float64
+	CreditScoringMinAgeDays         float64
+	CreditScoringMatureAgeDays      float64
 	CreditScoringMidTierPercent     int64
 	CreditScoringMaturePercent      int64
 	CreditScoringMaxCap             int64
 	CreditScoringReconLagThreshold  int64
 	CreditScoringReconLagPenaltyPct int64
 
-	MABIntervalMs      int
-	MABMinImpressions  int64
-	MABLookbackDays    int
+	MABIntervalMs     int
+	MABMinImpressions int64
+	MABLookbackDays   int
 
 	ConsentHMACSecret       Secret
 	ConsentRetentionMonths  int
@@ -204,7 +204,22 @@ type Config struct {
 	SlotMapPollIntervalMs   int
 	SlotMigrationEnabled    bool
 	SlotMigrationIntervalMs int
+	MigrationFenceEnabled   bool
 	ManagementURL           string
+
+	LuaFastPathEnabled bool
+
+	UDPControlEnabled  bool
+	UDPFailClosed      bool
+	UDPMgmtBindAddr    string
+	UDPTrackerBindAddr string
+	UDPMgmtAddr        string
+	UDPTrackerAddrs    []string
+	UDPTrackerID       uint32
+	UDPSyncIntervalMs  int
+	UDPDefaultShardRPS uint64
+
+	QuotaAutoRepair bool
 
 	Notifier struct {
 		ServerHost                 string
@@ -249,6 +264,14 @@ type Config struct {
 		MinImpressions     uint64
 		ClickToImpRatio    float64
 		MinIPsPerUA        uint64
+	}
+
+	ML struct {
+		Enabled        bool
+		ScanIntervalMs int
+		BatchSize      int
+		ModelPath      string
+		Standalone     bool
 	}
 
 	GeoIP struct {
@@ -299,6 +322,7 @@ func Load() (*Config, error) {
 		ServerPort:                      os.Getenv("SERVER_PORT"),
 		ProcessorPort:                   os.Getenv("PROCESSOR_PORT"),
 		ManagementPort:                  os.Getenv("MANAGEMENT_PORT"),
+		MetricsPort:                     os.Getenv("METRICS_PORT"),
 		DBDSN:                           Secret(os.Getenv("DB_DSN")),
 		PaymentDBDSN:                    Secret(os.Getenv("PAYMENT_DB_DSN")),
 		RedisAddrs:                      trimCommaList(os.Getenv("REDIS_ADDRS")),
@@ -377,20 +401,20 @@ func Load() (*Config, error) {
 		BidFloorMinMicro:                getEnvMicro("BID_FLOOR_MIN_MICRO", 1000),
 		DealFloorRefreshIntervalMs:      getEnvInt("DEAL_FLOOR_REFRESH_INTERVAL_MS", 60_000),
 		PacingToleranceMargin:           getEnvFloat("PACING_TOLERANCE_MARGIN", 0.15),
-		CreditScoringMinAgeDays:          getEnvFloat("CREDIT_SCORING_MIN_AGE_DAYS", 7.0),
-		CreditScoringMatureAgeDays:       getEnvFloat("CREDIT_SCORING_MATURE_AGE_DAYS", 30.0),
-		CreditScoringMidTierPercent:      getEnvInt64("CREDIT_SCORING_MID_TIER_PERCENT", 15),
-		CreditScoringMaturePercent:       getEnvInt64("CREDIT_SCORING_MATURE_PERCENT", 30),
-		CreditScoringMaxCap:              getEnvMicro("CREDIT_SCORING_MAX_CAP", 10000.0),
-		CreditScoringReconLagThreshold:   getEnvMicro("CREDIT_SCORING_RECON_LAG_THRESHOLD_MICRO", 100.0),
-		CreditScoringReconLagPenaltyPct:  getEnvInt64("CREDIT_SCORING_RECON_LAG_PENALTY_PCT", 50),
-		MABIntervalMs:                    getEnvInt("MAB_INTERVAL_MS", 900_000),
-		MABMinImpressions:                getEnvInt64("MAB_MIN_IMPRESSIONS", 1000),
-		MABLookbackDays:                  getEnvInt("MAB_LOOKBACK_DAYS", 90),
-		ConsentHMACSecret:                Secret(os.Getenv("CONSENT_HMAC_SECRET")),
-		ConsentRetentionMonths:           getEnvInt("CONSENT_RETENTION_MONTHS", 13),
-		ConsentUpdateChannel:             envOrDefault("CONSENT_UPDATE_CHANNEL", "consent:update"),
-		ErasureWorkerIntervalMs:          getEnvInt("ERASURE_WORKER_INTERVAL_MS", 60_000),
+		CreditScoringMinAgeDays:         getEnvFloat("CREDIT_SCORING_MIN_AGE_DAYS", 7.0),
+		CreditScoringMatureAgeDays:      getEnvFloat("CREDIT_SCORING_MATURE_AGE_DAYS", 30.0),
+		CreditScoringMidTierPercent:     getEnvInt64("CREDIT_SCORING_MID_TIER_PERCENT", 15),
+		CreditScoringMaturePercent:      getEnvInt64("CREDIT_SCORING_MATURE_PERCENT", 30),
+		CreditScoringMaxCap:             getEnvMicro("CREDIT_SCORING_MAX_CAP", 10000.0),
+		CreditScoringReconLagThreshold:  getEnvMicro("CREDIT_SCORING_RECON_LAG_THRESHOLD_MICRO", 100.0),
+		CreditScoringReconLagPenaltyPct: getEnvInt64("CREDIT_SCORING_RECON_LAG_PENALTY_PCT", 50),
+		MABIntervalMs:                   getEnvInt("MAB_INTERVAL_MS", 900_000),
+		MABMinImpressions:               getEnvInt64("MAB_MIN_IMPRESSIONS", 1000),
+		MABLookbackDays:                 getEnvInt("MAB_LOOKBACK_DAYS", 90),
+		ConsentHMACSecret:               Secret(os.Getenv("CONSENT_HMAC_SECRET")),
+		ConsentRetentionMonths:          getEnvInt("CONSENT_RETENTION_MONTHS", 13),
+		ConsentUpdateChannel:            envOrDefault("CONSENT_UPDATE_CHANNEL", "consent:update"),
+		ErasureWorkerIntervalMs:         getEnvInt("ERASURE_WORKER_INTERVAL_MS", 60_000),
 		PaymentServerPort:               os.Getenv("PAYMENT_SERVER_PORT"),
 		PaymentServerHost:               os.Getenv("PAYMENT_SERVER_HOST"),
 		PaymentMetricsPort:              os.Getenv("PAYMENT_METRICS_PORT"),
@@ -463,6 +487,29 @@ func Load() (*Config, error) {
 	cfg.SlotMapPollIntervalMs = getEnvInt("SLOT_MAP_POLL_INTERVAL_MS", 10000)
 	cfg.SlotMigrationEnabled = getEnvBool("SLOT_MIGRATION_ENABLED", true)
 	cfg.SlotMigrationIntervalMs = getEnvInt("SLOT_MIGRATION_INTERVAL_MS", 30000)
+	cfg.MigrationFenceEnabled = getEnvBool("MIGRATION_FENCE_ENABLED", false)
+	cfg.LuaFastPathEnabled = getEnvBool("LUA_FAST_PATH_ENABLED", false)
+	cfg.UDPControlEnabled = getEnvBool("UDP_CONTROL_ENABLED", false)
+	cfg.UDPFailClosed = getEnvBool("UDP_FAIL_CLOSED", true)
+	cfg.UDPMgmtBindAddr = os.Getenv("UDP_MGMT_BIND_ADDR")
+	if cfg.UDPMgmtBindAddr == "" {
+		cfg.UDPMgmtBindAddr = ":8190"
+	}
+	cfg.UDPTrackerBindAddr = os.Getenv("UDP_TRACKER_BIND_ADDR")
+	if cfg.UDPTrackerBindAddr == "" {
+		cfg.UDPTrackerBindAddr = ":8191"
+	}
+	cfg.UDPMgmtAddr = os.Getenv("UDP_MGMT_ADDR")
+	if cfg.UDPMgmtAddr == "" {
+		cfg.UDPMgmtAddr = "127.0.0.1:8190"
+	}
+	if addrs := os.Getenv("UDP_TRACKER_ADDRS"); addrs != "" {
+		cfg.UDPTrackerAddrs = strings.Split(addrs, ",")
+	}
+	cfg.UDPTrackerID = uint32(getEnvInt("UDP_TRACKER_ID", 1))
+	cfg.UDPSyncIntervalMs = getEnvInt("UDP_SYNC_INTERVAL_MS", 10000)
+	cfg.UDPDefaultShardRPS = uint64(getEnvInt64("UDP_DEFAULT_SHARD_RPS", 50_000))
+	cfg.QuotaAutoRepair = getEnvBool("QUOTA_AUTO_REPAIR", false)
 	cfg.ManagementURL = os.Getenv("MANAGEMENT_URL")
 	if cfg.ManagementURL == "" && cfg.ManagementPort != "" {
 		cfg.ManagementURL = "http://127.0.0.1:" + cfg.ManagementPort
@@ -528,6 +575,15 @@ func Load() (*Config, error) {
 	cfg.IVT.MinImpressions = uint64(getEnvInt64("IVT_DETECTOR_MIN_IMPRESSIONS", 1))
 	cfg.IVT.ClickToImpRatio = getEnvFloat("IVT_DETECTOR_CLICK_TO_IMP_RATIO", 5.0)
 	cfg.IVT.MinIPsPerUA = uint64(getEnvInt64("IVT_DETECTOR_MIN_IPS_PER_UA", 8))
+
+	cfg.ML.Enabled = getEnvBool("ML_ANALYTICS_ENABLED", false)
+	cfg.ML.ScanIntervalMs = getEnvInt("ML_SCAN_INTERVAL_MS", 300000)
+	cfg.ML.BatchSize = getEnvInt("ML_BATCH_SIZE", 1000)
+	cfg.ML.ModelPath = os.Getenv("ML_MODEL_PATH")
+	if cfg.ML.ModelPath == "" {
+		cfg.ML.ModelPath = "testdata/model.txt"
+	}
+	cfg.ML.Standalone = getEnvBool("ML_STANDALONE", false)
 
 	cfg.Billing.Port = os.Getenv("BILLING_SERVER_PORT")
 	if cfg.Billing.Port == "" {
@@ -748,6 +804,16 @@ func (c *Config) IVTDetectorEnabled() bool {
 		return false
 	}
 	return string(c.CHDSN) != ""
+}
+
+// MLAnalyticsEnabled reports whether the ML analytics shadow scoring should run.
+func (c *Config) MLAnalyticsEnabled() bool {
+	return c != nil && c.ML.Enabled
+}
+
+// MLStandalone reports whether the ML analytics is running as a standalone service.
+func (c *Config) MLStandalone() bool {
+	return c != nil && c.ML.Standalone
 }
 
 // ClickHouseEnabled reports whether analytics queries should use ClickHouse.

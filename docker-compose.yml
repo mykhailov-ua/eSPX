@@ -14,6 +14,7 @@ services:
       - .env
     environment:
       - SERVER_PORT=8181
+      - METRICS_PORT=9101
       - GOMEMLIMIT=700MiB   # hard memory limit; triggers GC before OOM killer fires
       - GOGC=50             # aggressive GC target: trade CPU for lower heap steady-state
     volumes:
@@ -67,6 +68,7 @@ services:
       - .env
     environment:
       - SERVER_PORT=8182
+      - METRICS_PORT=9102
       - GOMEMLIMIT=700MiB
       - GOGC=50
     volumes:
@@ -119,6 +121,7 @@ services:
       - .env
     environment:
       - SERVER_PORT=8183
+      - METRICS_PORT=9103
       - GOMEMLIMIT=700MiB
       - GOGC=50
     volumes:
@@ -171,6 +174,7 @@ services:
       - .env
     environment:
       - SERVER_PORT=8184
+      - METRICS_PORT=9104
       - GOMEMLIMIT=700MiB
       - GOGC=50
     volumes:
@@ -268,6 +272,7 @@ services:
       - REDIS_ADDRS=127.0.0.1:6479,127.0.0.1:6480,127.0.0.1:6481,127.0.0.1:6482,127.0.0.1:6483,127.0.0.1:6484
       - CH_DSN=${CH_DSN}
       - PROCESSOR_PORT=${PROCESSOR_PORT:-8186}
+      - SERVER_PORT=${PROCESSOR_PORT:-8186}
       - GEOIP_DB_PATH=/deploy/geoip/GeoLite2-Country.mmdb
       - GEOIP_UPDATER_ENABLED=${GEOIP_UPDATER_ENABLED:-false}
       - MAXMIND_LICENSE_KEY=${MAXMIND_LICENSE_KEY:-}
@@ -339,6 +344,7 @@ services:
     network_mode: "${NET_MODE:-host}"
     profiles:
       - chaos
+      - ml-analytics
     env_file:
       - .env
     environment:
@@ -429,6 +435,44 @@ services:
       resources:
         limits:
           memory: 256M
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      management:
+        condition: service_started
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+  # Standalone ML analytics worker: ClickHouse analytics → ML shadow scoring & threat enqueues.
+  ml-analytics:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/ml-analytics"]
+    network_mode: "${NET_MODE:-host}"
+    profiles:
+      - ml-analytics
+    env_file:
+      - .env
+    environment:
+      - ML_ANALYTICS_ENABLED=true
+      - ML_STANDALONE=true
+      - CH_DSN=${CH_DSN}
+      - DB_DSN=${DB_DSN}
+      - MANAGEMENT_URL=http://127.0.0.1:8188
+      - ADMIN_API_KEY=${ADMIN_API_KEY}
+    volumes:
+      - ./var/ml/artifacts:/var/ml/artifacts:rw
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     restart: always
     depends_on:
       db:

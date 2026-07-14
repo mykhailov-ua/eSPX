@@ -6,7 +6,7 @@ source "$(cd "$(dirname "$0")/../_common" && pwd)/paths.sh"
 cd "$ROOT"
 
 LOG="${CHAOS_LOG:-/tmp/espx-chaos.log}"
-MIN_PROOFS="${CHAOS_MIN_PROOFS:-30}"
+MIN_PROOFS="${CHAOS_MIN_PROOFS:-46}"
 export BROKER_CHAOS_LAB=1
 
 go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.28.0 generate
@@ -20,6 +20,7 @@ go test -count=1 -v -run 'Chaos' -timeout 20m \
 	./internal/billing/... \
 	./internal/notifier/... \
 	./internal/ivtdetector/... \
+	./internal/mlanalytics/... \
 	./pkg/broker/server/... \
 	./internal/management/... \
 	./internal/edge/perimeter/... \

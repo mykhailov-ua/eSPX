@@ -10,3 +10,6 @@ campaigns_replica.json
 campaigns_replica.json.tmp
 GUIDE_*.md
 docs/reports/
+deploy/terraform/**/.terraform/
+deploy/terraform/**/terraform.tfstate*
+deploy/monitoring/prometheus-k3s.rendered.yml

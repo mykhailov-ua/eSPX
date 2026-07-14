@@ -96,3 +96,17 @@ func TestLoad_productionFilterTimeoutCeiling(t *testing.T) {
 		t.Fatalf("FilterTimeoutMs=%d want 100", cfg.FilterTimeoutMs)
 	}
 }
+
+func TestMLAnalyticsEnabled_defaultFalse(t *testing.T) {
+	cfg := &Config{}
+	if cfg.MLAnalyticsEnabled() {
+		t.Fatal("ML_ANALYTICS_ENABLED must default to false")
+	}
+
+	t.Setenv("ML_ANALYTICS_ENABLED", "true")
+	cfg2 := &Config{}
+	cfg2.ML.Enabled = getEnvBool("ML_ANALYTICS_ENABLED", false)
+	if !cfg2.MLAnalyticsEnabled() {
+		t.Fatal("ML_ANALYTICS_ENABLED=true must enable analytics")
+	}
+}

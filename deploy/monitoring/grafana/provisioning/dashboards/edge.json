@@ -220,6 +220,26 @@
       ],
       "title": "Redis Lua p99 (tracker, SLA <15ms)",
       "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ms" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "id": 215,
+      "targets": [
+        {
+          "expr": "max(histogram_quantile(0.99, sum(rate(ad_redis_lua_fast_duration_seconds_bucket{job=\"tracker\"}[5m])) by (le, shard)) * 1000)",
+          "legendFormat": "budget_fast p99 max shard",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(ad_redis_lua_fast_path_total{job=\"tracker\"}[5m])) / clamp_min(sum(rate(ad_redis_lua_fast_path_total{job=\"tracker\"}[5m])) + sum(rate(ad_redis_lua_full_path_total{job=\"tracker\"}[5m])), 1)",
+          "legendFormat": "fast path ratio",
+          "refId": "B"
+        }
+      ],
+      "title": "Lua fast path p99 + ratio (M4)",
+      "type": "timeseries"
     }
   ],
   "refresh": "10s",

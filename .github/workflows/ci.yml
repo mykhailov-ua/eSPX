@@ -47,3 +47,25 @@ jobs:
 
       - name: Run chaos suite
         run: bash scripts/chaos/test_chaos.sh
+
+  terraform-validate:
+    name: Terraform validate (local + staging)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.8'
+
+      - name: Validate local env
+        run: |
+          cd deploy/terraform/envs/local
+          terraform init -backend=false
+          terraform validate
+
+      - name: Validate staging env
+        run: |
+          cd deploy/terraform/envs/staging
+          terraform init -backend=false
+          terraform validate

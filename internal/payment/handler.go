@@ -193,10 +193,10 @@ func (handler *Handler) ListDisputes(ctx context.Context, req *pb.ListDisputesRe
 	disputes := make([]*pb.DisputeRecord, 0, len(items))
 	for _, item := range items {
 		rec := &pb.DisputeRecord{
-			IntentId:     uuid.UUID(item.Intent.ID.Bytes).String(),
-			CustomerId:   uuid.UUID(item.Intent.CustomerID.Bytes).String(),
-			AmountMicro:  item.Intent.AmountMicro,
-			Currency:     item.Intent.Currency,
+			IntentId:          uuid.UUID(item.Intent.ID.Bytes).String(),
+			CustomerId:        uuid.UUID(item.Intent.CustomerID.Bytes).String(),
+			AmountMicro:       item.Intent.AmountMicro,
+			Currency:          item.Intent.Currency,
 			ProviderDisputeId: item.ProviderDisputeID,
 		}
 		if item.Intent.UpdatedAt.Valid {
