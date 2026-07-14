@@ -41,6 +41,20 @@ func (mgmt *countingManagement) BlockIP(_ context.Context, ip string) error {
 	return nil
 }
 
+func (mgmt *countingManagement) EnqueueMLThreat(_ context.Context, action string, ip string, campaignID string, score float64, boost int32, ttlSeconds int64) error {
+	mgmt.mu.Lock()
+	defer mgmt.mu.Unlock()
+	if mgmt.calls == nil {
+		mgmt.calls = make(map[string]int)
+	}
+	if mgmt.fail.Load() > 0 {
+		mgmt.fail.Add(^uint32(0))
+		return ErrManagementUnavailable
+	}
+	mgmt.calls[ip]++
+	return nil
+}
+
 func (mgmt *countingManagement) count(ip string) int {
 	mgmt.mu.Lock()
 	defer mgmt.mu.Unlock()

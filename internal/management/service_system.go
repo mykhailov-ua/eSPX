@@ -62,6 +62,39 @@ func (s *Service) BlockIPWithTTL(ctx context.Context, ip string, source string, 
 	})
 }
 
+// EnqueueMLThreat enqueues a machine learning threat candidate (IP, campaign, score, boost, TTL).
+func (s *Service) EnqueueMLThreat(ctx context.Context, p MLThreatPayload) error {
+	if _, err := uuid.Parse(p.CampaignID); err != nil {
+		return fmt.Errorf("invalid campaign id: %w", err)
+	}
+
+	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
+		q := db.New(tx)
+		payload, err := cold.MarshalJSON(p)
+		if err != nil {
+			return fmt.Errorf("marshal ml threat payload: %w", err)
+		}
+
+		var eventType string
+		switch p.Action {
+		case "boost":
+			eventType = "ML_SCORE_BOOST"
+		case "ghost":
+			eventType = "ML_GHOST_IVT"
+		case "blacklist":
+			eventType = "ML_BLACKLIST_ADD"
+		default:
+			return fmt.Errorf("unknown ml threat action: %s", p.Action)
+		}
+
+		_, err = q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{
+			EventType: eventType,
+			Payload:   payload,
+		})
+		return err
+	})
+}
+
 // UnblockIP removes a blacklist entry and propagates the change to Redis and nginx via cold.
 func (s *Service) UnblockIP(ctx context.Context, ip string, source string) error {
 	reason := normalizeBlacklistReason(source)

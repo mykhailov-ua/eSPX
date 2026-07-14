@@ -4,10 +4,13 @@ import (
 	"context"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"espx/internal/config"
+
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -34,11 +37,17 @@ type DynamicConfig struct {
 // SettingsChangeListener runs after a new dynamic config snapshot is stored.
 type SettingsChangeListener func(*DynamicConfig)
 
+// MLBoostSnapshot holds a lock-free map of campaign_id to score boost.
+type MLBoostSnapshot struct {
+	Boosts map[uuid.UUID]uint8
+}
+
 // SettingsWatcher polls Redis for config changes without restarting trackers.
 type SettingsWatcher struct {
 	rdbs           []redis.UniversalClient
 	currentVersion int64
-	snapshot       atomic.Value
+	snapshot       atomic.Value // *DynamicConfig
+	mlBoosts       atomic.Value // *MLBoostSnapshot
 	onChange       []SettingsChangeListener
 }
 
@@ -57,6 +66,10 @@ func NewSettingsWatcher(rdbs []redis.UniversalClient, initial *config.Config) *S
 		EmergencyBreaker: false,
 	})
 
+	sw.mlBoosts.Store(&MLBoostSnapshot{
+		Boosts: make(map[uuid.UUID]uint8),
+	})
+
 	return sw
 }
 
@@ -73,6 +86,15 @@ func (sw *SettingsWatcher) Get() *DynamicConfig {
 	return sw.snapshot.Load().(*DynamicConfig)
 }
 
+// GetMLBoosts returns the current immutable ML score boost snapshot; callers must not mutate it.
+func (sw *SettingsWatcher) GetMLBoosts() *MLBoostSnapshot {
+	v := sw.mlBoosts.Load()
+	if v == nil {
+		return &MLBoostSnapshot{Boosts: make(map[uuid.UUID]uint8)}
+	}
+	return v.(*MLBoostSnapshot)
+}
+
 // Start polls Redis on interval until the context is cancelled.
 func (sw *SettingsWatcher) Start(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
@@ -84,8 +106,72 @@ func (sw *SettingsWatcher) Start(ctx context.Context, interval time.Duration) {
 			return
 		case <-ticker.C:
 			sw.sync(ctx)
+			sw.syncMLBoosts(ctx)
 		}
 	}
+}
+
+// syncMLBoosts scans for active ml:score:boost:* keys on the first responsive Redis shard.
+func (sw *SettingsWatcher) syncMLBoosts(ctx context.Context) {
+	var rdb redis.UniversalClient
+	for _, client := range sw.rdbs {
+		if client != nil {
+			rdb = client
+			break
+		}
+	}
+	if rdb == nil {
+		return
+	}
+
+	newBoosts := make(map[uuid.UUID]uint8)
+	cursor := uint64(0)
+	prefix := "ml:score:boost:"
+
+	for {
+		keys, next, err := rdb.Scan(ctx, cursor, prefix+"*", 100).Result()
+		if err != nil {
+			slog.Error("failed to scan ml boost keys from redis", "error", err)
+			return
+		}
+
+		for _, key := range keys {
+			parts := strings.Split(key, ":")
+			if len(parts) < 4 {
+				continue
+			}
+			campIDStr := parts[3]
+			campID, err := uuid.Parse(campIDStr)
+			if err != nil {
+				continue
+			}
+
+			valStr, err := rdb.Get(ctx, key).Result()
+			if err != nil {
+				continue
+			}
+			val, err := strconv.Atoi(valStr)
+			if err != nil {
+				continue
+			}
+			if val < 0 {
+				val = 0
+			}
+			if val > 100 {
+				val = 100
+			}
+			newBoosts[campID] = uint8(val)
+		}
+
+		cursor = next
+		if cursor == 0 {
+			break
+		}
+	}
+
+	sw.mlBoosts.Store(&MLBoostSnapshot{
+		Boosts: newBoosts,
+	})
 }
 
 // readConfigVersion returns config:version from the first responsive Redis shard.

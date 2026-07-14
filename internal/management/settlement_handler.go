@@ -206,6 +206,32 @@ func (h *SettlementHandler) BlockIP(ctx context.Context, req *pb.BlockIPRequest)
 	return &pb.BlockIPResponse{Enqueued: true}, nil
 }
 
+func (h *SettlementHandler) EnqueueMLThreat(ctx context.Context, req *pb.EnqueueMLThreatRequest) (*pb.EnqueueMLThreatResponse, error) {
+	if err := h.requireSettlementToken(ctx); err != nil {
+		return nil, err
+	}
+	if req.GetIp() == "" {
+		return nil, status.Error(codes.InvalidArgument, "ip required")
+	}
+	if req.GetCampaignId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "campaign_id required")
+	}
+
+	payload := MLThreatPayload{
+		Action:     req.GetAction(),
+		IP:         req.GetIp(),
+		CampaignID: req.GetCampaignId(),
+		Score:      req.GetScore(),
+		Boost:      req.GetBoost(),
+		TTLSeconds: req.GetTtlSeconds(),
+	}
+
+	if err := h.service.EnqueueMLThreat(ctx, payload); err != nil {
+		return nil, status.Errorf(codes.Internal, "enqueue ml threat: %v", err)
+	}
+	return &pb.EnqueueMLThreatResponse{Enqueued: true}, nil
+}
+
 func (h *SettlementHandler) BatchApplySettlement(ctx context.Context, req *pb.BatchApplySettlementRequest) (*pb.BatchApplySettlementResponse, error) {
 	if err := h.requireSettlementToken(ctx); err != nil {
 		return nil, err

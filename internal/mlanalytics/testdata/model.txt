@@ -1,0 +1,29 @@
+tree
+version=v3
+num_class=1
+num_tree_per_iteration=1
+label_index=0
+max_feature_idx=6
+objective=binary
+feature_names=events clicks ctr spend_norm spend_ratio unique_users unique_uas
+feature_infos=[0:100000] [0:100000] [0:1] [0:100000] [0:1] [0:100000] [0:100000]
+tree_sizes=200
+
+Tree=0
+num_leaves=2
+num_cat=0
+split_feature=1
+split_gain=100
+threshold=5.0
+decision_type=2
+left_child=-1
+right_child=-2
+leaf_value=0.1 0.9
+leaf_weight=100 100
+leaf_count=100 100
+internal_value=0.5
+internal_weight=200
+internal_count=200
+shrinkage=1
+
+end of trees

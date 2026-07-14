@@ -3,7 +3,9 @@ package management
 import (
 	"context"
 	"fmt"
+	"time"
 
+	"espx/internal/ads"
 	"espx/internal/ads/db"
 	"espx/pkg/cold"
 
@@ -34,6 +36,10 @@ func (w *OutboxWorker) handleOutboxEvent(opCtx, ctx context.Context, ev db.Outbo
 		return w.handleCreateCampaign(ctx, ev.Payload)
 	case "PAUSE_CAMPAIGN":
 		return w.handlePauseCampaign(ctx, ev.Payload)
+	case "BUDGET_FREEZE":
+		return w.handleBudgetFreeze(ctx, ev.Payload)
+	case "QUOTA_REPAIR":
+		return w.ApplyQuotaRepair(ctx, ev.ID, ev.Payload)
 	case "RESUME_CAMPAIGN":
 		return w.handleResumeCampaign(ctx, ev.Payload)
 	case "UPDATE_CAMPAIGN_SCHEDULE":
@@ -62,6 +68,14 @@ func (w *OutboxWorker) handleOutboxEvent(opCtx, ctx context.Context, ev db.Outbo
 		return w.handleUpdateCampaignConsent(ctx, ev.Payload)
 	case "PURGE_USER_DATA":
 		return w.handlePurgeUserData(ctx, ev.Payload)
+	case "ML_SCORE_BOOST":
+		return w.handleMLScoreBoost(ctx, ev.Payload)
+	case "ML_GHOST_IVT":
+		return w.handleMLGhostIVT(ctx, ev.Payload)
+	case "ML_BLACKLIST_ADD":
+		return w.handleMLBlacklistAdd(ctx, ev.Payload)
+	case "ML_MODEL_VERSION":
+		return w.handleMLModelVersion(ctx, ev.Payload)
 	default:
 		return fmt.Errorf("unknown outbox event type: %s", ev.EventType)
 	}
@@ -101,6 +115,26 @@ func (w *OutboxWorker) handlePauseCampaign(ctx context.Context, payload []byte) 
 		return fmt.Errorf("invalid campaign id in payload: %w", err)
 	}
 	return w.deleteCampaignBudgetAndPublish(ctx, p.CampaignID, campUUID)
+}
+
+// handleBudgetFreeze blocks hot-path debits without deleting budget keys (M1 priority lane).
+func (w *OutboxWorker) handleBudgetFreeze(ctx context.Context, payload []byte) error {
+	p := cold.UnmarshalLenient[CampaignPayload](payload)
+	if p.CampaignID == "" {
+		return nil
+	}
+	campUUID, err := uuid.Parse(p.CampaignID)
+	if err != nil {
+		return fmt.Errorf("invalid campaign id in payload: %w", err)
+	}
+	rdb := w.svc.getRDB(campUUID)
+	if rdb == nil {
+		return nil
+	}
+	if err := ads.SetBudgetFrozen(ctx, rdb, campUUID); err != nil {
+		return err
+	}
+	return w.svc.publishCampaignUpdate(ctx, p.CampaignID)
 }
 
 // handleResumeCampaign restores Redis budget keys when delivery resumes.
@@ -329,3 +363,120 @@ func (w *OutboxWorker) handlePurgeUserData(ctx context.Context, payload []byte) 
 	purgeErr := w.svc.PurgeUserDataRedis(ctx, p.UserIDHash, p.SubjectUserID)
 	return w.svc.MarkErasureRedisPurgeDone(ctx, erasureID, purgeErr)
 }
+
+// handleMLScoreBoost sets the ML score boost for a campaign across all Redis shards.
+func (w *OutboxWorker) handleMLScoreBoost(ctx context.Context, payload []byte) error {
+	p, err := cold.UnmarshalStrict[MLThreatPayload](payload)
+	if err != nil {
+		return err
+	}
+	if p.CampaignID == "" {
+		return nil
+	}
+	if len(w.svc.rdbs) == 0 {
+		return fmt.Errorf("no redis client available")
+	}
+
+	key := fmt.Sprintf("ml:score:boost:%s", p.CampaignID)
+	if p.Boost <= 0 || p.TTLSeconds <= 0 {
+		for _, rdb := range w.svc.rdbs {
+			if rdb == nil {
+				continue
+			}
+			rdb.Del(ctx, key)
+		}
+	} else {
+		ttl := time.Duration(p.TTLSeconds) * time.Second
+		for _, rdb := range w.svc.rdbs {
+			if rdb == nil {
+				continue
+			}
+			if err := rdb.Set(ctx, key, p.Boost, ttl).Err(); err != nil {
+				return fmt.Errorf("set ml score boost on shard: %w", err)
+			}
+		}
+	}
+
+	// Also publish a campaign cache invalidation so the hot path reloads settings.
+	return w.svc.publishCampaignUpdate(ctx, p.CampaignID)
+}
+
+// handleMLGhostIVT enables the ghost IVT flag for a campaign in the database and invalidates caches.
+func (w *OutboxWorker) handleMLGhostIVT(ctx context.Context, payload []byte) error {
+	p, err := cold.UnmarshalStrict[MLThreatPayload](payload)
+	if err != nil {
+		return err
+	}
+	if p.CampaignID == "" {
+		return nil
+	}
+	campUUID, err := uuid.Parse(p.CampaignID)
+	if err != nil {
+		return fmt.Errorf("invalid campaign id: %w", err)
+	}
+
+	// Update campaign ghost_ivt_enabled to true in postgres
+	_, err = w.svc.GetPool().Exec(ctx, "UPDATE campaigns SET ghost_ivt_enabled = TRUE WHERE id = $1", ToUUID(campUUID))
+	if err != nil {
+		return fmt.Errorf("failed to update ghost_ivt_enabled: %w", err)
+	}
+
+	// Publish campaign update so trackers reload it
+	return w.svc.publishCampaignUpdate(ctx, p.CampaignID)
+}
+
+// handleMLBlacklistAdd blocks an IP using the standard management BlockIPWithTTL mechanism.
+func (w *OutboxWorker) handleMLBlacklistAdd(ctx context.Context, payload []byte) error {
+	p, err := cold.UnmarshalStrict[MLThreatPayload](payload)
+	if err != nil {
+		return err
+	}
+	if p.IP == "" {
+		return nil
+	}
+	ttl := p.TTLSeconds
+	return w.svc.BlockIPWithTTL(ctx, p.IP, "fraud", &ttl)
+}
+
+// handleMLModelVersion propagates model version and hash to specific or all Redis shards.
+func (w *OutboxWorker) handleMLModelVersion(ctx context.Context, payload []byte) error {
+	p, err := cold.UnmarshalStrict[MLModelVersionPayload](payload)
+	if err != nil {
+		return err
+	}
+
+	if len(w.svc.rdbs) == 0 {
+		return fmt.Errorf("no redis shards configured")
+	}
+
+	writeToShard := func(shardID int) error {
+		rdb := w.svc.rdbs[shardID]
+		if rdb == nil {
+			return nil
+		}
+		if err := rdb.Set(ctx, "ml:model:version", p.ModelVersion, 0).Err(); err != nil {
+			return fmt.Errorf("failed to set ml:model:version on shard %d: %w", shardID, err)
+		}
+		if err := rdb.Set(ctx, "ml:model:hash", p.Hash, 0).Err(); err != nil {
+			return fmt.Errorf("failed to set ml:model:hash on shard %d: %w", shardID, err)
+		}
+		if err := rdb.Set(ctx, "ml:model:applied_at", time.Now().Unix(), 0).Err(); err != nil {
+			return fmt.Errorf("failed to set ml:model:applied_at on shard %d: %w", shardID, err)
+		}
+		return nil
+	}
+
+	if p.ShardID >= 0 && p.ShardID < len(w.svc.rdbs) {
+		return writeToShard(p.ShardID)
+	}
+
+	// If ShardID is out of bounds or negative, write to all shards
+	for i := range w.svc.rdbs {
+		if err := writeToShard(i); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+

@@ -11,6 +11,7 @@ import (
 	"espx/internal/config"
 	"espx/internal/database"
 	"espx/internal/ivtdetector"
+	"espx/internal/mlanalytics"
 	"espx/pkg/lifecycle"
 )
 
@@ -86,7 +87,21 @@ func main() {
 	asn := &ivtdetector.StaticASNClassifier{
 		DatacenterPrefixes: strings.Split(os.Getenv("IVT_DATACENTER_PREFIXES"), ","),
 	}
-	registry := ivtdetector.NewAnalyzerRegistry(chConn, analyzerCfg, asn)
+
+	var scorer mlanalytics.Scorer
+	if cfg.MLAnalyticsEnabled() && !cfg.MLStandalone() {
+		var err error
+		scorer, err = mlanalytics.NewLGBMScorer(cfg.ML.ModelPath)
+		if err != nil {
+			slog.Error("failed to initialize ML scorer", "error", err, "path", cfg.ML.ModelPath)
+			os.Exit(1)
+		}
+		slog.Info("initialized ML scorer for shadow scoring", "path", cfg.ML.ModelPath)
+	} else if cfg.MLStandalone() {
+		slog.Info("ML standalone mode is enabled; skipping embedded scorer in ivt-detector")
+	}
+
+	registry := ivtdetector.NewAnalyzerRegistry(chConn, pool, analyzerCfg, asn, scorer, cfg.ML.BatchSize)
 
 	detector := ivtdetector.NewDetector(
 		registry,

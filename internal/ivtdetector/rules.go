@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"time"
 
+	"espx/internal/mlanalytics"
+
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type highCTRRule struct {
@@ -72,12 +75,12 @@ FROM (
         SELECT campaign_id, ip_address, 'click' AS event_type FROM clicks
         WHERE created_at >= now() - toIntervalSecond(?)
           AND ip_address != ''
-          AND campaign_id != ''
+          AND campaign_id != toUUID('00000000-0000-0000-0000-000000000000')
         UNION ALL
         SELECT campaign_id, ip_address, 'impression' AS event_type FROM impressions
         WHERE created_at >= now() - toIntervalSecond(?)
           AND ip_address != ''
-          AND campaign_id != ''
+          AND campaign_id != toUUID('00000000-0000-0000-0000-000000000000')
     )
     GROUP BY campaign_id, ip_address
     HAVING clicks >= ?
@@ -201,7 +204,7 @@ func hasIPPrefix(ip, prefix string) bool {
 }
 
 // NewAnalyzerRegistry wires default detection rules for production.
-func NewAnalyzerRegistry(conn driver.Conn, cfg AnalyzerConfig, asn ASNClassifier) *RuleRegistry {
+func NewAnalyzerRegistry(conn driver.Conn, pool *pgxpool.Pool, cfg AnalyzerConfig, asn ASNClassifier, scorer mlanalytics.Scorer, mlBatchSize int) *RuleRegistry {
 	analyzer := NewAnalyzer(conn, cfg)
 	reg := NewRuleRegistry()
 	reg.Register(&highCTRRule{analyzer: analyzer})
@@ -209,6 +212,9 @@ func NewAnalyzerRegistry(conn driver.Conn, cfg AnalyzerConfig, asn ASNClassifier
 	reg.Register(&campaignCTRSpikeRule{conn: conn, cfg: cfg})
 	if asn != nil {
 		reg.Register(&datacenterASNRule{conn: conn, cfg: cfg, asn: asn})
+	}
+	if scorer != nil {
+		reg.Register(NewMLRule(conn, pool, scorer, mlBatchSize))
 	}
 	return reg
 }

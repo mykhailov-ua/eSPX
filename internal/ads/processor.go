@@ -46,6 +46,12 @@ type StreamConsumer struct {
 	auditLogSeq        atomic.Uint64
 	auditLogSampleMask uint64
 	dlqStreamName      string
+	onMessageProcessed func(evt *domain.Event, msgID string)
+}
+
+// SetOnMessageProcessed sets the callback invoked when a message is successfully parsed during consumption.
+func (consumer *StreamConsumer) SetOnMessageProcessed(cb func(evt *domain.Event, msgID string)) {
+	consumer.onMessageProcessed = cb
 }
 
 // SetLogger attaches the audit log writer invoked after successful batch stores.
@@ -299,8 +305,12 @@ func (consumer *StreamConsumer) worker(ctx context.Context, workerIdx int) {
 
 		for _, stream := range streams {
 			for _, msg := range stream.Messages {
-				batch = append(batch, consumer.parseMessage(msg.ID, msg.Values))
+				evt := consumer.parseMessage(msg.ID, msg.Values)
+				batch = append(batch, evt)
 				msgIDs = append(msgIDs, msg.ID)
+				if consumer.onMessageProcessed != nil {
+					consumer.onMessageProcessed(evt, msg.ID)
+				}
 			}
 		}
 

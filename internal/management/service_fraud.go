@@ -161,3 +161,69 @@ func ResolveFraudThresholds(camp *domain.Campaign) (pass, suspect, ivt, block ui
 	}
 	return camp.FraudThresholdPass, camp.FraudThresholdSuspect, camp.FraudThresholdIVT, camp.FraudThresholdBlock
 }
+
+// MLOverrideRequest is the request payload for POST /admin/ml/overrides.
+type MLOverrideRequest struct {
+	CampaignID *string `json:"campaign_id,omitempty"`
+	IP         *string `json:"ip,omitempty"`
+}
+
+// ApplyMLOverride clears a campaign's ML boost and/or removes an IP from the fraud blacklist.
+func (s *Service) ApplyMLOverride(ctx context.Context, req MLOverrideRequest) error {
+	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
+		q := db.New(tx)
+		var uid uuid.UUID
+		if u, ok := GetUser(ctx); ok {
+			uid = u.UserID
+		}
+
+		if req.CampaignID != nil && *req.CampaignID != "" {
+			campUUID, err := uuid.Parse(*req.CampaignID)
+			if err != nil {
+				return errValidation("invalid campaign_id format")
+			}
+
+			s.AuditLog(ctx, q, uid, "ML_CLEAR_BOOST", "campaign", &campUUID, map[string]string{"campaign_id": *req.CampaignID}, nil)
+
+			payload, err := cold.MarshalJSON(MLThreatPayload{
+				Action:     "boost",
+				CampaignID: *req.CampaignID,
+				Boost:      0,
+				TTLSeconds: 0,
+			})
+			if err != nil {
+				return err
+			}
+			_, err = q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{
+				EventType: "ML_SCORE_BOOST",
+				Payload:   payload,
+			})
+			if err != nil {
+				return err
+			}
+		}
+
+		if req.IP != nil && *req.IP != "" {
+			err := q.DeleteBlacklistIP(ctx, *req.IP)
+			if err != nil {
+				return err
+			}
+
+			s.AuditLog(ctx, q, uid, "ML_REMOVE_FALSE_POSITIVE", "system", nil, map[string]string{"ip": *req.IP}, nil)
+
+			payload, err := cold.MarshalJSON(BlacklistPayload{Action: "remove", IP: *req.IP, Reason: "fraud"})
+			if err != nil {
+				return fmt.Errorf("marshal blacklist outbox payload: %w", err)
+			}
+			_, err = q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{
+				EventType: "UPDATE_BLACKLIST",
+				Payload:   payload,
+			})
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+}

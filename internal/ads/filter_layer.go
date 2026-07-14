@@ -40,11 +40,20 @@ func decideFraudLayer(acc *fraudAccumulator, tier FraudTier) FraudLayer {
 }
 
 // applyFraudLayerDecision finalizes score/reason and applies L1/L2/L3 on the event.
-func applyFraudLayerDecision(evt *domain.Event, acc *fraudAccumulator, camp *domain.Campaign) (FraudLayer, error) {
+func applyFraudLayerDecision(evt *domain.Event, acc *fraudAccumulator, camp *domain.Campaign, boost uint8) (FraudLayer, error) {
 	if evt == nil {
 		return FraudLayerNone, nil
 	}
 	evt.ShadowEvent = false
+
+	if acc != nil && boost > 0 && !acc.boostApplied {
+		sum := acc.score + uint32(boost)
+		if sum > 100 {
+			sum = 100
+		}
+		acc.score = sum
+		acc.boostApplied = true
+	}
 
 	tier := applyFraudAccumulatorForCampaign(evt, acc, camp)
 	if acc == nil || acc.count == 0 {

@@ -48,3 +48,19 @@ func (h *Handler) updateCampaignFraudConfig(w http.ResponseWriter, r *http.Reque
 	}
 	httpresponse.JSON(w, http.StatusOK, cfg)
 }
+
+func (h *Handler) applyMLOverrides(w http.ResponseWriter, r *http.Request) {
+	req, err := cold.DecodeRequest[MLOverrideRequest](w, r, 4096)
+	if err != nil {
+		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
+		return
+	}
+
+	err = h.svc.ApplyMLOverride(r.Context(), req)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	httpresponse.JSON(w, http.StatusOK, map[string]string{"status": "success"})
+}

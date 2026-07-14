@@ -87,34 +87,74 @@ func (detector *Detector) Run(ctx context.Context) (RunResult, error) {
 	result.Candidates = len(candidates)
 
 	for _, candidate := range candidates {
-		claimed, claimErr := detector.idem.TryClaim(ctx, candidate.IP)
-		if claimErr != nil {
-			return result, claimErr
-		}
-		if !claimed {
-			result.Skipped++
-			continue
-		}
-
-		blockErr := detector.management.BlockIP(ctx, candidate.IP)
-		if blockErr != nil {
-			if releaseErr := detector.idem.Release(ctx, candidate.IP); releaseErr != nil {
-				slog.Error("failed to release idempotency claim after management error",
-					"ip", candidate.IP,
-					"block_error", blockErr,
-					"release_error", releaseErr,
-				)
+		if candidate.Action == "boost" {
+			claimed, claimErr := detector.idem.TryClaimML(ctx, candidate.IP, candidate.Reason, "boost")
+			if claimErr != nil {
+				return result, claimErr
 			}
-			return result, blockErr
-		}
+			if !claimed {
+				result.Skipped++
+				continue
+			}
 
-		result.Enqueued++
-		ivtEnqueuedTotal.Inc()
-		slog.Info("ivt detector enqueued fraud blacklist",
-			"ip", candidate.IP,
-			"signal", candidate.Reason,
-			"score", candidate.Score,
-		)
+			err := detector.management.EnqueueMLThreat(
+				ctx,
+				"boost",
+				candidate.IP,
+				candidate.CampaignID,
+				candidate.Score,
+				candidate.Boost,
+				candidate.TTLSeconds,
+			)
+			if err != nil {
+				if releaseErr := detector.idem.ReleaseML(ctx, candidate.IP, candidate.Reason, "boost"); releaseErr != nil {
+					slog.Error("failed to release ml idempotency claim after management error",
+						"ip", candidate.IP,
+						"enqueue_error", err,
+						"release_error", releaseErr,
+					)
+				}
+				return result, err
+			}
+
+			result.Enqueued++
+			mlEnforcementEnqueuedTotal.WithLabelValues("boost").Inc()
+			slog.Info("ivt detector enqueued ml score boost",
+				"ip", candidate.IP,
+				"campaign_id", candidate.CampaignID,
+				"score", candidate.Score,
+				"boost", candidate.Boost,
+			)
+		} else {
+			claimed, claimErr := detector.idem.TryClaim(ctx, candidate.IP)
+			if claimErr != nil {
+				return result, claimErr
+			}
+			if !claimed {
+				result.Skipped++
+				continue
+			}
+
+			blockErr := detector.management.BlockIP(ctx, candidate.IP)
+			if blockErr != nil {
+				if releaseErr := detector.idem.Release(ctx, candidate.IP); releaseErr != nil {
+					slog.Error("failed to release idempotency claim after management error",
+						"ip", candidate.IP,
+						"block_error", blockErr,
+						"release_error", releaseErr,
+					)
+				}
+				return result, blockErr
+			}
+
+			result.Enqueued++
+			ivtEnqueuedTotal.Inc()
+			slog.Info("ivt detector enqueued fraud blacklist",
+				"ip", candidate.IP,
+				"signal", candidate.Reason,
+				"score", candidate.Score,
+			)
+		}
 	}
 
 	return result, nil

@@ -10,9 +10,13 @@ import (
 
 // SuspiciousIP is a candidate address flagged by a ClickHouse anomaly rule.
 type SuspiciousIP struct {
-	IP     string
-	Reason string
-	Score  float64
+	IP         string
+	Reason     string
+	Score      float64
+	CampaignID string
+	Action     string
+	Boost      int32
+	TTLSeconds int64
 }
 
 // AnalyzerConfig tunes ClickHouse window and detection thresholds.
@@ -50,7 +54,7 @@ func NewAnalyzer(conn driver.Conn, cfg AnalyzerConfig) *Analyzer {
 
 // FindSuspiciousIPs returns deduplicated candidates from all enabled detection rules.
 func (analyzer *Analyzer) FindSuspiciousIPs(ctx context.Context) ([]SuspiciousIP, error) {
-	reg := NewAnalyzerRegistry(analyzer.conn, analyzer.cfg, nil)
+	reg := NewAnalyzerRegistry(analyzer.conn, nil, analyzer.cfg, nil, nil, 0)
 	return reg.FindSuspiciousIPs(ctx)
 }
 

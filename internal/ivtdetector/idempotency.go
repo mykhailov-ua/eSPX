@@ -53,6 +53,43 @@ func (store *IdempotencyStore) Release(ctx context.Context, ip string) error {
 	return nil
 }
 
+// TryClaimML inserts an idempotency key in ml_enforcement_idempotency and reports whether this caller won the race.
+func (store *IdempotencyStore) TryClaimML(ctx context.Context, ip string, modelVersion string, reason string) (bool, error) {
+	if store == nil || store.pool == nil {
+		return false, fmt.Errorf("idempotency store: nil pool")
+	}
+	if ip == "" {
+		return false, ErrInvalidIP
+	}
+
+	tag, err := store.pool.Exec(ctx,
+		"INSERT INTO ml_enforcement_idempotency (ip, model_version, reason) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+		ip, modelVersion, reason,
+	)
+	if err != nil {
+		return false, fmt.Errorf("claim ml idempotency key: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// ReleaseML removes a claim from ml_enforcement_idempotency.
+func (store *IdempotencyStore) ReleaseML(ctx context.Context, ip string, modelVersion string, reason string) error {
+	if store == nil || store.pool == nil {
+		return fmt.Errorf("idempotency store: nil pool")
+	}
+	if ip == "" {
+		return ErrInvalidIP
+	}
+	_, err := store.pool.Exec(ctx,
+		"DELETE FROM ml_enforcement_idempotency WHERE ip = $1 AND model_version = $2 AND reason = $3",
+		ip, modelVersion, reason,
+	)
+	if err != nil {
+		return fmt.Errorf("release ml idempotency key: %w", err)
+	}
+	return nil
+}
+
 // HasClaim reports whether an IP was already flagged by a prior detector cycle.
 func (store *IdempotencyStore) HasClaim(ctx context.Context, ip string) (bool, error) {
 	if store == nil || store.pool == nil {

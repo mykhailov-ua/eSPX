@@ -46,6 +46,16 @@ type BlacklistPayload struct {
 	Reason string `json:"reason"`
 }
 
+// MLThreatPayload carries machine learning threat details in outbox events.
+type MLThreatPayload struct {
+	Action     string  `json:"action"` // e.g. "boost", "blacklist", "ghost"
+	IP         string  `json:"ip"`
+	CampaignID string  `json:"campaign_id"`
+	Score      float64 `json:"score"`
+	Boost      int32   `json:"boost"`
+	TTLSeconds int64   `json:"ttl_seconds"`
+}
+
 // normalizeBlacklistReason defaults empty blacklist sources to the manual category.
 func normalizeBlacklistReason(reason string) string {
 	if reason == "" {

@@ -14,6 +14,7 @@ import (
 	"espx/internal/ads/db"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/mlanalytics"
 	"espx/internal/processor"
 	"espx/pkg/logger"
 	"fmt"
@@ -113,6 +114,17 @@ func main() {
 	pgStore := ads.NewPostgresStore(queries, time.Duration(cfg.WriteTimeoutMs)*time.Millisecond)
 	chStore := ads.NewClickHouseStore(chConn, time.Duration(cfg.WriteTimeoutMs)*time.Millisecond)
 
+	var mlScorer mlanalytics.Scorer
+	if cfg.MLAnalyticsEnabled() {
+		var err error
+		mlScorer, err = mlanalytics.NewLGBMScorer(cfg.ML.ModelPath)
+		if err != nil {
+			slog.Error("failed to initialize ML scorer for processor micro-batching", "error", err, "path", cfg.ML.ModelPath)
+			os.Exit(1)
+		}
+		slog.Info("initialized ML scorer for processor micro-batching", "path", cfg.ML.ModelPath)
+	}
+
 	campaignRepo := ads.NewCampaignRepo(queries)
 	customerRepo := ads.NewCustomerRepo(queries)
 
@@ -168,6 +180,13 @@ func main() {
 		)
 		cc.SetLogger(appLogger)
 		cc.SetAuditLogSampleMask(cfg.AuditLogSampleMask)
+
+		if mlScorer != nil {
+			mb := mlanalytics.NewMicroBatcher(rdb, mlScorer)
+			go mb.Start(consumerCtx)
+			cc.SetOnMessageProcessed(mb.Enqueue)
+		}
+
 		chConsumers = append(chConsumers, cc)
 		cc.Start(consumerCtx)
 

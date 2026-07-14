@@ -50,3 +50,26 @@ func (client *GRPCManagementClient) BlockIP(ctx context.Context, ip string) erro
 	}
 	return nil
 }
+
+// EnqueueMLThreat enqueues an ML threat candidate via internal gRPC.
+func (client *GRPCManagementClient) EnqueueMLThreat(ctx context.Context, action string, ip string, campaignID string, score float64, boost int32, ttlSeconds int64) error {
+	if client == nil || client.client == nil {
+		return fmt.Errorf("management gRPC client: nil receiver")
+	}
+	if ip == "" {
+		return ErrInvalidIP
+	}
+	ctx = metadata.AppendToOutgoingContext(ctx, "x-internal-token", client.token)
+	_, err := client.client.EnqueueMLThreat(ctx, &pb.EnqueueMLThreatRequest{
+		Action:     action,
+		Ip:         ip,
+		CampaignId: campaignID,
+		Score:      score,
+		Boost:      boost,
+		TtlSeconds: ttlSeconds,
+	})
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrManagementUnavailable, err)
+	}
+	return nil
+}
