@@ -41,6 +41,108 @@ sh scripts/redis/verify_redis_topology.sh .env
 
 ---
 
+## K3s cold path (local)
+
+Cold-path services (auth, management, payment, billing, notifier, processor, ivt-detector) run in k3s namespace `espx`. Hot path (tracker, nginx) uses hostNetwork in `espx-edge` (see [K3s hot path](#k3s-hot-path-p3)) or compose host network on edge nodes.
+
+**Prereqs:** k3s installed (`bash scripts/deploy/install_k3s.sh`), Terraform in `PATH` (`~/bin/terraform` or package), Docker for compose data plane.
+
+```bash
+cp .env.example .env   # if missing
+bash scripts/deploy/k8s_cold_path_up.sh
+```
+
+The script starts compose **infra** (Postgres, Redis x4, ClickHouse), applies DB migrations (`cmd/migrate-cold-path`), syncs GeoIP to `/var/lib/espx/geoip`, builds/imports the image, and runs `terraform apply` in `deploy/terraform/envs/local/`.
+
+| NodePort | Service | Purpose |
+| :--- | :--- | :--- |
+| 30188 | management | Admin HTTP `/health`, `/metrics` |
+| 30187 | payment webhook | Stripe webhooks |
+| 30186 | processor | `/health`, `/metrics` |
+
+Verify:
+
+```bash
+export KUBECONFIG=~/.kube/config-espx
+bash scripts/deploy/k8s_cold_path_smoke.sh
+curl -s "http://$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type==\"InternalIP\")].address}'):30188/health"
+```
+
+Prometheus scrape for k3s cold path (host-side Prometheus):
+
+```bash
+bash scripts/deploy/render_prometheus_k3s.sh
+# use deploy/monitoring/prometheus-k3s.rendered.yml
+```
+
+Terraform outputs: `cd deploy/terraform/envs/local && terraform output`.
+
+---
+
+## K3s staging (P2)
+
+Staging cold path targets a **remote k3s** cluster with an **external data plane** (managed Postgres, 4× Redis, ClickHouse). No compose `host_ip` dependency.
+
+```bash
+cp deploy/terraform/envs/staging/terraform.tfvars.example deploy/terraform/envs/staging/terraform.tfvars
+# fill TF_VAR_* / tfvars secrets (DB_DSN, tokens, registry image)
+bash scripts/deploy/k8s_staging_apply.sh
+```
+
+| Item | Local | Staging |
+| :--- | :--- | :--- |
+| k3s bootstrap | `install_k3s.sh` via local terraform | Pre-provisioned cluster kubeconfig |
+| Image | `k8s_import_image.sh` → `ad-event-processor:latest` | Registry (`ghcr.io/...`), `imagePullPolicy: Always` |
+| ConfigMap/Secret | `*.yaml.tpl` with node `host_ip` | `*.staging.tpl` with `redis_addrs`, DSN vars |
+| `ENV` / filter | `development`, 5000 ms | `production`, 100 ms |
+| M1–M3 flags | off (local dev) | **`MIGRATION_FENCE_ENABLED`, `UDP_CONTROL_ENABLED`, `QUOTA_AUTO_REPAIR`, `QUOTA_MODE=live`** in `configmap-env.staging.tpl` |
+| Secrets in git | Dev placeholders | `terraform.tfvars` (gitignored) or CI `TF_VAR_*` |
+
+Optional registry auth creates `espx-registry` pull secret when `registry_server` + `registry_password` are set.
+
+By default staging skips NodePort Services and applies `ingress-cold-path.yaml.tpl` instead (`exclude_nodeports`, `enable_ingress`).
+
+Manifest layout:
+
+```
+deploy/k8s/
+  base/           # namespace, configmap/secret *.tpl (local + staging)
+  apps/           # cold-path Deployments/Services/NodePorts, ingress tpl
+  hot-path/       # tracker x4 + nginx DaemonSet (hostNetwork)
+  overlays/staging/  # kustomize reference for registry image patches
+deploy/terraform/envs/
+  local/          # k3s bootstrap + cold path (+ optional hot_path.tf)
+  staging/        # remote k3s + external data plane + Ingress
+```
+
+---
+
+## K3s hot path (P3)
+
+Ingestion (`tracker` ×4 + OpenResty `:8180`) runs in namespace `espx-edge` with **hostNetwork** — same SLA rationale as compose host mode.
+
+**Prereqs:** cold path up (`k8s_cold_path_up.sh`), compose **infra** only (not full stack nginx/trackers), management NodePort `30188`.
+
+**Port conflict:** compose `nginx` and k8s `nginx-edge` both bind host `:8180` — stop compose hot path before apply (`docker compose stop nginx tracker-0 tracker-1 tracker-2 tracker-3`).
+
+```bash
+# optional edge tuning on the node (sysctl/NIC)
+bash scripts/edge/edge_sysctl.sh install
+bash scripts/deploy/k8s_hot_path_up.sh
+bash scripts/deploy/k8s_hot_path_smoke.sh
+```
+
+| Port | Component |
+| :--- | :--- |
+| 8180 | OpenResty edge (`/track`, `/admin` proxy) |
+| 8181–8184 | gnet trackers |
+
+Host paths synced by the script: `/var/lib/espx/geoip`, `/var/lib/espx/logs`. OpenResty config/lua ship as in-cluster ConfigMaps (`nginx-edge-conf`, `nginx-edge-lua`).
+
+hostNetwork trackers reach compose Postgres/Redis via **loopback** (`127.0.0.1`), not node InternalIP.
+
+---
+
 ## Code Generation
 
 | Target | Command | Output |
@@ -68,6 +170,14 @@ One subdirectory level: `bash scripts/<area>/<name>.sh`. File names use **snake_
 | `govulncheck.sh` | Dependency vulnerability scan (`make check-vuln`) |
 | `full_test.sh` | `go test ./... -skip Chaos` (CI + `make test-full`) |
 | `smoke_local.sh` | Tracker/processor `/health`, edge `/metrics/edge`, 4× Redis PING/AOF; SKIP when stack down |
+| `k8s_cold_path_up.sh` | Compose infra + image import + terraform apply for k3s cold path |
+| `k8s_cold_path_smoke.sh` | k3s cold-path pods Ready + management/processor NodePort health |
+| `k8s_staging_apply.sh` | Terraform apply for staging env (remote k3s + external data plane) |
+| `k8s_hot_path_up.sh` | hostNetwork trackers + OpenResty in `espx-edge` namespace |
+| `k8s_hot_path_smoke.sh` | Tracker :8181-8184 `/health` + nginx :8180 listen check |
+| `k8s_import_image.sh` | Build image and import into k3s containerd |
+| `install_k3s.sh` | Single-node k3s bootstrap (Traefik disabled) |
+| `render_prometheus_k3s.sh` | Render `prometheus-k3s.yml` with node InternalIP |
 | `gen.sh` | Codegen: default sqlc; flags `--proto`, `--templ`, `--all` |
 
 ### Performance and CI
@@ -330,6 +440,68 @@ FILTER_TIMEOUT_MS=5000
 CLICK_AMOUNT=0.1                # dollars to micro-units internally
 IMPRESSION_AMOUNT=0.01
 ```
+
+### ML analytics (staging)
+
+ML scoring and enforcement run on the cold path (`ivt-detector` → management outbox → Redis). The hot path reads `ml:score:boost:{campaign_id}` via `SettingsWatcher`; it never imports `internal/mlanalytics`.
+
+**Default:** `ML_ANALYTICS_ENABLED=false` (production stays off until explicit ops enable).
+
+**Staging enable:**
+
+```bash
+ML_ANALYTICS_ENABLED=true
+ML_SCAN_INTERVAL_MS=300000
+ML_BATCH_SIZE=1000
+ML_MODEL_PATH=/path/to/model.txt
+SETTLEMENT_INTERNAL_TOKEN=<same as management>   # ivt-detector gRPC enqueue
+```
+
+After 24h shadow scoring, run `scripts/ml/shadow_precision_report.sql` in ClickHouse before enabling boost enforcement in production.
+
+### ML Operator Runbook
+
+#### 1. Emergency Kill-Switch
+If ML scoring or enforcement causes unexpected behavior or high false-positive rates:
+- Set `ML_ANALYTICS_ENABLED=false` in the environment of `ivt-detector`.
+- Restart `ivt-detector` to immediately halt new scoring and threat enqueuing.
+
+#### 2. Manual Overrides (False Positive Mitigation)
+If a legitimate user's IP is blacklisted or a campaign's score is incorrectly boosted, operators can apply manual overrides via the management API.
+
+##### Clear Campaign Score Boost
+To clear an active score boost for a campaign:
+```bash
+curl -X POST http://localhost:8080/admin/ml/overrides \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"campaign_id": "YOUR-CAMPAIGN-UUID"}'
+```
+*Effect:* Instantly creates an `ML_SCORE_BOOST` outbox event with `Boost: 0` and `TTL: 0`, which deletes the Redis key across all shards and publishes a cache invalidation.
+
+##### Remove IP from Blacklist
+To unblock an IP that was falsely blacklisted by ML:
+```bash
+curl -X POST http://localhost:8080/admin/ml/overrides \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"ip": "1.2.3.4"}'
+```
+*Effect:* Deletes the IP from the `ip_blacklist` table in Postgres, creates an `UPDATE_BLACKLIST` outbox event with `Action: "remove"`, and publishes a quarantine removal message to Redis.
+
+##### Combined Override
+Both overrides can be issued in a single request:
+```bash
+curl -X POST http://localhost:8080/admin/ml/overrides \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"campaign_id": "YOUR-CAMPAIGN-UUID", "ip": "1.2.3.4"}'
+```
+
+#### 3. Audit Logs
+All manual overrides are logged to the `audit_logs` table with action types:
+- `ML_CLEAR_BOOST`
+- `ML_REMOVE_FALSE_POSITIVE`
 
 ---
 
