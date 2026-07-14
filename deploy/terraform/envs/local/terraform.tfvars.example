@@ -1,0 +1,8 @@
+# Local single-node stack: k3s bootstrap plus cold-path manifests.
+# Prereq: docker compose infra up; scripts/deploy/k8s_import_image.sh before first apply.
+kubeconfig_path = "~/.kube/config-espx"
+namespace       = "espx"
+
+# Optional: hostNetwork hot path in espx-edge (conflicts with compose nginx on :8180).
+# enable_hot_path    = true
+# hot_path_data_host = "127.0.0.1"

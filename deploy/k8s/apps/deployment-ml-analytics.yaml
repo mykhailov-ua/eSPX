@@ -1,0 +1,89 @@
+# Standalone ML analytics worker and weekly retraining CronJob.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ml-analytics
+  namespace: espx
+  labels:
+    app.kubernetes.io/name: ml-analytics
+    app.kubernetes.io/component: cold-path
+    app.kubernetes.io/part-of: espx
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ml-analytics
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ml-analytics
+        app.kubernetes.io/component: cold-path
+        app.kubernetes.io/part-of: espx
+    spec:
+      containers:
+        - name: ml-analytics
+          image: ad-event-processor:latest
+          imagePullPolicy: IfNotPresent
+          command: ["/ml-analytics"]
+          envFrom:
+            - configMapRef:
+                name: espx-env
+            - secretRef:
+                name: espx-secrets
+          env:
+            - name: ML_STANDALONE
+              value: "true"
+            - name: ML_ANALYTICS_ENABLED
+              value: "true"
+          volumeMounts:
+            - name: ml-artifacts
+              mountPath: /var/ml/artifacts
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 50m
+            limits:
+              memory: 512Mi
+              cpu: 500m
+      volumes:
+        - name: ml-artifacts
+          persistentVolumeClaim:
+            claimName: ml-artifacts-pvc
+
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ml-analytics-retrain
+  namespace: espx
+  labels:
+    app.kubernetes.io/name: ml-analytics-retrain
+    app.kubernetes.io/component: cold-path
+    app.kubernetes.io/part-of: espx
+spec:
+  schedule: "0 0 * * 0" # Weekly on Sunday at midnight
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: retrain
+              image: ad-event-processor:latest
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/bash", "-c", "/scripts/ml/train.sh"]
+              envFrom:
+                - configMapRef:
+                    name: espx-env
+                - secretRef:
+                    name: espx-secrets
+              volumeMounts:
+                - name: ml-artifacts
+                  mountPath: /var/ml/artifacts
+          restartPolicy: OnFailure
+          volumes:
+            - name: ml-artifacts
+              persistentVolumeClaim:
+                claimName: ml-artifacts-pvc

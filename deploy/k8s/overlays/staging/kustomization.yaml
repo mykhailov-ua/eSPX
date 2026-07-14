@@ -1,0 +1,30 @@
+# Staging overlay: registry image + Always pull. Apply after base ConfigMap/Secret are rendered.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: espx
+
+resources:
+  - ../../base/namespace.yaml
+  - ../../apps/deployment-auth.yaml
+  - ../../apps/service-auth.yaml
+  - ../../apps/deployment-management.yaml
+  - ../../apps/service-management.yaml
+  - ../../apps/deployment-payment.yaml
+  - ../../apps/service-payment.yaml
+  - ../../apps/deployment-billing.yaml
+  - ../../apps/service-billing.yaml
+  - ../../apps/deployment-notifier.yaml
+  - ../../apps/service-notifier.yaml
+  - ../../apps/service-processor.yaml
+  - ../../apps/deployment-ivt-detector.yaml
+
+images:
+  - name: ad-event-processor
+    newName: ghcr.io/example/espx
+    newTag: latest
+
+patches:
+  - path: patch-image-pull-policy.yaml
+    target:
+      kind: Deployment

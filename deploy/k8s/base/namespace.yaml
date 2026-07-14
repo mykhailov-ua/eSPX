@@ -1,0 +1,8 @@
+# eSPX application namespace. Cold-path workloads only; ingestion stays off-cluster or hostNetwork.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: espx
+  labels:
+    app.kubernetes.io/part-of: espx
+    app.kubernetes.io/managed-by: terraform

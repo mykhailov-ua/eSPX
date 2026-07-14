@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: management
+  namespace: espx
+  labels:
+    app.kubernetes.io/name: management
+    app.kubernetes.io/part-of: espx
+spec:
+  selector:
+    app.kubernetes.io/name: management
+  ports:
+    - name: http
+      port: 8188
+      targetPort: http
+    - name: settlement-grpc
+      port: 51053
+      targetPort: settlement-grpc
+    - name: udp-control
+      port: 8190
+      targetPort: udp-control
+      protocol: UDP

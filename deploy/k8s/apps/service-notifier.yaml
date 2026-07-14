@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: notifier
+  namespace: espx
+  labels:
+    app.kubernetes.io/name: notifier
+    app.kubernetes.io/part-of: espx
+spec:
+  selector:
+    app.kubernetes.io/name: notifier
+  ports:
+    - name: grpc
+      port: 8085
+      targetPort: grpc

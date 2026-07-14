@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: processor
+  namespace: espx
+  labels:
+    app.kubernetes.io/name: processor
+    app.kubernetes.io/part-of: espx
+spec:
+  selector:
+    app.kubernetes.io/name: processor
+  ports:
+    - name: http
+      port: 8186
+      targetPort: http

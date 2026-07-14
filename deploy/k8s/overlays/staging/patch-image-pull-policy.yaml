@@ -1,0 +1,9 @@
+# Force registry pulls on staging rollouts (local dev uses IfNotPresent + ctr import).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: placeholder
+spec:
+  template:
+    spec:
+      imagePullPolicy: Always

@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - deployment-auth.yaml
+  - service-auth.yaml
+  - deployment-management.yaml
+  - service-management.yaml
+  - service-management-nodeport.yaml
+  - deployment-payment.yaml
+  - service-payment.yaml
+  - service-payment-nodeport.yaml
+  - deployment-billing.yaml
+  - service-billing.yaml
+  - deployment-notifier.yaml
+  - service-notifier.yaml
+  - service-processor.yaml
+  - service-processor-nodeport.yaml
+  - deployment-ivt-detector.yaml

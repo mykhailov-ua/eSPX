@@ -1,0 +1,15 @@
+# Hot-path manifests. ConfigMaps nginx-edge-conf/lua are generated at apply time from deploy/nginx/.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: espx-edge
+
+resources:
+  - namespace.yaml
+  - daemonset-nginx.yaml
+
+# Templated resources (host_ip=127.0.0.1 for local compose data plane):
+#   configmap-env.yaml.tpl
+#   secret-env.yaml.tpl
+#   deployment-trackers.yaml.tpl
+# Render via scripts/deploy/k8s_hot_path_up.sh or deploy/terraform/envs/local/hot_path.tf.

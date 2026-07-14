@@ -1,0 +1,41 @@
+# Staging: remote k3s + external managed data plane. Copy to terraform.tfvars and fill secrets.
+kubeconfig_path = "~/.kube/config-staging"
+namespace       = "espx"
+
+container_image   = "ghcr.io/example/espx:latest"
+image_pull_policy = "Always"
+geoip_host_path   = "/var/lib/espx/geoip"
+
+env               = "production"
+filter_timeout_ms = "100"
+redis_addrs       = "10.0.0.11:6379,10.0.0.12:6379,10.0.0.13:6379,10.0.0.14:6379"
+trusted_proxies   = "10.0.0.0/8,172.16.0.0/12"
+
+# Sensitive — use env vars TF_VAR_* or a secret store; never commit real values.
+# db_dsn                   = "postgres://..."
+# payment_db_dsn           = "postgres://..."
+# ch_dsn                   = "clickhouse://..."
+# redis_password           = "..."
+# payment_internal_token   = "..."
+# settlement_internal_token = "..."
+# billing_internal_token   = "..."
+# token_symmetric_key      = "01234567890123456789012345678901"
+# admin_api_key            = "..."
+
+# Optional private registry pull (creates espx-registry secret in namespace).
+# registry_server   = "ghcr.io"
+# registry_username = "..."
+# registry_password = "..."
+
+exclude_nodeports = true
+enable_ingress    = true
+ingress_class     = "nginx"
+admin_host        = "admin.staging.example.com"
+payment_webhook_host = "pay.staging.example.com"
+tls_secret_name   = "espx-tls"
+
+# M1–M3 sharding flags (cold-path ConfigMap; applied on terraform apply)
+udp_tracker_addrs = "10.0.0.20:8181,10.0.0.20:8182,10.0.0.20:8183,10.0.0.20:8184"
+
+# Optional hostNetwork hot path on edge nodes (uses hot-path/*.staging.tpl)
+# enable_hot_path = true

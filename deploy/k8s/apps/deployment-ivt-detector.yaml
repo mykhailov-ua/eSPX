@@ -1,0 +1,41 @@
+# Off-path IVT scan: ClickHouse batch read, fraud blacklist via management HTTP API.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ivt-detector
+  namespace: espx
+  labels:
+    app.kubernetes.io/name: ivt-detector
+    app.kubernetes.io/component: cold-path
+    app.kubernetes.io/part-of: espx
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ivt-detector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ivt-detector
+        app.kubernetes.io/component: cold-path
+        app.kubernetes.io/part-of: espx
+    spec:
+      containers:
+        - name: ivt-detector
+          image: ad-event-processor:latest
+          imagePullPolicy: IfNotPresent
+          command: ["/ivt-detector"]
+          envFrom:
+            - configMapRef:
+                name: espx-env
+            - secretRef:
+                name: espx-secrets
+          env:
+            - name: SERVER_PORT
+              value: "8188"
+          resources:
+            requests:
+              memory: 32Mi
+              cpu: 25m
+            limits:
+              memory: 256Mi

@@ -1,0 +1,26 @@
+# ClickHouse memory cap for docker-compose.load-test.yml (1 GiB container budget).
+max_server_memory_usage: 1073741824
+
+listen_host:
+  "@replace": replace
+  "#text": "0.0.0.0"
+
+listen_try: 1
+listen_reuse_port: 1
+async_load_databases: false
+
+query_log:
+  "@remove": remove
+query_thread_log:
+  "@remove": remove
+trace_log:
+  "@remove": remove
+metric_log:
+  "@remove": remove
+asynchronous_metric_log:
+  "@remove": remove
+text_log:
+  "@remove": remove
+
+skip_check_for_incorrect_settings: 1
+mlock_executable: false

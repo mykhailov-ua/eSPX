@@ -1,0 +1,18 @@
+# NodePort exposes management admin HTTP on the host NIC for local dev without Ingress.
+apiVersion: v1
+kind: Service
+metadata:
+  name: management-nodeport
+  namespace: espx
+  labels:
+    app.kubernetes.io/name: management
+    app.kubernetes.io/part-of: espx
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: management
+  ports:
+    - name: http
+      port: 8188
+      targetPort: http
+      nodePort: 30188

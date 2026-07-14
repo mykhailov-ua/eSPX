@@ -1,0 +1,169 @@
+# Constrained resource profile for local dirty-traffic load tests on laptops.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.load-test.yml up -d ...
+#
+# Caps CPU (GOMAXPROCS + cgroup cpus) and memory so k6 + stack fit ~8 GiB host budget.
+
+x-go-load-test-env: &go_load_test_env
+  GOMAXPROCS: "2"
+
+services:
+  tracker-0:
+    environment:
+      - GOMAXPROCS=2
+      - GOMEMLIMIT=350MiB
+      - GOGC=50
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 448M
+
+  tracker-1:
+    environment:
+      - GOMAXPROCS=2
+      - GOMEMLIMIT=350MiB
+      - GOGC=50
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 448M
+
+  # Not started by run_dirty_load.sh; kept defined so base nginx merge stays valid.
+  tracker-2:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 448M
+    environment:
+      - GOMAXPROCS=1
+      - GOMEMLIMIT=300MiB
+  tracker-3:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 448M
+    environment:
+      - GOMAXPROCS=1
+      - GOMEMLIMIT=300MiB
+
+  processor:
+    environment:
+      - GOMAXPROCS=2
+      - GOMEMLIMIT=512MiB
+      - GOGC=100
+      - DB_PROCESSOR_MAX_CONNS=8
+      - MAX_WORKERS=8
+      - CH_MAX_WORKERS=1
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 640M
+
+  nginx:
+    depends_on: !override
+      tracker-0:
+        condition: service_healthy
+      tracker-1:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+  db:
+    command:
+      [
+        "postgres",
+        "-p",
+        "${DB_PORT}",
+        "-c",
+        "max_connections=200",
+        "-c",
+        "shared_buffers=256MB",
+        "-c",
+        "work_mem=16MB",
+        "-c",
+        "maintenance_work_mem=64MB",
+        "-c",
+        "effective_cache_size=512MB",
+      ]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768M
+
+  clickhouse:
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    volumes:
+      - ./deploy/clickhouse/config.load-test.yml:/etc/clickhouse-server/config.d/memory_limit.yaml:ro
+
+  redis-0:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+  redis-1:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+  redis-2:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+  redis-3:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+  redis-4:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+  redis-5:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+
+  prometheus:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+    volumes:
+      - ./deploy/monitoring/prometheus.load-test.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/monitoring/prometheus.rules.yml:/etc/prometheus/prometheus.rules.yml:ro
+
+  grafana:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+
+  alertmanager:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.1"
+          memory: 128M
