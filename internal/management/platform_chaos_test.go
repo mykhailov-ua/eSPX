@@ -55,7 +55,7 @@ func TestChaos_BatchSettlementDrain(t *testing.T) {
 				LedgerIdempotencyKey: "batch:credit:a",
 				PaymentIntentId:      intentA.String(),
 				Provider:             "stripe",
-				ProviderRef:            "pi_batch_a",
+				ProviderRef:          "pi_batch_a",
 			},
 			{
 				CustomerId:           customerID.String(),
@@ -63,7 +63,7 @@ func TestChaos_BatchSettlementDrain(t *testing.T) {
 				LedgerIdempotencyKey: "batch:credit:b",
 				PaymentIntentId:      intentB.String(),
 				Provider:             "stripe",
-				ProviderRef:            "pi_batch_b",
+				ProviderRef:          "pi_batch_b",
 			},
 		},
 	})

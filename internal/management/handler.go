@@ -64,6 +64,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/settings", h.limit(h.perm(h.updateSettings, PermSettingsWrite)))
 	mux.HandleFunc("POST /admin/blacklist", h.limit(h.perm(h.blockIP, PermBlacklistWrite)))
 	mux.HandleFunc("DELETE /admin/blacklist", h.limit(h.perm(h.unblockIP, PermBlacklistWrite)))
+	mux.HandleFunc("POST /admin/ml/overrides", h.limit(h.perm(h.applyMLOverrides, PermBlacklistWrite)))
 	mux.HandleFunc("GET /admin/audit", h.limit(h.perm(h.listAudit, PermAuditRead)))
 	mux.HandleFunc("POST /admin/system/breaker", h.limit(h.perm(h.toggleEmergencyBreaker, PermSettingsWrite)))
 

@@ -121,6 +121,15 @@ func (s *Service) CopySlotMigrationData(ctx context.Context, version int32, slot
 
 	src := s.rdbs[job.SourceShard]
 	dst := s.rdbs[job.TargetShard]
+
+	if s.cfg != nil && s.cfg.MigrationFenceEnabled && len(slotCampaigns) > 0 {
+		if err := ads.BumpMigrationFences(ctx, s.GetPool(), src, slotCampaigns); err != nil {
+			_ = migRepo.UpdateProgress(ctx, version, slot, total, job.CampaignsCopied,
+				db.RedisSlotMigrationStateFailed, err.Error())
+			return fmt.Errorf("migration fence: %w", err)
+		}
+	}
+
 	migrator := &ads.CampaignKeyMigrator{}
 	var copied int32
 	for _, id := range slotCampaigns {

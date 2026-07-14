@@ -3,12 +3,12 @@ package management
 import (
 	"context"
 	"encoding/hex"
-	"fmt"
-	"log/slog"
-	"strconv"
 	"espx/internal/ads"
 	"espx/internal/ads/db"
 	"espx/pkg/cold"
+	"fmt"
+	"log/slog"
+	"strconv"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"

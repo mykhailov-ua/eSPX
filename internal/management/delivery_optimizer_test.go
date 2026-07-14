@@ -71,12 +71,12 @@ func TestCalculateOverdraft_reconLagPenalty(t *testing.T) {
 
 func configWithReconPenalty() *config.Config {
 	cfg := &config.Config{
-		CreditScoringMinAgeDays:          7,
-		CreditScoringMatureAgeDays:       30,
-		CreditScoringMaturePercent:       30,
-		CreditScoringMaxCap:              10_000_000_000,
-		CreditScoringReconLagThreshold:   100_000_000,
-		CreditScoringReconLagPenaltyPct:  50,
+		CreditScoringMinAgeDays:         7,
+		CreditScoringMatureAgeDays:      30,
+		CreditScoringMaturePercent:      30,
+		CreditScoringMaxCap:             10_000_000_000,
+		CreditScoringReconLagThreshold:  100_000_000,
+		CreditScoringReconLagPenaltyPct: 50,
 	}
 	return cfg
 }

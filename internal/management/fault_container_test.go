@@ -35,7 +35,7 @@ func TestChaos_MgmtRedisTerminateOutboxStaysPending(t *testing.T) {
 	}, "redis ping must fail after terminate")
 
 	processed, err := worker.ProcessOutboxWithCount(ctx, 10)
-	require.NoError(t, err)
+	require.Error(t, err)
 	require.Equal(t, 0, processed)
 
 	status := outboxStatus(t, infra.Pool, eventID)
@@ -75,7 +75,7 @@ func TestChaos_MgmtRedisStopStartOutboxRecovery(t *testing.T) {
 	}, "redis ping must fail after stop")
 
 	processed, err := worker.ProcessOutboxWithCount(ctx, 10)
-	require.NoError(t, err)
+	require.Error(t, err)
 	require.Equal(t, 0, processed)
 	require.Equal(t, "PENDING", outboxStatus(t, infra.Pool, eventID))
 

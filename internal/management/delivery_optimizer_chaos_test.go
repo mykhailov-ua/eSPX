@@ -29,14 +29,14 @@ func TestChaos_DeliveryOptimizerSingleWriter(t *testing.T) {
 	defer cleanupRedis()
 
 	cfg := &config.Config{
-		CampaignUpdateChannel:     "test:delivery-opt",
-		PacingToleranceMargin:     0.05,
-		AutoscaleHighCTRThreshold: 0.02,
-		AutoscaleLowCTRThreshold:  0.01,
-		AutoscaleMinImpressions:   10,
+		CampaignUpdateChannel:       "test:delivery-opt",
+		PacingToleranceMargin:       0.05,
+		AutoscaleHighCTRThreshold:   0.02,
+		AutoscaleLowCTRThreshold:    0.01,
+		AutoscaleMinImpressions:     10,
 		AutoscaleMinRemainingBudget: 1_000_000,
-		AutoscaleShiftAmount:      5_000_000,
-		MABMinImpressions:         1000,
+		AutoscaleShiftAmount:        5_000_000,
+		MABMinImpressions:           1000,
 	}
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
 

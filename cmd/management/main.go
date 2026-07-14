@@ -84,6 +84,15 @@ func main() {
 	svc := management.NewService(pool, rdbs, sharder, cfg)
 	svc.SetPaymentPool(pool)
 
+	if cfg.UDPControlEnabled {
+		udpSrv := management.NewUDPControlServer(cfg, pool, sharder, len(rdbs))
+		if err := udpSrv.Start(ctx); err != nil {
+			slog.Error("udp control server start failed", "error", err)
+			os.Exit(1)
+		}
+		defer udpSrv.Close()
+	}
+
 	if cfg.ClickHouseEnabled() {
 		chConn, err := database.ConnectClickHouse(ctx, string(cfg.CHDSN))
 		if err != nil {

@@ -96,7 +96,7 @@ func TestChaos_QuotaRefillRace(t *testing.T) {
 	})
 }
 
-// TestChaos_QuotaDeadShardRelease releases stale PG reservations when the campaign shard Redis is down.
+// TestChaos_QuotaDeadShardRelease releases PG reservations only after dead-shard quorum (M3).
 func TestChaos_QuotaDeadShardRelease(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
@@ -122,22 +122,30 @@ func TestChaos_QuotaDeadShardRelease(t *testing.T) {
 		ads.ToUUID(campaignID), stuckReserved, quotaChaosChunkMicro)
 	require.NoError(t, err)
 
-	cfg := &config.Config{QuotaMode: "live", QuotaChunkSize: quotaChaosChunkMicro}
+	cfg := &config.Config{QuotaMode: "live", QuotaChunkSize: quotaChaosChunkMicro, QuotaAutoRepair: true}
 	svc := newBareService(t, infra.Pool, []redis.UniversalClient{infra.Redis}, cfg)
-	worker := NewReconWorker(svc, time.Hour)
+	quorumDur := 150 * time.Millisecond
+	worker := NewReconWorkerWithQuorum(svc, time.Hour, quorumDur)
+	worker.Quorum().SetBreakerPctFunc(func(context.Context, int) float64 { return 1.0 })
 
 	stopMgmtContainer(t, infra.RedisContainer)
 	requireMgmtFaultActive(t, func() bool {
 		return infra.Redis.Ping(ctx).Err() != nil
 	}, "redis ping must fail after stop")
 
+	deadline := time.Now().Add(quorumDur + 100*time.Millisecond)
+	for time.Now().Before(deadline) {
+		worker.Quorum().ObserveShard(ctx, 0, infra.Redis)
+		time.Sleep(25 * time.Millisecond)
+	}
+	require.True(t, worker.Quorum().DeadShardConfirmed(0), "dead shard quorum must confirm after sustained outage")
+
 	worker.ReconcileQuotas(ctx)
 
 	var reservedAfter int64
-	err = infra.Pool.QueryRow(ctx, `
+	require.NoError(t, infra.Pool.QueryRow(ctx, `
 		SELECT reserved_amount FROM campaign_quotas WHERE shard_id = 0 AND campaign_id = $1`,
-		ads.ToUUID(campaignID)).Scan(&reservedAfter)
-	require.NoError(t, err)
+		ads.ToUUID(campaignID)).Scan(&reservedAfter))
 	require.Equal(t, int64(0), reservedAfter, "dead shard recon must release stuck reservations")
 
 	logChaosProof(t, "quota_dead_shard_release", map[string]string{
@@ -145,6 +153,7 @@ func TestChaos_QuotaDeadShardRelease(t *testing.T) {
 		"shard":          "0",
 		"released_micro": strconv.FormatInt(stuckReserved, 10),
 		"reserved_after": "0",
+		"quorum_ms":      strconv.FormatInt(quorumDur.Milliseconds(), 10),
 		"baseline_ok":    "true",
 		"fault_verify":   "redis_container_stopped",
 	})
