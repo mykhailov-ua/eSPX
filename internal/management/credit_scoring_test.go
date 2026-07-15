@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"espx/internal/ads"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/ingestion"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -34,7 +34,7 @@ func TestCreditScoringAndOverdraft(t *testing.T) {
 	}
 	cfg.Lifecycle.WaitTimeoutMs = 500
 
-	sharder := ads.NewJumpHashSharder(1)
+	sharder := ingestion.NewJumpHashSharder(1)
 	svc := NewService(pool, []redis.UniversalClient{rdb}, sharder, cfg)
 
 	t.Cleanup(func() {
@@ -55,7 +55,7 @@ func TestCreditScoringAndOverdraft(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "insufficient balance")
 
-	_, err = pool.Exec(ctx, "UPDATE customers SET created_at = NOW() - INTERVAL '35 days' WHERE id = $1", ads.ToUUID(customerID))
+	_, err = pool.Exec(ctx, "UPDATE customers SET created_at = NOW() - INTERVAL '35 days' WHERE id = $1", ingestion.ToUUID(customerID))
 	require.NoError(t, err)
 
 	err = svc.TopUpBalance(ctx, customerID, 1_000_000_000, "topup-scoring-1")
@@ -75,7 +75,7 @@ func TestCreditScoringAndOverdraft(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(300_000_000), allowedOverdraft)
 
-	_, err = pool.Exec(ctx, "UPDATE customers SET balance = 0 WHERE id = $1", ads.ToUUID(customerID))
+	_, err = pool.Exec(ctx, "UPDATE customers SET balance = 0 WHERE id = $1", ingestion.ToUUID(customerID))
 	require.NoError(t, err)
 
 	creditSpec := testCampaignSpec(customerID, "Credit Campaign", 200_000_000, "credit-idem")
@@ -98,7 +98,7 @@ func TestCreditScoringAndOverdraft(t *testing.T) {
 	require.NoError(t, err)
 
 	var campaignStatus string
-	err = pool.QueryRow(ctx, "SELECT status::TEXT FROM campaigns WHERE id = $1", ads.ToUUID(campaignID)).Scan(&campaignStatus)
+	err = pool.QueryRow(ctx, "SELECT status::TEXT FROM campaigns WHERE id = $1", ingestion.ToUUID(campaignID)).Scan(&campaignStatus)
 	require.NoError(t, err)
 	assert.Equal(t, "PAUSED", campaignStatus)
 

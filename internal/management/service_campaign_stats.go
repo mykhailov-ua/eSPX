@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/google/uuid"
@@ -58,13 +58,13 @@ func (s *Service) GetCampaignStats(ctx context.Context, campaignID uuid.UUID, fr
 	}
 
 	q := db.New(s.GetPool())
-	camp, err := q.GetCampaign(ctx, ads.ToUUID(campaignID))
+	camp, err := q.GetCampaign(ctx, ingestion.ToUUID(campaignID))
 	if err != nil {
 		return CampaignStatsDTO{}, mapNotFound(err, ErrCampaignNotFound)
 	}
 
 	stats, err := q.SumCampaignStatsInRange(ctx, db.SumCampaignStatsInRangeParams{
-		CampaignID: ads.ToUUID(campaignID),
+		CampaignID: ingestion.ToUUID(campaignID),
 		FromDate:   pgtype.Date{Time: from.UTC(), Valid: true},
 		ToDate:     pgtype.Date{Time: to.UTC(), Valid: true},
 	})

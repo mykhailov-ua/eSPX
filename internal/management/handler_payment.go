@@ -3,7 +3,7 @@ package management
 import (
 	"net/http"
 
-	"espx/pkg/cold"
+	"espx/pkg/coldpath"
 	"espx/pkg/httpresponse"
 
 	"github.com/google/uuid"
@@ -30,7 +30,7 @@ func (h *Handler) createCustomerPaymentIntent(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	body, err := cold.ReadLimitedBody(w, r, 16*1024)
+	body, err := coldpath.ReadLimitedBody(w, r, 16*1024)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
@@ -38,7 +38,7 @@ func (h *Handler) createCustomerPaymentIntent(w http.ResponseWriter, r *http.Req
 
 	var req createPaymentIntentRequest
 	if len(body) > 0 {
-		req, err = cold.DecodeBody[createPaymentIntentRequest](body)
+		req, err = coldpath.DecodeBody[createPaymentIntentRequest](body)
 		if err != nil {
 			httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 			return

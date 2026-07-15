@@ -7,10 +7,10 @@ import (
 	"log/slog"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
 	"espx/internal/database"
-	"espx/pkg/cold"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
+	"espx/pkg/coldpath"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -46,8 +46,8 @@ type BlacklistPayload struct {
 	Reason string `json:"reason"`
 }
 
-// MLThreatPayload carries machine learning threat details in outbox events.
-type MLThreatPayload struct {
+// FraudThreatPayload carries fraud enforcement details in outbox events.
+type FraudThreatPayload struct {
 	Action     string  `json:"action"` // e.g. "boost", "blacklist", "ghost"
 	IP         string  `json:"ip"`
 	CampaignID string  `json:"campaign_id"`
@@ -209,7 +209,7 @@ func (w *OutboxWorker) campaignRemainingBudget(ctx context.Context, campaignID u
 	err := w.svc.GetPool().QueryRow(ctx, `
 		SELECT budget_limit, current_spend
 		FROM campaigns
-		WHERE id = $1`, ads.ToUUID(campaignID)).Scan(&limit, &spend)
+		WHERE id = $1`, ingestion.ToUUID(campaignID)).Scan(&limit, &spend)
 	if err != nil {
 		return 0, err
 	}
@@ -272,7 +272,7 @@ func (w *OutboxWorker) applyBlacklistPayload(ctx context.Context, p BlacklistPay
 
 // syncBrandCreativesToRedis publishes weighted creative lists for hot-path rotation.
 func (w *OutboxWorker) syncBrandCreativesToRedis(ctx context.Context, brandIDStr string) error {
-	brandID, err := cold.ParseUUID(brandIDStr)
+	brandID, err := coldpath.ParseUUID(brandIDStr)
 	if err != nil {
 		return err
 	}
@@ -293,7 +293,7 @@ func (w *OutboxWorker) syncBrandCreativesToRedis(ctx context.Context, brandIDStr
 			Weight: r.Weight,
 		}
 	}
-	payload, err := cold.MarshalJSON(entries)
+	payload, err := coldpath.MarshalJSON(entries)
 	if err != nil {
 		return err
 	}

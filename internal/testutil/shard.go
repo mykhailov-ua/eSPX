@@ -3,13 +3,13 @@ package testutil
 import (
 	"testing"
 
-	"espx/internal/ads"
+	"espx/internal/ingestion"
 
 	"github.com/google/uuid"
 )
 
 // CampaignIDForShard returns a UUID that sharder routes to wantShard.
-func CampaignIDForShard(t testing.TB, sharder ads.Sharder, wantShard int) uuid.UUID {
+func CampaignIDForShard(t testing.TB, sharder ingestion.Sharder, wantShard int) uuid.UUID {
 	t.Helper()
 	for range 20_000 {
 		id := uuid.New()

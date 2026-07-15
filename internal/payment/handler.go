@@ -6,7 +6,7 @@ import (
 	"espx/internal/config"
 	"espx/internal/payment/db"
 	"espx/internal/payment/pb"
-	"espx/pkg/cold"
+	"espx/pkg/coldpath"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
@@ -156,7 +156,7 @@ func (handler *Handler) ListPaymentIntents(ctx context.Context, req *pb.ListPaym
 		return nil, status.Error(codes.InvalidArgument, "invalid customer id")
 	}
 
-	limit, offset := cold.ClampLimitOffset(req.Limit, req.Offset, 10, 100)
+	limit, offset := coldpath.ClampLimitOffset(req.Limit, req.Offset, 10, 100)
 
 	intents, total, err := handler.service.ListPaymentIntents(ctx, customerID, limit, offset)
 	if err != nil {
@@ -164,7 +164,7 @@ func (handler *Handler) ListPaymentIntents(ctx context.Context, req *pb.ListPaym
 	}
 
 	return &pb.ListPaymentIntentsResponse{
-		Intents: cold.MapSlice(intents, intentToPB),
+		Intents: coldpath.MapSlice(intents, intentToPB),
 		Total:   total,
 	}, nil
 }
@@ -184,7 +184,7 @@ func (handler *Handler) ListDisputes(ctx context.Context, req *pb.ListDisputesRe
 		customerID = &parsed
 	}
 
-	limit, offset := cold.ClampLimitOffset(req.Limit, req.Offset, 10, 100)
+	limit, offset := coldpath.ClampLimitOffset(req.Limit, req.Offset, 10, 100)
 	items, total, err := handler.service.ListDisputes(ctx, customerID, limit, offset)
 	if err != nil {
 		return nil, mapPaymentGRPCError(err)

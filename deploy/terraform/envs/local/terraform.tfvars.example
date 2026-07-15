@@ -1,5 +1,5 @@
 # Local single-node stack: k3s bootstrap plus cold-path manifests.
-# Prereq: docker compose infra up; scripts/deploy/k8s_import_image.sh before first apply.
+# Prereq: docker compose infra up; scripts/k8s/k8s_import_image.sh before first apply.
 kubeconfig_path = "~/.kube/config-espx"
 namespace       = "espx"
 

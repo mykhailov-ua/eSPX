@@ -9,9 +9,9 @@ import (
 	"fmt"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
-	"espx/pkg/cold"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
+	"espx/pkg/coldpath"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -43,8 +43,8 @@ func (s *Service) RecordConsent(ctx context.Context, in ConsentRecordInput) erro
 		return errValidation("purposes must be non-negative")
 	}
 
-	hash := ads.HashUserID(in.UserID)
-	adStorage, analyticsStorage := ads.ConsentFlagsFromPurposes(in.Purposes)
+	hash := ingestion.HashUserID(in.UserID)
+	adStorage, analyticsStorage := ingestion.ConsentFlagsFromPurposes(in.Purposes)
 
 	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
@@ -63,7 +63,7 @@ func (s *Service) RecordConsent(ctx context.Context, in ConsentRecordInput) erro
 		}); err != nil {
 			return fmt.Errorf("upsert consent state: %w", err)
 		}
-		payload, err := cold.MarshalJSON(map[string]any{
+		payload, err := coldpath.MarshalJSON(map[string]any{
 			"user_id_hash": hex.EncodeToString(hash),
 			"purposes":     in.Purposes,
 		})
@@ -104,12 +104,12 @@ func (s *Service) UpdateCampaignConsentRequirements(ctx context.Context, campaig
 	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 		if _, err := q.UpdateCampaignConsentPurposes(ctx, db.UpdateCampaignConsentPurposesParams{
-			ID:                     ads.ToUUID(campaignID),
+			ID:                     ingestion.ToUUID(campaignID),
 			RequireConsentPurposes: purposes,
 		}); err != nil {
 			return mapNotFound(err, ErrCampaignNotFound)
 		}
-		payload, err := cold.MarshalJSON(map[string]string{"campaign_id": campaignID.String()})
+		payload, err := coldpath.MarshalJSON(map[string]string{"campaign_id": campaignID.String()})
 		if err != nil {
 			return err
 		}

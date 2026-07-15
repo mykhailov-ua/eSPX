@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"espx/internal/ads"
+	"espx/internal/ingestion"
 	"espx/pkg/httpresponse"
 
 	"github.com/jackc/pgx/v5"
@@ -71,19 +71,19 @@ func isNotFoundError(err error) bool {
 		errors.Is(err, ErrDealCustomerMissing) ||
 		errors.Is(err, ErrSellerNotFound) ||
 		errors.Is(err, ErrAdsTxtEntryNotFound) ||
-		errors.Is(err, ads.ErrSlotMapVersionNotFound)
+		errors.Is(err, ingestion.ErrSlotMapVersionNotFound)
 }
 
 func isConflictError(err error) bool {
-	return errors.Is(err, ErrSlotMigrationNotReady) || errors.Is(err, ads.ErrSlotMapAlreadyActive)
+	return errors.Is(err, ErrSlotMigrationNotReady) || errors.Is(err, ingestion.ErrSlotMapAlreadyActive)
 }
 
 func conflictMessage(err error) string {
 	switch {
 	case errors.Is(err, ErrSlotMigrationNotReady):
 		return ErrSlotMigrationNotReady.Error()
-	case errors.Is(err, ads.ErrSlotMapAlreadyActive):
-		return ads.ErrSlotMapAlreadyActive.Error()
+	case errors.Is(err, ingestion.ErrSlotMapAlreadyActive):
+		return ingestion.ErrSlotMapAlreadyActive.Error()
 	default:
 		return "conflict"
 	}
@@ -119,9 +119,9 @@ func badRequestMessage(err error) (string, bool) {
 		errors.Is(err, ErrChargebackExceedsTopup),
 		errors.Is(err, ErrChargebackReversalExceedsWithdrawn),
 		errors.Is(err, errExportLimit),
-		errors.Is(err, ads.ErrSlotMapIncomplete),
-		errors.Is(err, ads.ErrSlotMapInvalidSlot),
-		errors.Is(err, ads.ErrSlotMapInvalidShard):
+		errors.Is(err, ingestion.ErrSlotMapIncomplete),
+		errors.Is(err, ingestion.ErrSlotMapInvalidSlot),
+		errors.Is(err, ingestion.ErrSlotMapInvalidShard):
 		return err.Error(), true
 	default:
 		return "", false

@@ -9,7 +9,7 @@ import (
 
 	"espx/internal/billing"
 	billingpb "espx/internal/billing/pb"
-	"espx/pkg/cold"
+	"espx/pkg/coldpath"
 	"espx/pkg/httpresponse"
 
 	"github.com/google/uuid"
@@ -59,12 +59,12 @@ func (handler *Handler) generateCustomerInvoice(w http.ResponseWriter, r *http.R
 
 	monthRaw := r.FormValue("billing_month")
 	if monthRaw == "" && strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
-		body, readErr := cold.ReadLimitedBody(w, r, 16*1024)
+		body, readErr := coldpath.ReadLimitedBody(w, r, 16*1024)
 		if readErr != nil {
 			return
 		}
 		if len(body) > 0 {
-			req, decodeErr := cold.DecodeBody[generateInvoiceRequest](body)
+			req, decodeErr := coldpath.DecodeBody[generateInvoiceRequest](body)
 			if decodeErr != nil {
 				httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 				return

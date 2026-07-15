@@ -47,7 +47,7 @@ func SetupTestDB(t testing.TB) (*pgxpool.Pool, func()) {
 
 	_, filename, _, _ := runtime.Caller(0)
 	baseDir := filepath.Join(filepath.Dir(filename), "..", "..")
-	migrationsDir := filepath.Join(baseDir, "internal/ads/migrations")
+	migrationsDir := filepath.Join(baseDir, "internal/ingestion/migrations")
 
 	entries, err := os.ReadDir(migrationsDir)
 	if err != nil {

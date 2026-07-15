@@ -88,7 +88,7 @@ func (detector *Detector) Run(ctx context.Context) (RunResult, error) {
 
 	for _, candidate := range candidates {
 		if candidate.Action == "boost" {
-			claimed, claimErr := detector.idem.TryClaimML(ctx, candidate.IP, candidate.Reason, "boost")
+			claimed, claimErr := detector.idem.TryClaimFraudEnforcement(ctx, candidate.IP, candidate.Reason, "boost")
 			if claimErr != nil {
 				return result, claimErr
 			}
@@ -97,7 +97,7 @@ func (detector *Detector) Run(ctx context.Context) (RunResult, error) {
 				continue
 			}
 
-			err := detector.management.EnqueueMLThreat(
+			err := detector.management.EnqueueFraudThreat(
 				ctx,
 				"boost",
 				candidate.IP,
@@ -107,7 +107,7 @@ func (detector *Detector) Run(ctx context.Context) (RunResult, error) {
 				candidate.TTLSeconds,
 			)
 			if err != nil {
-				if releaseErr := detector.idem.ReleaseML(ctx, candidate.IP, candidate.Reason, "boost"); releaseErr != nil {
+				if releaseErr := detector.idem.ReleaseFraudEnforcement(ctx, candidate.IP, candidate.Reason, "boost"); releaseErr != nil {
 					slog.Error("failed to release ml idempotency claim after management error",
 						"ip", candidate.IP,
 						"enqueue_error", err,
@@ -118,7 +118,7 @@ func (detector *Detector) Run(ctx context.Context) (RunResult, error) {
 			}
 
 			result.Enqueued++
-			mlEnforcementEnqueuedTotal.WithLabelValues("boost").Inc()
+			fraudEnforcementEnqueuedTotal.WithLabelValues("boost").Inc()
 			slog.Info("ivt detector enqueued ml score boost",
 				"ip", candidate.IP,
 				"campaign_id", candidate.CampaignID,

@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"espx/internal/ads"
+	"espx/internal/ingestion"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -39,7 +39,7 @@ func RegisterOpsRoutes(mux *http.ServeMux, pool *pgxpool.Pool, rdbs []redis.Univ
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
 
-		repo := ads.NewSlotMapRepo(pool)
+		repo := ingestion.NewSlotMapRepo(pool)
 		active, err := repo.GetActiveVersion(ctx)
 		if err != nil {
 			http.Error(w, "slot map meta unavailable", http.StatusServiceUnavailable)
@@ -50,13 +50,13 @@ func RegisterOpsRoutes(mux *http.ServeMux, pool *pgxpool.Pool, rdbs []redis.Univ
 			http.Error(w, "slot map unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		slots, err := ads.SlotMapShardTable(rows)
+		slots, err := ingestion.SlotMapShardTable(rows)
 		if err != nil {
 			http.Error(w, "slot map incomplete", http.StatusServiceUnavailable)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(ads.OpsSlotMapResponse{
+		if err := json.NewEncoder(w).Encode(ingestion.OpsSlotMapResponse{
 			Version:       active,
 			ActiveVersion: active,
 			Slots:         slots,

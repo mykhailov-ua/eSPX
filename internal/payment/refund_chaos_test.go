@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
+	"espx/internal/ingestion"
 	"espx/internal/payment/db"
 
 	"github.com/google/uuid"
@@ -193,7 +193,7 @@ func TestChaos_PaymentPartialRefundThenFull(t *testing.T) {
 
 	var intentStatus string
 	require.NoError(t, infra.Pool.QueryRow(ctx, `
-		SELECT status FROM payment.payment_intents WHERE id = $1`, ads.ToUUID(seed.IntentID)).Scan(&intentStatus))
+		SELECT status FROM payment.payment_intents WHERE id = $1`, ingestion.ToUUID(seed.IntentID)).Scan(&intentStatus))
 	require.Equal(t, "REFUNDED", intentStatus)
 
 	logChaosProof(t, "partial_refund_then_full", map[string]string{

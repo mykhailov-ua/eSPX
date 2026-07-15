@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"espx/internal/ads"
 	"espx/internal/config"
+	"espx/internal/ingestion"
 	"espx/internal/metrics"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,7 +19,7 @@ import (
 type UDPControlServer struct {
 	cfg       *config.Config
 	pool      *pgxpool.Pool
-	sharder   ads.Sharder
+	sharder   ingestion.Sharder
 	conn      *net.UDPConn
 	epoch     atomic.Int64
 	numShards int
@@ -27,7 +27,7 @@ type UDPControlServer struct {
 }
 
 // NewUDPControlServer builds a management UDP control-plane publisher.
-func NewUDPControlServer(cfg *config.Config, pool *pgxpool.Pool, sharder ads.Sharder, numShards int) *UDPControlServer {
+func NewUDPControlServer(cfg *config.Config, pool *pgxpool.Pool, sharder ingestion.Sharder, numShards int) *UDPControlServer {
 	s := &UDPControlServer{
 		cfg:       cfg,
 		pool:      pool,
@@ -89,16 +89,16 @@ func (s *UDPControlServer) recvLoop(ctx context.Context) {
 			}
 			continue
 		}
-		var hdr ads.UDPHeader
-		if !ads.DecodeUDPHeader(buf[:n], &hdr) {
+		var hdr ingestion.UDPHeader
+		if !ingestion.DecodeUDPHeader(buf[:n], &hdr) {
 			continue
 		}
-		if hdr.MsgType != ads.UDPMsgConfigRequest {
+		if hdr.MsgType != ingestion.UDPMsgConfigRequest {
 			continue
 		}
-		payload := buf[ads.UDPHeaderSize:n]
-		var req ads.UDPConfigRequestPayload
-		if !ads.DecodeUDPConfigRequest(payload, &req) {
+		payload := buf[ingestion.UDPHeaderSize:n]
+		var req ingestion.UDPConfigRequestPayload
+		if !ingestion.DecodeUDPConfigRequest(payload, &req) {
 			continue
 		}
 		slog.Debug("udp config request", "tracker", req.TrackerID, "last_epoch", req.LastEpoch, "remote", remote)
@@ -128,20 +128,20 @@ func (s *UDPControlServer) publishEpoch(ctx context.Context, snapshot bool) {
 	limits := s.buildLimits()
 	epoch := s.epoch.Add(1)
 	slotVersion := int32(0)
-	if sh, ok := s.sharder.(*ads.StaticSlotSharder); ok {
+	if sh, ok := s.sharder.(*ingestion.StaticSlotSharder); ok {
 		slotVersion = sh.SnapshotVersion()
 	}
-	hash := ads.ComputeUDPConfigHash(epoch, slotVersion, limits)
+	hash := ingestion.ComputeUDPConfigHash(epoch, slotVersion, limits)
 	if err := s.persistEpoch(ctx, epoch, hash, slotVersion, limits); err != nil {
 		slog.Warn("control_plane_epochs insert failed", "error", err)
 	}
-	msgType := ads.UDPMsgQuotaEpoch
+	msgType := ingestion.UDPMsgQuotaEpoch
 	flags := uint16(0)
 	if snapshot {
-		msgType = ads.UDPMsgConfigSnapshot
-		flags = ads.UDPFlagSnapshot
+		msgType = ingestion.UDPMsgConfigSnapshot
+		flags = ingestion.UDPFlagSnapshot
 	}
-	hdr := &ads.UDPHeader{
+	hdr := &ingestion.UDPHeader{
 		CoarseTimeNs:   time.Now().UnixNano(),
 		EpochID:        epoch,
 		ConfigHash:     hash,
@@ -149,7 +149,7 @@ func (s *UDPControlServer) publishEpoch(ctx context.Context, snapshot bool) {
 		Flags:          flags,
 	}
 	var pkt [512]byte
-	n := ads.EncodeQuotaEpochDatagram(pkt[:], msgType, hdr, limits)
+	n := ingestion.EncodeQuotaEpochDatagram(pkt[:], msgType, hdr, limits)
 	if n == 0 {
 		return
 	}
@@ -173,19 +173,19 @@ func (s *UDPControlServer) sendSnapshotBurst(ctx context.Context, addr *net.UDPA
 		epoch = s.epoch.Load()
 	}
 	slotVersion := int32(0)
-	if sh, ok := s.sharder.(*ads.StaticSlotSharder); ok {
+	if sh, ok := s.sharder.(*ingestion.StaticSlotSharder); ok {
 		slotVersion = sh.SnapshotVersion()
 	}
-	hash := ads.ComputeUDPConfigHash(epoch, slotVersion, limits)
-	hdr := &ads.UDPHeader{
+	hash := ingestion.ComputeUDPConfigHash(epoch, slotVersion, limits)
+	hdr := &ingestion.UDPHeader{
 		CoarseTimeNs:   time.Now().UnixNano(),
 		EpochID:        epoch,
 		ConfigHash:     hash,
 		SlotMapVersion: slotVersion,
-		Flags:          ads.UDPFlagSnapshot,
+		Flags:          ingestion.UDPFlagSnapshot,
 	}
 	var pkt [512]byte
-	n := ads.EncodeQuotaEpochDatagram(pkt[:], ads.UDPMsgConfigSnapshot, hdr, limits)
+	n := ingestion.EncodeQuotaEpochDatagram(pkt[:], ingestion.UDPMsgConfigSnapshot, hdr, limits)
 	if n == 0 {
 		return
 	}
@@ -195,15 +195,15 @@ func (s *UDPControlServer) sendSnapshotBurst(ctx context.Context, addr *net.UDPA
 	metrics.UDPControlPublishTotal.Add(float64(count))
 }
 
-func (s *UDPControlServer) buildLimits() *ads.UDPControlLimits {
+func (s *UDPControlServer) buildLimits() *ingestion.UDPControlLimits {
 	n := s.numShards
 	if n <= 0 {
 		n = 1
 	}
-	if n > ads.UDPMaxControlShards {
-		n = ads.UDPMaxControlShards
+	if n > ingestion.UDPMaxControlShards {
+		n = ingestion.UDPMaxControlShards
 	}
-	limits := &ads.UDPControlLimits{NumShards: uint8(n)}
+	limits := &ingestion.UDPControlLimits{NumShards: uint8(n)}
 	rps := s.cfg.UDPDefaultShardRPS
 	if rps == 0 {
 		rps = 50_000
@@ -214,11 +214,11 @@ func (s *UDPControlServer) buildLimits() *ads.UDPControlLimits {
 	return limits
 }
 
-func (s *UDPControlServer) persistEpoch(ctx context.Context, epoch int64, hash [16]byte, slotVersion int32, limits *ads.UDPControlLimits) error {
+func (s *UDPControlServer) persistEpoch(ctx context.Context, epoch int64, hash [16]byte, slotVersion int32, limits *ingestion.UDPControlLimits) error {
 	if s.pool == nil {
 		return nil
 	}
-	payload, err := ads.MarshalEpochPayload(slotVersion, limits)
+	payload, err := ingestion.MarshalEpochPayload(slotVersion, limits)
 	if err != nil {
 		return err
 	}

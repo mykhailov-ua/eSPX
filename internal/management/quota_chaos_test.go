@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/ingestion"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -26,7 +26,7 @@ func seedQuotaChaosCampaign(t *testing.T, pool *pgxpool.Pool, campaignID, custom
 		INSERT INTO campaigns (id, name, budget_limit, current_spend, status, customer_id, pacing_mode, timezone, freq_window)
 		VALUES ($1, 'quota-chaos', $2, 0, 'ACTIVE', $3, 'ASAP', 'UTC', 86400)
 		ON CONFLICT (id) DO NOTHING`,
-		ads.ToUUID(campaignID), budgetLimit, ads.ToUUID(customerID))
+		ingestion.ToUUID(campaignID), budgetLimit, ingestion.ToUUID(customerID))
 	require.NoError(t, err)
 }
 
@@ -47,7 +47,7 @@ func TestChaos_QuotaRefillRace(t *testing.T) {
 	campaignID := uuid.New()
 	_, err := pool.Exec(ctx, `
 		INSERT INTO customers (id, name, balance, currency) VALUES ($1, 'quota-chaos', 0, 'USD')`,
-		ads.ToUUID(customerID))
+		ingestion.ToUUID(customerID))
 	require.NoError(t, err)
 	seedQuotaChaosCampaign(t, pool, campaignID, customerID, 10_000_000)
 
@@ -73,7 +73,7 @@ func TestChaos_QuotaRefillRace(t *testing.T) {
 	}
 	wg.Wait()
 
-	quotaRepo := ads.NewQuotaRepo(pool)
+	quotaRepo := ingestion.NewQuotaRepo(pool)
 	pgQuota, err := quotaRepo.GetQuota(ctx, svc.sharder, campaignID)
 	require.NoError(t, err)
 	require.Equal(t, quotaChaosChunkMicro, pgQuota.ReservedAmount, "exactly one PG chunk must be reserved")
@@ -111,7 +111,7 @@ func TestChaos_QuotaDeadShardRelease(t *testing.T) {
 	customerID := uuid.New()
 	_, err := infra.Pool.Exec(ctx, `
 		INSERT INTO customers (id, name, balance, currency) VALUES ($1, 'quota-dead-shard', 0, 'USD')`,
-		ads.ToUUID(customerID))
+		ingestion.ToUUID(customerID))
 	require.NoError(t, err)
 	seedQuotaChaosCampaign(t, infra.Pool, campaignID, customerID, 5_000_000)
 
@@ -119,7 +119,7 @@ func TestChaos_QuotaDeadShardRelease(t *testing.T) {
 	_, err = infra.Pool.Exec(ctx, `
 		INSERT INTO campaign_quotas (shard_id, campaign_id, reserved_amount, chunk_size, updated_at)
 		VALUES (0, $1, $2, $3, NOW() - INTERVAL '90 seconds')`,
-		ads.ToUUID(campaignID), stuckReserved, quotaChaosChunkMicro)
+		ingestion.ToUUID(campaignID), stuckReserved, quotaChaosChunkMicro)
 	require.NoError(t, err)
 
 	cfg := &config.Config{QuotaMode: "live", QuotaChunkSize: quotaChaosChunkMicro, QuotaAutoRepair: true}
@@ -145,7 +145,7 @@ func TestChaos_QuotaDeadShardRelease(t *testing.T) {
 	var reservedAfter int64
 	require.NoError(t, infra.Pool.QueryRow(ctx, `
 		SELECT reserved_amount FROM campaign_quotas WHERE shard_id = 0 AND campaign_id = $1`,
-		ads.ToUUID(campaignID)).Scan(&reservedAfter))
+		ingestion.ToUUID(campaignID)).Scan(&reservedAfter))
 	require.Equal(t, int64(0), reservedAfter, "dead shard recon must release stuck reservations")
 
 	logChaosProof(t, "quota_dead_shard_release", map[string]string{

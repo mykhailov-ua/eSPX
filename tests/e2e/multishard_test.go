@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
 	"github.com/google/uuid"
 
 	"espx/internal/testutil"
@@ -51,7 +51,7 @@ func TestE2E_Multishard(t *testing.T) {
 	partManager := database.NewPartitionManager(pool, 7, 2)
 	require.NoError(t, partManager.Run(ctx))
 
-	sharder := ads.NewStaticSlotSharder(multishardCount)
+	sharder := ingestion.NewStaticSlotSharder(multishardCount)
 	campaignIDs := make([]uuid.UUID, multishardCount)
 	for i := range campaignIDs {
 		campaignIDs[i] = testutil.CampaignIDForShard(t, sharder, i)
@@ -71,18 +71,18 @@ func TestE2E_Multishard(t *testing.T) {
 	}
 
 	registry := testutil.NewAdsRegistry(t, queries)
-	budgetWarmer := ads.NewBudgetCacheWarmer(rdbs, sharder)
+	budgetWarmer := ingestion.NewBudgetCacheWarmer(rdbs, sharder)
 	registry.SetBudgetWarmer(budgetWarmer)
 	_, err = registry.Sync(ctx)
 	require.NoError(t, err)
 	_, err = budgetWarmer.WarmFromRegistry(ctx, registry)
 	require.NoError(t, err)
 
-	store := ads.NewPostgresStore(queries, 1*time.Second)
-	campaignRepo := ads.NewCampaignRepo(queries)
+	store := ingestion.NewPostgresStore(queries, 1*time.Second)
+	campaignRepo := ingestion.NewCampaignRepo(queries)
 	streamName := "test-multishard-stream"
 
-	unifiedFilter := ads.NewUnifiedFilter(
+	unifiedFilter := ingestion.NewUnifiedFilter(
 		rdbs,
 		sharder,
 		registry,
@@ -96,9 +96,9 @@ func TestE2E_Multishard(t *testing.T) {
 		streamName,
 		100000,
 	)
-	filterEngine := ads.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, unifiedFilter)
+	filterEngine := ingestion.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, unifiedFilter)
 
-	handler := ads.NewAdsPacketHandler(cfg, registry, filterEngine, pool, rdbs, sharder, cfg.FraudStreamName, nil)
+	handler := ingestion.NewAdsPacketHandler(cfg, registry, filterEngine, pool, rdbs, sharder, cfg.FraudStreamName, nil)
 	defer handler.Stop(ctx)
 
 	for i, campaignID := range campaignIDs {
@@ -111,7 +111,7 @@ func TestE2E_Multishard(t *testing.T) {
 		body, err := json.Marshal(payload)
 		require.NoError(t, err)
 
-		status, _ := ads.PostTrackGnetJSON(handler, body)
+		status, _ := ingestion.PostTrackGnetJSON(handler, body)
 		assert.Equal(t, http.StatusAccepted, status, "shard %d track", i)
 	}
 
@@ -136,9 +136,9 @@ func TestE2E_Multishard(t *testing.T) {
 		assert.Equal(t, int64(1), xlen, "shard %d must have exactly one stream entry", shardID)
 	}
 
-	consumers := make([]*ads.StreamConsumer, multishardCount)
+	consumers := make([]*ingestion.StreamConsumer, multishardCount)
 	for i, rdb := range rdbs {
-		consumers[i] = ads.NewStreamConsumer(
+		consumers[i] = ingestion.NewStreamConsumer(
 			store, rdb, streamName,
 			"test-multishard-group", fmt.Sprintf("test-multishard-c%d", i),
 			cfg.EventBatchSize, cfg.MaxWorkers,

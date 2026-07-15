@@ -6,7 +6,7 @@ import (
 	"espx/internal/auth/db"
 	"espx/internal/auth/pb"
 	"espx/internal/config"
-	"espx/pkg/cold"
+	"espx/pkg/coldpath"
 	"net"
 	"strings"
 	"time"
@@ -266,7 +266,7 @@ func (h *Handler) ListAPIKeys(ctx context.Context, _ *pb.ListAPIKeysRequest) (*p
 		return nil, mapError(err)
 	}
 
-	return &pb.ListAPIKeysResponse{Keys: cold.MapSlice(rows, apiKeyRowToPB)}, nil
+	return &pb.ListAPIKeysResponse{Keys: coldpath.MapSlice(rows, apiKeyRowToPB)}, nil
 }
 
 // ChangePassword ties credential rotation to the authenticated principal, not email alone.

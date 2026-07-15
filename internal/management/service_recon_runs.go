@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"espx/internal/ads/db"
+	"espx/internal/ingestion/sqlc"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"

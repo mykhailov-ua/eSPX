@@ -6,7 +6,7 @@ import (
 	"math"
 	"time"
 
-	"espx/internal/ads/db"
+	"espx/internal/ingestion/sqlc"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"

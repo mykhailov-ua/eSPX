@@ -1,0 +1,25 @@
+name: Sentinel Chaos
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  sentinel-failover:
+    name: Redis Sentinel failover chaos
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Prepare env
+        run: bash scripts/chaos-drills/sentinel_chaos_env.sh
+
+      - name: Sentinel failover chaos test
+        run: bash scripts/chaos-drills/test_sentinel_failover.sh

@@ -20,7 +20,7 @@ test-unit: gen fmt
 
 # Fast zero-alloc, fraud SLA, and RTB hot-path checks (no long benchmarks).
 test-alloc-gate: gen fmt
-	go test -short -count=1 -run 'ZeroAlloc|zeroAlloc_fraudScoring|FraudScoring_LatencySLA|ApplyRtbAuction_shadow_zeroAlloc|RecordRtbShadow' ./internal/ads/...
+	go test -short -count=1 -run 'ZeroAlloc|zeroAlloc_fraudScoring|FraudScoring_LatencySLA|ApplyRtbAuction_shadow_zeroAlloc|RecordRtbShadow' ./internal/ingestion/...
 	go test -run='^$$' -bench='BenchmarkAuction$$' -benchmem -count=1 ./internal/rtb/
 
 test-int: gen fmt
@@ -28,15 +28,15 @@ test-int: gen fmt
 
 # Chaos tests kill real containers (testcontainers). Requires Docker. Skipped by -short elsewhere.
 test-chaos:
-	bash scripts/chaos/test_chaos.sh
+	bash scripts/chaos-drills/test_chaos.sh
 
 # Broker durability lab chaos: slow fsync, page cache, CPU throttle, Redis outage, optional Sentinel stack.
 test-broker-chaos-lab:
-	bash scripts/chaos/broker_chaos_lab.sh
+	bash scripts/chaos-drills/broker_chaos_lab.sh
 
 # Sentinel failover chaos: docker compose redis+sentinel stack, stop master, verify go-redis client reads replica.
 test-sentinel-chaos:
-	bash scripts/chaos/test_sentinel_failover.sh
+	bash scripts/chaos-drills/test_sentinel_failover.sh
 
 test: test-unit test-int
 

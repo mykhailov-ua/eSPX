@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/ingestion"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -34,12 +34,12 @@ func TestReconcileWindow_skipsAutoAdjustWhenDeltaExceedsChunk(t *testing.T) {
 	campaignID := uuid.New()
 	_, err := pool.Exec(ctx, `
 		INSERT INTO customers (id, name, balance, currency) VALUES ($1, 'recon-chunk', 0, 'USD')`,
-		ads.ToUUID(customerID))
+		ingestion.ToUUID(customerID))
 	require.NoError(t, err)
 	_, err = pool.Exec(ctx, `
 		INSERT INTO campaigns (id, name, budget_limit, current_spend, status, customer_id, pacing_mode, timezone, freq_window)
 		VALUES ($1, 'recon-chunk', 100000000, 0, 'ACTIVE', $2, 'ASAP', 'UTC', 86400)`,
-		ads.ToUUID(campaignID), ads.ToUUID(customerID))
+		ingestion.ToUUID(campaignID), ingestion.ToUUID(customerID))
 	require.NoError(t, err)
 
 	start := time.Now().UTC().Truncate(time.Hour).Add(-3 * time.Hour)
@@ -48,7 +48,7 @@ func TestReconcileWindow_skipsAutoAdjustWhenDeltaExceedsChunk(t *testing.T) {
 	_, err = pool.Exec(ctx, `
 		INSERT INTO balance_ledger (customer_id, campaign_id, amount, type, created_at)
 		VALUES ($1, $2, $3, 'FEE', $4)`,
-		ads.ToUUID(customerID), ads.ToUUID(campaignID), -500_000, start.Add(10*time.Minute))
+		ingestion.ToUUID(customerID), ingestion.ToUUID(campaignID), -500_000, start.Add(10*time.Minute))
 	require.NoError(t, err)
 
 	syncKey := "budget:sync:campaign:" + campaignID.String()
@@ -59,14 +59,14 @@ func TestReconcileWindow_skipsAutoAdjustWhenDeltaExceedsChunk(t *testing.T) {
 	var adjusted bool
 	err = pool.QueryRow(ctx, `
 		SELECT redis_adjusted FROM recon_discrepancies WHERE campaign_id = $1 ORDER BY id DESC LIMIT 1`,
-		ads.ToUUID(campaignID)).Scan(&adjusted)
+		ingestion.ToUUID(campaignID)).Scan(&adjusted)
 	require.NoError(t, err)
 	assert.False(t, adjusted, "large delta must not be auto-adjusted")
 
 	var ledgerAdjust int
 	err = pool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM balance_ledger WHERE campaign_id = $1 AND type = 'RECONCILIATION_ADJUST'`,
-		ads.ToUUID(campaignID)).Scan(&ledgerAdjust)
+		ingestion.ToUUID(campaignID)).Scan(&ledgerAdjust)
 	require.NoError(t, err)
 	assert.Equal(t, 0, ledgerAdjust)
 }
@@ -90,12 +90,12 @@ func TestReconcileWindow_autoAdjustsWithinChunk(t *testing.T) {
 	campaignID := uuid.New()
 	_, err := pool.Exec(ctx, `
 		INSERT INTO customers (id, name, balance, currency) VALUES ($1, 'recon-ok', 0, 'USD')`,
-		ads.ToUUID(customerID))
+		ingestion.ToUUID(customerID))
 	require.NoError(t, err)
 	_, err = pool.Exec(ctx, `
 		INSERT INTO campaigns (id, name, budget_limit, current_spend, status, customer_id, pacing_mode, timezone, freq_window)
 		VALUES ($1, 'recon-ok', 100000000, 0, 'ACTIVE', $2, 'ASAP', 'UTC', 86400)`,
-		ads.ToUUID(campaignID), ads.ToUUID(customerID))
+		ingestion.ToUUID(campaignID), ingestion.ToUUID(customerID))
 	require.NoError(t, err)
 
 	start := time.Now().UTC().Truncate(time.Hour).Add(-3 * time.Hour)
@@ -104,7 +104,7 @@ func TestReconcileWindow_autoAdjustsWithinChunk(t *testing.T) {
 	_, err = pool.Exec(ctx, `
 		INSERT INTO balance_ledger (customer_id, campaign_id, amount, type, created_at)
 		VALUES ($1, $2, $3, 'FEE', $4)`,
-		ads.ToUUID(customerID), ads.ToUUID(campaignID), -500_000, start.Add(10*time.Minute))
+		ingestion.ToUUID(customerID), ingestion.ToUUID(campaignID), -500_000, start.Add(10*time.Minute))
 	require.NoError(t, err)
 
 	syncKey := "budget:sync:campaign:" + campaignID.String()
@@ -115,7 +115,7 @@ func TestReconcileWindow_autoAdjustsWithinChunk(t *testing.T) {
 	var adjusted bool
 	err = pool.QueryRow(ctx, `
 		SELECT redis_adjusted FROM recon_discrepancies WHERE campaign_id = $1 ORDER BY id DESC LIMIT 1`,
-		ads.ToUUID(campaignID)).Scan(&adjusted)
+		ingestion.ToUUID(campaignID)).Scan(&adjusted)
 	require.NoError(t, err)
 	assert.True(t, adjusted)
 }

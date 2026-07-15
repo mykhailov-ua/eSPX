@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"espx/internal/ads/db"
+	"espx/internal/ingestion/sqlc"
 	"espx/pkg/httpresponse"
 
 	"github.com/google/uuid"

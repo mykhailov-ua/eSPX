@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
 	"espx/internal/management"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -39,7 +39,7 @@ func TestChaos_Shard0Outage(t *testing.T) {
 	defer cancel()
 
 	queries := db.New(pool)
-	sharder := ads.NewStaticSlotSharder(numShards)
+	sharder := ingestion.NewStaticSlotSharder(numShards)
 	campaignIDs := make([]uuid.UUID, numShards)
 	for i := range campaignIDs {
 		campaignIDs[i] = testutil.CampaignIDForShard(t, sharder, i)
@@ -58,7 +58,7 @@ func TestChaos_Shard0Outage(t *testing.T) {
 	}
 
 	registry := testutil.NewAdsRegistry(t, queries)
-	registry.SetBudgetWarmer(ads.NewBudgetCacheWarmer(rdbs, sharder))
+	registry.SetBudgetWarmer(ingestion.NewBudgetCacheWarmer(rdbs, sharder))
 	_, err = registry.Sync(ctx)
 	require.NoError(t, err)
 
@@ -76,8 +76,8 @@ func TestChaos_Shard0Outage(t *testing.T) {
 	partManager := database.NewPartitionManager(pool, 7, 2)
 	require.NoError(t, partManager.Run(ctx))
 
-	campaignRepo := ads.NewCampaignRepo(queries)
-	unifiedFilter := ads.NewUnifiedFilter(
+	campaignRepo := ingestion.NewCampaignRepo(queries)
+	unifiedFilter := ingestion.NewUnifiedFilter(
 		rdbs,
 		sharder,
 		registry,
@@ -91,8 +91,8 @@ func TestChaos_Shard0Outage(t *testing.T) {
 		"shard0-chaos-stream",
 		100000,
 	)
-	filterEngine := ads.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, unifiedFilter)
-	handler := ads.NewAdsPacketHandler(cfg, registry, filterEngine, pool, rdbs, sharder, cfg.FraudStreamName, nil)
+	filterEngine := ingestion.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, unifiedFilter)
+	handler := ingestion.NewAdsPacketHandler(cfg, registry, filterEngine, pool, rdbs, sharder, cfg.FraudStreamName, nil)
 	defer handler.Stop(ctx)
 
 	for i, campaignID := range campaignIDs {
@@ -159,7 +159,7 @@ func TestChaos_Shard0Outage(t *testing.T) {
 	})
 }
 
-func postClickCampaign(t *testing.T, h *ads.AdsPacketHandler, campaignID uuid.UUID, clickID string) (int, time.Duration) {
+func postClickCampaign(t *testing.T, h *ingestion.AdsPacketHandler, campaignID uuid.UUID, clickID string) (int, time.Duration) {
 	t.Helper()
 	start := time.Now()
 	payload := map[string]any{
@@ -170,7 +170,7 @@ func postClickCampaign(t *testing.T, h *ads.AdsPacketHandler, campaignID uuid.UU
 	}
 	body, err := json.Marshal(payload)
 	require.NoError(t, err)
-	status, _ := ads.PostTrackGnetJSON(h, body)
+	status, _ := ingestion.PostTrackGnetJSON(h, body)
 	return status, time.Since(start)
 }
 

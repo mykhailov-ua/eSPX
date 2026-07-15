@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
-	"espx/pkg/cold"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
+	"espx/pkg/coldpath"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -45,14 +45,14 @@ func (s *Service) CreateBrand(ctx context.Context, customerID uuid.UUID, name st
 	}
 
 	q := db.New(s.GetPool())
-	_, err = q.GetCustomerByID(ctx, ads.ToUUID(customerID))
+	_, err = q.GetCustomerByID(ctx, ingestion.ToUUID(customerID))
 	if err != nil {
 		return uuid.Nil, mapNotFound(err, ErrCustomerNotFound)
 	}
 
 	_, err = q.CreateBrand(ctx, db.CreateBrandParams{
-		ID:         ads.ToUUID(brandID),
-		CustomerID: ads.ToUUID(customerID),
+		ID:         ingestion.ToUUID(brandID),
+		CustomerID: ingestion.ToUUID(customerID),
 		Name:       name,
 	})
 	if err != nil {
@@ -65,7 +65,7 @@ func (s *Service) CreateBrand(ctx context.Context, customerID uuid.UUID, name st
 // GetBrandDTO loads a single brand for admin display and access checks.
 func (s *Service) GetBrandDTO(ctx context.Context, id uuid.UUID) (BrandDTO, error) {
 	q := db.New(s.GetPool())
-	b, err := q.GetBrand(ctx, ads.ToUUID(id))
+	b, err := q.GetBrand(ctx, ingestion.ToUUID(id))
 	if err != nil {
 		return BrandDTO{}, mapNotFound(err, ErrBrandNotFound)
 	}
@@ -75,26 +75,26 @@ func (s *Service) GetBrandDTO(ctx context.Context, id uuid.UUID) (BrandDTO, erro
 // ListBrandsByCustomer returns all brands owned by a customer for the admin UI.
 func (s *Service) ListBrandsByCustomer(ctx context.Context, customerID uuid.UUID) ([]BrandDTO, error) {
 	q := db.New(s.GetPool())
-	rows, err := q.ListBrandsByCustomer(ctx, ads.ToUUID(customerID))
+	rows, err := q.ListBrandsByCustomer(ctx, ingestion.ToUUID(customerID))
 	if err != nil {
 		return nil, err
 	}
 
-	return cold.MapSlice(rows, toBrandDTO), nil
+	return coldpath.MapSlice(rows, toBrandDTO), nil
 }
 
-// ConfigureBrandFcap updates brand-level frequency caps and notifies the hot path via cold.
+// ConfigureBrandFcap updates brand-level frequency caps and notifies the hot path via coldpath.
 func (s *Service) ConfigureBrandFcap(ctx context.Context, brandID uuid.UUID, limit, window int32) error {
 	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 
-		brand, err := q.GetBrandForUpdate(ctx, ads.ToUUID(brandID))
+		brand, err := q.GetBrandForUpdate(ctx, ingestion.ToUUID(brandID))
 		if err != nil {
 			return mapNotFound(err, ErrBrandNotFound)
 		}
 
 		err = q.ConfigureBrandFcap(ctx, db.ConfigureBrandFcapParams{
-			ID:         ads.ToUUID(brandID),
+			ID:         ingestion.ToUUID(brandID),
 			FreqLimit:  limit,
 			FreqWindow: window,
 		})
@@ -102,7 +102,7 @@ func (s *Service) ConfigureBrandFcap(ctx context.Context, brandID uuid.UUID, lim
 			return fmt.Errorf("failed to update brand fcap limits: %w", err)
 		}
 
-		payloadBytes, err := cold.MarshalJSON(map[string]any{
+		payloadBytes, err := coldpath.MarshalJSON(map[string]any{
 			"brand_id":    brandID.String(),
 			"freq_limit":  limit,
 			"freq_window": window,

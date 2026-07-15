@@ -1,0 +1,18 @@
+# alertmanager.yaml: routes firing Prometheus alerts to the Telegram webhook proxy.
+# Grouping reduces notification noise during incident bursts.
+
+global:
+  resolve_timeout: 5m  # time before a firing alert is declared resolved if no further samples arrive
+
+route:
+  group_by: ['alertname']
+  group_wait: 10s       # delay before sending the first notification in a new group; allows alert aggregation
+  group_interval: 10s   # minimum interval between notifications for the same group
+  repeat_interval: 1h   # minimum time before resending a notification for an alert still firing
+  receiver: 'management-webhook'
+
+receivers:
+- name: 'management-webhook'
+  webhook_configs:
+  - url: 'http://127.0.0.1:8188/ops/alertmanager/webhook'
+    send_resolved: true

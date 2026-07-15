@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -28,7 +28,7 @@ func TestEdge_RoundingAndSmallAmounts(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Management.CancellationFeePercent = 10.0
 	cfg.Lifecycle.WaitTimeoutMs = 1
-	svc := NewService(pool, []redis.UniversalClient{rdb}, ads.NewJumpHashSharder(1), cfg)
+	svc := NewService(pool, []redis.UniversalClient{rdb}, ingestion.NewJumpHashSharder(1), cfg)
 	defer svc.Close()
 
 	customerID := uuid.New()
@@ -65,7 +65,7 @@ func TestEdge_ResumingStuckSettlement(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Management.CancellationFeePercent = 10
 	cfg.Lifecycle.WaitTimeoutMs = 1
-	svc := NewService(pool, []redis.UniversalClient{rdb}, ads.NewJumpHashSharder(1), cfg)
+	svc := NewService(pool, []redis.UniversalClient{rdb}, ingestion.NewJumpHashSharder(1), cfg)
 	defer svc.Close()
 
 	customerID := uuid.New()
@@ -142,7 +142,7 @@ func TestEdge_OutboxPartialRedisFailure(t *testing.T) {
 	cfg := &config.Config{
 		CampaignUpdateChannel: "campaigns:update-test",
 	}
-	svc := NewService(pool, []redis.UniversalClient{wrappedRDB}, ads.NewJumpHashSharder(1), cfg)
+	svc := NewService(pool, []redis.UniversalClient{wrappedRDB}, ingestion.NewJumpHashSharder(1), cfg)
 	defer svc.Close()
 
 	ctx := context.Background()
@@ -200,7 +200,7 @@ func TestEdge_OutboxWorkerRecoveryOfProcessingEvents(t *testing.T) {
 	cfg := &config.Config{
 		CampaignUpdateChannel: "campaigns:update-test",
 	}
-	svc := NewService(pool, []redis.UniversalClient{rdb}, ads.NewJumpHashSharder(1), cfg)
+	svc := NewService(pool, []redis.UniversalClient{rdb}, ingestion.NewJumpHashSharder(1), cfg)
 	defer svc.Close()
 
 	ctx := context.Background()
@@ -269,7 +269,7 @@ func TestEdge_OutboxSetsRemainingBudget(t *testing.T) {
 	defer cleanupRedis()
 
 	cfg := &config.Config{CampaignUpdateChannel: "campaigns:update-test"}
-	svc := NewService(pool, []redis.UniversalClient{rdb}, ads.NewJumpHashSharder(1), cfg)
+	svc := NewService(pool, []redis.UniversalClient{rdb}, ingestion.NewJumpHashSharder(1), cfg)
 	defer svc.Close()
 
 	ctx := context.Background()

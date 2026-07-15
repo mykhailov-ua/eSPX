@@ -7,7 +7,7 @@ var castagnoli = crc32.MakeTable(crc32.Castagnoli)
 
 const slotMask = 1023
 
-// Slot returns the crc32 slot for a 16-byte campaign ID (matches ads.StaticSlotSharder).
+// Slot returns the crc32 slot for a 16-byte campaign ID (matches ingestion.StaticSlotSharder).
 func Slot(campaignID []byte) uint32 {
 	if len(campaignID) < 16 {
 		return 0

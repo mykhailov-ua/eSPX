@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/ingestion"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -54,7 +54,7 @@ func TestQuotaManager_refillCampaign_modes(t *testing.T) {
 			campaignID := uuid.New()
 			_, err := pool.Exec(ctx, `
 				INSERT INTO customers (id, name, balance, currency) VALUES ($1, 'quota-mode', 0, 'USD')`,
-				ads.ToUUID(customerID))
+				ingestion.ToUUID(customerID))
 			require.NoError(t, err)
 			seedQuotaChaosCampaign(t, pool, campaignID, customerID, 10_000_000)
 
@@ -70,7 +70,7 @@ func TestQuotaManager_refillCampaign_modes(t *testing.T) {
 			require.NoError(t, rdb.Set(ctx, lockKey, "1", 10*time.Second).Err())
 			require.NoError(t, qm.refillCampaign(ctx, campaignID, 0, rdb))
 
-			quotaRepo := ads.NewQuotaRepo(pool)
+			quotaRepo := ingestion.NewQuotaRepo(pool)
 			pgQuota, err := quotaRepo.GetQuota(ctx, svc.sharder, campaignID)
 			require.NoError(t, err)
 			require.Equal(t, tc.wantPGReserved, pgQuota.ReservedAmount)

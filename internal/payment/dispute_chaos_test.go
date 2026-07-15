@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
+	"espx/internal/ingestion"
 	"espx/internal/payment/db"
 
 	"github.com/google/uuid"
@@ -183,7 +183,7 @@ func TestChaos_PaymentDisputeWithdrawnThenReinstated(t *testing.T) {
 	processDisputeWebhook(t, infra.Pool, svc, "evt_dp_created_"+uuid.New().String(), "charge.dispute.created", seed.ProviderRef, disputeID, 32_000_000, "needs_response")
 	var intentStatus string
 	require.NoError(t, infra.Pool.QueryRow(ctx, `
-		SELECT status FROM payment.payment_intents WHERE id = $1`, ads.ToUUID(seed.IntentID)).Scan(&intentStatus))
+		SELECT status FROM payment.payment_intents WHERE id = $1`, ingestion.ToUUID(seed.IntentID)).Scan(&intentStatus))
 	require.Equal(t, "DISPUTED", intentStatus)
 
 	processDisputeWebhook(t, infra.Pool, svc, "evt_dp_withdrawn_"+uuid.New().String(), "charge.dispute.funds_withdrawn", seed.ProviderRef, disputeID, 32_000_000, "needs_response")
@@ -204,7 +204,7 @@ func TestChaos_PaymentDisputeWithdrawnThenReinstated(t *testing.T) {
 
 	processDisputeWebhook(t, infra.Pool, svc, "evt_dp_closed_"+uuid.New().String(), "charge.dispute.closed", seed.ProviderRef, disputeID, 32_000_000, "won")
 	require.NoError(t, infra.Pool.QueryRow(ctx, `
-		SELECT status FROM payment.payment_intents WHERE id = $1`, ads.ToUUID(seed.IntentID)).Scan(&intentStatus))
+		SELECT status FROM payment.payment_intents WHERE id = $1`, ingestion.ToUUID(seed.IntentID)).Scan(&intentStatus))
 	require.Equal(t, "SUCCEEDED", intentStatus)
 
 	logChaosProof(t, "dispute_withdrawn_then_reinstated", map[string]string{

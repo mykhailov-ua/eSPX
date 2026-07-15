@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"testing"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -58,17 +58,17 @@ func TestChaos_DeliveryOptimizerSingleWriter(t *testing.T) {
 		VALUES ($1, CURRENT_DATE, 1000, 5), ($2, CURRENT_DATE, 1000, 30)
 		ON CONFLICT (campaign_id, date) DO UPDATE
 		SET impressions_count = EXCLUDED.impressions_count, clicks_count = EXCLUDED.clicks_count`,
-		ads.ToUUID(lowID), ads.ToUUID(highID))
+		ingestion.ToUUID(lowID), ingestion.ToUUID(highID))
 	require.NoError(t, err)
 
-	_, err = pool.Exec(ctx, `UPDATE campaigns SET current_spend = daily_budget / 10, pacing_mode = 'EVEN' WHERE id = $1`, ads.ToUUID(lowID))
+	_, err = pool.Exec(ctx, `UPDATE campaigns SET current_spend = daily_budget / 10, pacing_mode = 'EVEN' WHERE id = $1`, ingestion.ToUUID(lowID))
 	require.NoError(t, err)
 
 	var maxIDBefore int64
 	require.NoError(t, pool.QueryRow(ctx, `SELECT COALESCE(MAX(id), 0) FROM outbox_events`).Scan(&maxIDBefore))
 
-	syncWorker := ads.NewSyncWorker(rdb, ads.NewCampaignRepo(db.New(pool)), ads.NewCustomerRepo(db.New(pool)), 0)
-	require.NoError(t, svc.RunDeliveryOptimizerTick(ctx, []*ads.SyncWorker{syncWorker}, false))
+	syncWorker := ingestion.NewSyncWorker(rdb, ingestion.NewCampaignRepo(db.New(pool)), ingestion.NewCustomerRepo(db.New(pool)), 0)
+	require.NoError(t, svc.RunDeliveryOptimizerTick(ctx, []*ingestion.SyncWorker{syncWorker}, false))
 
 	rows, err := pool.Query(ctx, `SELECT event_type, payload FROM outbox_events WHERE id > $1 ORDER BY id`, maxIDBefore)
 	require.NoError(t, err)

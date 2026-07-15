@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
+	"espx/internal/ingestion"
 	"espx/internal/payment/db"
 
 	"github.com/google/uuid"
@@ -162,7 +162,7 @@ func TestChaos_FinancialReconSettlementFailedIntent(t *testing.T) {
 	ctx := context.Background()
 	customerID := uuid.New()
 	_ = seedSucceededIntentWithOutbox(t, infra, customerID, 9_000_000, "chaos-recon-fail-"+uuid.New().String())
-	_, err := infra.Pool.Exec(ctx, `DELETE FROM customers WHERE id = $1`, ads.ToUUID(customerID))
+	_, err := infra.Pool.Exec(ctx, `DELETE FROM customers WHERE id = $1`, ingestion.ToUUID(customerID))
 	require.NoError(t, err)
 
 	worker := newOutboxWorkerForChaos(infra)

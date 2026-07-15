@@ -7,9 +7,9 @@ import (
 	"log/slog"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
-	"espx/pkg/cold"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
+	"espx/pkg/coldpath"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -45,7 +45,7 @@ func (s *Service) CreateCampaign(ctx context.Context, spec CampaignCreateSpec) (
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("idempotency lookup failed: %w", err)
 		}
-		cust, err := q.GetCustomerForUpdate(ctx, ads.ToUUID(spec.CustomerID))
+		cust, err := q.GetCustomerForUpdate(ctx, ingestion.ToUUID(spec.CustomerID))
 		if err != nil {
 			return mapNotFound(err, ErrCustomerNotFound)
 		}
@@ -56,35 +56,35 @@ func (s *Service) CreateCampaign(ctx context.Context, spec CampaignCreateSpec) (
 		var brandIDParam pgtype.UUID
 		brandFcapKey := "fcap:c:" + campaignID.String()
 		if spec.BrandID != nil {
-			brand, err := q.GetBrand(ctx, ads.ToUUID(*spec.BrandID))
+			brand, err := q.GetBrand(ctx, ingestion.ToUUID(*spec.BrandID))
 			if err != nil {
 				return mapNotFound(err, ErrBrandNotFound)
 			}
 			if uuid.UUID(brand.CustomerID.Bytes) != spec.CustomerID {
 				return ErrBrandBelongsToAnotherCustomer
 			}
-			brandIDParam = ads.ToUUID(*spec.BrandID)
+			brandIDParam = ingestion.ToUUID(*spec.BrandID)
 			brandFcapKey = "fcap:b:" + spec.BrandID.String()
 		}
 
 		var templateIDParam pgtype.UUID
 		if spec.TemplateID != nil {
-			templateIDParam = ads.ToUUID(*spec.TemplateID)
+			templateIDParam = ingestion.ToUUID(*spec.TemplateID)
 		}
 
 		if _, err = q.UpdateCustomerBalanceManagement(ctx, db.UpdateCustomerBalanceManagementParams{
-			ID:      ads.ToUUID(spec.CustomerID),
+			ID:      ingestion.ToUUID(spec.CustomerID),
 			Balance: -spec.BudgetLimit,
 		}); err != nil {
 			return err
 		}
 
 		_, err = q.CreateCampaign(ctx, db.CreateCampaignParams{
-			ID:              ads.ToUUID(campaignID),
+			ID:              ingestion.ToUUID(campaignID),
 			Name:            spec.Name,
 			BudgetLimit:     spec.BudgetLimit,
 			Status:          initialStatus,
-			CustomerID:      ads.ToUUID(spec.CustomerID),
+			CustomerID:      ingestion.ToUUID(spec.CustomerID),
 			PacingMode:      spec.PacingMode,
 			DailyBudget:     spec.DailyBudget,
 			Timezone:        spec.Timezone,
@@ -103,8 +103,8 @@ func (s *Service) CreateCampaign(ctx context.Context, spec CampaignCreateSpec) (
 		}
 
 		_, err = q.CreateLedgerEntry(ctx, db.CreateLedgerEntryParams{
-			CustomerID:      ads.ToUUID(spec.CustomerID),
-			CampaignID:      ads.ToUUID(campaignID),
+			CustomerID:      ingestion.ToUUID(spec.CustomerID),
+			CampaignID:      ingestion.ToUUID(campaignID),
 			Amount:          spec.BudgetLimit,
 			Type:            db.LedgerTypeFREEZE,
 			IdempotencyHash: pgtype.Text{String: spec.IdempotencyKey, Valid: true},
@@ -115,7 +115,7 @@ func (s *Service) CreateCampaign(ctx context.Context, spec CampaignCreateSpec) (
 		}
 
 		err = q.CreateStatusHistory(ctx, db.CreateStatusHistoryParams{
-			CampaignID: ads.ToUUID(campaignID),
+			CampaignID: ingestion.ToUUID(campaignID),
 			NewStatus:  initialStatus,
 			Reason:     pgtype.Text{String: "Campaign creation", Valid: true},
 		})
@@ -141,14 +141,14 @@ func (s *Service) CreateCampaign(ctx context.Context, spec CampaignCreateSpec) (
 func (s *Service) emitCampaignLifecycleOutbox(ctx context.Context, q db.Querier, campaignID uuid.UUID, status db.CampaignStatusType, budgetLimit int64) error {
 	switch status {
 	case db.CampaignStatusTypeACTIVE:
-		payload, err := cold.MarshalJSON(CampaignPayload{CampaignID: campaignID.String(), BudgetLimit: budgetLimit})
+		payload, err := coldpath.MarshalJSON(CampaignPayload{CampaignID: campaignID.String(), BudgetLimit: budgetLimit})
 		if err != nil {
 			return fmt.Errorf("marshal create campaign outbox payload: %w", err)
 		}
 		_, err = q.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{EventType: "CREATE_CAMPAIGN", Payload: payload})
 		return err
 	case db.CampaignStatusTypePAUSED:
-		payload, err := cold.MarshalJSON(CampaignPayload{CampaignID: campaignID.String()})
+		payload, err := coldpath.MarshalJSON(CampaignPayload{CampaignID: campaignID.String()})
 		if err != nil {
 			return fmt.Errorf("marshal pause campaign outbox payload: %w", err)
 		}
@@ -159,11 +159,11 @@ func (s *Service) emitCampaignLifecycleOutbox(ctx context.Context, q db.Querier,
 	}
 }
 
-// PauseCampaign stops delivery for an active campaign and notifies the hot path via cold.
+// PauseCampaign stops delivery for an active campaign and notifies the hot path via coldpath.
 func (s *Service) PauseCampaign(ctx context.Context, campaignID uuid.UUID, reason string) error {
 	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
-		camp, err := q.GetCampaignForUpdate(ctx, ads.ToUUID(campaignID))
+		camp, err := q.GetCampaignForUpdate(ctx, ingestion.ToUUID(campaignID))
 		if err != nil {
 			return mapNotFound(err, ErrCampaignNotFound)
 		}
@@ -174,12 +174,12 @@ func (s *Service) PauseCampaign(ctx context.Context, campaignID uuid.UUID, reaso
 			return fmt.Errorf("%w in status %s", ErrCampaignCannotBePaused, camp.Status)
 		}
 
-		_, err = q.PauseCampaign(ctx, ads.ToUUID(campaignID))
+		_, err = q.PauseCampaign(ctx, ingestion.ToUUID(campaignID))
 		if err != nil {
 			return err
 		}
 		err = q.CreateStatusHistory(ctx, db.CreateStatusHistoryParams{
-			CampaignID: ads.ToUUID(campaignID),
+			CampaignID: ingestion.ToUUID(campaignID),
 			OldStatus:  db.NullCampaignStatusType{CampaignStatusType: camp.Status, Valid: true},
 			NewStatus:  db.CampaignStatusTypePAUSED,
 			Reason:     pgtype.Text{String: reason, Valid: reason != ""},
@@ -194,7 +194,7 @@ func (s *Service) PauseCampaign(ctx context.Context, campaignID uuid.UUID, reaso
 		}
 		s.AuditLog(ctx, q, uid, "PAUSE_CAMPAIGN", "campaign", &campaignID, map[string]any{"reason": reason}, nil)
 
-		payload, err := cold.MarshalJSON(CampaignPayload{CampaignID: campaignID.String()})
+		payload, err := coldpath.MarshalJSON(CampaignPayload{CampaignID: campaignID.String()})
 		if err != nil {
 			return fmt.Errorf("marshal pause campaign outbox payload: %w", err)
 		}
@@ -207,7 +207,7 @@ func (s *Service) PauseCampaign(ctx context.Context, campaignID uuid.UUID, reaso
 func (s *Service) ResumeCampaign(ctx context.Context, campaignID uuid.UUID, reason string) error {
 	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
-		camp, err := q.GetCampaignForUpdate(ctx, ads.ToUUID(campaignID))
+		camp, err := q.GetCampaignForUpdate(ctx, ingestion.ToUUID(campaignID))
 		if err != nil {
 			return mapNotFound(err, ErrCampaignNotFound)
 		}
@@ -227,12 +227,12 @@ func (s *Service) ResumeCampaign(ctx context.Context, campaignID uuid.UUID, reas
 			return ErrCampaignOutsideSchedule
 		}
 
-		_, err = q.ResumeCampaign(ctx, ads.ToUUID(campaignID))
+		_, err = q.ResumeCampaign(ctx, ingestion.ToUUID(campaignID))
 		if err != nil {
 			return err
 		}
 		err = q.CreateStatusHistory(ctx, db.CreateStatusHistoryParams{
-			CampaignID: ads.ToUUID(campaignID),
+			CampaignID: ingestion.ToUUID(campaignID),
 			OldStatus:  db.NullCampaignStatusType{CampaignStatusType: camp.Status, Valid: true},
 			NewStatus:  db.CampaignStatusTypeACTIVE,
 			Reason:     pgtype.Text{String: reason, Valid: reason != ""},
@@ -247,7 +247,7 @@ func (s *Service) ResumeCampaign(ctx context.Context, campaignID uuid.UUID, reas
 		}
 		s.AuditLog(ctx, q, uid, "RESUME_CAMPAIGN", "campaign", &campaignID, map[string]any{"reason": reason}, nil)
 
-		payload, err := cold.MarshalJSON(CampaignPayload{CampaignID: campaignID.String(), BudgetLimit: camp.BudgetLimit})
+		payload, err := coldpath.MarshalJSON(CampaignPayload{CampaignID: campaignID.String(), BudgetLimit: camp.BudgetLimit})
 		if err != nil {
 			return fmt.Errorf("marshal resume campaign outbox payload: %w", err)
 		}
@@ -267,12 +267,12 @@ func (s *Service) UpdateCampaignSchedule(ctx context.Context, campaignID uuid.UU
 
 	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
-		locked, err := q.GetCampaignForUpdate(ctx, ads.ToUUID(campaignID))
+		locked, err := q.GetCampaignForUpdate(ctx, ingestion.ToUUID(campaignID))
 		if err != nil {
 			return err
 		}
 		_, err = q.UpdateCampaignSchedule(ctx, db.UpdateCampaignScheduleParams{
-			ID:           ads.ToUUID(campaignID),
+			ID:           ingestion.ToUUID(campaignID),
 			StartAt:      toTimestamptz(startAt),
 			EndAt:        toTimestamptz(endAt),
 			DaypartHours: daypartOrEmpty(daypartHours),
@@ -289,7 +289,7 @@ func (s *Service) UpdateCampaignSchedule(ctx context.Context, campaignID uuid.UU
 			"start_at": startAt, "end_at": endAt, "daypart_hours": daypartHours,
 		}, nil)
 
-		payload, err := cold.MarshalJSON(map[string]any{
+		payload, err := coldpath.MarshalJSON(map[string]any{
 			"campaign_id":   campaignID.String(),
 			"start_at":      startAt,
 			"end_at":        endAt,
@@ -317,14 +317,14 @@ func (s *Service) UpdateCampaignSchedule(ctx context.Context, campaignID uuid.UU
 // transitionCampaignStatus updates status, records history, and emits the matching lifecycle outbox event.
 func (s *Service) transitionCampaignStatus(ctx context.Context, q db.Querier, campaignID uuid.UUID, old, new db.CampaignStatusType, reason string, budget int64) error {
 	_, err := q.UpdateCampaignStatus(ctx, db.UpdateCampaignStatusParams{
-		ID:     ads.ToUUID(campaignID),
+		ID:     ingestion.ToUUID(campaignID),
 		Status: new,
 	})
 	if err != nil {
 		return err
 	}
 	err = q.CreateStatusHistory(ctx, db.CreateStatusHistoryParams{
-		CampaignID: ads.ToUUID(campaignID),
+		CampaignID: ingestion.ToUUID(campaignID),
 		OldStatus:  db.NullCampaignStatusType{CampaignStatusType: old, Valid: true},
 		NewStatus:  new,
 		Reason:     pgtype.Text{String: reason, Valid: true},
@@ -347,12 +347,12 @@ func (s *Service) CreateCampaignTemplate(ctx context.Context, customerID uuid.UU
 
 	var brandParam pgtype.UUID
 	if brandID != nil {
-		brandParam = ads.ToUUID(*brandID)
+		brandParam = ingestion.ToUUID(*brandID)
 	}
 
 	_, err = db.New(s.GetPool()).CreateCampaignTemplate(ctx, db.CreateCampaignTemplateParams{
-		ID:              ads.ToUUID(templateID),
-		CustomerID:      ads.ToUUID(customerID),
+		ID:              ingestion.ToUUID(templateID),
+		CustomerID:      ingestion.ToUUID(customerID),
 		Name:            name,
 		BudgetLimit:     budgetLimit,
 		PacingMode:      pacing,
@@ -370,13 +370,13 @@ func (s *Service) CreateCampaignTemplate(ctx context.Context, customerID uuid.UU
 // ListCampaignTemplates returns paginated templates for a customer's campaign library.
 func (s *Service) ListCampaignTemplates(ctx context.Context, customerID uuid.UUID, limit, offset int32) ([]CampaignTemplateDTO, int64, error) {
 	q := db.New(s.GetPool())
-	cid := ads.ToUUID(customerID)
+	cid := ingestion.ToUUID(customerID)
 	listParams := db.ListCampaignTemplatesParams{
 		CustomerID: cid,
 		Limit:      limit,
 		Offset:     offset,
 	}
-	return cold.PaginatedList(
+	return coldpath.PaginatedList(
 		func() (int64, error) { return q.CountCampaignTemplates(ctx, cid) },
 		func() ([]db.CampaignTemplate, error) { return q.ListCampaignTemplates(ctx, listParams) },
 		templateToDTO,
@@ -385,7 +385,7 @@ func (s *Service) ListCampaignTemplates(ctx context.Context, customerID uuid.UUI
 
 // CreateCampaignFromTemplate instantiates a live campaign from a stored template with optional overrides.
 func (s *Service) CreateCampaignFromTemplate(ctx context.Context, templateID uuid.UUID, customerID uuid.UUID, name string, budgetLimit *int64, idempotencyKey string) (uuid.UUID, error) {
-	tmpl, err := db.New(s.GetPool()).GetCampaignTemplate(ctx, ads.ToUUID(templateID))
+	tmpl, err := db.New(s.GetPool()).GetCampaignTemplate(ctx, ingestion.ToUUID(templateID))
 	if err != nil {
 		return uuid.Nil, mapNotFound(err, ErrTemplateNotFound)
 	}
@@ -457,7 +457,7 @@ func (s *Service) SaveCampaignAsTemplate(ctx context.Context, campaignID uuid.UU
 	)
 }
 
-// UpsertBrandCreative creates a weighted landing URL variant and queues a Redis sync via cold.
+// UpsertBrandCreative creates a weighted landing URL variant and queues a Redis sync via coldpath.
 func (s *Service) UpsertBrandCreative(ctx context.Context, brandID uuid.UUID, name, landingURL string, weight int32, status string) (uuid.UUID, error) {
 	if weight <= 0 {
 		return uuid.Nil, ErrWeightMustBePositive
@@ -476,12 +476,12 @@ func (s *Service) UpsertBrandCreative(ctx context.Context, brandID uuid.UUID, na
 
 	err = pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
-		if _, err := q.GetBrand(ctx, ads.ToUUID(brandID)); err != nil {
+		if _, err := q.GetBrand(ctx, ingestion.ToUUID(brandID)); err != nil {
 			return mapNotFound(err, ErrBrandNotFound)
 		}
 		_, err := q.CreateBrandCreative(ctx, db.CreateBrandCreativeParams{
-			ID:         ads.ToUUID(creativeID),
-			BrandID:    ads.ToUUID(brandID),
+			ID:         ingestion.ToUUID(creativeID),
+			BrandID:    ingestion.ToUUID(brandID),
 			Name:       name,
 			LandingUrl: landingURL,
 			Weight:     weight,
@@ -497,23 +497,23 @@ func (s *Service) UpsertBrandCreative(ctx context.Context, brandID uuid.UUID, na
 
 // ListBrandCreatives returns active and paused creatives for a brand.
 func (s *Service) ListBrandCreatives(ctx context.Context, brandID uuid.UUID) ([]BrandCreativeDTO, error) {
-	rows, err := db.New(s.GetPool()).ListBrandCreatives(ctx, ads.ToUUID(brandID))
+	rows, err := db.New(s.GetPool()).ListBrandCreatives(ctx, ingestion.ToUUID(brandID))
 	if err != nil {
 		return nil, err
 	}
-	return cold.MapSlice(rows, creativeToDTO), nil
+	return coldpath.MapSlice(rows, creativeToDTO), nil
 }
 
-// UpdateBrandCreative edits a creative and triggers hot-path resync via cold.
+// UpdateBrandCreative edits a creative and triggers hot-path resync via coldpath.
 func (s *Service) UpdateBrandCreative(ctx context.Context, creativeID uuid.UUID, name, landingURL string, weight int32, status string) error {
 	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
-		existing, err := q.GetBrandCreative(ctx, ads.ToUUID(creativeID))
+		existing, err := q.GetBrandCreative(ctx, ingestion.ToUUID(creativeID))
 		if err != nil {
 			return mapNotFound(err, ErrCreativeNotFound)
 		}
 		_, err = q.UpdateBrandCreative(ctx, db.UpdateBrandCreativeParams{
-			ID:         ads.ToUUID(creativeID),
+			ID:         ingestion.ToUUID(creativeID),
 			Name:       name,
 			LandingUrl: landingURL,
 			Weight:     weight,
@@ -526,15 +526,15 @@ func (s *Service) UpdateBrandCreative(ctx context.Context, creativeID uuid.UUID,
 	})
 }
 
-// DeleteBrandCreative removes a creative and triggers hot-path resync via cold.
+// DeleteBrandCreative removes a creative and triggers hot-path resync via coldpath.
 func (s *Service) DeleteBrandCreative(ctx context.Context, creativeID uuid.UUID) error {
 	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
-		existing, err := q.GetBrandCreative(ctx, ads.ToUUID(creativeID))
+		existing, err := q.GetBrandCreative(ctx, ingestion.ToUUID(creativeID))
 		if err != nil {
 			return mapNotFound(err, ErrCreativeNotFound)
 		}
-		if err := q.DeleteBrandCreative(ctx, ads.ToUUID(creativeID)); err != nil {
+		if err := q.DeleteBrandCreative(ctx, ingestion.ToUUID(creativeID)); err != nil {
 			return err
 		}
 		return s.emitBrandCreativesOutbox(ctx, q, uuid.UUID(existing.BrandID.Bytes))
@@ -543,7 +543,7 @@ func (s *Service) DeleteBrandCreative(ctx context.Context, creativeID uuid.UUID)
 
 // emitBrandCreativesOutbox queues a Redis refresh of weighted creatives for a brand.
 func (s *Service) emitBrandCreativesOutbox(ctx context.Context, q db.Querier, brandID uuid.UUID) error {
-	payload, err := cold.MarshalJSON(map[string]string{"brand_id": brandID.String()})
+	payload, err := coldpath.MarshalJSON(map[string]string{"brand_id": brandID.String()})
 	if err != nil {
 		return fmt.Errorf("marshal sync brand creatives outbox payload: %w", err)
 	}

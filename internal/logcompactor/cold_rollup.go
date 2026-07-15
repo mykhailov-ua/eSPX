@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"espx/internal/ads/pb"
+	"espx/internal/ingestion/pb"
 
 	"github.com/google/uuid"
 )

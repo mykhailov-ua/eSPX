@@ -3,8 +3,8 @@
 # Usage: gen.sh [--proto] [--templ] [--bpf] [--all]
 set -euo pipefail
 
-source "$(cd "$(dirname "$0")/../_common" && pwd)/paths.sh"
-source "$SCRIPTS/_common/safe_paths.sh"
+source "$(cd "$(dirname "$0")/../lib" && pwd)/paths.sh"
+source "$SCRIPTS/lib/safe_paths.sh"
 cd "$ROOT"
 
 safe_validate_codegen_configs
@@ -44,7 +44,7 @@ if [[ "$RUN_PROTO" -eq 1 ]]; then
 	safe_rm_rf "$ROOT/api/gen"
 	mkdir -p "$ROOT/api/gen"
 	# buf out: gen is relative to api/; running from repo root would write to $ROOT/gen.
-	( cd "$ROOT/api" && go run github.com/bufbuild/buf/cmd/buf@latest generate --template buf.gen.yml . )
+	( cd "$ROOT/api" && go run github.com/bufbuild/buf/cmd/buf@latest generate --template buf.gen.yaml . )
 	safe_sync_proto_gen
 	echo "gen: patch vtproto hot path..."
 	( cd "$ROOT" && go run ./scripts/codegen/patch_vtproto_hotpath )

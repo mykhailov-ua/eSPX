@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads/pb"
+	"espx/internal/ingestion/pb"
 
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus/testutil"

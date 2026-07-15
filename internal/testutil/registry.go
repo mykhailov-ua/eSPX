@@ -4,14 +4,14 @@ import (
 	"path/filepath"
 	"testing"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
 )
 
 // NewAdsRegistry isolates registry sync from production replica paths.
-func NewAdsRegistry(t testing.TB, repo db.Querier) *ads.Registry {
+func NewAdsRegistry(t testing.TB, repo db.Querier) *ingestion.Registry {
 	t.Helper()
-	r := ads.NewRegistry(repo)
+	r := ingestion.NewRegistry(repo)
 	r.SetReplicaPath(filepath.Join(t.TempDir(), "campaigns_replica.json"))
 	return r
 }

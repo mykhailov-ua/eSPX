@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"espx/internal/ads"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/ingestion"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -47,7 +47,7 @@ func TestAPI_GetCustomerBalance(t *testing.T) {
 		_, err := pool.Exec(context.Background(), `
 			INSERT INTO balance_ledger (customer_id, amount, type, idempotency_hash)
 			VALUES ($1, $2, 'TOPUP', $3)`,
-			ads.ToUUID(custID), int64((i+1)*1_000_000), fmt.Sprintf("hash-%d", i))
+			ingestion.ToUUID(custID), int64((i+1)*1_000_000), fmt.Sprintf("hash-%d", i))
 		require.NoError(t, err)
 	}
 
@@ -119,7 +119,7 @@ func TestAPI_ExportCustomerBalance_CSV(t *testing.T) {
 	require.NoError(t, svc.CreateCustomer(context.Background(), custID, "Export", 0, "USD"))
 	_, err := pool.Exec(context.Background(), `
 		INSERT INTO balance_ledger (customer_id, amount, type, idempotency_hash)
-		VALUES ($1, 1000000, 'TOPUP', 'export-1')`, ads.ToUUID(custID))
+		VALUES ($1, 1000000, 'TOPUP', 'export-1')`, ingestion.ToUUID(custID))
 	require.NoError(t, err)
 
 	req, _ := http.NewRequest("GET", "/api/v1/customers/"+custID.String()+"/balance/export?format=csv", nil)
@@ -158,7 +158,7 @@ func TestAPI_ExportCustomerBalance_BufferOverflowCap(t *testing.T) {
 		_, err := pool.Exec(context.Background(), `
 			INSERT INTO balance_ledger (customer_id, amount, type, idempotency_hash)
 			VALUES ($1, 1000, 'FEE', $2)`,
-			ads.ToUUID(custID), fmt.Sprintf("%s-%d", padding, i))
+			ingestion.ToUUID(custID), fmt.Sprintf("%s-%d", padding, i))
 		require.NoError(t, err)
 	}
 
@@ -231,7 +231,7 @@ func TestAPI_ExportCustomerBalance_CursorResume(t *testing.T) {
 		_, err := pool.Exec(context.Background(), `
 			INSERT INTO balance_ledger (customer_id, amount, type, idempotency_hash)
 			VALUES ($1, 1000, 'FEE', $2)`,
-			ads.ToUUID(custID), fmt.Sprintf("%s-%d", padding, i))
+			ingestion.ToUUID(custID), fmt.Sprintf("%s-%d", padding, i))
 		require.NoError(t, err)
 	}
 

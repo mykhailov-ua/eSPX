@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  lint:
+    name: Lint and comment style
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+      - name: Comment style (R9.1)
+        run: bash scripts/ci/check_comments.sh
+      - name: golangci-lint
+        run: make lint
+
+  full-test:
+    name: Full test suite (no -short)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Run full test suite
+        run: bash scripts/ci/full_test.sh
+
+  chaos:
+    name: Container chaos tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Run chaos suite
+        run: bash scripts/chaos-drills/test_chaos.sh
+
+  terraform-validate:
+    name: Terraform validate (local + staging)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.8'
+
+      - name: Validate local env
+        run: |
+          cd deploy/terraform/envs/local
+          terraform init -backend=false
+          terraform validate
+
+      - name: Validate staging env
+        run: |
+          cd deploy/terraform/envs/staging
+          terraform init -backend=false
+          terraform validate

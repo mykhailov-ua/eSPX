@@ -7,9 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"espx/internal/ads"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/ingestion"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
@@ -41,7 +41,7 @@ func TestValidateBidRequestAPI(t *testing.T) {
 	mux.ServeHTTP(resp, req)
 	require.Equal(t, http.StatusOK, resp.Code, resp.Body.String())
 
-	var result ads.OpenRTBValidationResultDTO
+	var result ingestion.OpenRTBValidationResultDTO
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
 	assert.True(t, result.Valid)
 	assert.Equal(t, "2.6", result.Version)

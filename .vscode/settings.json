@@ -1,0 +1,121 @@
+{
+  "files.associations": {
+    "*.yaml.tpl": "yaml",
+    "*.staging.tpl": "yaml",
+    ".cursorrules": "markdown",
+    "*.conf": "nginx",
+    "nginx.conf": "nginx",
+    "*.cron": "plaintext",
+    "Dockerfile": "dockerfile",
+    "*.rules.yaml": "yaml",
+    "prometheus*.yaml": "yaml",
+    "buf.yaml": "yaml",
+    "buf.gen.yaml": "yaml",
+    "sqlc.yaml": "yaml",
+    "lefthook.yaml": "yaml",
+    "Taskfile.yaml": "yaml",
+    ".golangci.yaml": "yaml"
+  },
+
+  "[go]": {
+    "editor.defaultFormatter": "golang.go"
+  },
+  "[yaml]": {
+    "editor.defaultFormatter": "redhat.vscode-yaml",
+    "editor.tabSize": 2,
+    "editor.insertSpaces": true
+  },
+  "[terraform]": {
+    "editor.defaultFormatter": "hashicorp.terraform"
+  },
+  "[terraform-vars]": {
+    "editor.defaultFormatter": "hashicorp.terraform"
+  },
+  "[hcl]": {
+    "editor.defaultFormatter": "hashicorp.terraform"
+  },
+  "[lua]": {
+    "editor.defaultFormatter": "sumneko.lua",
+    "editor.tabSize": 4,
+    "editor.insertSpaces": true
+  },
+  "[proto]": {
+    "editor.defaultFormatter": "bufbuild.vscode-buf"
+  },
+  "[dockercompose]": {
+    "editor.tabSize": 2,
+    "editor.insertSpaces": true
+  },
+  "[nginx]": {
+    "editor.tabSize": 4,
+    "editor.insertSpaces": true
+  },
+  "[shellscript]": {
+    "editor.tabSize": 2,
+    "editor.insertSpaces": true,
+    "editor.defaultFormatter": "foxundermoon.shell-format"
+  },
+  "[markdown]": {
+    "editor.wordWrap": "on",
+    "editor.quickSuggestions": {
+      "comments": "off",
+      "strings": "off",
+      "other": "off"
+    }
+  },
+  "[json]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.tabSize": 2,
+    "editor.insertSpaces": true
+  },
+  "[jsonc]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.tabSize": 2,
+    "editor.insertSpaces": true
+  },
+  "[sql]": {
+    "editor.tabSize": 2,
+    "editor.insertSpaces": true
+  },
+  "[toml]": {
+    "editor.defaultFormatter": "tamasfe.even-better-toml",
+    "editor.tabSize": 2,
+    "editor.insertSpaces": true
+  },
+  "[xml]": {
+    "editor.tabSize": 2,
+    "editor.insertSpaces": true
+  },
+  "[c]": {
+    "editor.tabSize": 4,
+    "editor.insertSpaces": true
+  },
+  "[python]": {
+    "editor.tabSize": 4,
+    "editor.insertSpaces": true
+  },
+  "[javascript]": {
+    "editor.tabSize": 2,
+    "editor.insertSpaces": true,
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[promql]": {
+    "editor.tabSize": 2,
+    "editor.insertSpaces": true
+  },
+
+  "yaml.schemaStore.enable": true,
+  "yaml.format.enable": true,
+  "terraform.languageServer.enable": true,
+  "Lua.workspace.checkThirdParty": false,
+
+  "markdownlint.config": {
+    "default": true,
+    "MD013": false,
+    "MD033": false
+  },
+  "shellformat.path": "shfmt",
+  "shellcheck.enable": true,
+  "sqltools.connections": [],
+  "sqltools.useNodeRuntime": true
+}

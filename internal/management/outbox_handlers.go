@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
-	"espx/pkg/cold"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
+	"espx/pkg/coldpath"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -69,13 +69,13 @@ func (w *OutboxWorker) handleOutboxEvent(opCtx, ctx context.Context, ev db.Outbo
 	case "PURGE_USER_DATA":
 		return w.handlePurgeUserData(ctx, ev.Payload)
 	case "ML_SCORE_BOOST":
-		return w.handleMLScoreBoost(ctx, ev.Payload)
+		return w.handleFraudScoreBoost(ctx, ev.Payload)
 	case "ML_GHOST_IVT":
-		return w.handleMLGhostIVT(ctx, ev.Payload)
+		return w.handleFraudGhostIVT(ctx, ev.Payload)
 	case "ML_BLACKLIST_ADD":
-		return w.handleMLBlacklistAdd(ctx, ev.Payload)
+		return w.handleFraudBlacklistAdd(ctx, ev.Payload)
 	case "ML_MODEL_VERSION":
-		return w.handleMLModelVersion(ctx, ev.Payload)
+		return w.handleFraudModelVersion(ctx, ev.Payload)
 	default:
 		return fmt.Errorf("unknown outbox event type: %s", ev.EventType)
 	}
@@ -83,7 +83,7 @@ func (w *OutboxWorker) handleOutboxEvent(opCtx, ctx context.Context, ev db.Outbo
 
 // handleCreateCampaign seeds Redis budget keys and publishes a campaign cache invalidation.
 func (w *OutboxWorker) handleCreateCampaign(ctx context.Context, payload []byte) error {
-	p, err := cold.UnmarshalStrict[CampaignPayload](payload)
+	p, err := coldpath.UnmarshalStrict[CampaignPayload](payload)
 	if err != nil {
 		return err
 	}
@@ -106,7 +106,7 @@ func (w *OutboxWorker) handleCreateCampaign(ctx context.Context, payload []byte)
 
 // handlePauseCampaign removes Redis budget keys when delivery stops.
 func (w *OutboxWorker) handlePauseCampaign(ctx context.Context, payload []byte) error {
-	p := cold.UnmarshalLenient[CampaignPayload](payload)
+	p := coldpath.UnmarshalLenient[CampaignPayload](payload)
 	if p.CampaignID == "" {
 		return nil
 	}
@@ -119,7 +119,7 @@ func (w *OutboxWorker) handlePauseCampaign(ctx context.Context, payload []byte) 
 
 // handleBudgetFreeze blocks hot-path debits without deleting budget keys (M1 priority lane).
 func (w *OutboxWorker) handleBudgetFreeze(ctx context.Context, payload []byte) error {
-	p := cold.UnmarshalLenient[CampaignPayload](payload)
+	p := coldpath.UnmarshalLenient[CampaignPayload](payload)
 	if p.CampaignID == "" {
 		return nil
 	}
@@ -131,7 +131,7 @@ func (w *OutboxWorker) handleBudgetFreeze(ctx context.Context, payload []byte) e
 	if rdb == nil {
 		return nil
 	}
-	if err := ads.SetBudgetFrozen(ctx, rdb, campUUID); err != nil {
+	if err := ingestion.SetBudgetFrozen(ctx, rdb, campUUID); err != nil {
 		return err
 	}
 	return w.svc.publishCampaignUpdate(ctx, p.CampaignID)
@@ -139,7 +139,7 @@ func (w *OutboxWorker) handleBudgetFreeze(ctx context.Context, payload []byte) e
 
 // handleResumeCampaign restores Redis budget keys when delivery resumes.
 func (w *OutboxWorker) handleResumeCampaign(ctx context.Context, payload []byte) error {
-	p := cold.UnmarshalLenient[CampaignPayload](payload)
+	p := coldpath.UnmarshalLenient[CampaignPayload](payload)
 	if p.CampaignID == "" {
 		return nil
 	}
@@ -152,7 +152,7 @@ func (w *OutboxWorker) handleResumeCampaign(ctx context.Context, payload []byte)
 
 // handleUpdateCampaignSchedule notifies the hot path that schedule metadata changed.
 func (w *OutboxWorker) handleUpdateCampaignSchedule(ctx context.Context, payload []byte) error {
-	p := cold.UnmarshalLenient[campaignIDPayload](payload)
+	p := coldpath.UnmarshalLenient[campaignIDPayload](payload)
 	if p.CampaignID == "" {
 		return nil
 	}
@@ -164,7 +164,7 @@ func (w *OutboxWorker) handleUpdateCampaignSchedule(ctx context.Context, payload
 
 // handleUpdateCampaignFraud notifies trackers that fraud thresholds or behavior flags changed.
 func (w *OutboxWorker) handleUpdateCampaignFraud(ctx context.Context, payload []byte) error {
-	p := cold.UnmarshalLenient[campaignIDPayload](payload)
+	p := coldpath.UnmarshalLenient[campaignIDPayload](payload)
 	if p.CampaignID == "" {
 		return nil
 	}
@@ -176,7 +176,7 @@ func (w *OutboxWorker) handleUpdateCampaignFraud(ctx context.Context, payload []
 
 // handleSyncBrandCreatives refreshes weighted landing URLs in Redis for a brand.
 func (w *OutboxWorker) handleSyncBrandCreatives(ctx context.Context, payload []byte) error {
-	p := cold.UnmarshalLenient[brandIDPayload](payload)
+	p := coldpath.UnmarshalLenient[brandIDPayload](payload)
 	if p.BrandID == "" {
 		return nil
 	}
@@ -185,7 +185,7 @@ func (w *OutboxWorker) handleSyncBrandCreatives(ctx context.Context, payload []b
 
 // handleCancelCampaign clears Redis budget state when a campaign enters draining cancellation.
 func (w *OutboxWorker) handleCancelCampaign(ctx context.Context, payload []byte) error {
-	p := cold.UnmarshalLenient[CampaignPayload](payload)
+	p := coldpath.UnmarshalLenient[CampaignPayload](payload)
 	if p.CampaignID == "" {
 		return nil
 	}
@@ -198,7 +198,7 @@ func (w *OutboxWorker) handleCancelCampaign(ctx context.Context, payload []byte)
 
 // handleUpdateCampaignPacing writes pacing mode to Redis and invalidates campaign caches.
 func (w *OutboxWorker) handleUpdateCampaignPacing(ctx context.Context, payload []byte) error {
-	p := cold.UnmarshalLenient[campaignPacingPayload](payload)
+	p := coldpath.UnmarshalLenient[campaignPacingPayload](payload)
 	if p.CampaignID == "" {
 		return nil
 	}
@@ -222,7 +222,7 @@ func (w *OutboxWorker) handleUpdateCampaignPacing(ctx context.Context, payload [
 
 // handleUpdateSettings pushes system settings and a monotonic version to Redis config keys.
 func (w *OutboxWorker) handleUpdateSettings(opCtx context.Context, eventID int64, payload []byte) error {
-	p, err := cold.UnmarshalStrict[SettingsPayload](payload)
+	p, err := coldpath.UnmarshalStrict[SettingsPayload](payload)
 	if err != nil {
 		return err
 	}
@@ -234,7 +234,7 @@ func (w *OutboxWorker) handleUpdateSettings(opCtx context.Context, eventID int64
 
 // handleUpdateBlacklist applies an IP block or unblock to every Redis shard.
 func (w *OutboxWorker) handleUpdateBlacklist(ctx context.Context, payload []byte) error {
-	p, err := cold.UnmarshalStrict[BlacklistPayload](payload)
+	p, err := coldpath.UnmarshalStrict[BlacklistPayload](payload)
 	if err != nil {
 		return err
 	}
@@ -243,7 +243,7 @@ func (w *OutboxWorker) handleUpdateBlacklist(ctx context.Context, payload []byte
 
 // handleConfigureBrandFcap invalidates active campaigns when brand frequency caps change.
 func (w *OutboxWorker) handleConfigureBrandFcap(ctx context.Context, payload []byte) error {
-	p, err := cold.UnmarshalStrict[brandIDPayload](payload)
+	p, err := coldpath.UnmarshalStrict[brandIDPayload](payload)
 	if err != nil {
 		return err
 	}
@@ -333,7 +333,7 @@ type purgeUserDataPayload struct {
 }
 
 func (w *OutboxWorker) handleSyncUserConsent(ctx context.Context, payload []byte) error {
-	p, err := cold.UnmarshalStrict[userConsentOutboxPayload](payload)
+	p, err := coldpath.UnmarshalStrict[userConsentOutboxPayload](payload)
 	if err != nil {
 		return err
 	}
@@ -341,7 +341,7 @@ func (w *OutboxWorker) handleSyncUserConsent(ctx context.Context, payload []byte
 }
 
 func (w *OutboxWorker) handleUpdateCampaignConsent(ctx context.Context, payload []byte) error {
-	p := cold.UnmarshalLenient[campaignIDPayload](payload)
+	p := coldpath.UnmarshalLenient[campaignIDPayload](payload)
 	if p.CampaignID == "" {
 		return nil
 	}
@@ -352,7 +352,7 @@ func (w *OutboxWorker) handleUpdateCampaignConsent(ctx context.Context, payload 
 }
 
 func (w *OutboxWorker) handlePurgeUserData(ctx context.Context, payload []byte) error {
-	p, err := cold.UnmarshalStrict[purgeUserDataPayload](payload)
+	p, err := coldpath.UnmarshalStrict[purgeUserDataPayload](payload)
 	if err != nil {
 		return err
 	}
@@ -364,9 +364,9 @@ func (w *OutboxWorker) handlePurgeUserData(ctx context.Context, payload []byte) 
 	return w.svc.MarkErasureRedisPurgeDone(ctx, erasureID, purgeErr)
 }
 
-// handleMLScoreBoost sets the ML score boost for a campaign across all Redis shards.
-func (w *OutboxWorker) handleMLScoreBoost(ctx context.Context, payload []byte) error {
-	p, err := cold.UnmarshalStrict[MLThreatPayload](payload)
+// handleFraudScoreBoost sets the fraud score boost for a campaign across all Redis shards.
+func (w *OutboxWorker) handleFraudScoreBoost(ctx context.Context, payload []byte) error {
+	p, err := coldpath.UnmarshalStrict[FraudThreatPayload](payload)
 	if err != nil {
 		return err
 	}
@@ -401,9 +401,9 @@ func (w *OutboxWorker) handleMLScoreBoost(ctx context.Context, payload []byte) e
 	return w.svc.publishCampaignUpdate(ctx, p.CampaignID)
 }
 
-// handleMLGhostIVT enables the ghost IVT flag for a campaign in the database and invalidates caches.
-func (w *OutboxWorker) handleMLGhostIVT(ctx context.Context, payload []byte) error {
-	p, err := cold.UnmarshalStrict[MLThreatPayload](payload)
+// handleFraudGhostIVT enables the ghost IVT flag for a campaign in the database and invalidates caches.
+func (w *OutboxWorker) handleFraudGhostIVT(ctx context.Context, payload []byte) error {
+	p, err := coldpath.UnmarshalStrict[FraudThreatPayload](payload)
 	if err != nil {
 		return err
 	}
@@ -425,9 +425,9 @@ func (w *OutboxWorker) handleMLGhostIVT(ctx context.Context, payload []byte) err
 	return w.svc.publishCampaignUpdate(ctx, p.CampaignID)
 }
 
-// handleMLBlacklistAdd blocks an IP using the standard management BlockIPWithTTL mechanism.
-func (w *OutboxWorker) handleMLBlacklistAdd(ctx context.Context, payload []byte) error {
-	p, err := cold.UnmarshalStrict[MLThreatPayload](payload)
+// handleFraudBlacklistAdd blocks an IP using the standard management BlockIPWithTTL mechanism.
+func (w *OutboxWorker) handleFraudBlacklistAdd(ctx context.Context, payload []byte) error {
+	p, err := coldpath.UnmarshalStrict[FraudThreatPayload](payload)
 	if err != nil {
 		return err
 	}
@@ -438,9 +438,9 @@ func (w *OutboxWorker) handleMLBlacklistAdd(ctx context.Context, payload []byte)
 	return w.svc.BlockIPWithTTL(ctx, p.IP, "fraud", &ttl)
 }
 
-// handleMLModelVersion propagates model version and hash to specific or all Redis shards.
-func (w *OutboxWorker) handleMLModelVersion(ctx context.Context, payload []byte) error {
-	p, err := cold.UnmarshalStrict[MLModelVersionPayload](payload)
+// handleFraudModelVersion propagates model version and hash to specific or all Redis shards.
+func (w *OutboxWorker) handleFraudModelVersion(ctx context.Context, payload []byte) error {
+	p, err := coldpath.UnmarshalStrict[FraudModelVersionPayload](payload)
 	if err != nil {
 		return err
 	}
@@ -479,4 +479,3 @@ func (w *OutboxWorker) handleMLModelVersion(ctx context.Context, payload []byte)
 
 	return nil
 }
-

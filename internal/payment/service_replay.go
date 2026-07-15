@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"espx/internal/payment/db"
-	"espx/pkg/cold"
+	"espx/pkg/coldpath"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -29,7 +29,7 @@ func (service *Service) ListDisputes(ctx context.Context, customerID *uuid.UUID,
 		Offset:     offset,
 		CustomerID: cust,
 	}
-	intents, total, err := cold.PaginatedQuery(
+	intents, total, err := coldpath.PaginatedQuery(
 		func() (int64, error) { return q.CountDisputedPaymentIntents(ctx, cust) },
 		func() ([]db.PaymentPaymentIntent, error) { return q.ListDisputedPaymentIntents(ctx, listParams) },
 	)
@@ -76,7 +76,7 @@ func (service *Service) ReplayWebhook(ctx context.Context, provider, providerEve
 	}
 
 	body := ev.PayloadRedacted
-	event, err := cold.DecodeBody[stripeEvent](body)
+	event, err := coldpath.DecodeBody[stripeEvent](body)
 	if err != nil {
 		return "", fmt.Errorf("decode stored webhook payload: %w", err)
 	}

@@ -3,7 +3,7 @@ syntax = "proto3";
 // Wire format for tracker ingest and processor streams; bytes fields avoid UTF-8 validation on the hot path.
 package ads.v1;
 
-option go_package = "espx/internal/ads/pb;pb";
+option go_package = "espx/internal/ingestion/pb;pb";
 
 message AdEvent {
   bytes campaign_id = 1;

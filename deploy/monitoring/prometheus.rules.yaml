@@ -1,0 +1,624 @@
+# prometheus.rules.yaml: SLO and incident alerts for tracker hot path and processor cold path.
+# Rules favor actionable signals (breaker open, DLQ growth, budget miss) over raw error counts.
+
+groups:
+  - name: ad-event-processor-alerts
+    rules:
+      # Processor stopped writing to DB and is spilling batches to the DLQ stream.
+      - alert: CircuitBreakerOpen
+        expr: ad_circuit_breaker_state == 1
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Circuit Breaker is OPEN"
+          description: "Database write failures detected. Processor is routing event batches directly to the Dead Letter Queue (DLQ)."
+
+      # Per-shard Redis breaker open; tracker filter fast-fails with 503 until half-open probe succeeds.
+      - alert: RedisBreakerOpen
+        expr: ad_redis_breaker_state == 1
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis shard circuit breaker is OPEN"
+          description: "Shard {{ $labels.shard }} Redis circuit breaker has been open for 30s. Hot-path filter calls are fast-failing with 503."
+
+      # Sustained PG or ClickHouse write errors on the processor path.
+      - alert: DatabaseWriteErrors
+        expr: rate(ad_db_write_errors_total[1m]) > 0
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Database write errors detected"
+          description: "Processor has encountered write errors when storing event batches to PostgreSQL or ClickHouse."
+
+      # Any DLQ depth means events need operator inspect or requeue before data loss ages out.
+      - alert: DeadLetterQueueSpike
+        expr: ad_dlq_size_total > 0
+        for: 10s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Dead Letter Queue is not empty"
+          description: "Events are active in the Dead Letter Queue. Action required to inspect and replay raw event payloads."
+
+      # End-to-end /track latency regression at the Go handler (not nginx-only).
+      # SLA targets: p95 < 50ms, p99 < 80ms, hard ceiling 100ms (.cursorrules).
+      - alert: TrackerLatencyP95Warning
+        expr: histogram_quantile(0.95, sum(rate(ad_http_request_duration_seconds_bucket[5m])) by (le)) > 0.05
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Tracker p95 latency above SLA target (50ms)"
+          description: "p95 HTTP request duration at the Go tracker edge exceeds 50ms. Review Redis RTT, filter timeout, and worker pool saturation."
+
+      - alert: TrackerLatencyP99Critical
+        expr: histogram_quantile(0.99, sum(rate(ad_http_request_duration_seconds_bucket[5m])) by (le)) > 0.08
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Tracker p99 latency above SLA target (80ms)"
+          description: "p99 HTTP request duration at the Go tracker edge exceeds 80ms (100ms hard ceiling). Immediate investigation required."
+
+      - alert: HighRequestLatency
+        expr: histogram_quantile(0.95, sum(rate(ad_http_request_duration_seconds_bucket[5m])) by (le)) > 0.5
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Catastrophic HTTP request latency detected"
+          description: "p95 HTTP request duration at the Go tracker edge is above 500ms."
+
+      # Lua scripts block the Redis shard; high p99 here directly caps ingest RPS per shard.
+      - alert: RedisLuaLatencyHigh
+        expr: histogram_quantile(0.99, sum(rate(ad_redis_lua_duration_seconds_bucket[5m])) by (le, shard)) > 0.01
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis Lua filter p99 above 10ms"
+          description: "Shard {{ $labels.shard }} unified-filter.lua p99 exceeds 10ms. Lua scripts run atomically and block the shard during execution (https://redis.io/docs/interact/programmability/eval-intro/)."
+
+      # EVALSHA miss after Redis restart; fix with SCRIPT LOAD on tracker startup.
+      - alert: RedisLuaNoScriptFallback
+        expr: rate(ad_redis_lua_noscript_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis EVALSHA NOSCRIPT fallback detected"
+          description: "Shard {{ $labels.shard }} is falling back from EVALSHA to EVAL. Run SCRIPT LOAD on startup or after Redis restart (https://redis.io/docs/interact/programmability/eval-intro/#evalsha)."
+          runbook_url: "https://github.com/mykhailov-ua/espx/blob/main/docs/DEVELOPMENT.md#redis-restart-runbook"
+
+      # unified-filter.lua never loaded on a shard; all budget checks will fail closed or error.
+      - alert: RedisLuaScriptNotLoaded
+        expr: ad_redis_lua_script_loaded == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Unified filter Lua script not loaded on shard"
+          description: "Shard {{ $labels.shard }} missing SCRIPT LOAD for unified-filter.lua."
+          runbook_url: "https://github.com/mykhailov-ua/espx/blob/main/docs/DEVELOPMENT.md#redis-restart-runbook"
+
+      # Nightly or periodic PG vs Redis ledger reconciliation worker failed.
+      - alert: ReconciliationFailed
+        expr: rate(ad_reconciliation_runs_total{status="failed"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Financial reconciliation job failed"
+          description: "The background reconciliation worker failed to complete a run, indicating database or Redis pool communication errors on the cold path."
+
+      # Financial drift between Postgres spend and Redis budget accumulators.
+      - alert: ReconciliationDiscrepancySpike
+        expr: rate(ad_reconciliation_discrepancies_total[5m]) > 5
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High number of financial discrepancies detected"
+          description: "Automated reconciliation detected more than 5 campaign financial discrepancies in the last 5 minutes. Audit trails and ledger logs should be inspected for edge sync anomalies."
+
+      # Hot path fell through to Postgres for budget because Redis key was cold or evicted.
+      - alert: BudgetCacheMissPG
+        expr: rate(ad_budget_cache_miss_pg_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Budget cache miss falling through to PostgreSQL"
+          description: "Hot-path unified filter resolved budget keys via PostgreSQL GetByID. Redis warm path is stale or keys were evicted."
+
+      # Sustained Lua budget miss ratio; warmer or registry sync is behind ingest.
+      - alert: BudgetCacheMissRatioHigh
+        expr: |
+          sum(rate(ad_budget_cache_miss_total[5m]))
+          /
+          clamp_min(sum(rate(ad_http_requests_total[5m])), 0.001)
+          > 0.001
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Budget cache miss ratio above 0.1%"
+          description: "Lua budget key miss rate (return -1) exceeds 0.1% of HTTP request rate. Check registry sync lag and budget warmer."
+
+      # Audit log ring buffer saturated; sampled audit trail is being dropped on accept path.
+      - alert: HandlerLogDrop
+        expr: rate(ad_handler_log_drop_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Audit log writes dropped on hot path"
+          description: "Accepted events had audit log writes dropped because the logger ring buffer is full. Increase ring capacity, tighten AUDIT_LOG_SAMPLE_RATE (default 127 = 1/128 impressions), or reduce log volume."
+
+      # Pinned worker pool queue full; tracker is actively shedding load.
+      - alert: WorkerPoolReject
+        expr: rate(ad_worker_pool_reject_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pinned worker pool rejecting requests"
+          description: "Requests rejected because the pinned worker pool queue is full. Hot-path backpressure is active; scale workers or reduce ingress."
+
+      # Unhandled panics or filter bugs surfacing as 500 on /track.
+      - alert: HTTP500RateHigh
+        expr: sum(rate(ad_http_requests_total{status="500"}[5m])) > 0.001
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "HTTP 500 error rate above threshold"
+          description: "Internal server error rate on /track exceeds 0.001 req/s. Inspect tracker logs and recent deploys."
+
+      # Upstream or worker saturation causing gateway timeouts at the edge.
+      - alert: HTTP504RateHigh
+        expr: sum(rate(ad_http_requests_total{status="504"}[5m])) > 0.01
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "HTTP 504 gateway timeout rate above threshold"
+          description: "Gateway timeout rate on /track exceeds 0.01 req/s. Check upstream latency and worker pool saturation."
+
+      # MaxMind lookup failures spiked vs prior hour or absolute error budget.
+      - alert: FilterGeoLookupErrorSpike
+        expr: |
+          sum(rate(ad_filter_internal_errors_total{kind="geo_lookup"}[5m])) > 0
+          and
+          (
+            sum(rate(ad_filter_internal_errors_total{kind="geo_lookup"}[5m]))
+            >
+            10 * sum(rate(ad_filter_internal_errors_total{kind="geo_lookup"}[1h] offset 1h))
+            or
+            sum(increase(ad_filter_internal_errors_total{kind="geo_lookup"}[5m])) > 50
+          )
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Geo lookup error spike in filter engine"
+          description: "Geo provider failures spiked relative to the prior hour baseline or exceeded 50 errors in 5m. Check MaxMind DB freshness and ad_geo_provider_status."
+
+      # Geo filter latency regression; often mmdb mount or campaign geo targeting share shift.
+      - alert: FilterGeoLatencyHigh
+        expr: histogram_quantile(0.99, sum(rate(ad_filter_geo_duration_seconds_bucket[5m])) by (le)) > 0.00001
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Geo filter p99 above 10us"
+          description: "MaxMind country lookup p99 exceeds 10us on sampled observations. Review TargetCountries campaign share and mmdb mount."
+
+      # Clicks accepted without impression timestamp while TTC fail-open is enabled.
+      - alert: TTCBypassRateHigh
+        expr: |
+          sum(rate(ad_ttc_bypass_total[5m]))
+          /
+          clamp_min(sum(rate(ad_http_requests_total{path="/track"}[5m])), 0.001)
+          > 0.01
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TTC fail-open bypass rate above 1%"
+          description: "More than 1% of /track requests are clicks accepted without impression timestamp (Redis imp_ts missing). Review Redis health before enabling TTC_FAIL_CLOSED."
+
+  - name: management-cold-path-alerts
+    rules:
+      # Outbox backlog aging: Postgres changes not yet mirrored to Redis hot-path keys.
+      - alert: ManagementOutboxLagHigh
+        expr: ad_management_outbox_oldest_pending_seconds > 30
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Management outbox lag above 30s"
+          description: "Oldest PENDING outbox event is {{ $value | humanizeDuration }} old. Hot-path Redis may be stale vs Postgres."
+          runbook_url: "https://github.com/mykhailov-ua/espx/blob/main/docs/DEVELOPMENT.md#post-deploy-redis-reconciliation"
+
+      # Tracker /health DEGRADED: postgres or redis shard ping failure on any replica.
+      - alert: TrackerHealthDegraded
+        expr: ad_tracker_health_degraded == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Tracker health probe DEGRADED"
+          description: "Tracker /health reports DEGRADED (postgres or redis shard unreachable). Check ad_tracker_redis_shard_healthy and /health body redis= shard map."
+          runbook_url: "https://github.com/mykhailov-ua/espx/blob/main/docs/DEVELOPMENT.md#shard-down-blast-radius"
+
+      # Single shard unhealthy while aggregate health may still pass if probe logic differs.
+      - alert: TrackerRedisShardUnhealthy
+        expr: ad_tracker_redis_shard_healthy == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Tracker redis shard {{ $labels.shard }} unhealthy"
+          description: "Health probe cannot ping redis shard {{ $labels.shard }}. Campaigns on this shard will 503 at filter stage."
+
+  - name: broker-alerts
+    rules:
+      - alert: BrokerSplitBrain
+        expr: sum by (topic) (ad_broker_active_leader) > 1
+        for: 10s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Multiple broker leaders for topic {{ $labels.topic }}"
+          description: "More than one broker node reports active leadership for the same topic. Investigate Redis partition or stale leader."
+
+      - alert: BrokerReplicationLagHigh
+        expr: ad_broker_replication_lag_messages > 1000
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Broker replication lag high for {{ $labels.topic }}"
+          description: "Follower is more than 1000 messages behind published log_hwm."
+
+      - alert: BrokerLeaderNotReady
+        expr: ad_broker_active_leader == 1 and ad_broker_leader_ready == 0
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Broker leader not ready for {{ $labels.topic }}"
+          description: "Elected leader on {{ $labels.node_id }} has not caught up to log_hwm and is rejecting produce (status 6)."
+
+      - alert: BrokerDiskNotWritable
+        expr: ad_broker_disk_writable == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Broker data directory not writable"
+          description: "Broker /healthz will return 503 until disk probe recovers."
+
+      - alert: BrokerDiskUsageHigh
+        expr: ad_broker_retention_disk_usage_bytes > 8589934592
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Broker disk usage above 8GiB for {{ $labels.topic }}"
+          description: "Retention disk usage is high; verify consumer lag and retention policy."
+
+      - alert: BrokerLeaderElectionStorm
+        expr: increase(ad_broker_leader_election_total[5m]) > 3
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Frequent broker leader elections on {{ $labels.topic }}"
+          description: "More than 3 leader term changes in 5 minutes. Check Redis latency and lease TTL."
+
+      - alert: BrokerConsumerLagHigh
+        expr: ad_broker_consumer_lag_messages > 10000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Broker consumer lag high for {{ $labels.topic }}/{{ $labels.group }}"
+          description: "Committed offset is far behind broker log high watermark."
+
+      - alert: BrokerIngestDivergenceHigh
+        expr: ad_broker_ingest_divergence_high == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Broker vs Redis ingest divergence on {{ $labels.topic }}"
+          description: "Shadow validation detected Redis stream depth diverging from broker committed offset."
+
+      # In-process RTB auction latency (subsystem budget: p99 < 15µs per .cursorrules).
+      - alert: RtbAuctionLatencyHigh
+        expr: histogram_quantile(0.99, sum(rate(ad_rtb_auction_duration_seconds_bucket[5m])) by (le)) > 0.000015
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RTB in-process auction p99 above 15µs"
+          description: "RTB RunAuction p99 exceeds the in-process SLA budget. Check dense geo shards and catalog size."
+
+      - alert: RtbAuctionCandidatesScannedHigh
+        expr: histogram_quantile(0.99, sum(rate(ad_rtb_auction_candidates_scanned_bucket[5m])) by (le)) > 500
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RTB auction scanning too many candidates per request"
+          description: "p99 candidates scanned exceeds 500. Review geo shard density and campaign distribution."
+
+      - alert: RtbAuctionCorruptCatalog
+        expr: rate(ad_rtb_auction_no_bid_total{reason="corrupt_catalog"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RTB corrupt catalog detected on hot path"
+          description: "Auctions are rejecting due to catalog slice/count mismatch. Check registry sync and snapshot integrity."
+
+      - alert: RtbShadowWinnerMismatchHigh
+        expr: |
+          sum(rate(ad_rtb_shadow_winner_mismatch_total[5m]))
+          /
+          clamp_min(sum(rate(ad_http_requests_total[5m])), 0.001)
+          > 0.05
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RTB shadow winner mismatch rate above 5%"
+          description: "Shadow eval winners diverge from client campaign_id on more than 5% of requests. Do not promote to live until catalog inputs and targeting are validated."
+
+      - alert: RtbBudgetSpendRejectedSpike
+        expr: rate(ad_rtb_budget_spend_rejected_total[5m]) > 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RTB CAS spend rejections elevated"
+          description: "Winners are losing final budget debits. Check budget sync lag and concurrent spend races."
+
+      - alert: RtbBudgetReconcileHigh
+        expr: ad_rtb_budget_reconcile_high == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis and RTB campaign budgets diverged"
+          description: "Sampled Redis budget keys differ from in-process RTB store beyond threshold. Check SyncRTBBudgetState and reconcile worker."
+
+  - name: espx_edge_alerts
+    rules:
+      - alert: EdgeIpBlockRateHigh
+        expr: sum(rate(espx_edge_blocked_ip_total[1m])) > 500
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High volume of IP blocks at Edge"
+          description: "Nginx is dropping more than 500 requests/sec via IP blacklist. Potential DDoS in progress."
+
+      - alert: EdgeBlacklistSyncStale
+        expr: espx_edge_sync_last_success_timestamp > 0 and (time() - espx_edge_sync_last_success_timestamp > 60)
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Edge blacklist sync is stale"
+          description: "Nginx worker failed to sync blacklist from Redis for more than 60 seconds. Check Redis Shard 0 availability."
+
+      - alert: EdgeCampaignRlBlockRateHigh
+        expr: sum(rate(espx_edge_blocked_campaign_rl_total[1m])) > 200
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High per-campaign edge rate-limit blocks"
+          description: "OpenResty edge_rl is rejecting more than 200 requests/sec. Review campaign limits or abuse on hot campaigns."
+
+      - alert: EdgeStreamModeBodyRead
+        expr: rate(espx_edge_body_read_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Edge body read in stream mode"
+          description: "espx_edge_body_read_total is non-zero while EDGE_BODY_MODE=stream is expected. Phase-2 may be reading bodies unintentionally."
+
+      - alert: EdgeCircuitBreakerRejectHigh
+        expr: sum(rate(espx_edge_circuit_reject_total[1m])) > 10
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Edge circuit breaker rejecting /track traffic"
+          description: "OpenResty edge circuit breaker returned 503 on more than 10 req/s for 2m. Check upstream tracker health and Redis error rate."
+
+      - alert: EdgeTrack503RateHigh
+        expr: |
+          (
+            sum(rate(espx_edge_circuit_reject_total[1m]))
+            + sum(rate(espx_edge_blacklist_stale_total[1m]))
+          ) > 25
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High edge 503 rate on /track"
+          description: "Combined edge circuit-breaker and stale-blacklist 503 rejects exceed 25/s. Legit traffic may be blocked before reaching tracker."
+
+  - name: notifier-alerts
+    rules:
+      - alert: NotifierQueueBacklog
+        expr: notifier_queue_pending_total > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Notifier delivery queue backlog"
+          description: "More than 50 PENDING notifications awaiting delivery."
+
+      - alert: NotifierOldestPendingStale
+        expr: notifier_queue_oldest_pending_seconds > 600
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Notifier oldest pending notification stale"
+          description: "Oldest PENDING notification is older than 10 minutes."
+
+      - alert: NotifierPermanentFailures
+        expr: rate(notifier_permanent_failures_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Notifier permanent delivery failures"
+          description: "Notifications exhausted retry budget and were marked FAILED."
+
+      - alert: NotifierCircuitBreakerOpen
+        expr: notifier_circuit_breaker_state == 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Notifier circuit breaker open on {{ $labels.provider }}"
+          description: "Delivery channel {{ $labels.provider }} is fast-failing due to consecutive errors."
+
+      - alert: NotifierDown
+        expr: up{job="notifier"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Notifier service unreachable"
+          description: "Prometheus cannot scrape the notifier metrics endpoint."
+
+      - alert: NotifierDeliveryLatencyHigh
+        expr: histogram_quantile(0.99, sum by (le, provider) (rate(notifier_delivery_duration_seconds_bucket[5m]))) > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Notifier delivery latency high on {{ $labels.provider }}"
+          description: "P99 provider delivery latency exceeds 30 seconds."
+
+      - alert: NotifierProcessingStale
+        expr: notifier_queue_processing_total > 0 and notifier_queue_oldest_processing_seconds > 600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Notifier PROCESSING claims stale"
+          description: "Notifications remain claimed longer than 10 minutes; worker may be stuck or crashed."
+
+      - alert: NotifierHeapHigh
+        expr: go_memstats_heap_inuse_bytes{job="notifier"} > 3.4e8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Notifier heap usage high"
+          description: "Heap in-use exceeds ~340MiB (85% of GOMEMLIMIT=400MiB). GC pressure or backlog may precede OOM."
+
+  - name: geoip-alerts
+    rules:
+      - alert: GeoIPUpdateErrors
+        expr: rate(ad_geoip_update_errors_total[1h]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GeoIP database update failures"
+          description: "MaxMind GeoIP updater failed in the last hour."
+
+      - alert: GeoIPReloadErrors
+        expr: rate(ad_geoip_reload_errors_total[15m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GeoIP hot-reload failures"
+          description: "Tracker GeoIP watcher failed to reload the mmdb file."
+
+      - alert: LogCompactorNoLeader
+        expr: log_compactor_hot_pending_total > 0 and log_compactor_leader == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Log compactor has no leader with pending hot segments"
+          description: "Hot-tier segments are waiting but no compactor instance holds leadership."
+
+      - alert: ManagementOpsAlertEnqueueFailures
+        expr: rate(ad_management_ops_alert_enqueue_failures_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Management failed to enqueue ops alerts"
+          description: "OpsAlerter or Alertmanager webhook could not reach the notifier gRPC service."
+
+  - name: payment-financial-recon-alerts
+    rules:
+      # Hourly recon (PAYMENT_FINANCIAL_RECON_INTERVAL_MS=3600000); 65m window tolerates scrape jitter.
+      - alert: PaymentFinancialReconMissingLedgerTopup
+        expr: increase(payment_financial_recon_findings_total{kind="MISSING_LEDGER_TOPUP"}[65m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Payment financial recon: missing ledger topup"
+          description: "Settled payment intent without matching balance_ledger TOPUP row. See payment.financial_recon_findings."
+          runbook_url: "https://github.com/mykhailov-ua/espx/blob/main/docs/DEVELOPMENT.md#payment"
+
+      - alert: PaymentFinancialReconDeadOutbox
+        expr: increase(payment_financial_recon_findings_total{kind="DEAD_OUTBOX"}[65m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Payment financial recon: dead outbox rows"
+          description: "Payment outbox rows stuck without settlement path (e.g. refund before topup). See payment.financial_recon_findings."
+          runbook_url: "https://github.com/mykhailov-ua/espx/blob/main/docs/DEVELOPMENT.md#payment"
+
+  - name: settlement-grpc-alerts
+    rules:
+      - alert: SettlementGRPCErrors
+        expr: sum(rate(settlement_grpc_errors_total[5m])) by (method, code) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Settlement gRPC errors on {{ $labels.method }}"
+          description: "Payment settlement RPCs are failing with code {{ $labels.code }}. Check management logs and payment outbox backlog."
+
+      - alert: SettlementGRPCLatencyHigh
+        expr: histogram_quantile(0.99, sum by (le) (rate(settlement_grpc_request_duration_seconds_bucket[5m]))) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Settlement gRPC p99 latency above 500ms"
+          description: "Ledger credit path from payment outbox is slow; investigate Postgres lock contention or management pool saturation."
+
+      - alert: SettlementGRPCErrorsCritical
+        expr: sum(rate(settlement_grpc_errors_total{code=~"Internal|Unavailable|DeadlineExceeded"}[5m])) > 0.1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Settlement gRPC infrastructure errors"
+          description: "Sustained {{ $labels.code }} responses on settlement RPCs; payment webhooks may backlog."

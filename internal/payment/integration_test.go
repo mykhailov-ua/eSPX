@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
-	ads_db "espx/internal/ads/db"
 	"espx/internal/config"
+	"espx/internal/ingestion"
+	ads_db "espx/internal/ingestion/sqlc"
 	"espx/internal/management"
 	"espx/internal/management/pb"
 	"espx/internal/payment/db"
@@ -63,7 +63,7 @@ func setupTestDB(t testing.TB) (*pgxpool.Pool, func()) {
 	_, filename, _, _ := runtime.Caller(0)
 	baseDir := filepath.Join(filepath.Dir(filename), "..", "..")
 
-	adsMigrationsDir := filepath.Join(baseDir, "internal/ads/migrations")
+	adsMigrationsDir := filepath.Join(baseDir, "internal/ingestion/migrations")
 	applyMigrations(t, pool, adsMigrationsDir)
 
 	paymentMigrationsDir := filepath.Join(baseDir, "internal/payment/migrations")
@@ -163,7 +163,7 @@ func TestPaymentService_Integration(t *testing.T) {
 	customerID := uuid.New()
 	qAds := ads_db.New(pool)
 	_, err := qAds.CreateCustomer(ctx, ads_db.CreateCustomerParams{
-		ID:       ads.ToUUID(customerID),
+		ID:       ingestion.ToUUID(customerID),
 		Name:     "Test Payment Customer",
 		Balance:  0,
 		Currency: "USD",
@@ -217,7 +217,7 @@ func TestPaymentService_Integration(t *testing.T) {
 	assert.Equal(t, "SETTLE_BALANCE", outboxEvents[0].EventType)
 
 	rdbs := []redis.UniversalClient{rdb}
-	mgmtSvc := management.NewService(pool, rdbs, ads.NewStaticSlotSharder(len(rdbs)), cfg)
+	mgmtSvc := management.NewService(pool, rdbs, ingestion.NewStaticSlotSharder(len(rdbs)), cfg)
 	settleHandler := management.NewSettlementHandler(mgmtSvc, cfg)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
@@ -245,12 +245,12 @@ func TestPaymentService_Integration(t *testing.T) {
 		return err == nil && len(events) == 0
 	}, 5*time.Second, 100*time.Millisecond)
 
-	customer, err := qAds.GetCustomerForUpdate(ctx, ads.ToUUID(customerID))
+	customer, err := qAds.GetCustomerForUpdate(ctx, ingestion.ToUUID(customerID))
 	require.NoError(t, err)
 	assert.Equal(t, amountMicro, customer.Balance)
 
 	ledgerRows, err := qAds.ListCustomerLedger(ctx, ads_db.ListCustomerLedgerParams{
-		CustomerID: ads.ToUUID(customerID),
+		CustomerID: ingestion.ToUUID(customerID),
 		Limit:      10,
 		Offset:     0,
 	})
@@ -259,7 +259,7 @@ func TestPaymentService_Integration(t *testing.T) {
 	assert.Equal(t, amountMicro, ledgerRows[0].Amount)
 	assert.Equal(t, ads_db.LedgerType("PAYMENT_TOPUP"), ledgerRows[0].Type)
 	assert.Equal(t, "payment:"+uuid.UUID(intent.ID.Bytes).String(), ledgerRows[0].IdempotencyHash.String)
-	assert.Equal(t, ads.ToUUID(uuid.UUID(intent.ID.Bytes)), ledgerRows[0].PaymentIntentID)
+	assert.Equal(t, ingestion.ToUUID(uuid.UUID(intent.ID.Bytes)), ledgerRows[0].PaymentIntentID)
 
 	// Refund half the top-up via Stripe webhook and settle the reverse-balance outbox.
 	refundMicro := amountMicro / 2
@@ -290,12 +290,12 @@ func TestPaymentService_Integration(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, n)
 
-	customerAfterRefund, err := qAds.GetCustomerForUpdate(ctx, ads.ToUUID(customerID))
+	customerAfterRefund, err := qAds.GetCustomerForUpdate(ctx, ingestion.ToUUID(customerID))
 	require.NoError(t, err)
 	assert.Equal(t, amountMicro-refundMicro, customerAfterRefund.Balance)
 
 	ledgerRows, err = qAds.ListCustomerLedger(ctx, ads_db.ListCustomerLedgerParams{
-		CustomerID: ads.ToUUID(customerID),
+		CustomerID: ingestion.ToUUID(customerID),
 		Limit:      10,
 		Offset:     0,
 	})

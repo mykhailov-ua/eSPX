@@ -21,24 +21,24 @@ var (
 		Help: "Detector cycles skipped due to management outbox backpressure",
 	})
 
-	mlScoringDurationSeconds = promauto.NewHistogram(prometheus.HistogramOpts{
-		Name:    "ml_scoring_duration_seconds",
+	fraudScoringDurationSeconds = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "fraud_scoring_duration_seconds",
 		Help:    "Duration of ML scoring in seconds",
 		Buckets: prometheus.DefBuckets,
 	})
 
-	mlCandidatesTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "ml_candidates_total",
+	fraudScoringCandidatesTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "fraud_scoring_candidates_total",
 		Help: "Total number of candidates scored by ML",
 	})
 
-	mlScoringErrorsTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "ml_scoring_errors_total",
+	fraudScoringErrorsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "fraud_scoring_errors_total",
 		Help: "Total number of ML scoring errors",
 	})
 
-	mlEnforcementEnqueuedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "ml_enforcement_enqueued_total",
+	fraudEnforcementEnqueuedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "fraud_enforcement_enqueued_total",
 		Help: "Total number of ML enforcement threats enqueued",
 	}, []string{"action"})
 )

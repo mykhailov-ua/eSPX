@@ -1,0 +1,49 @@
+version: '3'
+
+vars:
+  GO: 'go'
+  PATH_WITH_GO: 'PATH=$PATH:/usr/local/go/bin:$(go env GOPATH)/bin'
+
+tasks:
+  default:
+    desc: List all available tasks
+    cmds:
+      - task --list
+
+  gen:
+    desc: Run sqlc, templ, and protoc code generation
+    cmds:
+      - bash scripts/codegen/gen.sh --all
+
+  docker-up:
+    desc: Start infrastructure containers (PostgreSQL, sharded Redis, ClickHouse) in detached mode
+    cmds:
+      - bash scripts/local-dev/dev_stack.sh infra
+
+  docker-down:
+    desc: Stop and remove all infrastructure containers
+    cmds:
+      - bash scripts/local-dev/dev_stack.sh down
+
+  check-deps:
+    desc: Run dependency healthcheck script to verify all databases and migrations are functional
+    cmds:
+      - bash scripts/ci/check_deps.sh
+
+  dev-preflight:
+    desc: check-deps then smoke-local HTTP/redis health
+    cmds:
+      - bash scripts/local-dev/dev_preflight.sh
+
+  test-full:
+    desc: Run all unit and integration tests with the Go race detector enabled
+    cmds:
+      - echo "Running full test suite with race detector..."
+      - go test -v -race ./...
+
+  perf-gate:
+    desc: Run performance gate analysis locally against main branch
+    env:
+      BASELINE_WORKTREE: ../baseline-local
+    cmds:
+      - bash scripts/perf-gate/perf_gate_run.sh

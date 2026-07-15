@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
-	adsdb "espx/internal/ads/db"
+	"espx/internal/ingestion"
+	ingestdb "espx/internal/ingestion/sqlc"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -46,7 +46,7 @@ func setupBillingTestDB(t testing.TB) (*pgxpool.Pool, func()) {
 
 	_, filename, _, _ := runtime.Caller(0)
 	baseDir := filepath.Join(filepath.Dir(filename), "..", "..")
-	applyBillingMigrations(t, pool, filepath.Join(baseDir, "internal/ads/migrations"))
+	applyBillingMigrations(t, pool, filepath.Join(baseDir, "internal/ingestion/migrations"))
 	applyBillingMigrations(t, pool, filepath.Join(baseDir, "internal/billing/migrations"))
 
 	return pool, func() {
@@ -89,26 +89,26 @@ func applyBillingMigrations(t testing.TB, pool *pgxpool.Pool, dir string) {
 func seedCustomerWithLedger(t testing.TB, pool *pgxpool.Pool, feeAt time.Time) uuid.UUID {
 	t.Helper()
 	ctx := context.Background()
-	q := adsdb.New(pool)
+	q := ingestdb.New(pool)
 
 	customerID, _ := uuid.NewV7()
-	_, err := q.CreateCustomer(ctx, adsdb.CreateCustomerParams{
-		ID:       ads.ToUUID(customerID),
+	_, err := q.CreateCustomer(ctx, ingestdb.CreateCustomerParams{
+		ID:       ingestion.ToUUID(customerID),
 		Name:     "billing-test",
 		Balance:  0,
 		Currency: "USD",
 	})
 	require.NoError(t, err)
 
-	_, err = q.CreateLedgerEntry(ctx, adsdb.CreateLedgerEntryParams{
-		CustomerID:      ads.ToUUID(customerID),
+	_, err = q.CreateLedgerEntry(ctx, ingestdb.CreateLedgerEntryParams{
+		CustomerID:      ingestion.ToUUID(customerID),
 		Amount:          10_000_000,
-		Type:            adsdb.LedgerTypeTOPUP,
+		Type:            ingestdb.LedgerTypeTOPUP,
 		IdempotencyHash: pgtype.Text{String: "topup-" + customerID.String(), Valid: true},
 	})
 	require.NoError(t, err)
-	_, err = q.UpdateCustomerBalanceManagement(ctx, adsdb.UpdateCustomerBalanceManagementParams{
-		ID:      ads.ToUUID(customerID),
+	_, err = q.UpdateCustomerBalanceManagement(ctx, ingestdb.UpdateCustomerBalanceManagementParams{
+		ID:      ingestion.ToUUID(customerID),
 		Balance: 10_000_000,
 	})
 	require.NoError(t, err)
@@ -118,8 +118,8 @@ func seedCustomerWithLedger(t testing.TB, pool *pgxpool.Pool, feeAt time.Time) u
 		VALUES ($1, $2, 'FEE', $3)
 	`, customerID, -2_500_000, feeAt)
 	require.NoError(t, err)
-	_, err = q.UpdateCustomerBalanceManagement(ctx, adsdb.UpdateCustomerBalanceManagementParams{
-		ID:      ads.ToUUID(customerID),
+	_, err = q.UpdateCustomerBalanceManagement(ctx, ingestdb.UpdateCustomerBalanceManagementParams{
+		ID:      ingestion.ToUUID(customerID),
 		Balance: -2_500_000,
 	})
 	require.NoError(t, err)

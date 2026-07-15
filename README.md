@@ -22,7 +22,8 @@ Request flow: Nginx (:8180) load-balances `/track` to tracker replicas (:8181-81
 | `billing` | 51054 | Invoice generation gRPC; management HTMX proxy when configured |
 | `notifier` | 8085 | Async notifications gRPC (Telegram, Slack, SMTP, SMS) |
 | `ivt-detector` | — | ClickHouse IVT scan → fraud blacklist via management API |
-| `telegram` | 8222 | Alertmanager to Telegram proxy |
+| `fraud-scorer` | — | Standalone fraud scorer + model registry watcher (`fraud-scorer` compose profile) |
+| `alertmanager-telegram` | 8222 | Alertmanager to Telegram proxy |
 | `log-evacuator` | — | Rotated tracker log segments → S3 (compose profile `tools`) |
 | `broker` | — | mmap log broker (not in compose; optional log evacuation) |
 | `dlq`, `admin` | — | Operator CLIs |
@@ -31,7 +32,7 @@ Request flow: Nginx (:8180) load-balances `/track` to tracker replicas (:8181-81
 
 Client-sharded standalone Redis masters (**not Redis Cluster**). Production locks **`N = 4`** shards (`config.ExpectedRedisShardCount`; `ENV=production` rejects `len(REDIS_ADDRS) != 4`). Lua scripts require multi-key atomicity on one instance; cluster hash tags would not remove cross-shard coordination for global config.
 
-Full design, chaos profile, and rollout: **[Sharding Strategy](docs/SHARDING_STRATEGY.md)**.
+Full design, chaos profile, and rollout: **[Edge layer](docs/EDGE.md)** (Part II sharding, Part III control plane).
 
 ### Campaign → shard routing
 
@@ -44,7 +45,7 @@ shard = slot_table[slot]                        // precomputed; default slot % N
 
 | Component | Implementation |
 | :--- | :--- |
-| Go tracker / processor | `StaticSlotSharder` (`internal/ads/sharding.go`) — 1024-entry table behind `atomic.Value`; cold-path reload via `StoreSlotMap` / `SwapSnapshot` |
+| Go tracker / processor | `StaticSlotSharder` (`internal/ingestion/sharding.go`) — 1024-entry table behind `atomic.Value`; cold-path reload via `StoreSlotMap` / `SwapSnapshot` |
 | Nginx edge | `deploy/nginx/lua/edge-slot-map.lua` — same Castagnoli CRC + slot table (must match Go) |
 | Slot index (migration) | `CampaignSlotIndex(id)` — `crc32 & 1023` for cohort copy / autoscale |
 | Legacy (do not use in prod) | `JumpHashSharder` — different distribution; management and tracker must share `StaticSlotSharder` |
@@ -55,16 +56,16 @@ Hot-path `GetShard` is **~5.6 ns/op, 0 allocs/op** (amd64 HW CRC). Shard count d
 
 | Mechanism | Role |
 | :--- | :--- |
-| **Outbox** (`management`) | Replicate `config:values`, blacklist, campaign keys to every shard; priority lanes for pause/freeze (M1) |
+| **Outbox** (`management`) | Replicate `config:values`, blacklist, campaign keys to every shard; priority lanes for pause/freeze |
 | **Slot map** (`slot_map_versions` PG) | Draft → MIGRATING → ACTIVE; `SlotMigrationOrchestrator` copies keys; trackers reload table atomically |
 | **Migration fence** (`MIGRATION_FENCE_ENABLED`) | Lua rejects debit when `migration_gen` mismatches PG — no dual debit during copy |
 | **UDP quotas** (`UDP_CONTROL_ENABLED`) | Management `:8190` → tracker `:8191`: per-shard RPS epochs, `CONFIG_SNAPSHOT` / `CONFIG_REQUEST`; ingress gate only (never writes `budget:*`) |
 | **Quota repair** (`QUOTA_MODE=live`, `QUOTA_AUTO_REPAIR`) | PG↔Redis drift auto-repair; dead-shard reservation release with quorum |
 | **Registry invalidation** | `campaigns:update` pub/sub on **shard 0** → tracker in-memory reload |
 
-**Degradation:** per-shard circuit breakers, Sentinel failover (~10–15 s), UDP STALE → canary ingress floor (fail-closed). Recovery runbook: [Runtime §5](docs/RUNTIME.md).
+**Degradation:** per-shard circuit breakers, Sentinel failover (~10–15 s), UDP STALE → canary ingress floor (fail-closed). Recovery runbook: [EDGE.md Part III §1.1](docs/EDGE.md).
 
-### Tiered Lua (M4)
+### Tiered Lua
 
 | Tier | Script | When |
 | :--- | :--- | :--- |
@@ -88,7 +89,7 @@ One `EVALSHA` per accepted event; financial debit stays atomic in Lua.
 
 **Shard-0 conventions** (by policy, not hash): `campaigns:update` pub/sub, auth lockout, brand creatives. Campaign budget keys still follow `StaticSlotSharder(campaign_id)`.
 
-### Why StaticSlot over JumpHash
+### StaticSlot vs JumpHash
 
 | | StaticSlot | JumpHash |
 | :--- | :--- | :--- |
@@ -100,7 +101,7 @@ Production uses **fixed slot map + orchestrated migration**, not live JumpHash r
 
 ### Sentinel and clients
 
-Go services (`ConnectRedisShards`) and Nginx Lua resolve masters via Sentinel when `REDIS_SENTINEL_ADDRS` is set; otherwise direct `REDIS_ADDRS`. Smoke: `scripts/redis/verify_redis_topology.sh`.
+Go services (`ConnectRedisShards`) and Nginx Lua resolve masters via Sentinel when `REDIS_SENTINEL_ADDRS` is set; otherwise direct `REDIS_ADDRS`. Smoke: `scripts/redis-ops/verify_redis_topology.sh`.
 
 ### Rollout flags (staging defaults)
 
@@ -111,11 +112,11 @@ Go services (`ConnectRedisShards`) and Nginx Lua resolve masters via Sentinel wh
 | `QUOTA_MODE` / `QUOTA_AUTO_REPAIR` | `live` / `true` | Distributed quota + repair |
 | `LUA_FAST_PATH_ENABLED` | `false` | Tier B fast Lua (canary after soak) |
 
-Apply: `bash scripts/deploy/k8s_staging_apply.sh` (see SHARDING_STRATEGY §9.6).
+Apply: `bash scripts/k8s/k8s_staging_apply.sh` (see [EDGE.md](docs/EDGE.md) Part III §8).
 
 ## Unified Filter (Lua)
 
-`internal/ads/unified-filter.lua` (Tier C) and `budget_fast.lua` (Tier B) embedded via `//go:embed`, preloaded with `SCRIPT LOAD` at tracker startup, invoked via `EVALSHA` with `EVAL` fallback on `NOSCRIPT`. Router in `UnifiedFilter.Check` picks tier by event type and flags.
+`internal/ingestion/unified-filter.lua` (Tier C) and `budget_fast.lua` (Tier B) embedded via `//go:embed`, preloaded with `SCRIPT LOAD` at tracker startup, invoked via `EVALSHA` with `EVAL` fallback on `NOSCRIPT`. Router in `UnifiedFilter.Check` picks tier by event type and flags.
 
 Single atomic script per event: MGET budget state, TTC check, pacing, fcap, rate limit, dedup SET NX, budget decrement, sync delta, stream XADD.
 
@@ -127,13 +128,13 @@ Single atomic script per event: MGET budget state, TTC check, pacing, fcap, rate
 | `6`-`7` | Low TTC, missing impression timestamp (fail-closed) |
 | `10` | TTC bypass (fail-open, no `imp_ts` key) |
 
-**Why one Lua script:** One network round trip replaces 8-12 pipelined commands. Trade-off: longer Redis engine lock per call; acceptable because all keys are colocated on one shard and the script avoids cross-key races without WATCH/MULTI.
+Single Lua script per event: one network round trip replaces 8–12 pipelined commands. Trade-off: longer Redis engine lock per call; acceptable because keys are colocated on one shard.
 
-**Why Lua for filter but Go for geo/schedule:** MaxMind lookups and daypart logic are CPU-bound and change frequently. Running them in Redis would require embedding GeoIP data or RPC from Lua, neither viable at tracker RPS.
+Geo, schedule, and fraud checks run in Go before Lua. MaxMind and daypart logic are CPU-bound; embedding them in Redis would require GeoIP in Lua or RPC from Lua.
 
 ## Design Decisions
 
-| Subsystem | Choice | Why | Trade-off |
+| Subsystem | Choice | Rationale | Trade-off |
 | :--- | :--- | :--- | :--- |
 | Serialization | Protobuf + vtproto | Pool-backed marshal/unmarshal; `bytes` fields slice from socket buffers | Schema evolution requires buf generate + deploy coordination |
 | Networking | gnet + pinned worker pool | Event-driven I/O; MPSC ring offload for parse/filter work | More complex than net/http; stdlib router kept for tests only |
@@ -163,15 +164,17 @@ Redis does not hold payment or ledger state.
 
 - Prometheus scrapes tracker (:8181–8184 `/metrics`), processor (:8186), management (:8188), auth (:9091), payment (:8187). Tracker also exposes a metrics sidecar on :9090 when configured.
 - Grafana dashboards: throughput, Redis breaker state, Lua NOSCRIPT fallbacks, budget cache misses.
-- Alertmanager to `cmd/telegram` for Telegram delivery.
+- Alertmanager to `cmd/alertmanager-telegram` for Telegram delivery.
 - Key alerts: circuit breaker open >5m, DLQ >100, p99 tracker latency >15ms, TTC bypass rate >1%.
 
 ## Tooling and CI
 
-Local workflows use `Makefile`, optional [Task](Taskfile.yml), and categorized `scripts/<area>/` (codegen, compose, perf gate, Redis ops, chaos). See [Development Guide](docs/development.md) for commands and CI workflow map under `.github/workflows/`.
+Local workflows use `Makefile`, optional [Task](Taskfile.yaml), and categorized `scripts/<area>/` (codegen, compose, perf gate, Redis ops, chaos). See [Development Guide](docs/DEVELOPMENT.md) for commands and CI workflow map under `.github/workflows/`.
 
 ## Documentation
 
-- [Architecture](docs/architecture.md) — subsystem workflows, Lua key layout, failover, limitations
-- [Sharding Strategy](docs/SHARDING_STRATEGY.md) — slot map, UDP control plane, tiered Lua, chaos/load validation (M1–M6)
-- [Development](docs/development.md) — setup, ports, scripts, runbooks, perf gate, CI
+- [Architecture](docs/ARCHITECTURE.md) — topology, patterns, microservices, Fraud scoring
+- [Development](docs/DEVELOPMENT.md) — setup, runbooks, CI, infra, perf gate
+- [Go hot path](docs/GO.md) — gnet, zero-alloc, filter engine
+- [Edge layer](docs/EDGE.md) — ingress, Redis/Lua, UDP control (Part III)
+- [Databases](docs/DATABASE.md) — PostgreSQL ledger + ClickHouse analytics (incl. ML features)

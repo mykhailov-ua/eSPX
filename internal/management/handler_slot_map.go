@@ -4,9 +4,9 @@ import (
 	"net/http"
 	"strconv"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
-	"espx/pkg/cold"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
+	"espx/pkg/coldpath"
 	"espx/pkg/httpresponse"
 
 	"github.com/google/uuid"
@@ -44,12 +44,12 @@ func (h *Handler) getSlotMap(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) createSlotMapVersion(w http.ResponseWriter, r *http.Request) {
-	body, err := cold.ReadLimitedBody(w, r, cold.DefaultMaxBody)
+	body, err := coldpath.ReadLimitedBody(w, r, coldpath.DefaultMaxBody)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
-	req, err := cold.DecodeBody[struct {
+	req, err := coldpath.DecodeBody[struct {
 		BaseVersion *int32 `json:"base_version"`
 		Overrides   []struct {
 			Slot    int16  `json:"slot"`
@@ -62,13 +62,13 @@ func (h *Handler) createSlotMapVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	overrides := make([]ads.SlotOverride, 0, len(req.Overrides))
+	overrides := make([]ingestion.SlotOverride, 0, len(req.Overrides))
 	for _, o := range req.Overrides {
 		state := db.RedisSlotStateACTIVE
 		if o.State != "" {
 			state = db.RedisSlotState(o.State)
 		}
-		overrides = append(overrides, ads.SlotOverride{
+		overrides = append(overrides, ingestion.SlotOverride{
 			Slot:    o.Slot,
 			ShardID: o.ShardID,
 			State:   state,
@@ -97,12 +97,12 @@ func (h *Handler) markSlotMapMigrating(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := cold.ReadLimitedBody(w, r, cold.DefaultMaxBody)
+	body, err := coldpath.ReadLimitedBody(w, r, coldpath.DefaultMaxBody)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
-	req, err := cold.DecodeBody[struct {
+	req, err := coldpath.DecodeBody[struct {
 		Slots       []int16 `json:"slots"`
 		TargetShard int16   `json:"target_shard"`
 	}](body)
@@ -174,12 +174,12 @@ func (h *Handler) copySlotMigration(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) rollbackSlotMap(w http.ResponseWriter, r *http.Request) {
-	body, err := cold.ReadLimitedBody(w, r, cold.DefaultMaxBody)
+	body, err := coldpath.ReadLimitedBody(w, r, coldpath.DefaultMaxBody)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
-	req, err := cold.DecodeBody[struct {
+	req, err := coldpath.DecodeBody[struct {
 		PreviousVersion int32 `json:"previous_version"`
 	}](body)
 	if err != nil {

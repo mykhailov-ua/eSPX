@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"espx/internal/ads"
+	"espx/internal/ingestion"
 )
 
 // SlotMigrationOrchestrator copies MIGRATING slot data and drains old keys after cutover (Phase 2.3).
@@ -38,7 +38,7 @@ func (o *SlotMigrationOrchestrator) Start(ctx context.Context) {
 }
 
 func (o *SlotMigrationOrchestrator) tick(ctx context.Context) {
-	migRepo := ads.NewSlotMigrationRepo(o.svc.GetPool())
+	migRepo := ingestion.NewSlotMigrationRepo(o.svc.GetPool())
 	draft, err := migRepo.GetMaxDraftVersionWithMigrating(ctx)
 	if err != nil {
 		slog.Error("slot migration: draft version lookup failed", "error", err)
@@ -56,7 +56,7 @@ func (o *SlotMigrationOrchestrator) tick(ctx context.Context) {
 		}
 	}
 
-	mapRepo := ads.NewSlotMapRepo(o.svc.GetPool())
+	mapRepo := ingestion.NewSlotMapRepo(o.svc.GetPool())
 	active, err := mapRepo.GetActiveVersion(ctx)
 	if err != nil {
 		slog.Error("slot migration: active version lookup failed", "error", err)

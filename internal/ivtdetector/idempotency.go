@@ -53,8 +53,8 @@ func (store *IdempotencyStore) Release(ctx context.Context, ip string) error {
 	return nil
 }
 
-// TryClaimML inserts an idempotency key in ml_enforcement_idempotency and reports whether this caller won the race.
-func (store *IdempotencyStore) TryClaimML(ctx context.Context, ip string, modelVersion string, reason string) (bool, error) {
+// TryClaimFraudEnforcement inserts an idempotency key in ml_enforcement_idempotency and reports whether this caller won the race.
+func (store *IdempotencyStore) TryClaimFraudEnforcement(ctx context.Context, ip string, modelVersion string, reason string) (bool, error) {
 	if store == nil || store.pool == nil {
 		return false, fmt.Errorf("idempotency store: nil pool")
 	}
@@ -72,8 +72,8 @@ func (store *IdempotencyStore) TryClaimML(ctx context.Context, ip string, modelV
 	return tag.RowsAffected() > 0, nil
 }
 
-// ReleaseML removes a claim from ml_enforcement_idempotency.
-func (store *IdempotencyStore) ReleaseML(ctx context.Context, ip string, modelVersion string, reason string) error {
+// ReleaseFraudEnforcement removes a claim from ml_enforcement_idempotency.
+func (store *IdempotencyStore) ReleaseFraudEnforcement(ctx context.Context, ip string, modelVersion string, reason string) error {
 	if store == nil || store.pool == nil {
 		return fmt.Errorf("idempotency store: nil pool")
 	}

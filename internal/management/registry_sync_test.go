@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -33,7 +33,7 @@ func TestRegistryWatch(t *testing.T) {
 	defer cancel()
 
 	queries := db.New(pool)
-	registry := ads.NewRegistry(queries)
+	registry := ingestion.NewRegistry(queries)
 	registry.SetReplicaPath(filepath.Join(t.TempDir(), "campaigns_replica.json"))
 
 	channel := "test:campaign:updates"
@@ -43,7 +43,7 @@ func TestRegistryWatch(t *testing.T) {
 		CampaignUpdateChannel: channel,
 	}
 	cfg.Lifecycle.WaitTimeoutMs = 1
-	sharder := ads.NewJumpHashSharder(1)
+	sharder := ingestion.NewJumpHashSharder(1)
 	svc := NewService(pool, []redis.UniversalClient{rdb}, sharder, cfg)
 	defer svc.Close()
 

@@ -1,7 +1,7 @@
 package payment
 
 import (
-	"espx/pkg/cold"
+	"espx/pkg/coldpath"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -58,7 +58,7 @@ func (htmxHandler *HTMXHandler) handleCreateIntent(w http.ResponseWriter, r *htt
 		return
 	}
 
-	body, err := cold.ReadLimitedBody(w, r, 16*1024)
+	body, err := coldpath.ReadLimitedBody(w, r, 16*1024)
 	if err != nil {
 		WriteHTMX(w, r, StatusValidation, CodeInvalidInput, "Check your payment details and try again.")
 		return
@@ -125,7 +125,7 @@ func parseCreateIntentInput(contentType string, body []byte) (uuid.UUID, int64, 
 
 	var form createIntentForm
 	if strings.HasPrefix(contentType, "application/json") {
-		decoded, err := cold.DecodeBody[createIntentForm](body)
+		decoded, err := coldpath.DecodeBody[createIntentForm](body)
 		if err != nil {
 			return uuid.Nil, 0, errValidation("invalid request body")
 		}

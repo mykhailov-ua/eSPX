@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	adsdb "espx/internal/ads/db"
 	"espx/internal/auth"
 	authdb "espx/internal/auth/db"
+	ingestdb "espx/internal/ingestion/sqlc"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/spf13/cobra"
@@ -54,7 +54,7 @@ var seedCmd = &cobra.Command{
 			}
 		}()
 
-		adsQueries := adsdb.New(tx)
+		adsQueries := ingestdb.New(tx)
 		authQueries := authdb.New(tx)
 
 		fmt.Println("Seeding 100 customers...")
@@ -62,7 +62,7 @@ var seedCmd = &cobra.Command{
 		for i := 1; i <= 100; i++ {
 			cID := uuid.New()
 			customerIDs[i-1] = cID
-			_, err = adsQueries.CreateCustomer(ctx, adsdb.CreateCustomerParams{
+			_, err = adsQueries.CreateCustomer(ctx, ingestdb.CreateCustomerParams{
 				ID:       pgtype.UUID{Bytes: cID, Valid: true},
 				Name:     fmt.Sprintf("Advertiser Customer %d", i),
 				Balance:  100_000_000_000,
@@ -74,7 +74,7 @@ var seedCmd = &cobra.Command{
 		}
 
 		for i := 0; i < 20; i++ {
-			_, err = adsQueries.UpdateCustomerOverdraft(ctx, adsdb.UpdateCustomerOverdraftParams{
+			_, err = adsQueries.UpdateCustomerOverdraft(ctx, ingestdb.UpdateCustomerOverdraftParams{
 				AllowedOverdraft: 5_000_000_000,
 				ID:               pgtype.UUID{Bytes: customerIDs[i], Valid: true},
 			})
@@ -105,7 +105,7 @@ var seedCmd = &cobra.Command{
 		for i := 1; i <= 10; i++ {
 			bID := uuid.New()
 			brandIDs[i-1] = bID
-			_, err = adsQueries.CreateBrand(ctx, adsdb.CreateBrandParams{
+			_, err = adsQueries.CreateBrand(ctx, ingestdb.CreateBrandParams{
 				ID:         pgtype.UUID{Bytes: bID, Valid: true},
 				CustomerID: pgtype.UUID{Bytes: customerIDs[i-1], Valid: true},
 				Name:       fmt.Sprintf("Global Elite Brand %d", i),
@@ -117,7 +117,7 @@ var seedCmd = &cobra.Command{
 
 		fmt.Println("Seeding 1000 campaigns...")
 		countries := []string{"US", "GB", "CA", "UA", "DE", "FR", "JP"}
-		pacingModes := []adsdb.PacingModeType{adsdb.PacingModeTypeASAP, adsdb.PacingModeTypeEVEN}
+		pacingModes := []ingestdb.PacingModeType{ingestdb.PacingModeTypeASAP, ingestdb.PacingModeTypeEVEN}
 
 		for i := 1; i <= 1000; i++ {
 			campID := uuid.New()
@@ -137,11 +137,11 @@ var seedCmd = &cobra.Command{
 			budgetLimit := int64(10_000_000_000 + (i%5)*5_000_000_000)
 			dailyBudget := int64(1_000_000_000 + (i%3)*1_000_000_000)
 
-			_, err = adsQueries.CreateCampaign(ctx, adsdb.CreateCampaignParams{
+			_, err = adsQueries.CreateCampaign(ctx, ingestdb.CreateCampaignParams{
 				ID:              pgtype.UUID{Bytes: campID, Valid: true},
 				Name:            fmt.Sprintf("Campaign Performance Campaign %d", i),
 				BudgetLimit:     budgetLimit,
-				Status:          adsdb.CampaignStatusTypeACTIVE,
+				Status:          ingestdb.CampaignStatusTypeACTIVE,
 				CustomerID:      pgtype.UUID{Bytes: cID, Valid: true},
 				PacingMode:      pacing,
 				DailyBudget:     dailyBudget,
@@ -225,7 +225,7 @@ var getCampaignCmd = &cobra.Command{
 		}
 		defer pool.Close()
 
-		queries := adsdb.New(pool)
+		queries := ingestdb.New(pool)
 		camp, err := queries.GetCampaign(ctx, pgtype.UUID{Bytes: id, Valid: true})
 		if err != nil {
 			return err
@@ -271,15 +271,15 @@ var createCampaignCmd = &cobra.Command{
 		}
 		defer pool.Close()
 
-		queries := adsdb.New(pool)
-		camp, err := queries.CreateCampaign(ctx, adsdb.CreateCampaignParams{
+		queries := ingestdb.New(pool)
+		camp, err := queries.CreateCampaign(ctx, ingestdb.CreateCampaignParams{
 			ID:          pgtype.UUID{Bytes: uuid.New(), Valid: true},
 			Name:        name,
 			CustomerID:  pgtype.UUID{Bytes: custID, Valid: true},
 			BudgetLimit: limit,
 			DailyBudget: daily,
-			PacingMode:  adsdb.PacingModeType(pacing),
-			Status:      adsdb.CampaignStatusTypeACTIVE,
+			PacingMode:  ingestdb.PacingModeType(pacing),
+			Status:      ingestdb.CampaignStatusTypeACTIVE,
 			Timezone:    "UTC",
 		})
 		if err != nil {
@@ -309,7 +309,7 @@ var deleteCampaignCmd = &cobra.Command{
 		}
 		defer pool.Close()
 
-		queries := adsdb.New(pool)
+		queries := ingestdb.New(pool)
 		err = queries.SoftDeleteCampaign(ctx, pgtype.UUID{Bytes: id, Valid: true})
 		if err != nil {
 			return err
@@ -336,8 +336,8 @@ var listCustomersCmd = &cobra.Command{
 		}
 		defer pool.Close()
 
-		queries := adsdb.New(pool)
-		customers, err := queries.ListCustomers(ctx, adsdb.ListCustomersParams{Limit: 50, Offset: 0})
+		queries := ingestdb.New(pool)
+		customers, err := queries.ListCustomers(ctx, ingestdb.ListCustomersParams{Limit: 50, Offset: 0})
 		if err != nil {
 			return err
 		}
@@ -368,7 +368,7 @@ var getCustomerCmd = &cobra.Command{
 		}
 		defer pool.Close()
 
-		queries := adsdb.New(pool)
+		queries := ingestdb.New(pool)
 		cust, err := queries.GetCustomerByID(ctx, pgtype.UUID{Bytes: id, Valid: true})
 		if err != nil {
 			return err
@@ -412,8 +412,8 @@ var createCustomerCmd = &cobra.Command{
 			}
 		}()
 
-		txQueries := adsdb.New(tx)
-		cust, err := txQueries.CreateCustomer(ctx, adsdb.CreateCustomerParams{
+		txQueries := ingestdb.New(tx)
+		cust, err := txQueries.CreateCustomer(ctx, ingestdb.CreateCustomerParams{
 			ID:       pgtype.UUID{Bytes: cID, Valid: true},
 			Name:     name,
 			Balance:  balance,
@@ -424,7 +424,7 @@ var createCustomerCmd = &cobra.Command{
 		}
 
 		if overdraft > 0 {
-			cust, err = txQueries.UpdateCustomerOverdraft(ctx, adsdb.UpdateCustomerOverdraftParams{
+			cust, err = txQueries.UpdateCustomerOverdraft(ctx, ingestdb.UpdateCustomerOverdraftParams{
 				AllowedOverdraft: overdraft,
 				ID:               pgtype.UUID{Bytes: cID, Valid: true},
 			})
@@ -530,7 +530,7 @@ var listBlacklistCmd = &cobra.Command{
 		}
 		defer pool.Close()
 
-		queries := adsdb.New(pool)
+		queries := ingestdb.New(pool)
 		ips, err := queries.GetAllBlacklist(ctx)
 		if err != nil {
 			return err
@@ -558,8 +558,8 @@ var addBlacklistCmd = &cobra.Command{
 		}
 		defer pool.Close()
 
-		queries := adsdb.New(pool)
-		res, err := queries.CreateBlacklistIP(ctx, adsdb.CreateBlacklistIPParams{
+		queries := ingestdb.New(pool)
+		res, err := queries.CreateBlacklistIP(ctx, ingestdb.CreateBlacklistIPParams{
 			Ip:     ip,
 			Reason: reason,
 		})
@@ -586,7 +586,7 @@ var deleteBlacklistCmd = &cobra.Command{
 		}
 		defer pool.Close()
 
-		queries := adsdb.New(pool)
+		queries := ingestdb.New(pool)
 		err = queries.DeleteBlacklistIP(ctx, ip)
 		if err != nil {
 			return err

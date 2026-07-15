@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/ingestion"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -193,7 +193,7 @@ func TestOptimizeBidFloors_writesRedis(t *testing.T) {
 	require.Len(t, recs, 1)
 	assert.Equal(t, int64(200_000), recs[0].RecommendedMicro)
 
-	val, err := rdb.Get(ctx, ads.RtbFloorRedisKeyPrefix+"opt-deal-1").Int64()
+	val, err := rdb.Get(ctx, ingestion.RtbFloorRedisKeyPrefix+"opt-deal-1").Int64()
 	require.NoError(t, err)
 	assert.Equal(t, int64(200_000), val)
 }

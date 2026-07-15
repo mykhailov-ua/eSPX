@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"time"
 
-	"espx/pkg/cold"
+	"espx/pkg/coldpath"
 	"espx/pkg/httpresponse"
 
 	"github.com/google/uuid"
@@ -108,5 +108,5 @@ func parseAPIPagination(r *http.Request) (int32, int32) {
 	if o, err := strconv.ParseInt(r.URL.Query().Get("offset"), 10, 32); err == nil && o > 0 {
 		offset = int32(o)
 	}
-	return cold.ClampLimitOffset(limit, offset, 50, 1000)
+	return coldpath.ClampLimitOffset(limit, offset, 50, 1000)
 }

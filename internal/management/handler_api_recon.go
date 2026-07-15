@@ -3,7 +3,7 @@ package management
 import (
 	"net/http"
 
-	"espx/pkg/cold"
+	"espx/pkg/coldpath"
 )
 
 func (h *Handler) listReconRuns(w http.ResponseWriter, r *http.Request) {
@@ -16,5 +16,5 @@ func (h *Handler) listReconRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cold.WritePaginatedJSON(w, runs, total)
+	coldpath.WritePaginatedJSON(w, runs, total)
 }

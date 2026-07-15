@@ -206,7 +206,7 @@ func (h *SettlementHandler) BlockIP(ctx context.Context, req *pb.BlockIPRequest)
 	return &pb.BlockIPResponse{Enqueued: true}, nil
 }
 
-func (h *SettlementHandler) EnqueueMLThreat(ctx context.Context, req *pb.EnqueueMLThreatRequest) (*pb.EnqueueMLThreatResponse, error) {
+func (h *SettlementHandler) EnqueueFraudThreat(ctx context.Context, req *pb.EnqueueFraudThreatRequest) (*pb.EnqueueFraudThreatResponse, error) {
 	if err := h.requireSettlementToken(ctx); err != nil {
 		return nil, err
 	}
@@ -217,7 +217,7 @@ func (h *SettlementHandler) EnqueueMLThreat(ctx context.Context, req *pb.Enqueue
 		return nil, status.Error(codes.InvalidArgument, "campaign_id required")
 	}
 
-	payload := MLThreatPayload{
+	payload := FraudThreatPayload{
 		Action:     req.GetAction(),
 		IP:         req.GetIp(),
 		CampaignID: req.GetCampaignId(),
@@ -226,10 +226,10 @@ func (h *SettlementHandler) EnqueueMLThreat(ctx context.Context, req *pb.Enqueue
 		TTLSeconds: req.GetTtlSeconds(),
 	}
 
-	if err := h.service.EnqueueMLThreat(ctx, payload); err != nil {
+	if err := h.service.EnqueueFraudThreat(ctx, payload); err != nil {
 		return nil, status.Errorf(codes.Internal, "enqueue ml threat: %v", err)
 	}
-	return &pb.EnqueueMLThreatResponse{Enqueued: true}, nil
+	return &pb.EnqueueFraudThreatResponse{Enqueued: true}, nil
 }
 
 func (h *SettlementHandler) BatchApplySettlement(ctx context.Context, req *pb.BatchApplySettlementRequest) (*pb.BatchApplySettlementResponse, error) {

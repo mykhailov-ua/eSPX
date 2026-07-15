@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
-	"espx/internal/ads"
-	adsdb "espx/internal/ads/db"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/ingestion"
+	ingestdb "espx/internal/ingestion/sqlc"
 	"espx/internal/management/pb"
 
 	"github.com/google/uuid"
@@ -38,9 +38,9 @@ func TestChaos_BatchSettlementDrain(t *testing.T) {
 	customerID := uuid.New()
 	intentA := uuid.New()
 	intentB := uuid.New()
-	q := adsdb.New(pool)
-	_, err := q.CreateCustomer(context.Background(), adsdb.CreateCustomerParams{
-		ID:       ads.ToUUID(customerID),
+	q := ingestdb.New(pool)
+	_, err := q.CreateCustomer(context.Background(), ingestdb.CreateCustomerParams{
+		ID:       ingestion.ToUUID(customerID),
 		Name:     "batch settlement customer",
 		Balance:  0,
 		Currency: "EUR",
@@ -94,12 +94,12 @@ func TestChaos_SlotMigrationCutoverInvariant(t *testing.T) {
 
 	const slot int16 = 2
 	campID, _ := seedCampaignForSlot(t, svc, svc.GetPool(), ctx, slot, rdbs[2])
-	mapRepo := ads.NewSlotMapRepo(svc.GetPool())
+	mapRepo := ingestion.NewSlotMapRepo(svc.GetPool())
 	v := prepareMigratingVersion(t, ctx, mapRepo, slot, 0)
 	require.NoError(t, svc.CopyAllMigratingSlots(ctx, v))
 
 	require.NoError(t, svc.VerifySlotMigrationR5(ctx))
-	ads.AssertBudgetInvariant(t, ctx, svc.GetPool(), rdbs[0], campID)
+	ingestion.AssertBudgetInvariant(t, ctx, svc.GetPool(), rdbs[0], campID)
 
 	logChaosProof(t, "slot_migration_cutover_invariant", map[string]string{
 		"subsystem":   "slot_migration",

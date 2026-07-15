@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
-	"espx/internal/domain"
+	"espx/internal/campaignmodel"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
 	"espx/internal/testutil"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -28,12 +28,12 @@ func TestIntegration_BudgetFlow(t *testing.T) {
 	defer cleanupRedis()
 
 	queries := db.New(dbPool)
-	campaignRepo := ads.NewCampaignRepo(queries)
-	customerRepo := ads.NewCustomerRepo(queries)
-	registry := ads.NewRegistry(queries)
+	campaignRepo := ingestion.NewCampaignRepo(queries)
+	customerRepo := ingestion.NewCustomerRepo(queries)
+	registry := ingestion.NewRegistry(queries)
 
-	budgetManager := ads.NewRedisBudgetManager(rdb, campaignRepo, 10*time.Second)
-	syncWorker := ads.NewSyncWorker(rdb, campaignRepo, customerRepo, 100*time.Millisecond)
+	budgetManager := ingestion.NewRedisBudgetManager(rdb, campaignRepo, 10*time.Second)
+	syncWorker := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, 100*time.Millisecond)
 
 	customerID := uuid.New()
 	campaignID := uuid.New()
@@ -51,8 +51,8 @@ func TestIntegration_BudgetFlow(t *testing.T) {
 	err = rdb.Set(ctx, "budget:campaign:"+campaignID.String(), 50_000_000, 0).Err()
 	require.NoError(t, err)
 
-	filter := ads.NewBudgetFilter(budgetManager, registry, 100_000, 10_000)
-	evt := &domain.Event{
+	filter := ingestion.NewBudgetFilter(budgetManager, registry, 100_000, 10_000)
+	evt := &campaignmodel.Event{
 		ClickID:    uuid.NewString(),
 		CampaignID: campaignID,
 		Type:       "click",

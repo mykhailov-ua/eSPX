@@ -14,7 +14,7 @@ import (
 // BlacklistBlocker enqueues fraud blacklist entries via management HTTP or in-process service.
 type BlacklistBlocker interface {
 	BlockIP(ctx context.Context, ip string) error
-	EnqueueMLThreat(ctx context.Context, action string, ip string, campaignID string, score float64, boost int32, ttlSeconds int64) error
+	EnqueueFraudThreat(ctx context.Context, action string, ip string, campaignID string, score float64, boost int32, ttlSeconds int64) error
 }
 
 const blacklistSourceFraud = "fraud"
@@ -81,7 +81,7 @@ func (client *ManagementClient) BlockIP(ctx context.Context, ip string) error {
 	return fmt.Errorf("%w: status=%d body=%s", ErrManagementUnavailable, resp.StatusCode, strings.TrimSpace(string(payload)))
 }
 
-// EnqueueMLThreat is a no-op / not implemented for the legacy HTTP client.
-func (client *ManagementClient) EnqueueMLThreat(ctx context.Context, action string, ip string, campaignID string, score float64, boost int32, ttlSeconds int64) error {
-	return fmt.Errorf("EnqueueMLThreat not implemented on HTTP client; use gRPC client")
+// EnqueueFraudThreat is a no-op / not implemented for the legacy HTTP client.
+func (client *ManagementClient) EnqueueFraudThreat(ctx context.Context, action string, ip string, campaignID string, score float64, boost int32, ttlSeconds int64) error {
+	return fmt.Errorf("EnqueueFraudThreat not implemented on HTTP client; use gRPC client")
 }

@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"time"
 
-	"espx/internal/ads/db"
 	"espx/internal/database"
+	"espx/internal/ingestion/sqlc"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"

@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
+	"espx/internal/clickhouse/migrate"
 	"espx/internal/config"
 	"espx/internal/database"
-	"espx/internal/processor"
+	"espx/internal/ingestion"
 	"espx/pkg/httpresponse"
 
 	"github.com/google/uuid"
@@ -56,7 +56,7 @@ func TestAPI_GetCampaignStats_PostgresOnly(t *testing.T) {
 	_, err = pool.Exec(context.Background(), `
 		INSERT INTO campaign_stats (campaign_id, date, impressions_count, clicks_count, conversions_count)
 		VALUES ($1, CURRENT_DATE, 100, 10, 2)`,
-		ads.ToUUID(campID))
+		ingestion.ToUUID(campID))
 	require.NoError(t, err)
 
 	from := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
@@ -131,7 +131,7 @@ func TestAPI_GetCampaignStats_ClickHouseStaleOK(t *testing.T) {
 	conn, cleanupCH := setupClickHouseStatsTest(t)
 	defer cleanupCH()
 	ctx := context.Background()
-	require.NoError(t, processor.ApplyClickHouseMigrations(ctx, conn))
+	require.NoError(t, migrate.ApplyClickHouseMigrations(ctx, conn))
 
 	pool, cleanupDB := database.SetupTestDB(t)
 	defer cleanupDB()
@@ -219,17 +219,17 @@ func TestSumCampaignStatsInRange_Explain(t *testing.T) {
 	ctx := context.Background()
 	_, err := pool.Exec(ctx, `
 		INSERT INTO customers (id, name, balance, currency) VALUES ($1, 'explain', 0, 'USD')`,
-		ads.ToUUID(customerID))
+		ingestion.ToUUID(customerID))
 	require.NoError(t, err)
 	_, err = pool.Exec(ctx, `
 		INSERT INTO campaigns (id, name, budget_limit, current_spend, status, customer_id, pacing_mode, timezone, freq_window)
 		VALUES ($1, 'explain', 100000000, 0, 'ACTIVE', $2, 'ASAP', 'UTC', 86400)`,
-		ads.ToUUID(campaignID), ads.ToUUID(customerID))
+		ingestion.ToUUID(campaignID), ingestion.ToUUID(customerID))
 	require.NoError(t, err)
 	_, err = pool.Exec(ctx, `
 		INSERT INTO campaign_stats (campaign_id, date, impressions_count, clicks_count, conversions_count)
 		VALUES ($1, CURRENT_DATE, 50, 5, 1)`,
-		ads.ToUUID(campaignID))
+		ingestion.ToUUID(campaignID))
 	require.NoError(t, err)
 
 	from := time.Now().UTC().Add(-7 * 24 * time.Hour)
@@ -244,7 +244,7 @@ func TestSumCampaignStatsInRange_Explain(t *testing.T) {
 		WHERE campaign_id = $1
 		  AND date >= $2::date
 		  AND date <= $3::date`,
-		ads.ToUUID(campaignID), from, to)
+		ingestion.ToUUID(campaignID), from, to)
 	require.NoError(t, err)
 	defer rows.Close()
 

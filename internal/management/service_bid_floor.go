@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"strconv"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
 	"espx/internal/config"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
 )
 
 // DealWinLossRate holds ClickHouse win/loss counts for one PMP deal.
@@ -128,7 +128,7 @@ func (s *Service) OptimizeBidFloors(ctx context.Context) ([]BidFloorRecommendati
 		recs = append(recs, rec)
 
 		val := strconv.FormatInt(rec.RecommendedMicro, 10)
-		key := ads.RtbFloorRedisKeyPrefix + deal.DealID
+		key := ingestion.RtbFloorRedisKeyPrefix + deal.DealID
 		for _, rdb := range s.rdbs {
 			if rdb == nil {
 				continue

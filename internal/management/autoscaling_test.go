@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -36,7 +36,7 @@ func TestSmartBudgetAutoscaling(t *testing.T) {
 	}
 	cfg.Lifecycle.WaitTimeoutMs = 500
 
-	sharder := ads.NewJumpHashSharder(1)
+	sharder := ingestion.NewJumpHashSharder(1)
 	svc := NewService(pool, []redis.UniversalClient{rdb}, sharder, cfg)
 
 	t.Cleanup(func() {
@@ -59,13 +59,13 @@ func TestSmartBudgetAutoscaling(t *testing.T) {
 
 	_, err = pool.Exec(ctx,
 		"INSERT INTO campaign_stats (campaign_id, date, impressions_count, clicks_count, conversions_count) VALUES ($1, CURRENT_DATE, 1000, 2, 0)",
-		ads.ToUUID(campaignA),
+		ingestion.ToUUID(campaignA),
 	)
 	require.NoError(t, err)
 
 	_, err = pool.Exec(ctx,
 		"INSERT INTO campaign_stats (campaign_id, date, impressions_count, clicks_count, conversions_count) VALUES ($1, CURRENT_DATE, 500, 15, 0)",
-		ads.ToUUID(campaignB),
+		ingestion.ToUUID(campaignB),
 	)
 	require.NoError(t, err)
 
@@ -75,9 +75,9 @@ func TestSmartBudgetAutoscaling(t *testing.T) {
 	require.NoError(t, err)
 
 	queries := db.New(pool)
-	campaignRepo := ads.NewCampaignRepo(queries)
-	customerRepo := ads.NewCustomerRepo(queries)
-	syncWorker := ads.NewSyncWorker(rdb, campaignRepo, customerRepo, 100*time.Millisecond)
+	campaignRepo := ingestion.NewCampaignRepo(queries)
+	customerRepo := ingestion.NewCustomerRepo(queries)
+	syncWorker := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, 100*time.Millisecond)
 
 	err = rdb.Set(ctx, "budget:campaign:"+campaignA.String(), 100000000, 0).Err()
 	require.NoError(t, err)
@@ -88,23 +88,23 @@ func TestSmartBudgetAutoscaling(t *testing.T) {
 	require.NoError(t, err)
 
 	var balanceBefore int64
-	require.NoError(t, pool.QueryRow(ctx, `SELECT balance FROM customers WHERE id = $1`, ads.ToUUID(customerID)).Scan(&balanceBefore))
+	require.NoError(t, pool.QueryRow(ctx, `SELECT balance FROM customers WHERE id = $1`, ingestion.ToUUID(customerID)).Scan(&balanceBefore))
 
-	err = svc.AutoscaleBudgets(ctx, []*ads.SyncWorker{syncWorker})
+	err = svc.AutoscaleBudgets(ctx, []*ingestion.SyncWorker{syncWorker})
 	require.NoError(t, err)
 
 	var spendA string
-	err = pool.QueryRow(ctx, "SELECT current_spend::TEXT FROM campaigns WHERE id = $1", ads.ToUUID(campaignA)).Scan(&spendA)
+	err = pool.QueryRow(ctx, "SELECT current_spend::TEXT FROM campaigns WHERE id = $1", ingestion.ToUUID(campaignA)).Scan(&spendA)
 	require.NoError(t, err)
 	assert.Equal(t, "5000000", spendA)
 
 	var limitA string
-	err = pool.QueryRow(ctx, "SELECT budget_limit::TEXT FROM campaigns WHERE id = $1", ads.ToUUID(campaignA)).Scan(&limitA)
+	err = pool.QueryRow(ctx, "SELECT budget_limit::TEXT FROM campaigns WHERE id = $1", ingestion.ToUUID(campaignA)).Scan(&limitA)
 	require.NoError(t, err)
 	assert.Equal(t, "90000000", limitA)
 
 	var limitB string
-	err = pool.QueryRow(ctx, "SELECT budget_limit::TEXT FROM campaigns WHERE id = $1", ads.ToUUID(campaignB)).Scan(&limitB)
+	err = pool.QueryRow(ctx, "SELECT budget_limit::TEXT FROM campaigns WHERE id = $1", ingestion.ToUUID(campaignB)).Scan(&limitB)
 	require.NoError(t, err)
 	assert.Equal(t, "110000000", limitB)
 
@@ -128,6 +128,6 @@ func TestSmartBudgetAutoscaling(t *testing.T) {
 	assert.Equal(t, 1, autoscaleRelease)
 
 	var balanceAfter int64
-	require.NoError(t, pool.QueryRow(ctx, `SELECT balance FROM customers WHERE id = $1`, ads.ToUUID(customerID)).Scan(&balanceAfter))
+	require.NoError(t, pool.QueryRow(ctx, `SELECT balance FROM customers WHERE id = $1`, ingestion.ToUUID(customerID)).Scan(&balanceAfter))
 	assert.Equal(t, balanceBefore, balanceAfter)
 }

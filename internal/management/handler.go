@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"time"
 
-	"espx/internal/ads/db"
 	"espx/internal/config"
-	"espx/pkg/cold"
+	"espx/internal/ingestion/sqlc"
+	"espx/pkg/coldpath"
 	"espx/pkg/httpresponse"
 
 	"github.com/google/uuid"
@@ -64,7 +64,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/settings", h.limit(h.perm(h.updateSettings, PermSettingsWrite)))
 	mux.HandleFunc("POST /admin/blacklist", h.limit(h.perm(h.blockIP, PermBlacklistWrite)))
 	mux.HandleFunc("DELETE /admin/blacklist", h.limit(h.perm(h.unblockIP, PermBlacklistWrite)))
-	mux.HandleFunc("POST /admin/ml/overrides", h.limit(h.perm(h.applyMLOverrides, PermBlacklistWrite)))
+	mux.HandleFunc("POST /admin/fraud-scoring/overrides", h.limit(h.perm(h.applyFraudScoringOverrides, PermBlacklistWrite)))
 	mux.HandleFunc("GET /admin/audit", h.limit(h.perm(h.listAudit, PermAuditRead)))
 	mux.HandleFunc("POST /admin/system/breaker", h.limit(h.perm(h.toggleEmergencyBreaker, PermSettingsWrite)))
 
@@ -125,12 +125,12 @@ func (h *Handler) authFallback(next http.HandlerFunc) http.HandlerFunc {
 
 // createCustomer handles POST /admin/customers for onboarding billing accounts.
 func (h *Handler) createCustomer(w http.ResponseWriter, r *http.Request) {
-	body, err := cold.ReadLimitedBody(w, r, cold.DefaultMaxBody)
+	body, err := coldpath.ReadLimitedBody(w, r, coldpath.DefaultMaxBody)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
-	req, err := cold.DecodeBody[struct {
+	req, err := coldpath.DecodeBody[struct {
 		ID           uuid.UUID `json:"id"`
 		Name         string    `json:"name"`
 		BalanceMicro *int64    `json:"balance_micro"`
@@ -173,12 +173,12 @@ func (h *Handler) topUpBalance(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid customer id")
 		return
 	}
-	body, err := cold.ReadLimitedBody(w, r, cold.DefaultMaxBody)
+	body, err := coldpath.ReadLimitedBody(w, r, coldpath.DefaultMaxBody)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
-	req, err := cold.DecodeBody[struct {
+	req, err := coldpath.DecodeBody[struct {
 		AmountMicro *int64   `json:"amount_micro"`
 		Amount      *float64 `json:"amount"`
 	}](body)
@@ -214,12 +214,12 @@ func (h *Handler) topUpBalance(w http.ResponseWriter, r *http.Request) {
 
 // createCampaign handles POST /admin/campaigns for launching new delivery with budget reservation.
 func (h *Handler) createCampaign(w http.ResponseWriter, r *http.Request) {
-	body, err := cold.ReadLimitedBody(w, r, cold.DefaultMaxBody)
+	body, err := coldpath.ReadLimitedBody(w, r, coldpath.DefaultMaxBody)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "failed to read request body")
 		return
 	}
-	req, err := cold.DecodeBody[struct {
+	req, err := coldpath.DecodeBody[struct {
 		CustomerID       uuid.UUID  `json:"customer_id"`
 		BrandID          *uuid.UUID `json:"brand_id,omitempty"`
 		Name             string     `json:"name"`
@@ -319,9 +319,9 @@ func (h *Handler) cancelCampaign(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid campaign id")
 		return
 	}
-	req, err := cold.DecodeRequest[struct {
+	req, err := coldpath.DecodeRequest[struct {
 		Reason string `json:"reason"`
-	}](w, r, cold.DefaultMaxBody)
+	}](w, r, coldpath.DefaultMaxBody)
 	if err != nil {
 		slog.Warn("failed to decode cancel campaign request", "error", err)
 	}
@@ -350,9 +350,9 @@ func (h *Handler) updateCampaignPacing(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid campaign id")
 		return
 	}
-	req, err := cold.DecodeRequest[struct {
+	req, err := coldpath.DecodeRequest[struct {
 		PacingMode string `json:"pacing_mode"`
-	}](w, r, cold.DefaultMaxBody)
+	}](w, r, coldpath.DefaultMaxBody)
 	if err != nil {
 		slog.Warn("failed to decode update campaign pacing request", "error", err)
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
@@ -384,7 +384,7 @@ func (h *Handler) updateCampaignPacing(w http.ResponseWriter, r *http.Request) {
 
 // updateSettings handles POST /admin/settings for system configuration changes.
 func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
-	settings, err := cold.DecodeRequest[map[string]string](w, r, cold.DefaultMaxBody)
+	settings, err := coldpath.DecodeRequest[map[string]string](w, r, coldpath.DefaultMaxBody)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
@@ -398,10 +398,10 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 
 // toggleEmergencyBreaker handles POST /admin/system/breaker for the global ad delivery kill switch.
 func (h *Handler) toggleEmergencyBreaker(w http.ResponseWriter, r *http.Request) {
-	req, err := cold.DecodeRequest[struct {
+	req, err := coldpath.DecodeRequest[struct {
 		Active bool   `json:"active"`
 		Reason string `json:"reason"`
-	}](w, r, cold.DefaultMaxBody)
+	}](w, r, coldpath.DefaultMaxBody)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
@@ -415,11 +415,11 @@ func (h *Handler) toggleEmergencyBreaker(w http.ResponseWriter, r *http.Request)
 
 // blockIP handles POST /admin/blacklist for operator-initiated IP blocks.
 func (h *Handler) blockIP(w http.ResponseWriter, r *http.Request) {
-	req, err := cold.DecodeRequest[struct {
+	req, err := coldpath.DecodeRequest[struct {
 		IP         string `json:"ip"`
 		Source     string `json:"source"`
 		TTLSeconds *int64 `json:"ttl_seconds,omitempty"`
-	}](w, r, cold.DefaultMaxBody)
+	}](w, r, coldpath.DefaultMaxBody)
 	if err != nil || req.IP == "" {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
@@ -433,10 +433,10 @@ func (h *Handler) blockIP(w http.ResponseWriter, r *http.Request) {
 
 // unblockIP handles DELETE /admin/blacklist for removing blocked IPs.
 func (h *Handler) unblockIP(w http.ResponseWriter, r *http.Request) {
-	req, err := cold.DecodeRequest[struct {
+	req, err := coldpath.DecodeRequest[struct {
 		IP     string `json:"ip"`
 		Source string `json:"source"`
-	}](w, r, cold.DefaultMaxBody)
+	}](w, r, coldpath.DefaultMaxBody)
 	if err != nil || req.IP == "" {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
@@ -459,7 +459,7 @@ func (h *Handler) listAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cold.WritePaginatedJSON(w, logs, total)
+	coldpath.WritePaginatedJSON(w, logs, total)
 }
 
 // parsePagination reads limit and offset query params with safe defaults and caps.
@@ -487,7 +487,7 @@ func (h *Handler) listCustomers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cold.WritePaginatedJSON(w, customers, total)
+	coldpath.WritePaginatedJSON(w, customers, total)
 }
 
 // getCustomer handles GET /admin/customers/{id} for account detail with spend stats.
@@ -536,7 +536,7 @@ func (h *Handler) getCustomerLedger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cold.WritePaginatedJSON(w, ledger, total)
+	coldpath.WritePaginatedJSON(w, ledger, total)
 }
 
 // listCampaigns handles GET /admin/campaigns with optional customer and status filters.
@@ -562,7 +562,7 @@ func (h *Handler) listCampaigns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cold.WritePaginatedJSON(w, campaigns, total)
+	coldpath.WritePaginatedJSON(w, campaigns, total)
 }
 
 // getCampaign handles GET /admin/campaigns/{id} for campaign detail views.
@@ -614,7 +614,7 @@ func (h *Handler) getCampaignHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cold.WritePaginatedJSON(w, history, total)
+	coldpath.WritePaginatedJSON(w, history, total)
 }
 
 // listBlacklist handles GET /admin/blacklist for blocked IP inventory.
@@ -626,7 +626,7 @@ func (h *Handler) listBlacklist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cold.WritePaginatedJSON(w, items, total)
+	coldpath.WritePaginatedJSON(w, items, total)
 }
 
 // getSettings handles GET /admin/settings for reading system configuration.
@@ -642,10 +642,10 @@ func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
 
 // createBrand handles POST /admin/brands for registering advertiser brands.
 func (h *Handler) createBrand(w http.ResponseWriter, r *http.Request) {
-	req, err := cold.DecodeRequest[struct {
+	req, err := coldpath.DecodeRequest[struct {
 		CustomerID uuid.UUID `json:"customer_id"`
 		Name       string    `json:"name"`
-	}](w, r, cold.DefaultMaxBody)
+	}](w, r, coldpath.DefaultMaxBody)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
@@ -710,10 +710,10 @@ func (h *Handler) configureBrandFcap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req, err := cold.DecodeRequest[struct {
+	req, err := coldpath.DecodeRequest[struct {
 		FreqLimit  int32 `json:"freq_limit"`
 		FreqWindow int32 `json:"freq_window"`
-	}](w, r, cold.DefaultMaxBody)
+	}](w, r, coldpath.DefaultMaxBody)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return

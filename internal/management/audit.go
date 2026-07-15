@@ -2,12 +2,12 @@ package management
 
 import (
 	"context"
-	"espx/internal/ads/db"
+	"espx/internal/ingestion/sqlc"
 	"log/slog"
 	"time"
 
-	"espx/internal/ads"
-	"espx/pkg/cold"
+	"espx/internal/ingestion"
+	"espx/pkg/coldpath"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -15,12 +15,12 @@ import (
 
 // AuditLog persists an admin action for compliance review without failing the primary transaction.
 func (s *Service) AuditLog(ctx context.Context, q db.Querier, adminID uuid.UUID, action string, targetType string, targetID *uuid.UUID, changes any, metadata any) {
-	changesJSON, err := cold.MarshalJSON(changes)
+	changesJSON, err := coldpath.MarshalJSON(changes)
 	if err != nil {
 		slog.Error("audit marshal changes failed", "error", err, "admin_id", adminID, "action", action)
 		changesJSON = []byte("{}")
 	}
-	metadataJSON, err := cold.MarshalJSON(metadata)
+	metadataJSON, err := coldpath.MarshalJSON(metadata)
 	if err != nil {
 		slog.Error("audit marshal metadata failed", "error", err, "admin_id", adminID, "action", action)
 		metadataJSON = []byte("{}")
@@ -28,7 +28,7 @@ func (s *Service) AuditLog(ctx context.Context, q db.Querier, adminID uuid.UUID,
 
 	var tid pgtype.UUID
 	if targetID != nil {
-		tid = ads.ToUUID(*targetID)
+		tid = ingestion.ToUUID(*targetID)
 	}
 
 	if q == nil {
@@ -36,7 +36,7 @@ func (s *Service) AuditLog(ctx context.Context, q db.Querier, adminID uuid.UUID,
 	}
 
 	_, err = q.CreateAuditLog(ctx, db.CreateAuditLogParams{
-		AdminID:    ads.ToUUID(adminID),
+		AdminID:    ingestion.ToUUID(adminID),
 		Action:     action,
 		TargetType: targetType,
 		TargetID:   tid,

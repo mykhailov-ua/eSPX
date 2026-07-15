@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"espx/internal/config"
-	"espx/pkg/cold"
+	"espx/pkg/coldpath"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -80,7 +80,7 @@ func (webhookHandler *WebhookHandler) handleStripeWebhook(w http.ResponseWriter,
 		return
 	}
 
-	body, err := cold.ReadLimitedBody(w, r, 64*1024)
+	body, err := coldpath.ReadLimitedBody(w, r, 64*1024)
 	if err != nil {
 		slog.Warn("failed to read webhook body", "error", err)
 		http.Error(w, "Bad Request", http.StatusBadRequest)
@@ -95,7 +95,7 @@ func (webhookHandler *WebhookHandler) handleStripeWebhook(w http.ResponseWriter,
 		return
 	}
 
-	event, err := cold.DecodeBody[stripeEvent](body)
+	event, err := coldpath.DecodeBody[stripeEvent](body)
 	if err != nil {
 		slog.Warn("failed to unmarshal stripe event", "error", err)
 		http.Error(w, "Bad Request", http.StatusBadRequest)

@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/ingestion"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -52,11 +52,11 @@ func TestChaos_ShardAutoscale_SuddenLoadSpike(t *testing.T) {
 	defer cleanup1()
 
 	cfg := &config.Config{SlotMigrationEnabled: false}
-	svc := NewService(pool, []redis.UniversalClient{rdb0, rdb1}, ads.NewStaticSlotSharder(2), cfg)
+	svc := NewService(pool, []redis.UniversalClient{rdb0, rdb1}, ingestion.NewStaticSlotSharder(2), cfg)
 	defer svc.Close()
 
 	// Seed active slot map version 1
-	mapRepo := ads.NewSlotMapRepo(pool)
+	mapRepo := ingestion.NewSlotMapRepo(pool)
 	activeVer, err := mapRepo.GetActiveVersion(ctx)
 	require.NoError(t, err)
 
@@ -65,7 +65,7 @@ func TestChaos_ShardAutoscale_SuddenLoadSpike(t *testing.T) {
 	var slot int16 = 0
 	for {
 		campID = uuid.New()
-		if ads.CampaignSlotIndex(campID) == slot {
+		if ingestion.CampaignSlotIndex(campID) == slot {
 			break
 		}
 	}
@@ -76,7 +76,7 @@ func TestChaos_ShardAutoscale_SuddenLoadSpike(t *testing.T) {
 	_, err = pool.Exec(ctx, `
 		INSERT INTO campaigns (id, name, budget_limit, current_spend, status, customer_id, pacing_mode, timezone, freq_window)
 		VALUES ($1, 'autoscale-test', 1000000, 0, 'ACTIVE', $2, 'ASAP', 'UTC', 86400)`,
-		ads.ToUUID(campID), ads.ToUUID(customerID))
+		ingestion.ToUUID(campID), ingestion.ToUUID(customerID))
 	require.NoError(t, err)
 
 	key := "budget:campaign:" + campID.String()
@@ -150,10 +150,10 @@ func TestChaos_ShardAutoscale_ShuffledShards(t *testing.T) {
 
 	// Shuffled order: s.rdbs[0] is rdb1, s.rdbs[1] is rdb0
 	cfg := &config.Config{SlotMigrationEnabled: false}
-	svc := NewService(pool, []redis.UniversalClient{rdb1, rdb0}, ads.NewStaticSlotSharder(2), cfg)
+	svc := NewService(pool, []redis.UniversalClient{rdb1, rdb0}, ingestion.NewStaticSlotSharder(2), cfg)
 	defer svc.Close()
 
-	mapRepo := ads.NewSlotMapRepo(pool)
+	mapRepo := ingestion.NewSlotMapRepo(pool)
 	activeVer, err := mapRepo.GetActiveVersion(ctx)
 	require.NoError(t, err)
 
@@ -162,7 +162,7 @@ func TestChaos_ShardAutoscale_ShuffledShards(t *testing.T) {
 	var slot int16 = 0
 	for {
 		campID = uuid.New()
-		if ads.CampaignSlotIndex(campID) == slot {
+		if ingestion.CampaignSlotIndex(campID) == slot {
 			break
 		}
 	}
@@ -173,7 +173,7 @@ func TestChaos_ShardAutoscale_ShuffledShards(t *testing.T) {
 	_, err = pool.Exec(ctx, `
 		INSERT INTO campaigns (id, name, budget_limit, current_spend, status, customer_id, pacing_mode, timezone, freq_window)
 		VALUES ($1, 'shuffled-test', 1000000, 0, 'ACTIVE', $2, 'ASAP', 'UTC', 86400)`,
-		ads.ToUUID(campID), ads.ToUUID(customerID))
+		ingestion.ToUUID(campID), ingestion.ToUUID(customerID))
 	require.NoError(t, err)
 
 	key := "budget:campaign:" + campID.String()
@@ -241,10 +241,10 @@ func TestChaos_ShardAutoscale_ConcurrentAutoscaleDeadlock(t *testing.T) {
 	defer cleanup1()
 
 	cfg := &config.Config{SlotMigrationEnabled: false}
-	svc := NewService(pool, []redis.UniversalClient{rdb0, rdb1}, ads.NewStaticSlotSharder(2), cfg)
+	svc := NewService(pool, []redis.UniversalClient{rdb0, rdb1}, ingestion.NewStaticSlotSharder(2), cfg)
 	defer svc.Close()
 
-	mapRepo := ads.NewSlotMapRepo(pool)
+	mapRepo := ingestion.NewSlotMapRepo(pool)
 	activeVer, err := mapRepo.GetActiveVersion(ctx)
 	require.NoError(t, err)
 
@@ -258,7 +258,7 @@ func TestChaos_ShardAutoscale_ConcurrentAutoscaleDeadlock(t *testing.T) {
 		var campID uuid.UUID
 		for {
 			campID = uuid.New()
-			if ads.CampaignSlotIndex(campID) == i {
+			if ingestion.CampaignSlotIndex(campID) == i {
 				break
 			}
 		}
@@ -268,7 +268,7 @@ func TestChaos_ShardAutoscale_ConcurrentAutoscaleDeadlock(t *testing.T) {
 		_, err := pool.Exec(ctx, fmt.Sprintf(`
 			INSERT INTO campaigns (id, name, budget_limit, current_spend, status, customer_id, pacing_mode, timezone, freq_window)
 			VALUES ($1, 'concurrent-test-%d', 1000000, 0, 'ACTIVE', $2, 'ASAP', 'UTC', 86400)`, i),
-			ads.ToUUID(campID), ads.ToUUID(customerID))
+			ingestion.ToUUID(campID), ingestion.ToUUID(customerID))
 		require.NoError(t, err)
 
 		key := "budget:campaign:" + campID.String()

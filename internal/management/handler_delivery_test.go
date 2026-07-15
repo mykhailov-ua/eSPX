@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads/db"
 	"espx/internal/auth"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/ingestion/sqlc"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"

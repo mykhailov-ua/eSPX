@@ -13,12 +13,12 @@ Applied on bare metal via scripts (not in default compose).
 | `nic-tune.env.example` | `INGRESS_INTERFACE`, `IRQ_STRATEGY` |
 
 ```bash
-sudo bash scripts/edge/edge_sysctl.sh apply
-sudo bash scripts/edge/edge_nic_tune.sh install-systemd
+sudo bash scripts/edge-tuning/edge_sysctl.sh apply
+sudo bash scripts/edge-tuning/edge_nic_tune.sh install-systemd
 sudo systemctl start espx-edge-nic-tune
 ```
 
-Or run the full Phase 0 check: `bash scripts/edge/edge_phase0.sh`
+Or run the full Phase 0 check: `bash scripts/edge-tuning/edge_phase0.sh`
 
 ## Optional — XDP filter (`xdp/`)
 

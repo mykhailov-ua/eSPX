@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"espx/internal/ads/db"
+	"espx/internal/ingestion/sqlc"
 
 	"github.com/google/uuid"
 )

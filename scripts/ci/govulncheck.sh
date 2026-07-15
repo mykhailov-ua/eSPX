@@ -2,7 +2,7 @@
 # Scan module dependencies for known vulnerabilities. Local utility — not run in CI.
 set -euo pipefail
 
-source "$(cd "$(dirname "$0")/../_common" && pwd)/paths.sh"
+source "$(cd "$(dirname "$0")/../lib" && pwd)/paths.sh"
 cd "$ROOT"
 
 if ! command -v govulncheck >/dev/null 2>&1; then

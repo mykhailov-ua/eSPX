@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/ingestion"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -32,7 +32,7 @@ func TestChaos_QuotaDriftRepair(t *testing.T) {
 	campaignID := uuid.New()
 	_, err := pool.Exec(ctx, `
 		INSERT INTO customers (id, name, balance, currency) VALUES ($1, 'quota-drift', 0, 'USD')`,
-		ads.ToUUID(customerID))
+		ingestion.ToUUID(customerID))
 	require.NoError(t, err)
 	seedQuotaChaosCampaign(t, pool, campaignID, customerID, 10_000_000)
 
@@ -40,7 +40,7 @@ func TestChaos_QuotaDriftRepair(t *testing.T) {
 	_, err = pool.Exec(ctx, `
 		INSERT INTO campaign_quotas (shard_id, campaign_id, reserved_amount, chunk_size, updated_at)
 		VALUES (0, $1, $2, $3, NOW() - INTERVAL '35 seconds')`,
-		ads.ToUUID(campaignID), reserved, quotaChaosChunkMicro)
+		ingestion.ToUUID(campaignID), reserved, quotaChaosChunkMicro)
 	require.NoError(t, err)
 
 	cfg := &config.Config{
@@ -68,14 +68,14 @@ func TestChaos_QuotaDriftRepair(t *testing.T) {
 
 	var spend, limit int64
 	require.NoError(t, pool.QueryRow(ctx, `
-		SELECT current_spend, budget_limit FROM campaigns WHERE id = $1`, ads.ToUUID(campaignID),
+		SELECT current_spend, budget_limit FROM campaigns WHERE id = $1`, ingestion.ToUUID(campaignID),
 	).Scan(&spend, &limit))
 	require.LessOrEqual(t, spend, limit)
 
 	var auditCount int
 	require.NoError(t, pool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM admin_audit_log WHERE action = 'QUOTA_REPAIR_TOPUP' AND target_id = $1`,
-		ads.ToUUID(campaignID)).Scan(&auditCount))
+		ingestion.ToUUID(campaignID)).Scan(&auditCount))
 	require.GreaterOrEqual(t, auditCount, 1)
 
 	elapsed := time.Since(start)
@@ -104,7 +104,7 @@ func TestChaos_QuotaDeadShardTransientBlip(t *testing.T) {
 	customerID := uuid.New()
 	_, err := infra.Pool.Exec(ctx, `
 		INSERT INTO customers (id, name, balance, currency) VALUES ($1, 'quota-blip', 0, 'USD')`,
-		ads.ToUUID(customerID))
+		ingestion.ToUUID(customerID))
 	require.NoError(t, err)
 	seedQuotaChaosCampaign(t, infra.Pool, campaignID, customerID, 5_000_000)
 
@@ -112,7 +112,7 @@ func TestChaos_QuotaDeadShardTransientBlip(t *testing.T) {
 	_, err = infra.Pool.Exec(ctx, `
 		INSERT INTO campaign_quotas (shard_id, campaign_id, reserved_amount, chunk_size, updated_at)
 		VALUES (0, $1, $2, $3, NOW() - INTERVAL '90 seconds')`,
-		ads.ToUUID(campaignID), stuckReserved, quotaChaosChunkMicro)
+		ingestion.ToUUID(campaignID), stuckReserved, quotaChaosChunkMicro)
 	require.NoError(t, err)
 
 	cfg := &config.Config{QuotaMode: "live", QuotaChunkSize: quotaChaosChunkMicro, QuotaAutoRepair: true}
@@ -130,7 +130,7 @@ func TestChaos_QuotaDeadShardTransientBlip(t *testing.T) {
 	var reservedAfter int64
 	require.NoError(t, infra.Pool.QueryRow(ctx, `
 		SELECT reserved_amount FROM campaign_quotas WHERE shard_id = 0 AND campaign_id = $1`,
-		ads.ToUUID(campaignID)).Scan(&reservedAfter))
+		ingestion.ToUUID(campaignID)).Scan(&reservedAfter))
 	require.Equal(t, stuckReserved, reservedAfter, "transient blip must not release reservations")
 
 	logChaosProof(t, "quota_dead_shard_transient_blip", map[string]string{

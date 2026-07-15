@@ -22,10 +22,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build -tags timetzdata -ldflags="-s -w" -o /bin/
 RUN CGO_ENABLED=0 GOOS=linux go build -tags timetzdata -ldflags="-s -w" -o /bin/billing ./cmd/billing
 RUN CGO_ENABLED=0 GOOS=linux go build -tags timetzdata -ldflags="-s -w" -o /bin/notifier ./cmd/notifier
 RUN CGO_ENABLED=0 GOOS=linux go build -tags timetzdata -ldflags="-s -w" -o /bin/ivt-detector ./cmd/ivt-detector
-RUN CGO_ENABLED=0 GOOS=linux go build -tags timetzdata -ldflags="-s -w" -o /bin/ml-analytics ./cmd/ml-analytics
+RUN CGO_ENABLED=0 GOOS=linux go build -tags timetzdata -ldflags="-s -w" -o /bin/fraud-scorer ./cmd/fraud-scorer
 RUN CGO_ENABLED=0 GOOS=linux go build -tags timetzdata -ldflags="-s -w" -o /bin/broker ./cmd/broker
 RUN CGO_ENABLED=0 GOOS=linux go build -tags timetzdata -ldflags="-s -w" -o /bin/log-shipper ./cmd/log-shipper
-RUN CGO_ENABLED=0 GOOS=linux go build -tags timetzdata -ldflags="-s -w" -o /bin/alertmanager-telegram ./cmd/telegram
+RUN CGO_ENABLED=0 GOOS=linux go build -tags timetzdata -ldflags="-s -w" -o /bin/alertmanager-telegram ./cmd/alertmanager-telegram
 
 # Stage 3: Final image
 # distroless/static-debian12: no shell, no package manager, no libc; attack surface ~2 MB.
@@ -40,7 +40,7 @@ COPY --from=builder /bin/payment /payment
 COPY --from=builder /bin/billing /billing
 COPY --from=builder /bin/notifier /notifier
 COPY --from=builder /bin/ivt-detector /ivt-detector
-COPY --from=builder /bin/ml-analytics /ml-analytics
+COPY --from=builder /bin/fraud-scorer /fraud-scorer
 COPY --from=builder /bin/broker /broker
 COPY --from=builder /bin/log-shipper /log-shipper
 COPY --from=builder /bin/alertmanager-telegram /alertmanager-telegram

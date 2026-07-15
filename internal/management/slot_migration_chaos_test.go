@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -103,7 +103,7 @@ func campaignIDForSlot(t *testing.T, slot int16) uuid.UUID {
 	t.Helper()
 	for range 50_000 {
 		id := uuid.New()
-		if ads.CampaignSlotIndex(id) == slot {
+		if ingestion.CampaignSlotIndex(id) == slot {
 			return id
 		}
 	}
@@ -119,14 +119,14 @@ func seedCampaignForSlot(t *testing.T, svc *Service, pool *pgxpool.Pool, ctx con
 	_, err := pool.Exec(ctx, `
 		INSERT INTO campaigns (id, name, budget_limit, current_spend, status, customer_id, pacing_mode, timezone, freq_window)
 		VALUES ($1, 'chaos-slot', 1000000, 222223, 'ACTIVE', $2, 'ASAP', 'UTC', 86400)`,
-		ads.ToUUID(campID), ads.ToUUID(customerID))
+		ingestion.ToUUID(campID), ingestion.ToUUID(customerID))
 	require.NoError(t, err)
 	key := "budget:campaign:" + campID.String()
 	require.NoError(t, rdb.Set(ctx, key, "777777", 0).Err())
 	return campID, slot
 }
 
-func prepareMigratingVersion(t *testing.T, ctx context.Context, mapRepo *ads.SlotMapRepo, slot int16, targetShard int16) int32 {
+func prepareMigratingVersion(t *testing.T, ctx context.Context, mapRepo *ingestion.SlotMapRepo, slot int16, targetShard int16) int32 {
 	t.Helper()
 	active, err := mapRepo.GetActiveVersion(ctx)
 	require.NoError(t, err)
@@ -147,7 +147,7 @@ func TestChaos_SlotMigrationActivateBeforeCopyRejected(t *testing.T) {
 	rdbs := []redis.UniversalClient{rdb, rdb, rdb, rdb}
 	svc, _, ctx := setupSlotMigrationChaos(t, rdbs)
 
-	mapRepo := ads.NewSlotMapRepo(svc.GetPool())
+	mapRepo := ingestion.NewSlotMapRepo(svc.GetPool())
 	v := prepareMigratingVersion(t, ctx, mapRepo, 7, 2)
 
 	err := svc.ActivateSlotMapVersion(ctx, uuid.Nil, v)
@@ -182,7 +182,7 @@ func TestChaos_SlotMigrationCopyRedisPartition(t *testing.T) {
 
 	const slot int16 = 3 // seeded source shard 3, target 1
 	_, _ = seedCampaignForSlot(t, svc, svc.GetPool(), ctx, slot, rdbs[3])
-	mapRepo := ads.NewSlotMapRepo(svc.GetPool())
+	mapRepo := ingestion.NewSlotMapRepo(svc.GetPool())
 	v := prepareMigratingVersion(t, ctx, mapRepo, slot, 1)
 
 	err := svc.CopyAllMigratingSlots(ctx, v)
@@ -225,7 +225,7 @@ func TestChaos_SlotMigrationCopySlowEventuallySucceeds(t *testing.T) {
 
 	const slot int16 = 0 // seeded source shard 0, target 1
 	campID, _ := seedCampaignForSlot(t, svc, svc.GetPool(), ctx, slot, rdbs[0])
-	mapRepo := ads.NewSlotMapRepo(svc.GetPool())
+	mapRepo := ingestion.NewSlotMapRepo(svc.GetPool())
 	v := prepareMigratingVersion(t, ctx, mapRepo, slot, 1)
 
 	start := time.Now()
@@ -265,7 +265,7 @@ func TestChaos_SlotMigrationConcurrentCopySameSlot(t *testing.T) {
 
 	const slot int16 = 17
 	campID, _ := seedCampaignForSlot(t, svc, svc.GetPool(), ctx, slot, rdb)
-	mapRepo := ads.NewSlotMapRepo(svc.GetPool())
+	mapRepo := ingestion.NewSlotMapRepo(svc.GetPool())
 	v := prepareMigratingVersion(t, ctx, mapRepo, slot, 3)
 
 	const workers = 6
@@ -315,7 +315,7 @@ func TestChaos_SlotMigrationConcurrentActivate(t *testing.T) {
 
 	const slot int16 = 19
 	_, _ = seedCampaignForSlot(t, svc, svc.GetPool(), ctx, slot, rdb)
-	mapRepo := ads.NewSlotMapRepo(svc.GetPool())
+	mapRepo := ingestion.NewSlotMapRepo(svc.GetPool())
 	v := prepareMigratingVersion(t, ctx, mapRepo, slot, 2)
 	require.NoError(t, svc.CopyAllMigratingSlots(ctx, v))
 
@@ -331,7 +331,7 @@ func TestChaos_SlotMigrationConcurrentActivate(t *testing.T) {
 			switch {
 			case err == nil:
 				success.Add(1)
-			case errors.Is(err, ads.ErrSlotMapAlreadyActive):
+			case errors.Is(err, ingestion.ErrSlotMapAlreadyActive):
 				alreadyActive.Add(1)
 			default:
 				t.Errorf("unexpected activate error: %v", err)
@@ -367,7 +367,7 @@ func TestChaos_SlotMapMetaLockContention(t *testing.T) {
 	rdb, cleanup := database.SetupTestRedis(t)
 	defer cleanup()
 	svc, _, ctx := setupSlotMigrationChaos(t, []redis.UniversalClient{rdb})
-	repo := ads.NewSlotMapRepo(svc.GetPool())
+	repo := ingestion.NewSlotMapRepo(svc.GetPool())
 	active, err := repo.GetActiveVersion(ctx)
 	require.NoError(t, err)
 
@@ -379,7 +379,7 @@ func TestChaos_SlotMapMetaLockContention(t *testing.T) {
 	for i := 0; i < workers; i++ {
 		go func() {
 			defer wg.Done()
-			v, err := repo.CreateNextVersion(ctx, active, []ads.SlotOverride{
+			v, err := repo.CreateNextVersion(ctx, active, []ingestion.SlotOverride{
 				{Slot: 50, ShardID: 1, State: db.RedisSlotStateACTIVE},
 			})
 			if err == nil {
@@ -417,7 +417,7 @@ func TestChaos_SlotMapPGDeadlockRecovery(t *testing.T) {
 	pool, cleanupDB := database.SetupTestDB(t)
 	defer cleanupDB()
 	ctx := context.Background()
-	repo := ads.NewSlotMapRepo(pool)
+	repo := ingestion.NewSlotMapRepo(pool)
 
 	active, err := repo.GetActiveVersion(ctx)
 	require.NoError(t, err)
@@ -457,7 +457,7 @@ func TestChaos_SlotMapPGDeadlockRecovery(t *testing.T) {
 
 	rows, err := repo.ListVersion(ctx, v)
 	require.NoError(t, err)
-	assert.Len(t, rows, ads.SlotCount)
+	assert.Len(t, rows, ingestion.SlotCount)
 
 	logChaosProof(t, "slot_map_pg_deadlock_recovery", map[string]string{
 		"subsystem":   "slot_map_control_plane",
@@ -484,7 +484,7 @@ func TestChaos_SlotMigrationCopyIdempotentRetry(t *testing.T) {
 
 	const slot int16 = 3 // seeded source shard 3, target 1
 	campID, _ := seedCampaignForSlot(t, svc, svc.GetPool(), ctx, slot, rdbs[3])
-	mapRepo := ads.NewSlotMapRepo(svc.GetPool())
+	mapRepo := ingestion.NewSlotMapRepo(svc.GetPool())
 	v := prepareMigratingVersion(t, ctx, mapRepo, slot, 1)
 
 	flaky.failDump = true
@@ -504,7 +504,7 @@ func TestChaos_SlotMigrationCopyIdempotentRetry(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "777777", val)
 
-	ads.AssertBudgetInvariant(t, ctx, svc.GetPool(), rdbs[1], campID)
+	ingestion.AssertBudgetInvariant(t, ctx, svc.GetPool(), rdbs[1], campID)
 
 	logChaosProof(t, "slot_migration_copy_retry_recovery", map[string]string{
 		"subsystem":   "slot_migration",
@@ -529,7 +529,7 @@ func TestChaos_SlotMigrationRollbackAfterActivate(t *testing.T) {
 
 	const slot int16 = 29
 	_, _ = seedCampaignForSlot(t, svc, svc.GetPool(), ctx, slot, rdb)
-	mapRepo := ads.NewSlotMapRepo(svc.GetPool())
+	mapRepo := ingestion.NewSlotMapRepo(svc.GetPool())
 	prevActive, err := mapRepo.GetActiveVersion(ctx)
 	require.NoError(t, err)
 	v := prepareMigratingVersion(t, ctx, mapRepo, slot, 2)

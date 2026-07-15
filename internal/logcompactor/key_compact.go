@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"espx/internal/ads/pb"
+	"espx/internal/ingestion/pb"
 )
 
 const compactOkSuffix = ".compact.ok"

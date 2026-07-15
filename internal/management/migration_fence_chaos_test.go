@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
+	"espx/internal/campaignmodel"
 	"espx/internal/config"
 	"espx/internal/database"
-	"espx/internal/domain"
+	"espx/internal/ingestion"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -22,11 +22,11 @@ import (
 type mgmtTestRegistry struct{}
 
 func (mgmtTestRegistry) Exists(uuid.UUID) bool { return true }
-func (mgmtTestRegistry) Add(uuid.UUID, uuid.UUID, *uuid.UUID, string, domain.PacingMode, int64, string, int32, int32, []string) {
+func (mgmtTestRegistry) Add(uuid.UUID, uuid.UUID, *uuid.UUID, string, campaignmodel.PacingMode, int64, string, int32, int32, []string) {
 }
 func (mgmtTestRegistry) GetCustomerID(uuid.UUID) (uuid.UUID, bool) { return uuid.Nil, true }
-func (mgmtTestRegistry) GetCampaign(id uuid.UUID) (*domain.Campaign, bool) {
-	cp := &domain.Campaign{ID: id, CustomerID: uuid.New(), Location: time.UTC}
+func (mgmtTestRegistry) GetCampaign(id uuid.UUID) (*campaignmodel.Campaign, bool) {
+	cp := &campaignmodel.Campaign{ID: id, CustomerID: uuid.New(), Location: time.UTC}
 	cp.IDStr = id.String()
 	cp.BudgetCampaignKey = "budget:campaign:" + cp.IDStr
 	cp.CampaignSyncKey = "budget:sync:campaign:" + cp.IDStr
@@ -37,10 +37,10 @@ func (mgmtTestRegistry) Sync(context.Context) (int, error)        { return 0, ni
 func (mgmtTestRegistry) StartSync(context.Context, time.Duration) {}
 func (mgmtTestRegistry) Wait(context.Context) error               { return nil }
 
-func newMgmtUnifiedFilter(rdb redis.UniversalClient) *ads.UnifiedFilter {
-	return ads.NewUnifiedFilter(
+func newMgmtUnifiedFilter(rdb redis.UniversalClient) *ingestion.UnifiedFilter {
+	return ingestion.NewUnifiedFilter(
 		[]redis.UniversalClient{rdb},
-		ads.NewJumpHashSharder(1),
+		ingestion.NewJumpHashSharder(1),
 		mgmtTestRegistry{},
 		nil,
 		10_000, time.Minute, time.Hour, time.Hour,
@@ -95,7 +95,7 @@ func TestChaos_OutboxBudgetFreezePriority(t *testing.T) {
 	require.NoError(t, pool.QueryRow(ctx, `SELECT status FROM outbox_events WHERE id = $1`, freezeID).Scan(&status))
 	require.Equal(t, "PROCESSED", status)
 
-	exists, err := rdb.Exists(ctx, ads.BudgetFrozenRedisKey(campID)).Result()
+	exists, err := rdb.Exists(ctx, ingestion.BudgetFrozenRedisKey(campID)).Result()
 	require.NoError(t, err)
 	require.Equal(t, int64(1), exists)
 
@@ -122,15 +122,15 @@ func TestChaos_SlotMigrationFence(t *testing.T) {
 	customerID := uuid.New()
 	_, err := pool.Exec(ctx, `
 		INSERT INTO customers (id, name, balance, currency) VALUES ($1, 'mig-fence', 0, 'USD')`,
-		ads.ToUUID(customerID))
+		ingestion.ToUUID(customerID))
 	require.NoError(t, err)
 	_, err = pool.Exec(ctx, `
 		INSERT INTO campaigns (id, name, budget_limit, current_spend, status, customer_id, pacing_mode, timezone, freq_window)
 		VALUES ($1, 'mig-fence', 10000000, 0, 'ACTIVE', $2, 'ASAP', 'UTC', 86400)`,
-		ads.ToUUID(campID), ads.ToUUID(customerID))
+		ingestion.ToUUID(campID), ingestion.ToUUID(customerID))
 	require.NoError(t, err)
 
-	require.NoError(t, ads.BumpMigrationFences(ctx, pool, rdb, []uuid.UUID{campID}))
+	require.NoError(t, ingestion.BumpMigrationFences(ctx, pool, rdb, []uuid.UUID{campID}))
 	require.NoError(t, rdb.Set(ctx, "budget:campaign:"+campID.String(), 10_000_000, 0).Err())
 
 	f := newMgmtUnifiedFilter(rdb)
@@ -143,7 +143,7 @@ func TestChaos_SlotMigrationFence(t *testing.T) {
 	for range workers {
 		go func() {
 			defer wg.Done()
-			evt := &domain.Event{
+			evt := &campaignmodel.Event{
 				Type:       "click",
 				CampaignID: campID,
 				ClickID:    uuid.NewString(),
@@ -154,7 +154,7 @@ func TestChaos_SlotMigrationFence(t *testing.T) {
 			defer cancel()
 			err := f.Check(checkCtx, evt)
 			if err != nil {
-				if err == ads.ErrMigrationFenced {
+				if err == ingestion.ErrMigrationFenced {
 					fenced++
 				}
 				return
@@ -167,7 +167,7 @@ func TestChaos_SlotMigrationFence(t *testing.T) {
 	require.Equal(t, int64(workers), fenced)
 	require.Equal(t, int64(0), debited)
 
-	ads.AssertBudgetInvariant(t, ctx, pool, rdb, campID)
+	ingestion.AssertBudgetInvariant(t, ctx, pool, rdb, campID)
 
 	logChaosProof(t, "slot_migration_fence", map[string]string{
 		"subsystem":         "slot_migration",

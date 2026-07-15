@@ -2,7 +2,7 @@
 # Fast local gate before push: lint, alloc gate, unit+integration tests, docker build.
 set -euo pipefail
 
-source "$(cd "$(dirname "$0")/../_common" && pwd)/paths.sh"
+source "$(cd "$(dirname "$0")/../lib" && pwd)/paths.sh"
 cd "$ROOT"
 
 bash "$SCRIPTS/codegen/validate_configs.sh"

@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/ingestion"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -170,7 +170,7 @@ func TestRtbShadowDiffAPI(t *testing.T) {
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
-	ads.ResetRtbShadowDiffBuckets()
+	ingestion.ResetRtbShadowDiffBuckets()
 
 	req, _ := http.NewRequest("GET", "/admin/rtb/shadow-diff?window=1h", nil)
 	withAdminAPIKey(req, cfg)
@@ -178,7 +178,7 @@ func TestRtbShadowDiffAPI(t *testing.T) {
 	mux.ServeHTTP(resp, req)
 	require.Equal(t, http.StatusOK, resp.Code)
 
-	var snap ads.RtbShadowDiffSnapshotDTO
+	var snap ingestion.RtbShadowDiffSnapshotDTO
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&snap))
 	assert.Equal(t, "1h0m0s", snap.Window)
 	assert.Equal(t, "memory", snap.Source)

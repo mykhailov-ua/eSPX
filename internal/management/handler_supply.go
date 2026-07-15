@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"espx/pkg/cold"
+	"espx/pkg/coldpath"
 	"espx/pkg/httpresponse"
 
 	"github.com/google/uuid"
@@ -77,7 +77,7 @@ func (h *Handler) getSeller(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) createSeller(w http.ResponseWriter, r *http.Request) {
-	spec, err := cold.DecodeRequest[SellerCreateSpec](w, r, cold.DefaultMaxBody)
+	spec, err := coldpath.DecodeRequest[SellerCreateSpec](w, r, coldpath.DefaultMaxBody)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
@@ -96,7 +96,7 @@ func (h *Handler) updateSeller(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid seller id")
 		return
 	}
-	spec, err := cold.DecodeRequest[SellerUpdateSpec](w, r, cold.DefaultMaxBody)
+	spec, err := coldpath.DecodeRequest[SellerUpdateSpec](w, r, coldpath.DefaultMaxBody)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
@@ -146,7 +146,7 @@ func (h *Handler) getAdsTxtEntry(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) createAdsTxtEntry(w http.ResponseWriter, r *http.Request) {
-	spec, err := cold.DecodeRequest[AdsTxtEntryCreateSpec](w, r, cold.DefaultMaxBody)
+	spec, err := coldpath.DecodeRequest[AdsTxtEntryCreateSpec](w, r, coldpath.DefaultMaxBody)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
@@ -165,7 +165,7 @@ func (h *Handler) updateAdsTxtEntry(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid entry id")
 		return
 	}
-	spec, err := cold.DecodeRequest[AdsTxtEntryUpdateSpec](w, r, cold.DefaultMaxBody)
+	spec, err := coldpath.DecodeRequest[AdsTxtEntryUpdateSpec](w, r, coldpath.DefaultMaxBody)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
@@ -211,9 +211,9 @@ func (h *Handler) updateCampaignSupplyChain(w http.ResponseWriter, r *http.Reque
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid campaign id")
 		return
 	}
-	req, err := cold.DecodeRequest[struct {
+	req, err := coldpath.DecodeRequest[struct {
 		Nodes []SupplyChainNode `json:"nodes"`
-	}](w, r, cold.DefaultMaxBody)
+	}](w, r, coldpath.DefaultMaxBody)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return

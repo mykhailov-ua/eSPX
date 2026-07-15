@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
-	"espx/pkg/cold"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
+	"espx/pkg/coldpath"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -23,7 +23,7 @@ type BlacklistDTO struct {
 	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
-// BlockIP persists a blacklist entry and propagates it to Redis and nginx via cold.
+// BlockIP persists a blacklist entry and propagates it to Redis and nginx via coldpath.
 func (s *Service) BlockIP(ctx context.Context, ip string, source string) error {
 	return s.BlockIPWithTTL(ctx, ip, source, nil)
 }
@@ -50,7 +50,7 @@ func (s *Service) BlockIPWithTTL(ctx context.Context, ip string, source string, 
 		}
 		s.AuditLog(ctx, q, uid, "BLOCK_IP", "system", nil, map[string]string{"ip": ip, "source": reason}, nil)
 
-		payload, err := cold.MarshalJSON(BlacklistPayload{Action: "add", IP: ip, Reason: reason})
+		payload, err := coldpath.MarshalJSON(BlacklistPayload{Action: "add", IP: ip, Reason: reason})
 		if err != nil {
 			return fmt.Errorf("marshal blacklist outbox payload: %w", err)
 		}
@@ -62,15 +62,15 @@ func (s *Service) BlockIPWithTTL(ctx context.Context, ip string, source string, 
 	})
 }
 
-// EnqueueMLThreat enqueues a machine learning threat candidate (IP, campaign, score, boost, TTL).
-func (s *Service) EnqueueMLThreat(ctx context.Context, p MLThreatPayload) error {
+// EnqueueFraudThreat enqueues a fraud enforcement action via outbox.
+func (s *Service) EnqueueFraudThreat(ctx context.Context, p FraudThreatPayload) error {
 	if _, err := uuid.Parse(p.CampaignID); err != nil {
 		return fmt.Errorf("invalid campaign id: %w", err)
 	}
 
 	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
-		payload, err := cold.MarshalJSON(p)
+		payload, err := coldpath.MarshalJSON(p)
 		if err != nil {
 			return fmt.Errorf("marshal ml threat payload: %w", err)
 		}
@@ -95,7 +95,7 @@ func (s *Service) EnqueueMLThreat(ctx context.Context, p MLThreatPayload) error 
 	})
 }
 
-// UnblockIP removes a blacklist entry and propagates the change to Redis and nginx via cold.
+// UnblockIP removes a blacklist entry and propagates the change to Redis and nginx via coldpath.
 func (s *Service) UnblockIP(ctx context.Context, ip string, source string) error {
 	reason := normalizeBlacklistReason(source)
 
@@ -112,7 +112,7 @@ func (s *Service) UnblockIP(ctx context.Context, ip string, source string) error
 		}
 		s.AuditLog(ctx, q, uid, "UNBLOCK_IP", "system", nil, map[string]string{"ip": ip, "source": reason}, nil)
 
-		payload, err := cold.MarshalJSON(BlacklistPayload{Action: "remove", IP: ip, Reason: reason})
+		payload, err := coldpath.MarshalJSON(BlacklistPayload{Action: "remove", IP: ip, Reason: reason})
 		if err != nil {
 			return fmt.Errorf("marshal blacklist outbox payload: %w", err)
 		}
@@ -124,7 +124,7 @@ func (s *Service) UnblockIP(ctx context.Context, ip string, source string) error
 	})
 }
 
-// UpdateSettings persists system configuration and queues a hot-path sync via cold.
+// UpdateSettings persists system configuration and queues a hot-path sync via coldpath.
 func (s *Service) UpdateSettings(ctx context.Context, settings map[string]string) error {
 	normalized, err := normalizeSystemSettings(settings)
 	if err != nil {
@@ -147,7 +147,7 @@ func (s *Service) UpdateSettings(ctx context.Context, settings map[string]string
 			uid = u.UserID
 		}
 		s.AuditLog(ctx, q, uid, "UPDATE_SETTINGS", "system", nil, normalized, nil)
-		payloadBytes, err := cold.MarshalJSON(SettingsPayload{Settings: normalized})
+		payloadBytes, err := coldpath.MarshalJSON(SettingsPayload{Settings: normalized})
 		if err != nil {
 			return fmt.Errorf("marshal settings outbox payload: %w", err)
 		}
@@ -163,7 +163,7 @@ func normalizeSystemSettings(settings map[string]string) (map[string]string, err
 	out := make(map[string]string, len(settings))
 	for k, v := range settings {
 		if k == "rtb_budget_authority" {
-			norm, err := ads.NormalizeRtbBudgetAuthoritySetting(v)
+			norm, err := ingestion.NormalizeRtbBudgetAuthoritySetting(v)
 			if err != nil {
 				return nil, err
 			}
@@ -179,7 +179,7 @@ func normalizeSystemSettings(settings map[string]string) (map[string]string, err
 func (s *Service) ListBlacklist(ctx context.Context, limit, offset int32) ([]BlacklistDTO, int64, error) {
 	q := db.New(s.GetPool())
 	listParams := db.ListBlacklistParams{Limit: limit, Offset: offset}
-	return cold.PaginatedList(
+	return coldpath.PaginatedList(
 		func() (int64, error) { return q.CountBlacklist(ctx) },
 		func() ([]db.IpBlacklist, error) { return q.ListBlacklist(ctx, listParams) },
 		blacklistToDTO,
@@ -206,7 +206,7 @@ func (s *Service) GetSettings(ctx context.Context) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return cold.KeyByValue(rows, func(r db.GetAllSystemSettingsRow) string { return r.Key }, func(r db.GetAllSystemSettingsRow) string { return r.Value }), nil
+	return coldpath.KeyByValue(rows, func(r db.GetAllSystemSettingsRow) string { return r.Key }, func(r db.GetAllSystemSettingsRow) string { return r.Value }), nil
 }
 
 // SyncSystemState pushes authoritative blacklist and settings snapshots from Postgres to all Redis shards.
@@ -283,7 +283,7 @@ func (s *Service) RunSystemStateSyncer(ctx context.Context) {
 	}
 }
 
-// ToggleEmergencyBreaker flips the global kill switch and propagates it to the hot path via cold.
+// ToggleEmergencyBreaker flips the global kill switch and propagates it to the hot path via coldpath.
 func (s *Service) ToggleEmergencyBreaker(ctx context.Context, active bool, reason string) error {
 	val := "false"
 	if active {
@@ -313,7 +313,7 @@ func (s *Service) ToggleEmergencyBreaker(ctx context.Context, active bool, reaso
 		settings := map[string]string{
 			"emergency_breaker": val,
 		}
-		payloadBytes, err := cold.MarshalJSON(SettingsPayload{Settings: settings})
+		payloadBytes, err := coldpath.MarshalJSON(SettingsPayload{Settings: settings})
 		if err != nil {
 			return fmt.Errorf("marshal emergency breaker outbox payload: %w", err)
 		}

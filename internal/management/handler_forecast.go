@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"espx/pkg/cold"
+	"espx/pkg/coldpath"
 	"espx/pkg/httpresponse"
 
 	"github.com/google/uuid"
@@ -17,13 +17,13 @@ const forecastHandlerTimeout = 2 * time.Second
 
 // forecastCampaign handles POST /api/v1/forecast/campaign (M5.1).
 func (h *Handler) forecastCampaign(w http.ResponseWriter, r *http.Request) {
-	body, err := cold.ReadLimitedBody(w, r, cold.DefaultMaxBody)
+	body, err := coldpath.ReadLimitedBody(w, r, coldpath.DefaultMaxBody)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "failed to read request body")
 		return
 	}
 
-	req, err := cold.DecodeBody[struct {
+	req, err := coldpath.DecodeBody[struct {
 		CustomerID       *uuid.UUID `json:"customer_id,omitempty"`
 		BudgetLimitMicro *int64     `json:"budget_limit_micro"`
 		BudgetLimit      *float64   `json:"budget_limit"`

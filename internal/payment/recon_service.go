@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"espx/internal/payment/db"
-	"espx/pkg/cold"
+	"espx/pkg/coldpath"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -86,7 +86,7 @@ func (recon *ReconService) Run(ctx context.Context, periodStart, periodEnd time.
 	err = pgx.BeginFunc(ctx, recon.paymentPool, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		for _, f := range findings {
-			detailBytes, err := cold.MarshalJSON(f.Detail)
+			detailBytes, err := coldpath.MarshalJSON(f.Detail)
 			if err != nil {
 				return fmt.Errorf("marshal recon finding detail: %w", err)
 			}

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -59,7 +59,7 @@ func (m deliveryOutboxMerge) flush(ctx context.Context, pool pgx.Tx) error {
 }
 
 // RunDeliveryOptimizerTick is the unified M5.0 delivery pass: sync, pacing, autoscale, MAB, bid floors.
-func (s *Service) RunDeliveryOptimizerTick(ctx context.Context, syncWorkers []*ads.SyncWorker, runMAB bool) error {
+func (s *Service) RunDeliveryOptimizerTick(ctx context.Context, syncWorkers []*ingestion.SyncWorker, runMAB bool) error {
 	opCtx, cancel := workerContext(ctx, workerBatchTimeout)
 	defer cancel()
 

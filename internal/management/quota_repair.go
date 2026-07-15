@@ -8,8 +8,8 @@ import (
 	"math"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
 	"espx/internal/metrics"
 
 	"github.com/google/uuid"
@@ -357,7 +357,7 @@ func (w *OutboxWorker) ApplyQuotaRepair(ctx context.Context, eventID int64, payl
 		q := db.New(tx)
 		if err := q.DecreaseCampaignQuotaReserved(ctx, db.DecreaseCampaignQuotaReservedParams{
 			ShardID:        p.ShardID,
-			CampaignID:     ads.ToUUID(campID),
+			CampaignID:     ingestion.ToUUID(campID),
 			ReservedAmount: p.RepairMicro,
 		}); err != nil {
 			return err

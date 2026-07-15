@@ -10,11 +10,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
 	"espx/internal/config"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
 	"espx/internal/metrics"
-	"espx/pkg/cold"
+	"espx/pkg/coldpath"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/google/uuid"
@@ -28,7 +28,7 @@ import (
 type Service struct {
 	pool        *pgxpool.Pool
 	rdbs        []redis.UniversalClient
-	sharder     ads.Sharder
+	sharder     ingestion.Sharder
 	cfg         *config.Config
 	alerter     *OpsAlerter
 	ch          driver.Conn
@@ -63,7 +63,7 @@ func (s *Service) startWorker(fn func()) {
 }
 
 // NewService constructs the management service and starts core background workers.
-func NewService(pool *pgxpool.Pool, rdbs []redis.UniversalClient, sharder ads.Sharder, cfg *config.Config) *Service {
+func NewService(pool *pgxpool.Pool, rdbs []redis.UniversalClient, sharder ingestion.Sharder, cfg *config.Config) *Service {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Service{
 		pool:    pool,
@@ -137,21 +137,21 @@ func (s *Service) Close() {
 }
 
 // StartPacingController starts the closed-loop pacing worker with budget sync dependencies.
-func (s *Service) StartPacingController(syncWorkers []*ads.SyncWorker, interval time.Duration) {
+func (s *Service) StartPacingController(syncWorkers []*ingestion.SyncWorker, interval time.Duration) {
 	s.startWorker(func() {
 		NewPacingControllerWorker(s, syncWorkers).Start(s.ctx, interval)
 	})
 }
 
 // StartAutoscaleBudgetWorker starts CTR-based budget shifting when interval is positive.
-func (s *Service) StartAutoscaleBudgetWorker(syncWorkers []*ads.SyncWorker, interval time.Duration) {
+func (s *Service) StartAutoscaleBudgetWorker(syncWorkers []*ingestion.SyncWorker, interval time.Duration) {
 	s.startWorker(func() {
 		NewAutoscaleBudgetWorker(s, syncWorkers).Start(s.ctx, interval)
 	})
 }
 
 // StartDeliveryOptimizerWorker runs the unified M5.0 delivery pass (pacing, autoscale, MAB, bid floors).
-func (s *Service) StartDeliveryOptimizerWorker(syncWorkers []*ads.SyncWorker, interval time.Duration) {
+func (s *Service) StartDeliveryOptimizerWorker(syncWorkers []*ingestion.SyncWorker, interval time.Duration) {
 	s.startWorker(func() {
 		NewDeliveryOptimizerWorker(s, syncWorkers).Start(s.ctx, interval)
 	})
@@ -159,13 +159,13 @@ func (s *Service) StartDeliveryOptimizerWorker(syncWorkers []*ads.SyncWorker, in
 
 // GetCampaign loads the full campaign row for internal authorization and lifecycle checks.
 func (s *Service) GetCampaign(ctx context.Context, id uuid.UUID) (db.Campaign, error) {
-	return db.New(s.pool).GetCampaignFull(ctx, ads.ToUUID(id))
+	return db.New(s.pool).GetCampaignFull(ctx, ingestion.ToUUID(id))
 }
 
 // CreateCustomer registers a new billing account with an optional opening balance.
 func (s *Service) CreateCustomer(ctx context.Context, id uuid.UUID, name string, balance int64, currency string) error {
 	_, err := db.New(s.pool).CreateCustomer(ctx, db.CreateCustomerParams{
-		ID:       ads.ToUUID(id),
+		ID:       ingestion.ToUUID(id),
 		Name:     name,
 		Balance:  balance,
 		Currency: currency,
@@ -178,7 +178,7 @@ func (s *Service) CreateCustomer(ctx context.Context, id uuid.UUID, name string,
 
 // GenerateIdempotencyHash derives a stable key from customer identity and request payload for safe retries.
 func (s *Service) GenerateIdempotencyHash(customerID uuid.UUID, params any) (string, error) {
-	b, err := cold.MarshalJSON(params)
+	b, err := coldpath.MarshalJSON(params)
 	if err != nil {
 		return "", fmt.Errorf("idempotency hash params: %w", err)
 	}
@@ -197,21 +197,21 @@ func (s *Service) TopUpBalance(ctx context.Context, customerID uuid.UUID, amount
 			return nil
 		}
 		_, err = q.UpdateCustomerBalanceManagement(ctx, db.UpdateCustomerBalanceManagementParams{
-			ID:      ads.ToUUID(customerID),
+			ID:      ingestion.ToUUID(customerID),
 			Balance: amount,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to update balance: %w", err)
 		}
 		_, err = q.CreateLedgerEntry(ctx, db.CreateLedgerEntryParams{
-			CustomerID:      ads.ToUUID(customerID),
+			CustomerID:      ingestion.ToUUID(customerID),
 			Amount:          amount,
 			Type:            db.LedgerTypeTOPUP,
 			IdempotencyHash: pgtype.Text{String: idempotencyKey, Valid: true},
 			PaymentIntentID: pgtype.UUID{},
 		})
 		if err == nil {
-			metrics.BalanceTopupsTotal.WithLabelValues("USD").Add(float64(amount) / ads.MicroUnitFactor)
+			metrics.BalanceTopupsTotal.WithLabelValues("USD").Add(float64(amount) / ingestion.MicroUnitFactor)
 			s.AuditLog(ctx, q, uuid.Nil, "TOPUP_BALANCE", "customer", &customerID, map[string]any{"amount": amount}, map[string]any{"idempotency_key": idempotencyKey})
 		}
 		return err
@@ -226,7 +226,7 @@ func (s *Service) ApplyPaymentCredit(ctx context.Context, customerID uuid.UUID, 
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
 
-		existingPI, err := q.GetLedgerByPaymentIntentForUpdate(ctx, ads.ToUUID(paymentIntentID))
+		existingPI, err := q.GetLedgerByPaymentIntentForUpdate(ctx, ingestion.ToUUID(paymentIntentID))
 		if err == nil {
 			ledgerEntryID = existingPI.ID
 			applied = false
@@ -247,7 +247,7 @@ func (s *Service) ApplyPaymentCredit(ctx context.Context, customerID uuid.UUID, 
 		}
 
 		_, err = q.UpdateCustomerBalanceManagement(ctx, db.UpdateCustomerBalanceManagementParams{
-			ID:      ads.ToUUID(customerID),
+			ID:      ingestion.ToUUID(customerID),
 			Balance: amount,
 		})
 		if err != nil {
@@ -258,15 +258,15 @@ func (s *Service) ApplyPaymentCredit(ctx context.Context, customerID uuid.UUID, 
 		}
 
 		row, err := q.CreateLedgerEntry(ctx, db.CreateLedgerEntryParams{
-			CustomerID:      ads.ToUUID(customerID),
+			CustomerID:      ingestion.ToUUID(customerID),
 			Amount:          amount,
 			Type:            db.LedgerType("PAYMENT_TOPUP"),
 			IdempotencyHash: pgtype.Text{String: ledgerIdempotencyKey, Valid: true},
-			PaymentIntentID: ads.ToUUID(paymentIntentID),
+			PaymentIntentID: ingestion.ToUUID(paymentIntentID),
 		})
 		if err != nil {
 			if isPgUniqueViolation(err) {
-				if existingPI, lookupErr := q.GetLedgerByPaymentIntentForUpdate(ctx, ads.ToUUID(paymentIntentID)); lookupErr == nil {
+				if existingPI, lookupErr := q.GetLedgerByPaymentIntentForUpdate(ctx, ingestion.ToUUID(paymentIntentID)); lookupErr == nil {
 					ledgerEntryID = existingPI.ID
 					applied = false
 					return nil
@@ -283,7 +283,7 @@ func (s *Service) ApplyPaymentCredit(ctx context.Context, customerID uuid.UUID, 
 		ledgerEntryID = row.ID
 		applied = true
 
-		metrics.BalanceTopupsTotal.WithLabelValues("USD").Add(float64(amount) / ads.MicroUnitFactor)
+		metrics.BalanceTopupsTotal.WithLabelValues("USD").Add(float64(amount) / ingestion.MicroUnitFactor)
 		s.AuditLog(ctx, q, uuid.Nil, "PAYMENT_SETTLEMENT", "customer", &customerID, map[string]any{"amount": amount, "payment_intent_id": paymentIntentID.String(), "provider": provider, "provider_ref": providerRef}, map[string]any{"idempotency_key": ledgerIdempotencyKey})
 		return nil
 	})
@@ -313,7 +313,7 @@ func (s *Service) ApplyPaymentRefund(ctx context.Context, customerID uuid.UUID, 
 			return fmt.Errorf("refund idempotency check failed: %w", err)
 		}
 
-		topup, err := q.GetLedgerByPaymentIntentForUpdate(ctx, ads.ToUUID(paymentIntentID))
+		topup, err := q.GetLedgerByPaymentIntentForUpdate(ctx, ingestion.ToUUID(paymentIntentID))
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrPaymentTopupNotFound
@@ -321,7 +321,7 @@ func (s *Service) ApplyPaymentRefund(ctx context.Context, customerID uuid.UUID, 
 			return fmt.Errorf("payment topup lookup failed: %w", err)
 		}
 
-		refundedSoFar, err := q.SumPaymentRefundAmountForIntent(ctx, ads.ToUUID(paymentIntentID))
+		refundedSoFar, err := q.SumPaymentRefundAmountForIntent(ctx, ingestion.ToUUID(paymentIntentID))
 		if err != nil {
 			return fmt.Errorf("sum payment refunds failed: %w", err)
 		}
@@ -331,7 +331,7 @@ func (s *Service) ApplyPaymentRefund(ctx context.Context, customerID uuid.UUID, 
 
 		debitAmount := -amountMicro
 		_, err = q.UpdateCustomerBalanceManagement(ctx, db.UpdateCustomerBalanceManagementParams{
-			ID:      ads.ToUUID(customerID),
+			ID:      ingestion.ToUUID(customerID),
 			Balance: debitAmount,
 		})
 		if err != nil {
@@ -342,11 +342,11 @@ func (s *Service) ApplyPaymentRefund(ctx context.Context, customerID uuid.UUID, 
 		}
 
 		row, err := q.CreateLedgerEntry(ctx, db.CreateLedgerEntryParams{
-			CustomerID:      ads.ToUUID(customerID),
+			CustomerID:      ingestion.ToUUID(customerID),
 			Amount:          debitAmount,
 			Type:            db.LedgerType("PAYMENT_REFUND"),
 			IdempotencyHash: pgtype.Text{String: ledgerIdempotencyKey, Valid: true},
-			PaymentIntentID: ads.ToUUID(paymentIntentID),
+			PaymentIntentID: ingestion.ToUUID(paymentIntentID),
 		})
 		if err != nil {
 			if isPgUniqueViolation(err) {
@@ -412,7 +412,7 @@ func (s *Service) applyPaymentChargebackMovement(
 			return fmt.Errorf("chargeback idempotency check failed: %w", err)
 		}
 
-		topup, err := q.GetLedgerByPaymentIntentForUpdate(ctx, ads.ToUUID(paymentIntentID))
+		topup, err := q.GetLedgerByPaymentIntentForUpdate(ctx, ingestion.ToUUID(paymentIntentID))
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrPaymentTopupNotFound
@@ -420,15 +420,15 @@ func (s *Service) applyPaymentChargebackMovement(
 			return fmt.Errorf("payment topup lookup failed: %w", err)
 		}
 
-		refundedSoFar, err := q.SumPaymentRefundAmountForIntent(ctx, ads.ToUUID(paymentIntentID))
+		refundedSoFar, err := q.SumPaymentRefundAmountForIntent(ctx, ingestion.ToUUID(paymentIntentID))
 		if err != nil {
 			return fmt.Errorf("sum payment refunds failed: %w", err)
 		}
-		chargebackSoFar, err := q.SumPaymentChargebackAmountForIntent(ctx, ads.ToUUID(paymentIntentID))
+		chargebackSoFar, err := q.SumPaymentChargebackAmountForIntent(ctx, ingestion.ToUUID(paymentIntentID))
 		if err != nil {
 			return fmt.Errorf("sum payment chargebacks failed: %w", err)
 		}
-		reversalSoFar, err := q.SumPaymentChargebackReversalAmountForIntent(ctx, ads.ToUUID(paymentIntentID))
+		reversalSoFar, err := q.SumPaymentChargebackReversalAmountForIntent(ctx, ingestion.ToUUID(paymentIntentID))
 		if err != nil {
 			return fmt.Errorf("sum payment chargeback reversals failed: %w", err)
 		}
@@ -450,7 +450,7 @@ func (s *Service) applyPaymentChargebackMovement(
 		}
 
 		_, err = q.UpdateCustomerBalanceManagement(ctx, db.UpdateCustomerBalanceManagementParams{
-			ID:      ads.ToUUID(customerID),
+			ID:      ingestion.ToUUID(customerID),
 			Balance: balanceDelta,
 		})
 		if err != nil {
@@ -461,11 +461,11 @@ func (s *Service) applyPaymentChargebackMovement(
 		}
 
 		row, err := q.CreateLedgerEntry(ctx, db.CreateLedgerEntryParams{
-			CustomerID:      ads.ToUUID(customerID),
+			CustomerID:      ingestion.ToUUID(customerID),
 			Amount:          ledgerAmount,
 			Type:            db.LedgerType(ledgerType),
 			IdempotencyHash: pgtype.Text{String: ledgerIdempotencyKey, Valid: true},
-			PaymentIntentID: ads.ToUUID(paymentIntentID),
+			PaymentIntentID: ingestion.ToUUID(paymentIntentID),
 		})
 		if err != nil {
 			if isPgUniqueViolation(err) {
@@ -498,7 +498,7 @@ func (s *Service) applyPaymentChargebackMovement(
 func (s *Service) CancelCampaign(ctx context.Context, campaignID uuid.UUID, reason string) error {
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
-		camp, err := q.GetCampaignForUpdate(ctx, ads.ToUUID(campaignID))
+		camp, err := q.GetCampaignForUpdate(ctx, ingestion.ToUUID(campaignID))
 		if err != nil {
 			return err
 		}
@@ -506,20 +506,20 @@ func (s *Service) CancelCampaign(ctx context.Context, campaignID uuid.UUID, reas
 			return nil
 		}
 		_, err = q.UpdateCampaignStatus(ctx, db.UpdateCampaignStatusParams{
-			ID:     ads.ToUUID(campaignID),
+			ID:     ingestion.ToUUID(campaignID),
 			Status: db.CampaignStatusTypeDRAINING,
 		})
 		if err != nil {
 			return err
 		}
 		err = q.CreateStatusHistory(ctx, db.CreateStatusHistoryParams{
-			CampaignID: ads.ToUUID(campaignID),
+			CampaignID: ingestion.ToUUID(campaignID),
 			OldStatus:  db.NullCampaignStatusType{CampaignStatusType: camp.Status, Valid: true},
 			NewStatus:  db.CampaignStatusTypeDRAINING,
 			Reason:     pgtype.Text{String: reason, Valid: true},
 		})
 		if err == nil {
-			payloadBytes, marshalErr := cold.MarshalJSON(CampaignPayload{CampaignID: campaignID.String()})
+			payloadBytes, marshalErr := coldpath.MarshalJSON(CampaignPayload{CampaignID: campaignID.String()})
 			if marshalErr != nil {
 				return fmt.Errorf("marshal cancel campaign outbox payload: %w", marshalErr)
 			}
@@ -538,7 +538,7 @@ func (s *Service) FinalizeCancelledCampaign(ctx context.Context, campaignID uuid
 			SELECT status, budget_limit, current_spend, customer_id 
 			FROM campaigns 
 			WHERE id = $1 
-			FOR UPDATE`, ads.ToUUID(campaignID)).Scan(&camp.Status, &camp.BudgetLimit, &camp.CurrentSpend, &camp.CustomerID)
+			FOR UPDATE`, ingestion.ToUUID(campaignID)).Scan(&camp.Status, &camp.BudgetLimit, &camp.CurrentSpend, &camp.CustomerID)
 		if err != nil {
 			return err
 		}
@@ -573,7 +573,7 @@ func (s *Service) finalizeDrainingCampaign(ctx context.Context, q db.Querier, ca
 		}
 		_, err = q.CreateLedgerEntry(ctx, db.CreateLedgerEntryParams{
 			CustomerID:      camp.CustomerID,
-			CampaignID:      ads.ToUUID(campaignID),
+			CampaignID:      ingestion.ToUUID(campaignID),
 			Amount:          refund,
 			Type:            db.LedgerTypeRELEASE,
 			PaymentIntentID: pgtype.UUID{},
@@ -585,7 +585,7 @@ func (s *Service) finalizeDrainingCampaign(ctx context.Context, q db.Querier, ca
 	if fee > 0 {
 		_, err := q.CreateLedgerEntry(ctx, db.CreateLedgerEntryParams{
 			CustomerID:      camp.CustomerID,
-			CampaignID:      ads.ToUUID(campaignID),
+			CampaignID:      ingestion.ToUUID(campaignID),
 			Amount:          fee,
 			Type:            db.LedgerTypeFEE,
 			PaymentIntentID: pgtype.UUID{},
@@ -593,13 +593,13 @@ func (s *Service) finalizeDrainingCampaign(ctx context.Context, q db.Querier, ca
 		if err != nil {
 			return err
 		}
-		metrics.CommissionsCollectedTotal.Add(float64(fee) / ads.MicroUnitFactor)
+		metrics.CommissionsCollectedTotal.Add(float64(fee) / ingestion.MicroUnitFactor)
 	}
-	if err := q.SoftDeleteCampaign(ctx, ads.ToUUID(campaignID)); err != nil {
+	if err := q.SoftDeleteCampaign(ctx, ingestion.ToUUID(campaignID)); err != nil {
 		return err
 	}
 	if err := q.CreateStatusHistory(ctx, db.CreateStatusHistoryParams{
-		CampaignID: ads.ToUUID(campaignID),
+		CampaignID: ingestion.ToUUID(campaignID),
 		OldStatus:  db.NullCampaignStatusType{CampaignStatusType: db.CampaignStatusTypeDRAINING, Valid: true},
 		NewStatus:  db.CampaignStatusTypeDELETED,
 		Reason:     pgtype.Text{String: "Finalized", Valid: true},
@@ -650,7 +650,7 @@ func (s *Service) getRDB(campaignID uuid.UUID) redis.UniversalClient {
 // ListAuditLogs returns paginated admin audit entries for compliance review.
 func (s *Service) ListAuditLogs(ctx context.Context, limit, offset int32) ([]db.AdminAuditLog, int64, error) {
 	q := db.New(s.pool)
-	return cold.PaginatedQuery(
+	return coldpath.PaginatedQuery(
 		func() (int64, error) { return q.CountAuditLogs(ctx) },
 		func() ([]db.AdminAuditLog, error) {
 			return q.ListAuditPaginated(ctx, db.ListAuditPaginatedParams{
@@ -664,7 +664,7 @@ func (s *Service) ListAuditLogs(ctx context.Context, limit, offset int32) ([]db.
 // GetLedgerEntry returns PAYMENT_TOPUP ledger state and related totals for a payment intent.
 func (s *Service) GetLedgerEntry(ctx context.Context, paymentIntentID uuid.UUID) (found bool, entry db.BalanceLedger, refundTotal, chargebackTotal, reversalTotal int64, err error) {
 	q := db.New(s.pool)
-	entry, err = q.GetLedgerByPaymentIntent(ctx, ads.ToUUID(paymentIntentID))
+	entry, err = q.GetLedgerByPaymentIntent(ctx, ingestion.ToUUID(paymentIntentID))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			entry = db.BalanceLedger{}
@@ -674,15 +674,15 @@ func (s *Service) GetLedgerEntry(ctx context.Context, paymentIntentID uuid.UUID)
 	} else {
 		found = true
 	}
-	refundTotal, err = q.SumPaymentRefundAmountForIntent(ctx, ads.ToUUID(paymentIntentID))
+	refundTotal, err = q.SumPaymentRefundAmountForIntent(ctx, ingestion.ToUUID(paymentIntentID))
 	if err != nil {
 		return false, db.BalanceLedger{}, 0, 0, 0, err
 	}
-	chargebackTotal, err = q.SumPaymentChargebackAmountForIntent(ctx, ads.ToUUID(paymentIntentID))
+	chargebackTotal, err = q.SumPaymentChargebackAmountForIntent(ctx, ingestion.ToUUID(paymentIntentID))
 	if err != nil {
 		return false, db.BalanceLedger{}, 0, 0, 0, err
 	}
-	reversalTotal, err = q.SumPaymentChargebackReversalAmountForIntent(ctx, ads.ToUUID(paymentIntentID))
+	reversalTotal, err = q.SumPaymentChargebackReversalAmountForIntent(ctx, ingestion.ToUUID(paymentIntentID))
 	if err != nil {
 		return false, db.BalanceLedger{}, 0, 0, 0, err
 	}
@@ -693,7 +693,7 @@ func (s *Service) GetLedgerEntry(ctx context.Context, paymentIntentID uuid.UUID)
 func (s *Service) UpdateOverdraft(ctx context.Context, id uuid.UUID, newOverdraft int64) error {
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
-		cust, err := q.GetCustomerForUpdate(ctx, ads.ToUUID(id))
+		cust, err := q.GetCustomerForUpdate(ctx, ingestion.ToUUID(id))
 		if err != nil {
 			return fmt.Errorf("failed to fetch customer for overdraft update: %w", err)
 		}
@@ -709,7 +709,7 @@ func (s *Service) UpdateOverdraft(ctx context.Context, id uuid.UUID, newOverdraf
 				camps, err := q.ListCampaigns(ctx, db.ListCampaignsParams{
 					Limit:      10000,
 					Offset:     0,
-					CustomerID: ads.ToUUID(id),
+					CustomerID: ingestion.ToUUID(id),
 					Status:     pgtype.Text{String: string(db.CampaignStatusTypeACTIVE), Valid: true},
 				})
 				if err != nil {
@@ -756,7 +756,7 @@ func (s *Service) UpdateOverdraft(ctx context.Context, id uuid.UUID, newOverdraf
 
 					if remaining > 0 {
 						_, err = q.UpdateCustomerBalanceManagement(ctx, db.UpdateCustomerBalanceManagementParams{
-							ID:      ads.ToUUID(id),
+							ID:      ingestion.ToUUID(id),
 							Balance: remaining,
 						})
 						if err != nil {
@@ -764,7 +764,7 @@ func (s *Service) UpdateOverdraft(ctx context.Context, id uuid.UUID, newOverdraf
 						}
 
 						_, err = q.CreateLedgerEntry(ctx, db.CreateLedgerEntryParams{
-							CustomerID:      ads.ToUUID(id),
+							CustomerID:      ingestion.ToUUID(id),
 							CampaignID:      locked.ID,
 							Amount:          remaining,
 							Type:            db.LedgerTypeRELEASE,
@@ -777,7 +777,7 @@ func (s *Service) UpdateOverdraft(ctx context.Context, id uuid.UUID, newOverdraf
 						availableLimit = availableLimit + remaining
 					}
 
-					payloadBytes, marshalErr := cold.MarshalJSON(CampaignPayload{CampaignID: uuid.UUID(locked.ID.Bytes).String()})
+					payloadBytes, marshalErr := coldpath.MarshalJSON(CampaignPayload{CampaignID: uuid.UUID(locked.ID.Bytes).String()})
 					if marshalErr != nil {
 						return fmt.Errorf("marshal pause campaign outbox payload: %w", marshalErr)
 					}
@@ -796,7 +796,7 @@ func (s *Service) UpdateOverdraft(ctx context.Context, id uuid.UUID, newOverdraf
 		}
 
 		_, err = q.UpdateCustomerOverdraft(ctx, db.UpdateCustomerOverdraftParams{
-			ID:               ads.ToUUID(id),
+			ID:               ingestion.ToUUID(id),
 			AllowedOverdraft: newOverdraft,
 		})
 		if err != nil {
@@ -804,8 +804,8 @@ func (s *Service) UpdateOverdraft(ctx context.Context, id uuid.UUID, newOverdraf
 		}
 
 		s.AuditLog(ctx, q, uuid.Nil, "UPDATE_CUSTOMER_OVERDRAFT", "customer", &id, map[string]any{
-			"old_overdraft": fmt.Sprintf("%.2f", float64(prevOverdraft)/ads.MicroUnitFactor),
-			"new_overdraft": fmt.Sprintf("%.2f", float64(newOverdraft)/ads.MicroUnitFactor),
+			"old_overdraft": fmt.Sprintf("%.2f", float64(prevOverdraft)/ingestion.MicroUnitFactor),
+			"new_overdraft": fmt.Sprintf("%.2f", float64(newOverdraft)/ingestion.MicroUnitFactor),
 		}, nil)
 		return nil
 	})

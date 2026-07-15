@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads/pb"
+	"espx/internal/ingestion/pb"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

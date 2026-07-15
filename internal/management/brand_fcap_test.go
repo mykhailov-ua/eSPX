@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
+	"espx/internal/campaignmodel"
 	"espx/internal/config"
 	"espx/internal/database"
-	"espx/internal/domain"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
 
 	"github.com/google/uuid"
 	redis "github.com/redis/go-redis/v9"
@@ -173,13 +173,13 @@ func TestBrandFrequencyCapping(t *testing.T) {
 	assert.Equal(t, expectedFcapKey, brandFcapKeyB)
 
 	queries := db.New(pool)
-	registry := ads.NewRegistry(queries)
+	registry := ingestion.NewRegistry(queries)
 	registry.SetReplicaPath(filepath.Join(t.TempDir(), "campaigns_replica.json"))
 	_, err = registry.Sync(ctx)
 	require.NoError(t, err)
 
-	sharder := ads.NewJumpHashSharder(1)
-	filter := ads.NewUnifiedFilter(
+	sharder := ingestion.NewJumpHashSharder(1)
+	filter := ingestion.NewUnifiedFilter(
 		[]redis.UniversalClient{rdb},
 		sharder,
 		registry,
@@ -197,7 +197,7 @@ func TestBrandFrequencyCapping(t *testing.T) {
 	rdb.Set(ctx, "budget:campaign:"+campAID.String(), 1000000000, 0)
 	rdb.Set(ctx, "budget:campaign:"+campBID.String(), 1000000000, 0)
 
-	evtUser1A := &domain.Event{
+	evtUser1A := &campaignmodel.Event{
 		CampaignID: campAID,
 		Type:       "click",
 		ClickID:    "click_u1_a1",
@@ -205,7 +205,7 @@ func TestBrandFrequencyCapping(t *testing.T) {
 		IP:         "1.1.1.1",
 	}
 
-	evtUser1B := &domain.Event{
+	evtUser1B := &campaignmodel.Event{
 		CampaignID: campBID,
 		Type:       "click",
 		ClickID:    "click_u1_b1",
@@ -213,7 +213,7 @@ func TestBrandFrequencyCapping(t *testing.T) {
 		IP:         "1.1.1.1",
 	}
 
-	evtUser1ASecond := &domain.Event{
+	evtUser1ASecond := &campaignmodel.Event{
 		CampaignID: campAID,
 		Type:       "click",
 		ClickID:    "click_u1_a2",
@@ -228,5 +228,5 @@ func TestBrandFrequencyCapping(t *testing.T) {
 	assert.NoError(t, err)
 
 	err = filter.Check(ctx, evtUser1ASecond)
-	assert.ErrorIs(t, err, ads.ErrFreqLimitExceeded)
+	assert.ErrorIs(t, err, ingestion.ErrFreqLimitExceeded)
 }

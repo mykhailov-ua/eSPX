@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"time"
 
-	"espx/internal/ads"
-	"espx/pkg/cold"
+	"espx/internal/ingestion"
+	"espx/pkg/coldpath"
 	"espx/pkg/httpresponse"
 )
 
@@ -44,7 +44,7 @@ func (h *Handler) getRtbDeal(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) createRtbDeal(w http.ResponseWriter, r *http.Request) {
-	spec, err := cold.DecodeRequest[RtbDealCreateSpec](w, r, cold.DefaultMaxBody)
+	spec, err := coldpath.DecodeRequest[RtbDealCreateSpec](w, r, coldpath.DefaultMaxBody)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
@@ -63,7 +63,7 @@ func (h *Handler) updateRtbDeal(w http.ResponseWriter, r *http.Request) {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid deal id")
 		return
 	}
-	spec, err := cold.DecodeRequest[RtbDealUpdateSpec](w, r, cold.DefaultMaxBody)
+	spec, err := coldpath.DecodeRequest[RtbDealUpdateSpec](w, r, coldpath.DefaultMaxBody)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
@@ -90,18 +90,18 @@ func (h *Handler) deleteRtbDeal(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) validateBidRequest(w http.ResponseWriter, r *http.Request) {
-	body, err := cold.ReadLimitedBody(w, r, cold.DefaultMaxBody)
+	body, err := coldpath.ReadLimitedBody(w, r, coldpath.DefaultMaxBody)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
-	result := ads.ValidateOpenRTBBidRequest(body)
+	result := ingestion.ValidateOpenRTBBidRequest(body)
 	httpresponse.JSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) getRtbShadowDiff(w http.ResponseWriter, r *http.Request) {
 	window := parseDurationQuery(r, "window", time.Hour)
-	snap := ads.RtbShadowDiffForWindow(window)
+	snap := ingestion.RtbShadowDiffForWindow(window)
 	httpresponse.JSON(w, http.StatusOK, snap)
 }
 

@@ -1,15 +1,60 @@
+# Secrets & environment
 .env.secrets
 *.env
+
+# Build output & vendored deps
 bin/
 vendor/
-.idea/
-.vscode/
+
+# Generated code (sqlc, proto, etc.)
 /gen/
 /api/gen/
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Local runtime state
 campaigns_replica.json
 campaigns_replica.json.tmp
-GUIDE_*.md
-docs/reports/
+var/
+
+# Go test & profiling artifacts
+.cache/
+coverage.out
+*.coverprofile
+*.prof
+*.test
+
+# Python (scripts/fraud-scoring training)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Perf gate & benchmark reports (local / CI scratch)
+.ci-baselines/
+pr_bench.txt
+baseline_bench.txt
+gate_report.txt
+escape_report.txt
+*_bench.txt
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# GeoIP (download MaxMind separately; keep deploy/geoip/.gitkeep)
+deploy/geoip/*.mmdb
+
+# Terraform state & plugins
 deploy/terraform/**/.terraform/
 deploy/terraform/**/terraform.tfstate*
-deploy/monitoring/prometheus-k3s.rendered.yml
+
+# Rendered deploy configs (scripts/k8s/render_prometheus_k3s.sh, etc.)
+deploy/monitoring/*.rendered.yaml
+
+# Personal scratch docs
+GUIDE_*.md

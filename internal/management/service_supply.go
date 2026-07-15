@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
-	"espx/pkg/cold"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
+	"espx/pkg/coldpath"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -189,7 +189,7 @@ func validateSupplyChainNodes(nodes []SupplyChainNode) error {
 
 func (s *Service) enqueueSupplyFilesUpdate(ctx context.Context, q db.Querier, trigger string) error {
 	invalidateSellersJSONCache()
-	payload, err := cold.MarshalJSON(SupplyFilesPayload{Trigger: trigger})
+	payload, err := coldpath.MarshalJSON(SupplyFilesPayload{Trigger: trigger})
 	if err != nil {
 		return err
 	}
@@ -212,7 +212,7 @@ func (s *Service) ListSellers(ctx context.Context) ([]SellerDTO, error) {
 	if err != nil {
 		return nil, err
 	}
-	return cold.MapSlice(rows, sellerToDTO), nil
+	return coldpath.MapSlice(rows, sellerToDTO), nil
 }
 
 // GetSeller returns one seller by internal id.
@@ -335,7 +335,7 @@ func (s *Service) ListAdsTxtEntries(ctx context.Context) ([]AdsTxtEntryDTO, erro
 	if err != nil {
 		return nil, err
 	}
-	return cold.MapSlice(rows, adsTxtToDTO), nil
+	return coldpath.MapSlice(rows, adsTxtToDTO), nil
 }
 
 // GetAdsTxtEntry returns one ads.txt line by id.
@@ -450,7 +450,7 @@ func (s *Service) DeleteAdsTxtEntry(ctx context.Context, id int64) error {
 
 // GetCampaignSupplyChain returns schain nodes for a campaign.
 func (s *Service) GetCampaignSupplyChain(ctx context.Context, campaignID uuid.UUID) (CampaignSupplyChainDTO, error) {
-	row, err := db.New(s.GetPool()).GetCampaignFull(ctx, ads.ToUUID(campaignID))
+	row, err := db.New(s.GetPool()).GetCampaignFull(ctx, ingestion.ToUUID(campaignID))
 	if err != nil {
 		return CampaignSupplyChainDTO{}, mapNotFound(err, ErrCampaignNotFound)
 	}
@@ -470,7 +470,7 @@ func (s *Service) UpdateCampaignSupplyChain(ctx context.Context, campaignID uuid
 		return CampaignSupplyChainDTO{}, err
 	}
 
-	nodesJSON, err := cold.MarshalJSON(nodes)
+	nodesJSON, err := coldpath.MarshalJSON(nodes)
 	if err != nil {
 		return CampaignSupplyChainDTO{}, err
 	}
@@ -478,7 +478,7 @@ func (s *Service) UpdateCampaignSupplyChain(ctx context.Context, campaignID uuid
 	var out CampaignSupplyChainDTO
 	err = pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
-		locked, err := q.GetCampaignForUpdate(ctx, ads.ToUUID(campaignID))
+		locked, err := q.GetCampaignForUpdate(ctx, ingestion.ToUUID(campaignID))
 		if err != nil {
 			return err
 		}
@@ -486,7 +486,7 @@ func (s *Service) UpdateCampaignSupplyChain(ctx context.Context, campaignID uuid
 		oldNodes, _ := parseSupplyChainNodes(locked.SupplyChainNodes)
 
 		updated, err := q.UpdateCampaignSupplyChain(ctx, db.UpdateCampaignSupplyChainParams{
-			ID:               ads.ToUUID(campaignID),
+			ID:               ingestion.ToUUID(campaignID),
 			SupplyChainNodes: nodesJSON,
 		})
 		if err != nil {
@@ -520,7 +520,7 @@ func parseSupplyChainNodes(raw []byte) ([]SupplyChainNode, error) {
 		return []SupplyChainNode{}, nil
 	}
 	var nodes []SupplyChainNode
-	if err := cold.UnmarshalJSON(raw, &nodes); err != nil {
+	if err := coldpath.UnmarshalJSON(raw, &nodes); err != nil {
 		return nil, err
 	}
 	return nodes, nil
@@ -571,7 +571,7 @@ func (s *Service) BuildSellersJSON(ctx context.Context) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	settingsMap := cold.KeyByValue(settings, func(r db.GetAllSystemSettingsRow) string { return r.Key }, func(r db.GetAllSystemSettingsRow) string { return r.Value })
+	settingsMap := coldpath.KeyByValue(settings, func(r db.GetAllSystemSettingsRow) string { return r.Key }, func(r db.GetAllSystemSettingsRow) string { return r.Value })
 
 	doc := iabSellersJSON{
 		Version: sellersJSONVersion,
@@ -597,7 +597,7 @@ func (s *Service) BuildSellersJSON(ctx context.Context) ([]byte, error) {
 	if err := validateSellersJSON(doc); err != nil {
 		return nil, err
 	}
-	return cold.MarshalJSON(doc)
+	return coldpath.MarshalJSON(doc)
 }
 
 // GetSellersJSON returns sellers.json with a 60-second in-memory cache.
@@ -633,7 +633,7 @@ func (s *Service) BuildAdsTxt(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	settingsMap := cold.KeyByValue(settings, func(r db.GetAllSystemSettingsRow) string { return r.Key }, func(r db.GetAllSystemSettingsRow) string { return r.Value })
+	settingsMap := coldpath.KeyByValue(settings, func(r db.GetAllSystemSettingsRow) string { return r.Key }, func(r db.GetAllSystemSettingsRow) string { return r.Value })
 
 	var b strings.Builder
 	if owner := strings.TrimSpace(settingsMap[supplySettingOwner]); owner != "" {

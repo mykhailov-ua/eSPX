@@ -5,17 +5,17 @@ import (
 	"log/slog"
 	"time"
 
-	"espx/internal/ads"
+	"espx/internal/ingestion"
 )
 
 // PacingControllerWorker periodically rebalances campaign pacing modes based on actual spend versus the daily curve.
 type PacingControllerWorker struct {
 	svc         *Service
-	syncWorkers []*ads.SyncWorker
+	syncWorkers []*ingestion.SyncWorker
 }
 
 // NewPacingControllerWorker binds the closed-loop pacing controller to the service and budget sync workers.
-func NewPacingControllerWorker(svc *Service, syncWorkers []*ads.SyncWorker) *PacingControllerWorker {
+func NewPacingControllerWorker(svc *Service, syncWorkers []*ingestion.SyncWorker) *PacingControllerWorker {
 	return &PacingControllerWorker{
 		svc:         svc,
 		syncWorkers: syncWorkers,

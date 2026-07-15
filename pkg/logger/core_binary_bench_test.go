@@ -7,7 +7,7 @@ import (
 	"time"
 	"unsafe"
 
-	"espx/internal/ads/pb"
+	"espx/internal/ingestion/pb"
 	"github.com/google/uuid"
 )
 

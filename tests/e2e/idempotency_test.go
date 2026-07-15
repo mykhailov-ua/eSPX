@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 
@@ -53,7 +53,7 @@ func TestE2E_Idempotency(t *testing.T) {
 	partManager := database.NewPartitionManager(pool, 7, 2)
 	require.NoError(t, partManager.Run(ctx))
 
-	sharder := ads.NewStaticSlotSharder(1)
+	sharder := ingestion.NewStaticSlotSharder(1)
 	customerID := uuid.New()
 	campaignID := uuid.New()
 	clickID := uuid.NewString()
@@ -69,7 +69,7 @@ func TestE2E_Idempotency(t *testing.T) {
 	require.NoError(t, err)
 
 	registry := testutil.NewAdsRegistry(t, queries)
-	budgetWarmer := ads.NewBudgetCacheWarmer([]redis.UniversalClient{rdb}, sharder)
+	budgetWarmer := ingestion.NewBudgetCacheWarmer([]redis.UniversalClient{rdb}, sharder)
 	registry.SetBudgetWarmer(budgetWarmer)
 	_, err = registry.Sync(ctx)
 	require.NoError(t, err)
@@ -81,12 +81,12 @@ func TestE2E_Idempotency(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(budgetLimitMicro), initialBudget)
 
-	store := ads.NewPostgresStore(queries, 1*time.Second)
-	campaignRepo := ads.NewCampaignRepoWithDB(pool, queries)
-	customerRepo := ads.NewCustomerRepoWithDB(pool, queries)
+	store := ingestion.NewPostgresStore(queries, 1*time.Second)
+	campaignRepo := ingestion.NewCampaignRepoWithDB(pool, queries)
+	customerRepo := ingestion.NewCustomerRepoWithDB(pool, queries)
 	streamName := "test-idempotency-stream"
 
-	unifiedFilter := ads.NewUnifiedFilter(
+	unifiedFilter := ingestion.NewUnifiedFilter(
 		[]redis.UniversalClient{rdb},
 		sharder,
 		registry,
@@ -100,9 +100,9 @@ func TestE2E_Idempotency(t *testing.T) {
 		streamName,
 		100000,
 	)
-	filterEngine := ads.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, unifiedFilter)
+	filterEngine := ingestion.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, unifiedFilter)
 
-	consumer := ads.NewStreamConsumer(
+	consumer := ingestion.NewStreamConsumer(
 		store, rdb, streamName,
 		"test-idempotency-group", "test-idempotency-c1",
 		cfg.EventBatchSize, cfg.MaxWorkers,
@@ -116,7 +116,7 @@ func TestE2E_Idempotency(t *testing.T) {
 		_ = consumer.Wait(context.Background())
 	}()
 
-	handler := ads.NewAdsPacketHandler(cfg, registry, filterEngine, pool, []redis.UniversalClient{rdb}, sharder, cfg.FraudStreamName, nil)
+	handler := ingestion.NewAdsPacketHandler(cfg, registry, filterEngine, pool, []redis.UniversalClient{rdb}, sharder, cfg.FraudStreamName, nil)
 	defer handler.Stop(ctx)
 
 	payload := map[string]any{
@@ -128,14 +128,14 @@ func TestE2E_Idempotency(t *testing.T) {
 	body, err := json.Marshal(payload)
 	require.NoError(t, err)
 
-	status1, _ := ads.PostTrackGnetJSON(handler, body)
+	status1, _ := ingestion.PostTrackGnetJSON(handler, body)
 	assert.Equal(t, http.StatusAccepted, status1)
 
 	afterFirst, err := rdb.Get(ctx, budgetKey).Int64()
 	require.NoError(t, err)
 	assert.Equal(t, initialBudget-e2eClickAmountMicro, afterFirst)
 
-	status2, _ := ads.PostTrackGnetJSON(handler, body)
+	status2, _ := ingestion.PostTrackGnetJSON(handler, body)
 	assert.Equal(t, http.StatusAccepted, status2, "idempotent replay must still accept")
 
 	afterSecond, err := rdb.Get(ctx, budgetKey).Int64()
@@ -163,7 +163,7 @@ func TestE2E_Idempotency(t *testing.T) {
 		return err == nil && clicks == 1
 	}, 5*time.Second, 100*time.Millisecond)
 
-	syncWorker := ads.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Hour)
+	syncWorker := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Hour)
 	syncWorker.SyncAll(ctx)
 
 	var syncIdemAfterFirst int

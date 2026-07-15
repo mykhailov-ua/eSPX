@@ -3,9 +3,9 @@ package management
 import (
 	"context"
 	"encoding/hex"
-	"espx/internal/ads"
-	"espx/internal/ads/db"
-	"espx/pkg/cold"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
+	"espx/pkg/coldpath"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -25,9 +25,9 @@ func (s *Service) CreatePrivacyErasureRequest(ctx context.Context, userID string
 	if err != nil {
 		return uuid.Nil, err
 	}
-	hash := ads.HashUserID(userID)
+	hash := ingestion.HashUserID(userID)
 	_, err = db.New(s.GetPool()).CreatePrivacyErasureRequest(ctx, db.CreatePrivacyErasureRequestParams{
-		ID:            ads.ToUUID(id),
+		ID:            ingestion.ToUUID(id),
 		UserIDHash:    hash,
 		SubjectUserID: userID,
 	})
@@ -122,7 +122,7 @@ func (s *Service) enqueueErasureRedisPurge(ctx context.Context, row db.PrivacyEr
 		if locked.LastError.Valid && locked.LastError.String == "purge_enqueued" {
 			return nil
 		}
-		payload, err := cold.MarshalJSON(map[string]string{
+		payload, err := coldpath.MarshalJSON(map[string]string{
 			"erasure_id":      uuid.UUID(locked.ID.Bytes).String(),
 			"user_id_hash":    hex.EncodeToString(locked.UserIDHash),
 			"subject_user_id": locked.SubjectUserID,
@@ -184,7 +184,7 @@ func (s *Service) PurgeUserDataRedis(ctx context.Context, hashHex, subjectUserID
 	if len(s.rdbs) == 0 {
 		return fmt.Errorf("no redis clients")
 	}
-	consentKey := ads.ConsentRedisKeyPrefix + hashHex
+	consentKey := ingestion.ConsentRedisKeyPrefix + hashHex
 	pattern := "*:u:" + subjectUserID
 	var firstErr error
 	var success int
@@ -218,7 +218,7 @@ func (s *Service) SyncUserConsentToRedis(ctx context.Context, hashHex string, pu
 		return fmt.Errorf("no redis clients")
 	}
 	val := strconv.FormatInt(int64(purposes), 10)
-	key := ads.ConsentRedisKeyPrefix + hashHex
+	key := ingestion.ConsentRedisKeyPrefix + hashHex
 	for _, rdb := range s.rdbs {
 		if err := rdb.Set(ctx, key, val, 0).Err(); err != nil {
 			return err
@@ -234,7 +234,7 @@ func (s *Service) consentUpdateChannel() string {
 	if s.cfg != nil && s.cfg.ConsentUpdateChannel != "" {
 		return s.cfg.ConsentUpdateChannel
 	}
-	return ads.ConsentDefaultUpdateChannel
+	return ingestion.ConsentDefaultUpdateChannel
 }
 
 // MarkErasureRedisPurgeDone advances erasure after Redis purge outbox (M6.4).
@@ -242,13 +242,13 @@ func (s *Service) MarkErasureRedisPurgeDone(ctx context.Context, erasureID uuid.
 	status := db.PrivacyErasureStatusREDISPURGED
 	if partialErr != nil {
 		return db.New(s.GetPool()).UpdatePrivacyErasureStatus(ctx, db.UpdatePrivacyErasureStatusParams{
-			ID:        ads.ToUUID(erasureID),
+			ID:        ingestion.ToUUID(erasureID),
 			Status:    db.PrivacyErasureStatusFAILED,
 			LastError: pgtype.Text{String: partialErr.Error(), Valid: true},
 		})
 	}
 	return db.New(s.GetPool()).UpdatePrivacyErasureStatus(ctx, db.UpdatePrivacyErasureStatusParams{
-		ID:     ads.ToUUID(erasureID),
+		ID:     ingestion.ToUUID(erasureID),
 		Status: status,
 	})
 }

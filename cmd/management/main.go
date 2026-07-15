@@ -11,15 +11,15 @@ import (
 	"syscall"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
 	"espx/internal/auth"
 	auth_pb "espx/internal/auth/pb"
+	"espx/internal/clickhouse/migrate"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
 	"espx/internal/management"
 	mgmt_pb "espx/internal/management/pb"
-	"espx/internal/processor"
 
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
@@ -56,7 +56,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	sharder := ads.NewStaticSlotSharder(len(rdbs))
+	sharder := ingestion.NewStaticSlotSharder(len(rdbs))
 
 	authTarget := "127.0.0.1:" + cfg.AuthServerPort
 	if host := os.Getenv("AUTH_SERVER_HOST"); host != "" {
@@ -100,7 +100,7 @@ func main() {
 			os.Exit(1)
 		}
 		defer chConn.Close()
-		if err := processor.ApplyClickHouseMigrations(ctx, chConn); err != nil {
+		if err := migrate.ApplyClickHouseMigrations(ctx, chConn); err != nil {
 			slog.Error("failed to apply clickhouse migrations", "error", err)
 			os.Exit(1)
 		}
@@ -109,11 +109,11 @@ func main() {
 	}
 
 	queries := db.New(pool)
-	campaignRepo := ads.NewCampaignRepo(queries)
-	customerRepo := ads.NewCustomerRepo(queries)
-	var syncWorkers []*ads.SyncWorker
+	campaignRepo := ingestion.NewCampaignRepo(queries)
+	customerRepo := ingestion.NewCustomerRepo(queries)
+	var syncWorkers []*ingestion.SyncWorker
 	for _, rdb := range rdbs {
-		sw := ads.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond)
+		sw := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond)
 		syncWorkers = append(syncWorkers, sw)
 		svc.StartBackgroundWorker(func() {
 			sw.Start(ctx)

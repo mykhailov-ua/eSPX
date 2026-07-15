@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
+	"espx/internal/ingestion"
 	"espx/internal/payment/db"
 
 	"github.com/google/uuid"
@@ -32,7 +32,7 @@ func TestChaos_SettlementFailedNotifier(t *testing.T) {
 	customerID := uuid.New()
 	seed := seedSucceededIntentWithOutbox(t, infra, customerID, 9_000_000, "chaos-settle-alert-"+uuid.New().String())
 
-	_, err := infra.Pool.Exec(ctx, `DELETE FROM customers WHERE id = $1`, ads.ToUUID(customerID))
+	_, err := infra.Pool.Exec(ctx, `DELETE FROM customers WHERE id = $1`, ingestion.ToUUID(customerID))
 	require.NoError(t, err)
 
 	worker := newOutboxWorkerForChaos(infra)

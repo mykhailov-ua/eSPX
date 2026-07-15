@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const defaultPath = "internal/ads/pb/events_vtproto.pb.go"
+const defaultPath = "internal/ingestion/pb/events_vtproto.pb.go"
 
 var patches = []struct {
 	from string

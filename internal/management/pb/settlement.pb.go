@@ -865,7 +865,7 @@ func (x *BlockIPResponse) GetEnqueued() bool {
 	return false
 }
 
-type EnqueueMLThreatRequest struct {
+type EnqueueFraudThreatRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Action        string                 `protobuf:"bytes,1,opt,name=action,proto3" json:"action,omitempty"` // e.g. "boost", "blacklist", "ghost"
 	Ip            string                 `protobuf:"bytes,2,opt,name=ip,proto3" json:"ip,omitempty"`
@@ -877,20 +877,20 @@ type EnqueueMLThreatRequest struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *EnqueueMLThreatRequest) Reset() {
-	*x = EnqueueMLThreatRequest{}
+func (x *EnqueueFraudThreatRequest) Reset() {
+	*x = EnqueueFraudThreatRequest{}
 	mi := &file_settlement_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *EnqueueMLThreatRequest) String() string {
+func (x *EnqueueFraudThreatRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*EnqueueMLThreatRequest) ProtoMessage() {}
+func (*EnqueueFraudThreatRequest) ProtoMessage() {}
 
-func (x *EnqueueMLThreatRequest) ProtoReflect() protoreflect.Message {
+func (x *EnqueueFraudThreatRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_settlement_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -902,74 +902,74 @@ func (x *EnqueueMLThreatRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use EnqueueMLThreatRequest.ProtoReflect.Descriptor instead.
-func (*EnqueueMLThreatRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use EnqueueFraudThreatRequest.ProtoReflect.Descriptor instead.
+func (*EnqueueFraudThreatRequest) Descriptor() ([]byte, []int) {
 	return file_settlement_proto_rawDescGZIP(), []int{13}
 }
 
-func (x *EnqueueMLThreatRequest) GetAction() string {
+func (x *EnqueueFraudThreatRequest) GetAction() string {
 	if x != nil {
 		return x.Action
 	}
 	return ""
 }
 
-func (x *EnqueueMLThreatRequest) GetIp() string {
+func (x *EnqueueFraudThreatRequest) GetIp() string {
 	if x != nil {
 		return x.Ip
 	}
 	return ""
 }
 
-func (x *EnqueueMLThreatRequest) GetCampaignId() string {
+func (x *EnqueueFraudThreatRequest) GetCampaignId() string {
 	if x != nil {
 		return x.CampaignId
 	}
 	return ""
 }
 
-func (x *EnqueueMLThreatRequest) GetScore() float64 {
+func (x *EnqueueFraudThreatRequest) GetScore() float64 {
 	if x != nil {
 		return x.Score
 	}
 	return 0
 }
 
-func (x *EnqueueMLThreatRequest) GetBoost() int32 {
+func (x *EnqueueFraudThreatRequest) GetBoost() int32 {
 	if x != nil {
 		return x.Boost
 	}
 	return 0
 }
 
-func (x *EnqueueMLThreatRequest) GetTtlSeconds() int64 {
+func (x *EnqueueFraudThreatRequest) GetTtlSeconds() int64 {
 	if x != nil {
 		return x.TtlSeconds
 	}
 	return 0
 }
 
-type EnqueueMLThreatResponse struct {
+type EnqueueFraudThreatResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Enqueued      bool                   `protobuf:"varint,1,opt,name=enqueued,proto3" json:"enqueued,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *EnqueueMLThreatResponse) Reset() {
-	*x = EnqueueMLThreatResponse{}
+func (x *EnqueueFraudThreatResponse) Reset() {
+	*x = EnqueueFraudThreatResponse{}
 	mi := &file_settlement_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *EnqueueMLThreatResponse) String() string {
+func (x *EnqueueFraudThreatResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*EnqueueMLThreatResponse) ProtoMessage() {}
+func (*EnqueueFraudThreatResponse) ProtoMessage() {}
 
-func (x *EnqueueMLThreatResponse) ProtoReflect() protoreflect.Message {
+func (x *EnqueueFraudThreatResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_settlement_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -981,12 +981,12 @@ func (x *EnqueueMLThreatResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use EnqueueMLThreatResponse.ProtoReflect.Descriptor instead.
-func (*EnqueueMLThreatResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use EnqueueFraudThreatResponse.ProtoReflect.Descriptor instead.
+func (*EnqueueFraudThreatResponse) Descriptor() ([]byte, []int) {
 	return file_settlement_proto_rawDescGZIP(), []int{14}
 }
 
-func (x *EnqueueMLThreatResponse) GetEnqueued() bool {
+func (x *EnqueueFraudThreatResponse) GetEnqueued() bool {
 	if x != nil {
 		return x.Enqueued
 	}
@@ -1261,8 +1261,8 @@ const file_settlement_proto_rawDesc = "" +
 	"\x02ip\x18\x01 \x01(\tR\x02ip\x12\x16\n" +
 	"\x06source\x18\x02 \x01(\tR\x06source\"-\n" +
 	"\x0fBlockIPResponse\x12\x1a\n" +
-	"\benqueued\x18\x01 \x01(\bR\benqueued\"\xae\x01\n" +
-	"\x16EnqueueMLThreatRequest\x12\x16\n" +
+	"\benqueued\x18\x01 \x01(\bR\benqueued\"\xb1\x01\n" +
+	"\x19EnqueueFraudThreatRequest\x12\x16\n" +
 	"\x06action\x18\x01 \x01(\tR\x06action\x12\x0e\n" +
 	"\x02ip\x18\x02 \x01(\tR\x02ip\x12\x1f\n" +
 	"\vcampaign_id\x18\x03 \x01(\tR\n" +
@@ -1270,8 +1270,8 @@ const file_settlement_proto_rawDesc = "" +
 	"\x05score\x18\x04 \x01(\x01R\x05score\x12\x14\n" +
 	"\x05boost\x18\x05 \x01(\x05R\x05boost\x12\x1f\n" +
 	"\vttl_seconds\x18\x06 \x01(\x03R\n" +
-	"ttlSeconds\"5\n" +
-	"\x17EnqueueMLThreatResponse\x12\x1a\n" +
+	"ttlSeconds\"8\n" +
+	"\x1aEnqueueFraudThreatResponse\x12\x1a\n" +
 	"\benqueued\x18\x01 \x01(\bR\benqueued\"\xd2\x02\n" +
 	"\x1bBatchApplySettlementRequest\x12?\n" +
 	"\acredits\x18\x01 \x03(\v2%.settlement.ApplyPaymentCreditRequestR\acredits\x12?\n" +
@@ -1286,15 +1286,15 @@ const file_settlement_proto_rawDesc = "" +
 	"\x0ecredit_results\x18\x01 \x03(\v2%.settlement.BatchSettlementItemResultR\rcreditResults\x12L\n" +
 	"\x0erefund_results\x18\x02 \x03(\v2%.settlement.BatchSettlementItemResultR\rrefundResults\x12T\n" +
 	"\x12chargeback_results\x18\x03 \x03(\v2%.settlement.BatchSettlementItemResultR\x11chargebackResults\x12e\n" +
-	"\x1bchargeback_reversal_results\x18\x04 \x03(\v2%.settlement.BatchSettlementItemResultR\x19chargebackReversalResults2\xbc\x06\n" +
+	"\x1bchargeback_reversal_results\x18\x04 \x03(\v2%.settlement.BatchSettlementItemResultR\x19chargebackReversalResults2\xc5\x06\n" +
 	"\x11SettlementService\x12c\n" +
 	"\x12ApplyPaymentCredit\x12%.settlement.ApplyPaymentCreditRequest\x1a&.settlement.ApplyPaymentCreditResponse\x12c\n" +
 	"\x12ApplyPaymentRefund\x12%.settlement.ApplyPaymentRefundRequest\x1a&.settlement.ApplyPaymentRefundResponse\x12o\n" +
 	"\x16ApplyPaymentChargeback\x12).settlement.ApplyPaymentChargebackRequest\x1a*.settlement.ApplyPaymentChargebackResponse\x12\x87\x01\n" +
 	"\x1eApplyPaymentChargebackReversal\x121.settlement.ApplyPaymentChargebackReversalRequest\x1a2.settlement.ApplyPaymentChargebackReversalResponse\x12W\n" +
 	"\x0eGetLedgerEntry\x12!.settlement.GetLedgerEntryRequest\x1a\".settlement.GetLedgerEntryResponse\x12B\n" +
-	"\aBlockIP\x12\x1a.settlement.BlockIPRequest\x1a\x1b.settlement.BlockIPResponse\x12Z\n" +
-	"\x0fEnqueueMLThreat\x12\".settlement.EnqueueMLThreatRequest\x1a#.settlement.EnqueueMLThreatResponse\x12i\n" +
+	"\aBlockIP\x12\x1a.settlement.BlockIPRequest\x1a\x1b.settlement.BlockIPResponse\x12c\n" +
+	"\x12EnqueueFraudThreat\x12%.settlement.EnqueueFraudThreatRequest\x1a&.settlement.EnqueueFraudThreatResponse\x12i\n" +
 	"\x14BatchApplySettlement\x12'.settlement.BatchApplySettlementRequest\x1a(.settlement.BatchApplySettlementResponseB Z\x1eespx/internal/management/pb;pbb\x06proto3"
 
 var (
@@ -1324,8 +1324,8 @@ var file_settlement_proto_goTypes = []any{
 	(*GetLedgerEntryResponse)(nil),                 // 10: settlement.GetLedgerEntryResponse
 	(*BlockIPRequest)(nil),                         // 11: settlement.BlockIPRequest
 	(*BlockIPResponse)(nil),                        // 12: settlement.BlockIPResponse
-	(*EnqueueMLThreatRequest)(nil),                 // 13: settlement.EnqueueMLThreatRequest
-	(*EnqueueMLThreatResponse)(nil),                // 14: settlement.EnqueueMLThreatResponse
+	(*EnqueueFraudThreatRequest)(nil),              // 13: settlement.EnqueueFraudThreatRequest
+	(*EnqueueFraudThreatResponse)(nil),             // 14: settlement.EnqueueFraudThreatResponse
 	(*BatchApplySettlementRequest)(nil),            // 15: settlement.BatchApplySettlementRequest
 	(*BatchSettlementItemResult)(nil),              // 16: settlement.BatchSettlementItemResult
 	(*BatchApplySettlementResponse)(nil),           // 17: settlement.BatchApplySettlementResponse
@@ -1346,7 +1346,7 @@ var file_settlement_proto_depIdxs = []int32{
 	6,  // 12: settlement.SettlementService.ApplyPaymentChargebackReversal:input_type -> settlement.ApplyPaymentChargebackReversalRequest
 	8,  // 13: settlement.SettlementService.GetLedgerEntry:input_type -> settlement.GetLedgerEntryRequest
 	11, // 14: settlement.SettlementService.BlockIP:input_type -> settlement.BlockIPRequest
-	13, // 15: settlement.SettlementService.EnqueueMLThreat:input_type -> settlement.EnqueueMLThreatRequest
+	13, // 15: settlement.SettlementService.EnqueueFraudThreat:input_type -> settlement.EnqueueFraudThreatRequest
 	15, // 16: settlement.SettlementService.BatchApplySettlement:input_type -> settlement.BatchApplySettlementRequest
 	1,  // 17: settlement.SettlementService.ApplyPaymentCredit:output_type -> settlement.ApplyPaymentCreditResponse
 	3,  // 18: settlement.SettlementService.ApplyPaymentRefund:output_type -> settlement.ApplyPaymentRefundResponse
@@ -1354,7 +1354,7 @@ var file_settlement_proto_depIdxs = []int32{
 	7,  // 20: settlement.SettlementService.ApplyPaymentChargebackReversal:output_type -> settlement.ApplyPaymentChargebackReversalResponse
 	10, // 21: settlement.SettlementService.GetLedgerEntry:output_type -> settlement.GetLedgerEntryResponse
 	12, // 22: settlement.SettlementService.BlockIP:output_type -> settlement.BlockIPResponse
-	14, // 23: settlement.SettlementService.EnqueueMLThreat:output_type -> settlement.EnqueueMLThreatResponse
+	14, // 23: settlement.SettlementService.EnqueueFraudThreat:output_type -> settlement.EnqueueFraudThreatResponse
 	17, // 24: settlement.SettlementService.BatchApplySettlement:output_type -> settlement.BatchApplySettlementResponse
 	17, // [17:25] is the sub-list for method output_type
 	9,  // [9:17] is the sub-list for method input_type

@@ -23,8 +23,8 @@ service SettlementService {
   // BlockIP enqueues a fraud blacklist update via management outbox (internal IVT path).
   rpc BlockIP(BlockIPRequest) returns (BlockIPResponse);
 
-  // EnqueueMLThreat enqueues a machine learning threat candidate (IP, campaign, score, boost, TTL).
-  rpc EnqueueMLThreat(EnqueueMLThreatRequest) returns (EnqueueMLThreatResponse);
+  // EnqueueFraudThreat enqueues a fraud enforcement action (boost, blacklist, ghost IVT).
+  rpc EnqueueFraudThreat(EnqueueFraudThreatRequest) returns (EnqueueFraudThreatResponse);
 
   // BatchApplySettlement drains payment outbox rows after management outages (<=500 ops per call).
   rpc BatchApplySettlement(BatchApplySettlementRequest) returns (BatchApplySettlementResponse);
@@ -116,7 +116,7 @@ message BlockIPResponse {
   bool enqueued = 1;
 }
 
-message EnqueueMLThreatRequest {
+message EnqueueFraudThreatRequest {
   string action = 1;      // e.g. "boost", "blacklist", "ghost"
   string ip = 2;
   string campaign_id = 3;
@@ -125,7 +125,7 @@ message EnqueueMLThreatRequest {
   int64 ttl_seconds = 6;
 }
 
-message EnqueueMLThreatResponse {
+message EnqueueFraudThreatResponse {
   bool enqueued = 1;
 }
 

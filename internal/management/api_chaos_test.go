@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
+	"espx/internal/clickhouse/migrate"
 	"espx/internal/config"
 	"espx/internal/database"
-	"espx/internal/processor"
+	"espx/internal/ingestion"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -130,7 +130,7 @@ func TestChaos_APIChLagStaleOK(t *testing.T) {
 	conn, chContainer, cleanupCH := setupClickHouseStatsContainer(t)
 	defer cleanupCH()
 	ctx := context.Background()
-	require.NoError(t, processor.ApplyClickHouseMigrations(ctx, conn))
+	require.NoError(t, migrate.ApplyClickHouseMigrations(ctx, conn))
 
 	pool, cleanupDB := database.SetupTestDB(t)
 	defer cleanupDB()
@@ -166,7 +166,7 @@ func TestChaos_APIChLagStaleOK(t *testing.T) {
 	_, err = pool.Exec(ctx, `
 		INSERT INTO campaign_stats (campaign_id, date, impressions_count, clicks_count, conversions_count)
 		VALUES ($1, CURRENT_DATE, $2, 3, 1)`,
-		ads.ToUUID(campID), pgImpressions)
+		ingestion.ToUUID(campID), pgImpressions)
 	require.NoError(t, err)
 
 	now := time.Now().UTC()
@@ -262,7 +262,7 @@ func TestChaos_LedgerExportCursor(t *testing.T) {
 		_, err := pool.Exec(ctx, `
 			INSERT INTO balance_ledger (customer_id, amount, type, idempotency_hash)
 			VALUES ($1, 1000, 'FEE', $2)`,
-			ads.ToUUID(custID), fmt.Sprintf("%s-%d", padding, i))
+			ingestion.ToUUID(custID), fmt.Sprintf("%s-%d", padding, i))
 		require.NoError(t, err)
 	}
 

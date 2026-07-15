@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"espx/internal/ads/pb"
+	"espx/internal/ingestion/pb"
 
 	"github.com/stretchr/testify/assert"
 )

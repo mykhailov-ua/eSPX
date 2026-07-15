@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
 	"espx/internal/rtb"
 
 	"github.com/google/uuid"
@@ -60,13 +60,13 @@ func TestChaos_rtb_catalog_reload_outbox(t *testing.T) {
 	var created RtbDealDTO
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&created))
 
-	catalog := ads.NewRtbCatalog(rtb.NewBudgetStore(), ads.BudgetAuthorityShadow)
-	require.NoError(t, ads.ReloadRtbDeals(ctx, db.New(pool), catalog))
+	catalog := ingestion.NewRtbCatalog(rtb.NewBudgetStore(), ingestion.BudgetAuthorityShadow)
+	require.NoError(t, ingestion.ReloadRtbDeals(ctx, db.New(pool), catalog))
 	deal, ok := catalog.LookupDeal("chaos-reload-deal")
 	require.True(t, ok)
 	require.Equal(t, int64(100_000), deal.FloorMicro)
 
-	channel := ads.RtbCatalogReloadChannel(svc.cfg)
+	channel := ingestion.RtbCatalogReloadChannel(svc.cfg)
 	sub := rdb.Subscribe(ctx, channel)
 	defer sub.Close()
 	_, err := sub.Receive(ctx)
@@ -120,7 +120,7 @@ func TestChaos_rtb_catalog_reload_outbox(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "reload", m.Payload)
 
-	require.NoError(t, ads.ReloadRtbDeals(ctx, db.New(pool), catalog))
+	require.NoError(t, ingestion.ReloadRtbDeals(ctx, db.New(pool), catalog))
 	close(stop)
 	wg.Wait()
 

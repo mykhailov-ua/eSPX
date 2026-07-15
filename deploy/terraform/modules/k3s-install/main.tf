@@ -7,16 +7,16 @@ terraform {
   }
 }
 
-# Idempotent k3s install via scripts/deploy/install_k3s.sh.
+# Idempotent k3s install via scripts/k8s/install_k3s.sh.
 # Re-runs when install script checksum or kubeconfig path changes.
 resource "null_resource" "k3s_install" {
   triggers = {
-    install_script = filemd5("${path.module}/../../../../scripts/deploy/install_k3s.sh")
+    install_script = filemd5("${path.module}/../../../../scripts/k8s/install_k3s.sh")
     kubeconfig     = var.kubeconfig_path
   }
 
   provisioner "local-exec" {
-    command     = "bash ${abspath(path.module)}/../../../../scripts/deploy/install_k3s.sh --kubeconfig ${var.kubeconfig_path}"
+    command     = "bash ${abspath(path.module)}/../../../../scripts/k8s/install_k3s.sh --kubeconfig ${var.kubeconfig_path}"
     working_dir = abspath(path.module)
   }
 }

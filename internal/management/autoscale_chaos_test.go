@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -53,16 +53,16 @@ func TestChaos_AutoscaleNoDoubleFreeze(t *testing.T) {
 		INSERT INTO campaign_stats (campaign_id, date, impressions_count, clicks_count, conversions_count) VALUES
 		($1, CURRENT_DATE, 1000, 2, 0),
 		($2, CURRENT_DATE, 500, 15, 0)`,
-		ads.ToUUID(lowCTR), ads.ToUUID(highCTR))
+		ingestion.ToUUID(lowCTR), ingestion.ToUUID(highCTR))
 	require.NoError(t, err)
 
 	queries := db.New(pool)
-	syncWorker := ads.NewSyncWorker(rdb, ads.NewCampaignRepo(queries), ads.NewCustomerRepo(queries), 100*time.Millisecond)
+	syncWorker := ingestion.NewSyncWorker(rdb, ingestion.NewCampaignRepo(queries), ingestion.NewCustomerRepo(queries), 100*time.Millisecond)
 	_, err = pool.Exec(ctx, `DELETE FROM outbox_events`)
 	require.NoError(t, err)
 
 	var balanceBefore int64
-	require.NoError(t, pool.QueryRow(ctx, `SELECT balance FROM customers WHERE id = $1`, ads.ToUUID(customerID)).Scan(&balanceBefore))
+	require.NoError(t, pool.QueryRow(ctx, `SELECT balance FROM customers WHERE id = $1`, ingestion.ToUUID(customerID)).Scan(&balanceBefore))
 
 	const workers = 24
 	var wg sync.WaitGroup
@@ -72,7 +72,7 @@ func TestChaos_AutoscaleNoDoubleFreeze(t *testing.T) {
 	for range workers {
 		go func() {
 			defer wg.Done()
-			if err := svc.AutoscaleBudgets(ctx, []*ads.SyncWorker{syncWorker}); err != nil {
+			if err := svc.AutoscaleBudgets(ctx, []*ingestion.SyncWorker{syncWorker}); err != nil {
 				errMu.Lock()
 				if firstErr == nil {
 					firstErr = err
@@ -85,8 +85,8 @@ func TestChaos_AutoscaleNoDoubleFreeze(t *testing.T) {
 	require.NoError(t, firstErr)
 
 	var limitLow, limitHigh int64
-	require.NoError(t, pool.QueryRow(ctx, `SELECT budget_limit FROM campaigns WHERE id = $1`, ads.ToUUID(lowCTR)).Scan(&limitLow))
-	require.NoError(t, pool.QueryRow(ctx, `SELECT budget_limit FROM campaigns WHERE id = $1`, ads.ToUUID(highCTR)).Scan(&limitHigh))
+	require.NoError(t, pool.QueryRow(ctx, `SELECT budget_limit FROM campaigns WHERE id = $1`, ingestion.ToUUID(lowCTR)).Scan(&limitLow))
+	require.NoError(t, pool.QueryRow(ctx, `SELECT budget_limit FROM campaigns WHERE id = $1`, ingestion.ToUUID(highCTR)).Scan(&limitHigh))
 	assert.Equal(t, int64(90_000_000), limitLow)
 	assert.Equal(t, int64(110_000_000), limitHigh)
 
@@ -101,7 +101,7 @@ func TestChaos_AutoscaleNoDoubleFreeze(t *testing.T) {
 	assert.Equal(t, 1, autoscaleRelease, "exactly one autoscale RELEASE per stats fingerprint")
 
 	var balanceAfter int64
-	require.NoError(t, pool.QueryRow(ctx, `SELECT balance FROM customers WHERE id = $1`, ads.ToUUID(customerID)).Scan(&balanceAfter))
+	require.NoError(t, pool.QueryRow(ctx, `SELECT balance FROM customers WHERE id = $1`, ingestion.ToUUID(customerID)).Scan(&balanceAfter))
 	assert.Equal(t, balanceBefore, balanceAfter, "autoscale transfer must not change customer balance")
 
 	var outboxCount int

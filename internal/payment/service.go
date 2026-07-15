@@ -9,7 +9,7 @@ import (
 
 	"espx/internal/config"
 	"espx/internal/payment/db"
-	"espx/pkg/cold"
+	"espx/pkg/coldpath"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -106,7 +106,7 @@ func (service *Service) CreatePaymentIntent(ctx context.Context, customerID uuid
 		return innerErr
 	})
 	if err != nil {
-		if cold.IsUniqueViolation(err) {
+		if coldpath.IsUniqueViolation(err) {
 			existing, lookupErr := q.GetPaymentIntentByIdempotencyKey(ctx, idempotencyKey)
 			if lookupErr != nil {
 				return CreateIntentResult{}, fmt.Errorf("idempotency race recovery failed: %w", lookupErr)
@@ -147,7 +147,7 @@ func (s *Service) ListPaymentIntents(ctx context.Context, customerID uuid.UUID, 
 		Limit:      limit,
 		Offset:     offset,
 	}
-	return cold.PaginatedQuery(
+	return coldpath.PaginatedQuery(
 		func() (int64, error) { return q.CountPaymentIntents(ctx, custUUID) },
 		func() ([]db.PaymentPaymentIntent, error) { return q.ListPaymentIntents(ctx, listParams) },
 	)
@@ -194,7 +194,7 @@ func (service *Service) ProcessStripeWebhook(ctx context.Context, eventID string
 	h.Write(payload)
 	payloadHash := h.Sum(nil)
 
-	redactedBytes, err := cold.RedactStripeWebhookPayload(payload)
+	redactedBytes, err := coldpath.RedactStripeWebhookPayload(payload)
 	if err != nil {
 		return fmt.Errorf("redact stripe webhook payload: %w", err)
 	}
@@ -225,7 +225,7 @@ func (service *Service) ProcessStripeWebhook(ctx context.Context, eventID string
 			ErrorMessage:    pgtype.Text{},
 		})
 		if err != nil {
-			if cold.IsUniqueViolation(err) {
+			if coldpath.IsUniqueViolation(err) {
 				slog.Info("webhook event deduplicated by unique constraint", "event_id", eventID)
 				WebhookEventsTotal.WithLabelValues("duplicate").Inc()
 				return nil
@@ -297,7 +297,7 @@ func (service *Service) ProcessStripeWebhook(ctx context.Context, eventID string
 				"provider":               "stripe",
 				"provider_ref":           providerRef,
 			}
-			payloadJSON, err := cold.MarshalJSON(outboxPayload)
+			payloadJSON, err := coldpath.MarshalJSON(outboxPayload)
 			if err != nil {
 				return fmt.Errorf("marshal settle balance outbox payload: %w", err)
 			}
@@ -324,7 +324,7 @@ func (service *Service) ProcessStripeRefundWebhook(ctx context.Context, eventID 
 	h.Write(payload)
 	payloadHash := h.Sum(nil)
 
-	redactedBytes, err := cold.RedactStripeWebhookPayload(payload)
+	redactedBytes, err := coldpath.RedactStripeWebhookPayload(payload)
 	if err != nil {
 		return fmt.Errorf("redact stripe webhook payload: %w", err)
 	}
@@ -355,7 +355,7 @@ func (service *Service) ProcessStripeRefundWebhook(ctx context.Context, eventID 
 			ErrorMessage:    pgtype.Text{},
 		})
 		if err != nil {
-			if cold.IsUniqueViolation(err) {
+			if coldpath.IsUniqueViolation(err) {
 				slog.Info("refund webhook event deduplicated by unique constraint", "event_id", eventID)
 				WebhookEventsTotal.WithLabelValues("duplicate").Inc()
 				return nil
@@ -444,7 +444,7 @@ func (service *Service) ProcessStripeRefundWebhook(ctx context.Context, eventID 
 			Status:           db.PaymentRefundStatusSUCCEEDED,
 		})
 		if err != nil {
-			if cold.IsUniqueViolation(err) {
+			if coldpath.IsUniqueViolation(err) {
 				return updateStripeWebhookStatus(ctx, txQueries, eventID, db.PaymentWebhookEventStatusPROCESSED, "")
 			}
 			return err
@@ -460,7 +460,7 @@ func (service *Service) ProcessStripeRefundWebhook(ctx context.Context, eventID 
 
 		intentUUID := uuid.UUID(intent.ID.Bytes)
 		customerUUID := uuid.UUID(intent.CustomerID.Bytes)
-		outboxPayload, err := cold.MarshalJSON(reverseBalancePayload(intentUUID, customerUUID, refundAmountMicro, providerRefundID))
+		outboxPayload, err := coldpath.MarshalJSON(reverseBalancePayload(intentUUID, customerUUID, refundAmountMicro, providerRefundID))
 		if err != nil {
 			return fmt.Errorf("marshal reverse balance outbox payload: %w", err)
 		}

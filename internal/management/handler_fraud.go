@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"espx/pkg/cold"
+	"espx/pkg/coldpath"
 	"espx/pkg/httpresponse"
 
 	"github.com/google/uuid"
@@ -36,7 +36,7 @@ func (h *Handler) updateCampaignFraudConfig(w http.ResponseWriter, r *http.Reque
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid campaign id")
 		return
 	}
-	req, err := cold.DecodeRequest[CampaignFraudConfigUpdate](w, r, 4096)
+	req, err := coldpath.DecodeRequest[CampaignFraudConfigUpdate](w, r, 4096)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
@@ -49,14 +49,14 @@ func (h *Handler) updateCampaignFraudConfig(w http.ResponseWriter, r *http.Reque
 	httpresponse.JSON(w, http.StatusOK, cfg)
 }
 
-func (h *Handler) applyMLOverrides(w http.ResponseWriter, r *http.Request) {
-	req, err := cold.DecodeRequest[MLOverrideRequest](w, r, 4096)
+func (h *Handler) applyFraudScoringOverrides(w http.ResponseWriter, r *http.Request) {
+	req, err := coldpath.DecodeRequest[FraudScoringOverrideRequest](w, r, 4096)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
 
-	err = h.svc.ApplyMLOverride(r.Context(), req)
+	err = h.svc.ApplyFraudScoringOverride(r.Context(), req)
 	if err != nil {
 		writeServiceError(w, err)
 		return

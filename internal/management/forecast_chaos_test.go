@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"espx/internal/clickhouse/migrate"
 	"espx/internal/config"
 	"espx/internal/database"
-	"espx/internal/processor"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -29,7 +29,7 @@ func TestChaos_ForecastDeterministic(t *testing.T) {
 	conn, cleanupCH := setupClickHouseStatsTest(t)
 	defer cleanupCH()
 	ctx := context.Background()
-	require.NoError(t, processor.ApplyClickHouseMigrations(ctx, conn))
+	require.NoError(t, migrate.ApplyClickHouseMigrations(ctx, conn))
 
 	pool, cleanupDB := database.SetupTestDB(t)
 	defer cleanupDB()

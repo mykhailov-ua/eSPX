@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"espx/internal/ads"
+	"espx/internal/ingestion"
 	"espx/internal/metrics"
 
 	"github.com/google/uuid"
@@ -88,7 +88,7 @@ func (reconService *ReconService) ReconcileWindow(ctx context.Context, start, en
 		}
 
 		var customerID pgtype.UUID
-		err = reconService.mgmt.GetPool().QueryRow(opCtx, `SELECT customer_id FROM campaigns WHERE id = $1`, ads.ToUUID(campID)).Scan(&customerID)
+		err = reconService.mgmt.GetPool().QueryRow(opCtx, `SELECT customer_id FROM campaigns WHERE id = $1`, ingestion.ToUUID(campID)).Scan(&customerID)
 		if err != nil {
 			slog.Error("failed to resolve campaign customer in recon", "campaign_id", campID, "error", err)
 			metrics.ReconAdjustmentErrors.Inc()
@@ -100,7 +100,7 @@ func (reconService *ReconService) ReconcileWindow(ctx context.Context, start, en
 		_, err = reconService.mgmt.GetPool().Exec(opCtx, `
 			INSERT INTO recon_discrepancies (run_id, campaign_id, customer_id, expected_spend, actual_spend, delta, redis_adjusted)
 			VALUES ($1, $2, $3, $4, $5, $6, false)
-		`, run.ID, ads.ToUUID(campID), customerID, syncVal, ledgerSpent, delta)
+		`, run.ID, ingestion.ToUUID(campID), customerID, syncVal, ledgerSpent, delta)
 		if err != nil {
 			slog.Error("failed to record recon discrepancy to postgres", "run_id", run.ID, "campaign_id", campID, "error", err)
 			metrics.ReconAdjustmentErrors.Inc()
@@ -125,7 +125,7 @@ func (reconService *ReconService) ReconcileWindow(ctx context.Context, start, en
 		_, err = reconService.mgmt.GetPool().Exec(opCtx, `
 			INSERT INTO balance_ledger (customer_id, campaign_id, amount, type, created_at)
 			VALUES ($1, $2, $3, $4, NOW())
-		`, customerID, ads.ToUUID(campID), -delta, adjType)
+		`, customerID, ingestion.ToUUID(campID), -delta, adjType)
 		if err != nil {
 			slog.Error("failed to insert corrective ledger entry for recon", "campaign_id", campID, "delta", delta, "error", err)
 			metrics.ReconAdjustmentErrors.Inc()
@@ -142,7 +142,7 @@ func (reconService *ReconService) ReconcileWindow(ctx context.Context, start, en
 			UPDATE recon_discrepancies 
 			SET redis_adjusted = true 
 			WHERE run_id = $1 AND campaign_id = $2
-		`, run.ID, ads.ToUUID(campID))
+		`, run.ID, ingestion.ToUUID(campID))
 		if err != nil {
 			slog.Error("failed to mark recon discrepancy as adjusted in postgres", "run_id", run.ID, "campaign_id", campID, "error", err)
 			metrics.ReconAdjustmentErrors.Inc()

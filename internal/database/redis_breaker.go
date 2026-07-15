@@ -36,7 +36,7 @@ func (s CircuitState) String() string {
 
 // RedisBreaker is a lock-free circuit breaker for Redis clients. State transitions use CAS
 // to avoid mutex contention on the hot command path. database.RedisBreaker is shard-scoped;
-// ads.CircuitBreaker is per-worker for stream consumers.
+// ingestion.CircuitBreaker is per-worker for stream consumers.
 type RedisBreaker struct {
 	state            int32
 	failures         int64

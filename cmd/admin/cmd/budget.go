@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	adsdb "espx/internal/ads/db"
+	ingestdb "espx/internal/ingestion/sqlc"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/spf13/cobra"
@@ -34,7 +34,7 @@ var budgetResetCmd = &cobra.Command{
 		}
 		defer pool.Close()
 
-		queries := adsdb.New(pool)
+		queries := ingestdb.New(pool)
 		camp, err := queries.GetCampaign(ctx, pgtype.UUID{Bytes: campaignID, Valid: true})
 		if err != nil {
 			return fmt.Errorf("campaign not found in database: %w", err)

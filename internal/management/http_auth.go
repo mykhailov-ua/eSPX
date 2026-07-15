@@ -11,7 +11,7 @@ import (
 	"espx/internal/auth"
 	"espx/internal/auth/pb"
 	"espx/internal/config"
-	"espx/pkg/cold"
+	"espx/pkg/coldpath"
 	"espx/pkg/httpresponse"
 
 	"github.com/redis/go-redis/v9"
@@ -103,7 +103,7 @@ func (h *AuthHandler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req, err := cold.DecodeBody[LoginRequest](buf.Bytes())
+	req, err := coldpath.DecodeBody[LoginRequest](buf.Bytes())
 	if err != nil || req.Email == "" || req.Password == "" {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid login request")
 		return
@@ -252,7 +252,7 @@ func (h *AuthHandler) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req, err := cold.DecodeBody[RegisterRequest](buf.Bytes())
+	req, err := coldpath.DecodeBody[RegisterRequest](buf.Bytes())
 	if err != nil || req.Email == "" || req.Password == "" || req.Role == "" {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid register request")
 		return

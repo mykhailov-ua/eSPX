@@ -773,7 +773,7 @@ func (m *BlockIPResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	return len(dAtA) - i, nil
 }
 
-func (m *EnqueueMLThreatRequest) MarshalVT() (dAtA []byte, err error) {
+func (m *EnqueueFraudThreatRequest) MarshalVT() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
 	}
@@ -786,12 +786,12 @@ func (m *EnqueueMLThreatRequest) MarshalVT() (dAtA []byte, err error) {
 	return dAtA[:n], nil
 }
 
-func (m *EnqueueMLThreatRequest) MarshalToVT(dAtA []byte) (int, error) {
+func (m *EnqueueFraudThreatRequest) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
 }
 
-func (m *EnqueueMLThreatRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+func (m *EnqueueFraudThreatRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m == nil {
 		return 0, nil
 	}
@@ -843,7 +843,7 @@ func (m *EnqueueMLThreatRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error
 	return len(dAtA) - i, nil
 }
 
-func (m *EnqueueMLThreatResponse) MarshalVT() (dAtA []byte, err error) {
+func (m *EnqueueFraudThreatResponse) MarshalVT() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
 	}
@@ -856,12 +856,12 @@ func (m *EnqueueMLThreatResponse) MarshalVT() (dAtA []byte, err error) {
 	return dAtA[:n], nil
 }
 
-func (m *EnqueueMLThreatResponse) MarshalToVT(dAtA []byte) (int, error) {
+func (m *EnqueueFraudThreatResponse) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
 }
 
-func (m *EnqueueMLThreatResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+func (m *EnqueueFraudThreatResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m == nil {
 		return 0, nil
 	}
@@ -1402,7 +1402,7 @@ func (m *BlockIPResponse) SizeVT() (n int) {
 	return n
 }
 
-func (m *EnqueueMLThreatRequest) SizeVT() (n int) {
+func (m *EnqueueFraudThreatRequest) SizeVT() (n int) {
 	if m == nil {
 		return 0
 	}
@@ -1433,7 +1433,7 @@ func (m *EnqueueMLThreatRequest) SizeVT() (n int) {
 	return n
 }
 
-func (m *EnqueueMLThreatResponse) SizeVT() (n int) {
+func (m *EnqueueFraudThreatResponse) SizeVT() (n int) {
 	if m == nil {
 		return 0
 	}
@@ -3464,7 +3464,7 @@ func (m *BlockIPResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-func (m *EnqueueMLThreatRequest) UnmarshalVT(dAtA []byte) error {
+func (m *EnqueueFraudThreatRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
 	for iNdEx < l {
@@ -3487,10 +3487,10 @@ func (m *EnqueueMLThreatRequest) UnmarshalVT(dAtA []byte) error {
 		fieldNum := int32(wire >> 3)
 		wireType := int(wire & 0x7)
 		if wireType == 4 {
-			return fmt.Errorf("proto: EnqueueMLThreatRequest: wiretype end group for non-group")
+			return fmt.Errorf("proto: EnqueueFraudThreatRequest: wiretype end group for non-group")
 		}
 		if fieldNum <= 0 {
-			return fmt.Errorf("proto: EnqueueMLThreatRequest: illegal tag %d (wire type %d)", fieldNum, wire)
+			return fmt.Errorf("proto: EnqueueFraudThreatRequest: illegal tag %d (wire type %d)", fieldNum, wire)
 		}
 		switch fieldNum {
 		case 1:
@@ -3660,7 +3660,7 @@ func (m *EnqueueMLThreatRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-func (m *EnqueueMLThreatResponse) UnmarshalVT(dAtA []byte) error {
+func (m *EnqueueFraudThreatResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
 	for iNdEx < l {
@@ -3683,10 +3683,10 @@ func (m *EnqueueMLThreatResponse) UnmarshalVT(dAtA []byte) error {
 		fieldNum := int32(wire >> 3)
 		wireType := int(wire & 0x7)
 		if wireType == 4 {
-			return fmt.Errorf("proto: EnqueueMLThreatResponse: wiretype end group for non-group")
+			return fmt.Errorf("proto: EnqueueFraudThreatResponse: wiretype end group for non-group")
 		}
 		if fieldNum <= 0 {
-			return fmt.Errorf("proto: EnqueueMLThreatResponse: illegal tag %d (wire type %d)", fieldNum, wire)
+			return fmt.Errorf("proto: EnqueueFraudThreatResponse: illegal tag %d (wire type %d)", fieldNum, wire)
 		}
 		switch fieldNum {
 		case 1:

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"espx/internal/mlanalytics"
+	"espx/internal/fraudscoring"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -204,7 +204,7 @@ func hasIPPrefix(ip, prefix string) bool {
 }
 
 // NewAnalyzerRegistry wires default detection rules for production.
-func NewAnalyzerRegistry(conn driver.Conn, pool *pgxpool.Pool, cfg AnalyzerConfig, asn ASNClassifier, scorer mlanalytics.Scorer, mlBatchSize int) *RuleRegistry {
+func NewAnalyzerRegistry(conn driver.Conn, pool *pgxpool.Pool, cfg AnalyzerConfig, asn ASNClassifier, scorer fraudscoring.Scorer, fraudScoringBatchSize int) *RuleRegistry {
 	analyzer := NewAnalyzer(conn, cfg)
 	reg := NewRuleRegistry()
 	reg.Register(&highCTRRule{analyzer: analyzer})
@@ -214,7 +214,7 @@ func NewAnalyzerRegistry(conn driver.Conn, pool *pgxpool.Pool, cfg AnalyzerConfi
 		reg.Register(&datacenterASNRule{conn: conn, cfg: cfg, asn: asn})
 	}
 	if scorer != nil {
-		reg.Register(NewMLRule(conn, pool, scorer, mlBatchSize))
+		reg.Register(NewFraudScoringRule(conn, pool, scorer, fraudScoringBatchSize))
 	}
 	return reg
 }

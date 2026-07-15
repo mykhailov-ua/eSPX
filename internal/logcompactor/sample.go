@@ -3,7 +3,7 @@ package logcompactor
 import (
 	"hash/fnv"
 
-	"espx/internal/ads/pb"
+	"espx/internal/ingestion/pb"
 )
 
 // isAlwaysKeepEvent returns true for billable and fraud-marked audit records.

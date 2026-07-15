@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
-	"espx/internal/domain"
-	"espx/pkg/cold"
+	"espx/internal/campaignmodel"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
+	"espx/pkg/coldpath"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -58,7 +58,7 @@ func validateFraudThresholds(pass, suspect, ivt, block uint8) error {
 
 // GetCampaignFraudConfig returns the current fraud configuration for a campaign.
 func (s *Service) GetCampaignFraudConfig(ctx context.Context, campaignID uuid.UUID) (CampaignFraudConfigDTO, error) {
-	row, err := db.New(s.GetPool()).GetCampaignFull(ctx, ads.ToUUID(campaignID))
+	row, err := db.New(s.GetPool()).GetCampaignFull(ctx, ingestion.ToUUID(campaignID))
 	if err != nil {
 		return CampaignFraudConfigDTO{}, mapNotFound(err, ErrCampaignNotFound)
 	}
@@ -71,7 +71,7 @@ func (s *Service) UpdateCampaignFraudConfig(ctx context.Context, campaignID uuid
 
 	err := pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
-		locked, err := q.GetCampaignForUpdate(ctx, ads.ToUUID(campaignID))
+		locked, err := q.GetCampaignForUpdate(ctx, ingestion.ToUUID(campaignID))
 		if err != nil {
 			return mapNotFound(err, ErrCampaignNotFound)
 		}
@@ -107,7 +107,7 @@ func (s *Service) UpdateCampaignFraudConfig(ctx context.Context, campaignID uuid
 		}
 
 		updated, err := q.UpdateCampaignFraudConfig(ctx, db.UpdateCampaignFraudConfigParams{
-			ID:                    ads.ToUUID(campaignID),
+			ID:                    ingestion.ToUUID(campaignID),
 			FraudThresholdPass:    int16(pass),
 			FraudThresholdSuspect: int16(suspect),
 			FraudThresholdIvt:     int16(ivt),
@@ -132,7 +132,7 @@ func (s *Service) UpdateCampaignFraudConfig(ctx context.Context, campaignID uuid
 			"behavior_flags":          flags,
 		}, nil)
 
-		payload, err := cold.MarshalJSON(map[string]string{"campaign_id": campaignID.String()})
+		payload, err := coldpath.MarshalJSON(map[string]string{"campaign_id": campaignID.String()})
 		if err != nil {
 			return fmt.Errorf("marshal update campaign fraud outbox payload: %w", err)
 		}
@@ -154,22 +154,22 @@ func (s *Service) UpdateCampaignFraudConfig(ctx context.Context, campaignID uuid
 }
 
 // ResolveFraudThresholds returns campaign thresholds or PLAN defaults when unset in storage.
-func ResolveFraudThresholds(camp *domain.Campaign) (pass, suspect, ivt, block uint8) {
+func ResolveFraudThresholds(camp *campaignmodel.Campaign) (pass, suspect, ivt, block uint8) {
 	if camp == nil {
-		return domain.DefaultFraudThresholdPass, domain.DefaultFraudThresholdSuspect,
-			domain.DefaultFraudThresholdIVT, domain.DefaultFraudThresholdBlock
+		return campaignmodel.DefaultFraudThresholdPass, campaignmodel.DefaultFraudThresholdSuspect,
+			campaignmodel.DefaultFraudThresholdIVT, campaignmodel.DefaultFraudThresholdBlock
 	}
 	return camp.FraudThresholdPass, camp.FraudThresholdSuspect, camp.FraudThresholdIVT, camp.FraudThresholdBlock
 }
 
-// MLOverrideRequest is the request payload for POST /admin/ml/overrides.
-type MLOverrideRequest struct {
+// FraudScoringOverrideRequest is the request payload for POST /admin/fraud-scoring/overrides.
+type FraudScoringOverrideRequest struct {
 	CampaignID *string `json:"campaign_id,omitempty"`
 	IP         *string `json:"ip,omitempty"`
 }
 
-// ApplyMLOverride clears a campaign's ML boost and/or removes an IP from the fraud blacklist.
-func (s *Service) ApplyMLOverride(ctx context.Context, req MLOverrideRequest) error {
+// ApplyFraudScoringOverride clears a campaign score boost and/or removes an IP from the fraud blacklist.
+func (s *Service) ApplyFraudScoringOverride(ctx context.Context, req FraudScoringOverrideRequest) error {
 	return pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 		var uid uuid.UUID
@@ -183,9 +183,9 @@ func (s *Service) ApplyMLOverride(ctx context.Context, req MLOverrideRequest) er
 				return errValidation("invalid campaign_id format")
 			}
 
-			s.AuditLog(ctx, q, uid, "ML_CLEAR_BOOST", "campaign", &campUUID, map[string]string{"campaign_id": *req.CampaignID}, nil)
+			s.AuditLog(ctx, q, uid, "FRAUD_CLEAR_BOOST", "campaign", &campUUID, map[string]string{"campaign_id": *req.CampaignID}, nil)
 
-			payload, err := cold.MarshalJSON(MLThreatPayload{
+			payload, err := coldpath.MarshalJSON(FraudThreatPayload{
 				Action:     "boost",
 				CampaignID: *req.CampaignID,
 				Boost:      0,
@@ -209,9 +209,9 @@ func (s *Service) ApplyMLOverride(ctx context.Context, req MLOverrideRequest) er
 				return err
 			}
 
-			s.AuditLog(ctx, q, uid, "ML_REMOVE_FALSE_POSITIVE", "system", nil, map[string]string{"ip": *req.IP}, nil)
+			s.AuditLog(ctx, q, uid, "FRAUD_REMOVE_FALSE_POSITIVE", "system", nil, map[string]string{"ip": *req.IP}, nil)
 
-			payload, err := cold.MarshalJSON(BlacklistPayload{Action: "remove", IP: *req.IP, Reason: "fraud"})
+			payload, err := coldpath.MarshalJSON(BlacklistPayload{Action: "remove", IP: *req.IP, Reason: "fraud"})
 			if err != nil {
 				return fmt.Errorf("marshal blacklist outbox payload: %w", err)
 			}

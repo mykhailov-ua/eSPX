@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
-	"espx/pkg/cold"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
+	"espx/pkg/coldpath"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -83,14 +83,14 @@ func (s *Service) ListCustomers(ctx context.Context, limit, offset int32) ([]Cus
 		return nil, 0, err
 	}
 
-	statsMap := cold.KeyBy(stats, func(st db.GetCustomerStatsRow) (uuid.UUID, bool) {
+	statsMap := coldpath.KeyBy(stats, func(st db.GetCustomerStatsRow) (uuid.UUID, bool) {
 		if st.CustomerID.Valid {
 			return uuid.UUID(st.CustomerID.Bytes), true
 		}
 		return uuid.Nil, false
 	})
 
-	return cold.MapSlice(rows, func(r db.Customer) CustomerDTO {
+	return coldpath.MapSlice(rows, func(r db.Customer) CustomerDTO {
 		uid := uuid.UUID(r.ID.Bytes)
 		st := statsMap[uid]
 		return CustomerDTO{
@@ -109,7 +109,7 @@ func (s *Service) ListCustomers(ctx context.Context, limit, offset int32) ([]Cus
 // GetCustomerDTO loads one customer with aggregated stats for detail views.
 func (s *Service) GetCustomerDTO(ctx context.Context, id uuid.UUID) (CustomerDTO, error) {
 	q := db.New(s.GetPool())
-	r, err := q.GetCustomerByID(ctx, ads.ToUUID(id))
+	r, err := q.GetCustomerByID(ctx, ingestion.ToUUID(id))
 	if err != nil {
 		return CustomerDTO{}, mapNotFound(err, ErrCustomerNotFound)
 	}
@@ -139,13 +139,13 @@ func (s *Service) GetCustomerDTO(ctx context.Context, id uuid.UUID) (CustomerDTO
 // ListCustomerLedger returns paginated ledger entries for a customer's billing history.
 func (s *Service) ListCustomerLedger(ctx context.Context, customerID uuid.UUID, limit, offset int32) ([]LedgerDTO, int64, error) {
 	q := db.New(s.GetPool())
-	tid := ads.ToUUID(customerID)
+	tid := ingestion.ToUUID(customerID)
 	listParams := db.ListCustomerLedgerParams{
 		CustomerID: tid,
 		Limit:      limit,
 		Offset:     offset,
 	}
-	return cold.PaginatedList(
+	return coldpath.PaginatedList(
 		func() (int64, error) { return q.CountCustomerLedger(ctx, tid) },
 		func() ([]db.BalanceLedger, error) { return q.ListCustomerLedger(ctx, listParams) },
 		ledgerToDTO,

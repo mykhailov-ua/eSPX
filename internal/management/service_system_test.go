@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
 	"espx/internal/database"
+	"espx/internal/ingestion"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
@@ -24,7 +24,7 @@ func TestBlockIPUsesOutbox(t *testing.T) {
 	rdb, cleanupRedis := database.SetupTestRedis(t)
 	defer cleanupRedis()
 
-	svc := NewService(pool, []redis.UniversalClient{rdb}, ads.NewJumpHashSharder(1), nil)
+	svc := NewService(pool, []redis.UniversalClient{rdb}, ingestion.NewJumpHashSharder(1), nil)
 	defer svc.Close()
 
 	ctx := context.Background()

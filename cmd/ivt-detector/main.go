@@ -10,8 +10,8 @@ import (
 
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/fraudscoring"
 	"espx/internal/ivtdetector"
-	"espx/internal/mlanalytics"
 	"espx/pkg/lifecycle"
 )
 
@@ -88,20 +88,20 @@ func main() {
 		DatacenterPrefixes: strings.Split(os.Getenv("IVT_DATACENTER_PREFIXES"), ","),
 	}
 
-	var scorer mlanalytics.Scorer
-	if cfg.MLAnalyticsEnabled() && !cfg.MLStandalone() {
+	var scorer fraudscoring.Scorer
+	if cfg.FraudScoringEnabled() && !cfg.FraudScorerStandalone() {
 		var err error
-		scorer, err = mlanalytics.NewLGBMScorer(cfg.ML.ModelPath)
+		scorer, err = fraudscoring.NewLGBMScorer(cfg.FraudScoring.ModelPath)
 		if err != nil {
-			slog.Error("failed to initialize ML scorer", "error", err, "path", cfg.ML.ModelPath)
+			slog.Error("failed to initialize fraud scorer", "error", err, "path", cfg.FraudScoring.ModelPath)
 			os.Exit(1)
 		}
-		slog.Info("initialized ML scorer for shadow scoring", "path", cfg.ML.ModelPath)
-	} else if cfg.MLStandalone() {
-		slog.Info("ML standalone mode is enabled; skipping embedded scorer in ivt-detector")
+		slog.Info("initialized embedded fraud scorer", "path", cfg.FraudScoring.ModelPath)
+	} else if cfg.FraudScorerStandalone() {
+		slog.Info("FRAUD_SCORER_STANDALONE enabled; skipping embedded scorer in ivt-detector")
 	}
 
-	registry := ivtdetector.NewAnalyzerRegistry(chConn, pool, analyzerCfg, asn, scorer, cfg.ML.BatchSize)
+	registry := ivtdetector.NewAnalyzerRegistry(chConn, pool, analyzerCfg, asn, scorer, cfg.FraudScoring.BatchSize)
 
 	detector := ivtdetector.NewDetector(
 		registry,

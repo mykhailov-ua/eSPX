@@ -10,12 +10,12 @@ import (
 	"syscall"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
+	"espx/internal/clickhouse/migrate"
 	"espx/internal/config"
 	"espx/internal/database"
-	"espx/internal/mlanalytics"
-	"espx/internal/processor"
+	"espx/internal/fraudscoring"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
 	"espx/pkg/logger"
 	"fmt"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -76,7 +76,7 @@ func main() {
 	partManager.StartBackground(ctx)
 
 	if cfg.GeoIP.UpdaterEnabled {
-		updater := ads.NewGeoIPUpdater(ads.GeoIPUpdaterConfig{
+		updater := ingestion.NewGeoIPUpdater(ingestion.GeoIPUpdaterConfig{
 			DBPath:         cfg.GeoIP.DBPath,
 			StagingPath:    cfg.GeoIP.StagingPath,
 			EditionID:      cfg.GeoIP.EditionID,
@@ -97,7 +97,7 @@ func main() {
 	}
 	defer chConn.Close()
 
-	if err := processor.ApplyClickHouseMigrations(ctx, chConn); err != nil {
+	if err := migrate.ApplyClickHouseMigrations(ctx, chConn); err != nil {
 		slog.Error("failed to apply clickhouse migrations", "error", err)
 		os.Exit(1)
 	}
@@ -111,37 +111,37 @@ func main() {
 		os.Exit(1)
 	}
 
-	pgStore := ads.NewPostgresStore(queries, time.Duration(cfg.WriteTimeoutMs)*time.Millisecond)
-	chStore := ads.NewClickHouseStore(chConn, time.Duration(cfg.WriteTimeoutMs)*time.Millisecond)
+	pgStore := ingestion.NewPostgresStore(queries, time.Duration(cfg.WriteTimeoutMs)*time.Millisecond)
+	chStore := ingestion.NewClickHouseStore(chConn, time.Duration(cfg.WriteTimeoutMs)*time.Millisecond)
 
-	var mlScorer mlanalytics.Scorer
-	if cfg.MLAnalyticsEnabled() {
+	var fraudScorer fraudscoring.Scorer
+	if cfg.FraudScoringEnabled() {
 		var err error
-		mlScorer, err = mlanalytics.NewLGBMScorer(cfg.ML.ModelPath)
+		fraudScorer, err = fraudscoring.NewLGBMScorer(cfg.FraudScoring.ModelPath)
 		if err != nil {
-			slog.Error("failed to initialize ML scorer for processor micro-batching", "error", err, "path", cfg.ML.ModelPath)
+			slog.Error("failed to initialize fraud scorer for processor micro-batching", "error", err, "path", cfg.FraudScoring.ModelPath)
 			os.Exit(1)
 		}
-		slog.Info("initialized ML scorer for processor micro-batching", "path", cfg.ML.ModelPath)
+		slog.Info("initialized fraud scorer for processor micro-batching", "path", cfg.FraudScoring.ModelPath)
 	}
 
-	campaignRepo := ads.NewCampaignRepo(queries)
-	customerRepo := ads.NewCustomerRepo(queries)
+	campaignRepo := ingestion.NewCampaignRepo(queries)
+	customerRepo := ingestion.NewCustomerRepo(queries)
 
-	var pgConsumers []*ads.StreamConsumer
-	var chConsumers []*ads.StreamConsumer
-	var brokerConsumers []*ads.BrokerStreamConsumer
-	var brokerReconcile *ads.BrokerReconcileWorker
-	var syncWorkers []*ads.SyncWorker
+	var pgConsumers []*ingestion.StreamConsumer
+	var chConsumers []*ingestion.StreamConsumer
+	var brokerConsumers []*ingestion.BrokerStreamConsumer
+	var brokerReconcile *ingestion.BrokerReconcileWorker
+	var syncWorkers []*ingestion.SyncWorker
 
 	for i, rdb := range rdbs {
 		shardID := fmt.Sprintf("shard_%d", i)
 
-		sw := ads.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond)
+		sw := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond)
 		syncWorkers = append(syncWorkers, sw)
 		sw.Start(syncCtx)
 
-		pc := ads.NewStreamConsumer(
+		pc := ingestion.NewStreamConsumer(
 			pgStore,
 			rdb,
 			cfg.RedisStreamName,
@@ -162,7 +162,7 @@ func main() {
 		pgConsumers = append(pgConsumers, pc)
 		pc.Start(consumerCtx)
 
-		cc := ads.NewStreamConsumer(
+		cc := ingestion.NewStreamConsumer(
 			chStore,
 			rdb,
 			cfg.RedisStreamName,
@@ -181,8 +181,8 @@ func main() {
 		cc.SetLogger(appLogger)
 		cc.SetAuditLogSampleMask(cfg.AuditLogSampleMask)
 
-		if mlScorer != nil {
-			mb := mlanalytics.NewMicroBatcher(rdb, mlScorer)
+		if fraudScorer != nil {
+			mb := fraudscoring.NewMicroBatcher(rdb, fraudScorer)
 			go mb.Start(consumerCtx)
 			cc.SetOnMessageProcessed(mb.Enqueue)
 		}
@@ -190,7 +190,7 @@ func main() {
 		chConsumers = append(chConsumers, cc)
 		cc.Start(consumerCtx)
 
-		fc := ads.NewStreamConsumer(
+		fc := ingestion.NewStreamConsumer(
 			chStore,
 			rdb,
 			cfg.FraudStreamName,
@@ -217,7 +217,7 @@ func main() {
 		if brokerRedisURL == "" && len(cfg.RedisAddrs) > 0 {
 			brokerRedisURL = "redis://" + cfg.RedisAddrs[0] + "/0"
 		}
-		brokerBase := ads.BrokerConsumerConfig{
+		brokerBase := ingestion.BrokerConsumerConfig{
 			BrokerAddr: cfg.Broker.URL,
 			RedisURL:   brokerRedisURL,
 			Topic:      cfg.Broker.Topic,
@@ -239,7 +239,7 @@ func main() {
 			pgBrokerCfg := brokerBase
 			pgBrokerCfg.Partition = uint16(p)
 			pgBrokerCfg.Group = cfg.RedisGroupName + "_pg_broker"
-			pgBroker := ads.NewBrokerStreamConsumer(pgStore, pgBrokerCfg, writeTimeout, retryInit, retryMax, cfg.MaxRetries)
+			pgBroker := ingestion.NewBrokerStreamConsumer(pgStore, pgBrokerCfg, writeTimeout, retryInit, retryMax, cfg.MaxRetries)
 			pgBroker.SetLogger(appLogger)
 			brokerConsumers = append(brokerConsumers, pgBroker)
 			pgBroker.Start(consumerCtx)
@@ -249,14 +249,14 @@ func main() {
 			chBrokerCfg.Group = cfg.RedisGroupName + "_ch_broker"
 			chBrokerCfg.BatchSize = cfg.CHBatchSize
 			chBrokerCfg.FlushInt = time.Duration(cfg.CHFlushIntervalMs) * time.Millisecond
-			chBroker := ads.NewBrokerStreamConsumer(chStore, chBrokerCfg, writeTimeout, retryInit, retryMax, cfg.MaxRetries)
+			chBroker := ingestion.NewBrokerStreamConsumer(chStore, chBrokerCfg, writeTimeout, retryInit, retryMax, cfg.MaxRetries)
 			chBroker.SetLogger(appLogger)
 			brokerConsumers = append(brokerConsumers, chBroker)
 			chBroker.Start(consumerCtx)
 		}
 
 		if len(rdbs) > 0 {
-			brokerReconcile = ads.NewBrokerReconcileWorker(ads.BrokerReconcileConfig{
+			brokerReconcile = ingestion.NewBrokerReconcileWorker(ingestion.BrokerReconcileConfig{
 				BrokerAddr:          cfg.Broker.URL,
 				BrokerRedis:         brokerRedisURL,
 				Topic:               cfg.Broker.Topic,

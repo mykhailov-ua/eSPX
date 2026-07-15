@@ -266,7 +266,7 @@ type Config struct {
 		MinIPsPerUA        uint64
 	}
 
-	ML struct {
+	FraudScoring struct {
 		Enabled        bool
 		ScanIntervalMs int
 		BatchSize      int
@@ -576,14 +576,14 @@ func Load() (*Config, error) {
 	cfg.IVT.ClickToImpRatio = getEnvFloat("IVT_DETECTOR_CLICK_TO_IMP_RATIO", 5.0)
 	cfg.IVT.MinIPsPerUA = uint64(getEnvInt64("IVT_DETECTOR_MIN_IPS_PER_UA", 8))
 
-	cfg.ML.Enabled = getEnvBool("ML_ANALYTICS_ENABLED", false)
-	cfg.ML.ScanIntervalMs = getEnvInt("ML_SCAN_INTERVAL_MS", 300000)
-	cfg.ML.BatchSize = getEnvInt("ML_BATCH_SIZE", 1000)
-	cfg.ML.ModelPath = os.Getenv("ML_MODEL_PATH")
-	if cfg.ML.ModelPath == "" {
-		cfg.ML.ModelPath = "testdata/model.txt"
+	cfg.FraudScoring.Enabled = getEnvBool("FRAUD_SCORING_ENABLED", false)
+	cfg.FraudScoring.ScanIntervalMs = getEnvInt("FRAUD_SCORING_SCAN_INTERVAL_MS", 300000)
+	cfg.FraudScoring.BatchSize = getEnvInt("FRAUD_SCORING_BATCH_SIZE", 1000)
+	cfg.FraudScoring.ModelPath = os.Getenv("FRAUD_SCORING_MODEL_PATH")
+	if cfg.FraudScoring.ModelPath == "" {
+		cfg.FraudScoring.ModelPath = "testdata/model.txt"
 	}
-	cfg.ML.Standalone = getEnvBool("ML_STANDALONE", false)
+	cfg.FraudScoring.Standalone = getEnvBool("FRAUD_SCORER_STANDALONE", false)
 
 	cfg.Billing.Port = os.Getenv("BILLING_SERVER_PORT")
 	if cfg.Billing.Port == "" {
@@ -806,14 +806,14 @@ func (c *Config) IVTDetectorEnabled() bool {
 	return string(c.CHDSN) != ""
 }
 
-// MLAnalyticsEnabled reports whether the ML analytics shadow scoring should run.
-func (c *Config) MLAnalyticsEnabled() bool {
-	return c != nil && c.ML.Enabled
+// FraudScoringEnabled reports whether the ML analytics shadow scoring should run.
+func (c *Config) FraudScoringEnabled() bool {
+	return c != nil && c.FraudScoring.Enabled
 }
 
-// MLStandalone reports whether the ML analytics is running as a standalone service.
-func (c *Config) MLStandalone() bool {
-	return c != nil && c.ML.Standalone
+// FraudScorerStandalone reports whether the ML analytics is running as a standalone service.
+func (c *Config) FraudScorerStandalone() bool {
+	return c != nil && c.FraudScoring.Standalone
 }
 
 // ClickHouseEnabled reports whether analytics queries should use ClickHouse.

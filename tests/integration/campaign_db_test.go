@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"espx/internal/ads/db"
+	"espx/internal/ingestion/sqlc"
 
 	"espx/internal/testutil"
 	"github.com/google/uuid"

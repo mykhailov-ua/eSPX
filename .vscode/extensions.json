@@ -1,0 +1,34 @@
+{
+  "recommendations": [
+    "golang.go",
+    "redhat.vscode-yaml",
+    "hashicorp.terraform",
+    "bufbuild.vscode-buf",
+    "sumneko.lua",
+    "ms-azuretools.vscode-docker",
+    "ms-python.python",
+    "mikestead.dotenv",
+    "ahmadalli.vscode-nginx-support",
+    "coolbear.systemd-unit-file",
+
+    "yzhang.markdown-all-in-one",
+    "davidanson.vscode-markdownlint",
+    "bierner.markdown-mermaid",
+    "esbenp.prettier-vscode",
+
+    "mtxr.sqltools",
+    "mtxr.sqltools-driver-pg",
+    "timonwong.shellcheck",
+    "foxundermoon.shell-format",
+
+    "github.vscode-github-actions",
+    "ms-kubernetes-tools.vscode-kubernetes-tools",
+    "camptocamp.promql",
+
+    "tamasfe.even-better-toml",
+    "redhat.vscode-xml",
+    "editorconfig.editorconfig",
+    "ms-vscode.makefile-tools",
+    "llvm-vs-code-extensions.vscode-clangd"
+  ]
+}

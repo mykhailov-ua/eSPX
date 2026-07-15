@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
+	"espx/internal/campaignmodel"
 	"espx/internal/config"
 	"espx/internal/database"
-	"espx/internal/domain"
+	"espx/internal/ingestion"
 
 	"github.com/google/uuid"
 	redis "github.com/redis/go-redis/v9"
@@ -46,7 +46,7 @@ func TestEmergencyCircuitBreaker(t *testing.T) {
 
 	ctx := context.Background()
 
-	sw := ads.NewSettingsWatcher([]redis.UniversalClient{rdb}, cfg)
+	sw := ingestion.NewSettingsWatcher([]redis.UniversalClient{rdb}, cfg)
 	assert.False(t, sw.Get().EmergencyBreaker)
 
 	reqBody := map[string]any{
@@ -92,8 +92,8 @@ func TestEmergencyCircuitBreaker(t *testing.T) {
 
 	cancelWatcher()
 
-	breakerFilter := ads.NewEmergencyBreakerFilter(sw)
-	testEvt := &domain.Event{
+	breakerFilter := ingestion.NewEmergencyBreakerFilter(sw)
+	testEvt := &campaignmodel.Event{
 		CampaignID: uuid.New(),
 		Type:       "click",
 		ClickID:    "click123",
@@ -102,7 +102,7 @@ func TestEmergencyCircuitBreaker(t *testing.T) {
 	}
 
 	err = breakerFilter.Check(ctx, testEvt)
-	assert.ErrorIs(t, err, ads.ErrEmergencyBreakerActive)
+	assert.ErrorIs(t, err, ingestion.ErrEmergencyBreakerActive)
 
 	reqBodyOff := map[string]any{
 		"active": false,

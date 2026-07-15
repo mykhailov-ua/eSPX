@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -100,7 +100,7 @@ func TestChaos_PGDeadlockRecovery(t *testing.T) {
 	_, err := pool.Exec(ctx, `
 		INSERT INTO customers (id, name, balance, currency) VALUES
 		($1, 'Deadlock A', 100000000, 'USD'),
-		($2, 'Deadlock B', 100000000, 'USD')`, ads.ToUUID(id1), ads.ToUUID(id2))
+		($2, 'Deadlock B', 100000000, 'USD')`, ingestion.ToUUID(id1), ingestion.ToUUID(id2))
 	require.NoError(t, err)
 
 	start := make(chan struct{})
@@ -112,11 +112,11 @@ func TestChaos_PGDeadlockRecovery(t *testing.T) {
 		defer wg.Done()
 		<-start
 		e := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-			if _, e := tx.Exec(ctx, `SELECT 1 FROM customers WHERE id = $1 FOR UPDATE`, ads.ToUUID(first)); e != nil {
+			if _, e := tx.Exec(ctx, `SELECT 1 FROM customers WHERE id = $1 FOR UPDATE`, ingestion.ToUUID(first)); e != nil {
 				return e
 			}
 			time.Sleep(150 * time.Millisecond)
-			_, e := tx.Exec(ctx, `SELECT 1 FROM customers WHERE id = $1 FOR UPDATE`, ads.ToUUID(second))
+			_, e := tx.Exec(ctx, `SELECT 1 FROM customers WHERE id = $1 FOR UPDATE`, ingestion.ToUUID(second))
 			return e
 		})
 		if first == id1 {
@@ -134,8 +134,8 @@ func TestChaos_PGDeadlockRecovery(t *testing.T) {
 	assert.True(t, isDeadlock(err1) || isDeadlock(err2), "expected deadlock on one session, got: %v / %v", err1, err2)
 
 	var bal1, bal2 int64
-	require.NoError(t, pool.QueryRow(ctx, `SELECT balance FROM customers WHERE id = $1`, ads.ToUUID(id1)).Scan(&bal1))
-	require.NoError(t, pool.QueryRow(ctx, `SELECT balance FROM customers WHERE id = $1`, ads.ToUUID(id2)).Scan(&bal2))
+	require.NoError(t, pool.QueryRow(ctx, `SELECT balance FROM customers WHERE id = $1`, ingestion.ToUUID(id1)).Scan(&bal1))
+	require.NoError(t, pool.QueryRow(ctx, `SELECT balance FROM customers WHERE id = $1`, ingestion.ToUUID(id2)).Scan(&bal2))
 	assert.Equal(t, int64(100_000_000), bal1)
 	assert.Equal(t, int64(100_000_000), bal2)
 
@@ -234,7 +234,7 @@ func TestChaos_ScheduleTickRace(t *testing.T) {
 
 	var historyCount int
 	require.NoError(t, pool.QueryRow(ctx, `
-		SELECT COUNT(*) FROM campaign_status_history WHERE campaign_id = $1`, ads.ToUUID(campID),
+		SELECT COUNT(*) FROM campaign_status_history WHERE campaign_id = $1`, ingestion.ToUUID(campID),
 	).Scan(&historyCount))
 	assert.Equal(t, 1, historyCount, "concurrent ticks must not duplicate status transitions")
 
@@ -300,7 +300,7 @@ func TestChaos_ConcurrentBalanceDepletion(t *testing.T) {
 	assert.Equal(t, 5, failureCount)
 
 	var balance int64
-	require.NoError(t, pool.QueryRow(ctx, `SELECT balance FROM customers WHERE id = $1`, ads.ToUUID(customerID)).Scan(&balance))
+	require.NoError(t, pool.QueryRow(ctx, `SELECT balance FROM customers WHERE id = $1`, ingestion.ToUUID(customerID)).Scan(&balance))
 	assert.Equal(t, int64(0), balance)
 
 	logChaosProof(t, "concurrent_balance_depletion", map[string]string{
@@ -347,24 +347,24 @@ func TestChaos_AutoscaleInsufficientTotalBudget(t *testing.T) {
 		INSERT INTO campaign_stats (campaign_id, date, impressions_count, clicks_count, conversions_count) VALUES
 		($1, CURRENT_DATE, 1000, 2, 0),
 		($2, CURRENT_DATE, 500, 15, 0)`,
-		ads.ToUUID(lowCTR), ads.ToUUID(highCTR))
+		ingestion.ToUUID(lowCTR), ingestion.ToUUID(highCTR))
 	require.NoError(t, err)
 
-	_, err = pool.Exec(ctx, `UPDATE campaigns SET current_spend = $1 WHERE id = $2`, int64(94_000_000), ads.ToUUID(lowCTR))
+	_, err = pool.Exec(ctx, `UPDATE campaigns SET current_spend = $1 WHERE id = $2`, int64(94_000_000), ingestion.ToUUID(lowCTR))
 	require.NoError(t, err)
 
 	queries := db.New(pool)
-	syncWorker := ads.NewSyncWorker(rdb, ads.NewCampaignRepo(queries), ads.NewCustomerRepo(queries), 100*time.Millisecond)
+	syncWorker := ingestion.NewSyncWorker(rdb, ingestion.NewCampaignRepo(queries), ingestion.NewCustomerRepo(queries), 100*time.Millisecond)
 	_, err = pool.Exec(ctx, `DELETE FROM outbox_events`)
 	require.NoError(t, err)
 
-	err = svc.AutoscaleBudgets(ctx, []*ads.SyncWorker{syncWorker})
+	err = svc.AutoscaleBudgets(ctx, []*ingestion.SyncWorker{syncWorker})
 	require.NoError(t, err)
 
 	var limitLow, limitHigh, spend int64
-	require.NoError(t, pool.QueryRow(ctx, `SELECT budget_limit FROM campaigns WHERE id = $1`, ads.ToUUID(lowCTR)).Scan(&limitLow))
-	require.NoError(t, pool.QueryRow(ctx, `SELECT budget_limit FROM campaigns WHERE id = $1`, ads.ToUUID(highCTR)).Scan(&limitHigh))
-	require.NoError(t, pool.QueryRow(ctx, `SELECT current_spend FROM campaigns WHERE id = $1`, ads.ToUUID(lowCTR)).Scan(&spend))
+	require.NoError(t, pool.QueryRow(ctx, `SELECT budget_limit FROM campaigns WHERE id = $1`, ingestion.ToUUID(lowCTR)).Scan(&limitLow))
+	require.NoError(t, pool.QueryRow(ctx, `SELECT budget_limit FROM campaigns WHERE id = $1`, ingestion.ToUUID(highCTR)).Scan(&limitHigh))
+	require.NoError(t, pool.QueryRow(ctx, `SELECT current_spend FROM campaigns WHERE id = $1`, ingestion.ToUUID(lowCTR)).Scan(&spend))
 
 	assert.Equal(t, int64(100_000_000), limitLow, "budget must not decrease when spend would exceed new limit")
 	assert.Equal(t, int64(100_000_000), limitHigh)

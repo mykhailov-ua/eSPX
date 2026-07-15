@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/processor"
+	"espx/internal/clickhouse/migrate"
 
 	chgo "github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -73,7 +73,7 @@ func TestHandlerAPI_CampaignStatsClickHouseExplain(t *testing.T) {
 	conn, cleanup := setupClickHouseStatsTest(t)
 	defer cleanup()
 	ctx := context.Background()
-	require.NoError(t, processor.ApplyClickHouseMigrations(ctx, conn))
+	require.NoError(t, migrate.ApplyClickHouseMigrations(ctx, conn))
 
 	campaignID := uuid.MustParse("00000000-0000-4000-8000-000000000042")
 	hour := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Hour)

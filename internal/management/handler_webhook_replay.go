@@ -3,7 +3,7 @@ package management
 import (
 	"net/http"
 
-	"espx/pkg/cold"
+	"espx/pkg/coldpath"
 	"espx/pkg/httpresponse"
 
 	"google.golang.org/grpc/codes"
@@ -22,7 +22,7 @@ func (h *Handler) replayPaymentWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req, err := cold.DecodeRequest[replayWebhookRequest](w, r, 16*1024)
+	req, err := coldpath.DecodeRequest[replayWebhookRequest](w, r, 16*1024)
 	if err != nil {
 		return
 	}

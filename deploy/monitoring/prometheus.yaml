@@ -1,0 +1,39 @@
+# prometheus.yaml: scrape targets for tracker replicas and the processor cold path.
+# Evaluation interval matches scrape so alert rules see fresh samples.
+
+global:
+  scrape_interval: 5s      # tracker hot-path counters are updated at ~1 ms granularity; 5s gives adequate resolution
+  evaluation_interval: 5s  # alert rule evaluation period; match scrape interval to prevent stale data in conditions
+
+rule_files:
+  - "prometheus.rules.yaml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - '127.0.0.1:9093'
+
+scrape_configs:
+  - job_name: 'tracker'      # metrics sidecar per replica (gnet /metrics returns 404 by design)
+    static_configs:
+      - targets: ['127.0.0.1:9101', '127.0.0.1:9102', '127.0.0.1:9103', '127.0.0.1:9104']
+  - job_name: 'processor'    # single processor instance; higher cardinality metrics (per-shard stream lag)
+    static_configs:
+      - targets: ['127.0.0.1:8186']
+  - job_name: 'management'   # admin gateway ops routes: GET /health, GET /metrics on MANAGEMENT_PORT
+    static_configs:
+      - targets: ['127.0.0.1:8188']
+  - job_name: 'auth'         # dedicated metrics listener (AUTH_METRICS_PORT, default 9091)
+    static_configs:
+      - targets: ['127.0.0.1:9091']
+  - job_name: 'payment'      # webhook sidecar mux: GET /metrics on PAYMENT_WEBHOOK_PORT (default 8187)
+    static_configs:
+      - targets: ['127.0.0.1:8187']
+  - job_name: 'broker'       # mmap log broker: GET /metrics on health-addr (default 8081)
+    static_configs:
+      - targets: ['127.0.0.1:8081', '127.0.0.1:8082']
+  - job_name: 'nginx-edge'   # OpenResty edge counters (blacklist blocks, campaign RL, sync health)
+    static_configs:
+      - targets: ['127.0.0.1:8180']
+    metrics_path: '/metrics/edge'

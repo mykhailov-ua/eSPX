@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
-	"espx/pkg/cold"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
+	"espx/pkg/coldpath"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -110,7 +110,7 @@ func (s *Service) ListCampaigns(ctx context.Context, customerID uuid.UUID, statu
 
 	var cid pgtype.UUID
 	if customerID != uuid.Nil {
-		cid = ads.ToUUID(customerID)
+		cid = ingestion.ToUUID(customerID)
 	}
 
 	var st pgtype.Text
@@ -129,7 +129,7 @@ func (s *Service) ListCampaigns(ctx context.Context, customerID uuid.UUID, statu
 		Status:     st,
 	}
 
-	return cold.PaginatedList(
+	return coldpath.PaginatedList(
 		func() (int64, error) { return q.CountCampaigns(ctx, countParams) },
 		func() ([]db.Campaign, error) { return q.ListCampaigns(ctx, listParams) },
 		toCampaignDTO,
@@ -139,7 +139,7 @@ func (s *Service) ListCampaigns(ctx context.Context, customerID uuid.UUID, statu
 // GetCampaignDTO loads a single campaign for detail views and access checks.
 func (s *Service) GetCampaignDTO(ctx context.Context, id uuid.UUID) (CampaignDTO, error) {
 	q := db.New(s.GetPool())
-	c, err := q.GetCampaignFull(ctx, ads.ToUUID(id))
+	c, err := q.GetCampaignFull(ctx, ingestion.ToUUID(id))
 	if err != nil {
 		return CampaignDTO{}, mapNotFound(err, ErrCampaignNotFound)
 	}
@@ -149,21 +149,21 @@ func (s *Service) GetCampaignDTO(ctx context.Context, id uuid.UUID) (CampaignDTO
 // ListStatusHistory returns paginated status transitions for a campaign audit trail.
 func (s *Service) ListStatusHistory(ctx context.Context, campaignID uuid.UUID, limit, offset int32) ([]StatusHistoryDTO, int64, error) {
 	q := db.New(s.GetPool())
-	cid := ads.ToUUID(campaignID)
+	cid := ingestion.ToUUID(campaignID)
 
 	listParams := db.ListStatusHistoryParams{
 		CampaignID: cid,
 		Limit:      limit,
 		Offset:     offset,
 	}
-	return cold.PaginatedList(
+	return coldpath.PaginatedList(
 		func() (int64, error) { return q.CountStatusHistory(ctx, cid) },
 		func() ([]db.CampaignStatusHistory, error) { return q.ListStatusHistory(ctx, listParams) },
 		statusHistoryToDTO,
 	)
 }
 
-// UpdateCampaignPacing changes manual pacing mode and propagates the update to the hot path via cold.
+// UpdateCampaignPacing changes manual pacing mode and propagates the update to the hot path via coldpath.
 func (s *Service) UpdateCampaignPacing(ctx context.Context, campaignID uuid.UUID, newMode string) (CampaignDTO, error) {
 	var pacing db.PacingModeType
 	switch newMode {
@@ -179,13 +179,13 @@ func (s *Service) UpdateCampaignPacing(ctx context.Context, campaignID uuid.UUID
 	err := pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
 
-		camp, err := q.GetCampaignForUpdate(ctx, ads.ToUUID(campaignID))
+		camp, err := q.GetCampaignForUpdate(ctx, ingestion.ToUUID(campaignID))
 		if err != nil {
 			return mapNotFound(err, ErrCampaignNotFound)
 		}
 
 		updatedCamp, err = q.UpdateCampaignPacing(ctx, db.UpdateCampaignPacingParams{
-			ID:         ads.ToUUID(campaignID),
+			ID:         ingestion.ToUUID(campaignID),
 			PacingMode: pacing,
 		})
 		if err != nil {
@@ -202,7 +202,7 @@ func (s *Service) UpdateCampaignPacing(ctx context.Context, campaignID uuid.UUID
 			"new_pacing_mode": string(pacing),
 		}, nil)
 
-		payloadBytes, err := cold.MarshalJSON(map[string]any{
+		payloadBytes, err := coldpath.MarshalJSON(map[string]any{
 			"campaign_id": campaignID.String(),
 			"pacing_mode": string(pacing),
 		})

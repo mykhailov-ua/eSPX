@@ -1,0 +1,70 @@
+name: Performance Gate
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'internal/ingestion/**'
+      - 'internal/rtb/**'
+      - 'internal/config/**'
+      - 'internal/database/redis*.go'
+      - 'pkg/logger/**'
+      - 'pkg/broker/**'
+      - 'deploy/nginx/lua/**'
+      - 'api/**'
+      - 'scripts/perf-gate/**'
+
+jobs:
+  performance-gate:
+    name: Performance Gate
+    runs-on: ${{ vars.PERF_RUNNER_LABEL || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    env:
+      GOMAXPROCS: "1"
+      BASELINE_REF: main
+      OUTDIR: ${{ github.workspace }}
+      # Smoke on github-hosted: zero-alloc only. Strict benchstat when PERF_RUNNER_LABEL is set.
+      PERF_GATE_STRICT: ${{ vars.PERF_RUNNER_LABEL != '' && 'true' || 'false' }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Gate mode
+        run: |
+          if [ "$PERF_GATE_STRICT" = "true" ]; then
+            echo "Strict perf gate (self-hosted): zero-alloc + benchstat regression vs baseline"
+          else
+            echo "Smoke perf gate (github-hosted): zero-alloc only — set repo variable PERF_RUNNER_LABEL for benchstat"
+          fi
+
+      - name: Stabilize CPU (performance governor)
+        if: env.PERF_GATE_STRICT == 'true'
+        run: bash scripts/perf-gate/stabilize_cpu.sh
+
+      - name: Run performance gate
+        run: bash scripts/perf-gate/perf_gate_run.sh
+
+      - name: Upload Benchmark Artifacts
+        if: always() && env.PERF_GATE_STRICT == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: |
+            pr_bench.txt
+            baseline_bench.txt
+            gate_report.txt
+
+      - name: Upload smoke bench artifact
+        if: always() && env.PERF_GATE_STRICT != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-gate-smoke
+          path: pr_bench.txt

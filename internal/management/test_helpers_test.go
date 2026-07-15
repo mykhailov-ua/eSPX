@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
 	"espx/internal/auth"
 	"espx/internal/config"
+	"espx/internal/ingestion"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -56,7 +56,7 @@ func newBareService(t *testing.T, pool *pgxpool.Pool, rdbs []redis.UniversalClie
 	ctx, cancel := context.WithCancel(context.Background())
 	svc := &Service{
 		rdbs:    rdbs,
-		sharder: ads.NewStaticSlotSharder(shardCount),
+		sharder: ingestion.NewStaticSlotSharder(shardCount),
 		cfg:     cfg,
 		ctx:     ctx,
 		cancel:  cancel,

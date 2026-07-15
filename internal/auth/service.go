@@ -77,7 +77,7 @@ func init() {
 	prometheus.MustRegister(AuthTokenErrors)
 }
 
-// Service owns registration, login, token lifecycle, and credential policy for the auth domain.
+// Service owns registration, login, token lifecycle, and credential policy for the auth service.
 type Service struct {
 	repo       db.Store
 	tokenMaker Maker

@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
 
 	"github.com/google/uuid"
 )
@@ -37,12 +37,12 @@ type LedgerExportResult struct {
 // GetCustomerBalance returns balance and the 100 most recent ledger rows by id.
 func (s *Service) GetCustomerBalance(ctx context.Context, customerID uuid.UUID) (CustomerBalanceDTO, error) {
 	q := db.New(s.GetPool())
-	cust, err := q.GetCustomerByID(ctx, ads.ToUUID(customerID))
+	cust, err := q.GetCustomerByID(ctx, ingestion.ToUUID(customerID))
 	if err != nil {
 		return CustomerBalanceDTO{}, mapNotFound(err, ErrCustomerNotFound)
 	}
 
-	rows, err := q.ListCustomerLedgerByIDDesc(ctx, ads.ToUUID(customerID))
+	rows, err := q.ListCustomerLedgerByIDDesc(ctx, ingestion.ToUUID(customerID))
 	if err != nil {
 		return CustomerBalanceDTO{}, err
 	}
@@ -63,7 +63,7 @@ func (s *Service) GetCustomerBalance(ctx context.Context, customerID uuid.UUID) 
 // ExportCustomerLedgerCSV streams ledger rows as CSV up to ledgerExportMaxBytes.
 func (s *Service) ExportCustomerLedgerCSV(ctx context.Context, customerID uuid.UUID, cursor int64, w io.Writer) (LedgerExportResult, error) {
 	q := db.New(s.GetPool())
-	if _, err := q.GetCustomerByID(ctx, ads.ToUUID(customerID)); err != nil {
+	if _, err := q.GetCustomerByID(ctx, ingestion.ToUUID(customerID)); err != nil {
 		return LedgerExportResult{}, err
 	}
 
@@ -81,7 +81,7 @@ func (s *Service) ExportCustomerLedgerCSV(ctx context.Context, customerID uuid.U
 
 	for {
 		rows, err := q.ListCustomerLedgerExport(ctx, db.ListCustomerLedgerExportParams{
-			CustomerID: ads.ToUUID(customerID),
+			CustomerID: ingestion.ToUUID(customerID),
 			CursorID:   nextCursor,
 			BatchLimit: ledgerExportBatchLimit,
 		})

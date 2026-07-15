@@ -5,17 +5,17 @@ import (
 	"log/slog"
 	"time"
 
-	"espx/internal/ads"
+	"espx/internal/ingestion"
 )
 
 // AutoscaleBudgetWorker periodically shifts budget from low-CTR to high-CTR campaigns per customer.
 type AutoscaleBudgetWorker struct {
 	svc         *Service
-	syncWorkers []*ads.SyncWorker
+	syncWorkers []*ingestion.SyncWorker
 }
 
 // NewAutoscaleBudgetWorker binds budget autoscaling to the service and budget sync workers.
-func NewAutoscaleBudgetWorker(svc *Service, syncWorkers []*ads.SyncWorker) *AutoscaleBudgetWorker {
+func NewAutoscaleBudgetWorker(svc *Service, syncWorkers []*ingestion.SyncWorker) *AutoscaleBudgetWorker {
 	return &AutoscaleBudgetWorker{
 		svc:         svc,
 		syncWorkers: syncWorkers,

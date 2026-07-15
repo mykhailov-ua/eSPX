@@ -8,7 +8,7 @@ import (
 	"log/slog"
 
 	"espx/internal/payment/db"
-	"espx/pkg/cold"
+	"espx/pkg/coldpath"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -47,7 +47,7 @@ func (service *Service) ProcessStripeDisputeWebhook(
 	h.Write(payload)
 	payloadHash := h.Sum(nil)
 
-	redactedBytes, err := cold.RedactStripeWebhookPayload(payload)
+	redactedBytes, err := coldpath.RedactStripeWebhookPayload(payload)
 	if err != nil {
 		return fmt.Errorf("redact stripe webhook payload: %w", err)
 	}
@@ -78,7 +78,7 @@ func (service *Service) ProcessStripeDisputeWebhook(
 			ErrorMessage:    pgtype.Text{},
 		})
 		if err != nil {
-			if cold.IsUniqueViolation(err) {
+			if coldpath.IsUniqueViolation(err) {
 				WebhookEventsTotal.WithLabelValues("duplicate").Inc()
 				return nil
 			}
@@ -136,7 +136,7 @@ func (service *Service) ProcessStripeDisputeWebhook(
 				Status:            db.PaymentDisputeStatusOPEN,
 			})
 			if err != nil {
-				if cold.IsUniqueViolation(err) {
+				if coldpath.IsUniqueViolation(err) {
 					break
 				}
 				return err
@@ -189,7 +189,7 @@ func (service *Service) ProcessStripeDisputeWebhook(
 					return err
 				}
 			}
-			outboxPayload, err := cold.MarshalJSON(applyChargebackPayload(
+			outboxPayload, err := coldpath.MarshalJSON(applyChargebackPayload(
 				uuid.UUID(intent.ID.Bytes), uuid.UUID(intent.CustomerID.Bytes), delta, providerDisputeID,
 			))
 			if err != nil {
@@ -222,7 +222,7 @@ func (service *Service) ProcessStripeDisputeWebhook(
 			if err != nil {
 				return err
 			}
-			outboxPayload, err := cold.MarshalJSON(reverseChargebackPayload(
+			outboxPayload, err := coldpath.MarshalJSON(reverseChargebackPayload(
 				uuid.UUID(intent.ID.Bytes), uuid.UUID(intent.CustomerID.Bytes), delta, providerDisputeID,
 			))
 			if err != nil {
@@ -300,7 +300,7 @@ func (service *Service) ensureDisputeRow(ctx context.Context, q db.Querier, inte
 		AmountMicro:       amount,
 		Status:            db.PaymentDisputeStatusOPEN,
 	})
-	if err != nil && !cold.IsUniqueViolation(err) {
+	if err != nil && !coldpath.IsUniqueViolation(err) {
 		return err
 	}
 	if intent.Status != db.PaymentPaymentIntentStatusDISPUTED {

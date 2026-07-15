@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -160,7 +160,7 @@ func (s *Service) AutoscaleShards(ctx context.Context, provider ShardMetricsProv
 	)
 
 	// Retrieve active slot map version
-	mapRepo := ads.NewSlotMapRepo(s.GetPool())
+	mapRepo := ingestion.NewSlotMapRepo(s.GetPool())
 	activeVer, err := mapRepo.GetActiveVersion(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get active slot map version: %w", err)

@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/ingestion"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
@@ -47,7 +47,7 @@ func TestChaos_ConsentWebhookReplay(t *testing.T) {
 
 	body, _ := json.Marshal(ConsentRecordInput{
 		UserID:   "replay-user",
-		Purposes: ads.ConsentPurposeAdStorage,
+		Purposes: ingestion.ConsentPurposeAdStorage,
 		Source:   "cmp",
 	})
 	sig := signConsentBody(secret, body)
@@ -84,18 +84,18 @@ func TestChaos_ConsentReadYourWrites(t *testing.T) {
 		ConsentUpdateChannel: "test:consent:update",
 	}
 	svc := newBareService(t, pool, []redis.UniversalClient{rdb}, cfg)
-	store := ads.NewConsentStore(rdb)
+	store := ingestion.NewConsentStore(rdb)
 	store.StartWatch(ctx, rdb, cfg.ConsentUpdateChannel)
 	worker := NewOutboxWorker(svc)
 
 	require.NoError(t, svc.RecordConsent(ctx, ConsentRecordInput{
 		UserID:   "ryw-user",
-		Purposes: ads.ConsentPurposeAdStorage | ads.ConsentPurposeAnalytics,
+		Purposes: ingestion.ConsentPurposeAdStorage | ingestion.ConsentPurposeAnalytics,
 		Source:   "web",
 	}))
 	require.NoError(t, worker.ProcessOutbox(ctx))
 
-	want := ads.ConsentPurposeAdStorage | ads.ConsentPurposeAnalytics
+	want := ingestion.ConsentPurposeAdStorage | ingestion.ConsentPurposeAnalytics
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if store.PurposesForUser("ryw-user") == want {
@@ -123,8 +123,8 @@ func TestChaos_ErasurePartialShardFailure(t *testing.T) {
 	svc := newBareService(t, pool, []redis.UniversalClient{okRdb, badRdb}, cfg)
 
 	userID := "erasure-user"
-	hashHex := ads.HashUserIDHex(userID)
-	require.NoError(t, okRdb.Set(ctx, ads.ConsentRedisKeyPrefix+hashHex, "3", 0).Err())
+	hashHex := ingestion.HashUserIDHex(userID)
+	require.NoError(t, okRdb.Set(ctx, ingestion.ConsentRedisKeyPrefix+hashHex, "3", 0).Err())
 
 	reqID, err := svc.CreatePrivacyErasureRequest(ctx, userID)
 	require.NoError(t, err)
@@ -132,6 +132,6 @@ func TestChaos_ErasurePartialShardFailure(t *testing.T) {
 	require.NoError(t, NewOutboxWorker(svc).ProcessOutbox(ctx))
 
 	var status string
-	require.NoError(t, pool.QueryRow(ctx, `SELECT status::text FROM privacy_erasure_requests WHERE id = $1`, ads.ToUUID(reqID)).Scan(&status))
+	require.NoError(t, pool.QueryRow(ctx, `SELECT status::text FROM privacy_erasure_requests WHERE id = $1`, ingestion.ToUUID(reqID)).Scan(&status))
 	assert.Equal(t, "REDIS_PURGED", status)
 }

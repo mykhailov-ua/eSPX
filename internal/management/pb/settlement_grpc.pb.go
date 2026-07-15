@@ -25,7 +25,7 @@ const (
 	SettlementService_ApplyPaymentChargebackReversal_FullMethodName = "/settlement.SettlementService/ApplyPaymentChargebackReversal"
 	SettlementService_GetLedgerEntry_FullMethodName                 = "/settlement.SettlementService/GetLedgerEntry"
 	SettlementService_BlockIP_FullMethodName                        = "/settlement.SettlementService/BlockIP"
-	SettlementService_EnqueueMLThreat_FullMethodName                = "/settlement.SettlementService/EnqueueMLThreat"
+	SettlementService_EnqueueFraudThreat_FullMethodName             = "/settlement.SettlementService/EnqueueFraudThreat"
 	SettlementService_BatchApplySettlement_FullMethodName           = "/settlement.SettlementService/BatchApplySettlement"
 )
 
@@ -45,8 +45,8 @@ type SettlementServiceClient interface {
 	GetLedgerEntry(ctx context.Context, in *GetLedgerEntryRequest, opts ...grpc.CallOption) (*GetLedgerEntryResponse, error)
 	// BlockIP enqueues a fraud blacklist update via management outbox (internal IVT path).
 	BlockIP(ctx context.Context, in *BlockIPRequest, opts ...grpc.CallOption) (*BlockIPResponse, error)
-	// EnqueueMLThreat enqueues a machine learning threat candidate (IP, campaign, score, boost, TTL).
-	EnqueueMLThreat(ctx context.Context, in *EnqueueMLThreatRequest, opts ...grpc.CallOption) (*EnqueueMLThreatResponse, error)
+	// EnqueueFraudThreat enqueues a fraud enforcement action (boost, blacklist, ghost IVT).
+	EnqueueFraudThreat(ctx context.Context, in *EnqueueFraudThreatRequest, opts ...grpc.CallOption) (*EnqueueFraudThreatResponse, error)
 	// BatchApplySettlement drains payment outbox rows after management outages (<=500 ops per call).
 	BatchApplySettlement(ctx context.Context, in *BatchApplySettlementRequest, opts ...grpc.CallOption) (*BatchApplySettlementResponse, error)
 }
@@ -119,10 +119,10 @@ func (c *settlementServiceClient) BlockIP(ctx context.Context, in *BlockIPReques
 	return out, nil
 }
 
-func (c *settlementServiceClient) EnqueueMLThreat(ctx context.Context, in *EnqueueMLThreatRequest, opts ...grpc.CallOption) (*EnqueueMLThreatResponse, error) {
+func (c *settlementServiceClient) EnqueueFraudThreat(ctx context.Context, in *EnqueueFraudThreatRequest, opts ...grpc.CallOption) (*EnqueueFraudThreatResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(EnqueueMLThreatResponse)
-	err := c.cc.Invoke(ctx, SettlementService_EnqueueMLThreat_FullMethodName, in, out, cOpts...)
+	out := new(EnqueueFraudThreatResponse)
+	err := c.cc.Invoke(ctx, SettlementService_EnqueueFraudThreat_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -155,8 +155,8 @@ type SettlementServiceServer interface {
 	GetLedgerEntry(context.Context, *GetLedgerEntryRequest) (*GetLedgerEntryResponse, error)
 	// BlockIP enqueues a fraud blacklist update via management outbox (internal IVT path).
 	BlockIP(context.Context, *BlockIPRequest) (*BlockIPResponse, error)
-	// EnqueueMLThreat enqueues a machine learning threat candidate (IP, campaign, score, boost, TTL).
-	EnqueueMLThreat(context.Context, *EnqueueMLThreatRequest) (*EnqueueMLThreatResponse, error)
+	// EnqueueFraudThreat enqueues a fraud enforcement action (boost, blacklist, ghost IVT).
+	EnqueueFraudThreat(context.Context, *EnqueueFraudThreatRequest) (*EnqueueFraudThreatResponse, error)
 	// BatchApplySettlement drains payment outbox rows after management outages (<=500 ops per call).
 	BatchApplySettlement(context.Context, *BatchApplySettlementRequest) (*BatchApplySettlementResponse, error)
 	mustEmbedUnimplementedSettlementServiceServer()
@@ -187,8 +187,8 @@ func (UnimplementedSettlementServiceServer) GetLedgerEntry(context.Context, *Get
 func (UnimplementedSettlementServiceServer) BlockIP(context.Context, *BlockIPRequest) (*BlockIPResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BlockIP not implemented")
 }
-func (UnimplementedSettlementServiceServer) EnqueueMLThreat(context.Context, *EnqueueMLThreatRequest) (*EnqueueMLThreatResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method EnqueueMLThreat not implemented")
+func (UnimplementedSettlementServiceServer) EnqueueFraudThreat(context.Context, *EnqueueFraudThreatRequest) (*EnqueueFraudThreatResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method EnqueueFraudThreat not implemented")
 }
 func (UnimplementedSettlementServiceServer) BatchApplySettlement(context.Context, *BatchApplySettlementRequest) (*BatchApplySettlementResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BatchApplySettlement not implemented")
@@ -322,20 +322,20 @@ func _SettlementService_BlockIP_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
-func _SettlementService_EnqueueMLThreat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(EnqueueMLThreatRequest)
+func _SettlementService_EnqueueFraudThreat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EnqueueFraudThreatRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(SettlementServiceServer).EnqueueMLThreat(ctx, in)
+		return srv.(SettlementServiceServer).EnqueueFraudThreat(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: SettlementService_EnqueueMLThreat_FullMethodName,
+		FullMethod: SettlementService_EnqueueFraudThreat_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(SettlementServiceServer).EnqueueMLThreat(ctx, req.(*EnqueueMLThreatRequest))
+		return srv.(SettlementServiceServer).EnqueueFraudThreat(ctx, req.(*EnqueueFraudThreatRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -390,8 +390,8 @@ var SettlementService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _SettlementService_BlockIP_Handler,
 		},
 		{
-			MethodName: "EnqueueMLThreat",
-			Handler:    _SettlementService_EnqueueMLThreat_Handler,
+			MethodName: "EnqueueFraudThreat",
+			Handler:    _SettlementService_EnqueueFraudThreat_Handler,
 		},
 		{
 			MethodName: "BatchApplySettlement",

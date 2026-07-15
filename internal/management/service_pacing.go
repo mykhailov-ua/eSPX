@@ -6,16 +6,16 @@ import (
 	"log/slog"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
-	"espx/pkg/cold"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
+	"espx/pkg/coldpath"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
 // ClosedLoopPacingController switches campaigns between ASAP and EVEN when spend diverges from the daypart curve.
-func (s *Service) ClosedLoopPacingController(ctx context.Context, syncWorkers []*ads.SyncWorker) error {
+func (s *Service) ClosedLoopPacingController(ctx context.Context, syncWorkers []*ingestion.SyncWorker) error {
 	opCtx, cancel := workerContext(ctx, workerBatchTimeout)
 	defer cancel()
 
@@ -107,7 +107,7 @@ func (s *Service) closedLoopPacingControllerTx(ctx context.Context, tx pgx.Tx, m
 			"curve":      "daypart_weighted",
 		}, nil)
 
-		payloadBytes, err := cold.MarshalJSON(map[string]any{
+		payloadBytes, err := coldpath.MarshalJSON(map[string]any{
 			"campaign_id": campID.String(),
 			"pacing_mode": string(targetPacing),
 		})

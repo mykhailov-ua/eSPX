@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"espx/internal/ads"
+	"espx/internal/ingestion"
 
 	"github.com/google/uuid"
 )
@@ -24,7 +24,7 @@ func (s *Service) VerifySlotMigrationR5(ctx context.Context) error {
 		return nil
 	}
 
-	sharder := ads.NewStaticSlotSharder(len(s.rdbs))
+	sharder := ingestion.NewStaticSlotSharder(len(s.rdbs))
 	perShard := make(map[int][]uuid.UUID)
 	for _, id := range campaignIDs {
 		shard := sharder.GetShard(id)
@@ -39,7 +39,7 @@ func (s *Service) VerifySlotMigrationR5(ctx context.Context) error {
 		}
 		rdb := s.rdbs[shard]
 		for _, campID := range ids {
-			snap, err := ads.ReadBudgetInvariant(ctx, s.GetPool(), rdb, campID)
+			snap, err := ingestion.ReadBudgetInvariant(ctx, s.GetPool(), rdb, campID)
 			if err != nil {
 				return fmt.Errorf("r5 read shard %d campaign %s: %w", shard, campID, err)
 			}
@@ -57,7 +57,7 @@ func (s *Service) VerifySlotMigrationR5(ctx context.Context) error {
 
 // HasPendingSlotDrain reports whether any slot migration drain jobs remain.
 func (s *Service) HasPendingSlotDrain(ctx context.Context) (bool, error) {
-	migRepo := ads.NewSlotMigrationRepo(s.GetPool())
+	migRepo := ingestion.NewSlotMigrationRepo(s.GetPool())
 	jobs, err := migRepo.ListDraining(ctx)
 	if err != nil {
 		return false, err

@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
-	"espx/internal/ads"
-	adsdb "espx/internal/ads/db"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/ingestion"
+	ingestdb "espx/internal/ingestion/sqlc"
 	"espx/internal/management/pb"
 
 	"github.com/google/uuid"
@@ -44,9 +44,9 @@ func TestSettlementHandler_GetLedgerEntry(t *testing.T) {
 
 	customerID := uuid.New()
 	intentID := uuid.New()
-	q := adsdb.New(pool)
-	_, err = q.CreateCustomer(context.Background(), adsdb.CreateCustomerParams{
-		ID:       ads.ToUUID(customerID),
+	q := ingestdb.New(pool)
+	_, err = q.CreateCustomer(context.Background(), ingestdb.CreateCustomerParams{
+		ID:       ingestion.ToUUID(customerID),
 		Name:     "ledger lookup customer",
 		Balance:  0,
 		Currency: "USD",

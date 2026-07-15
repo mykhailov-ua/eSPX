@@ -1,0 +1,14 @@
+# provider.yaml: file-based dashboard provisioning for the ops Grafana instance.
+# Dashboards are loaded from the mounted deploy/monitoring/grafana/provisioning/dashboards path.
+
+apiVersion: 1
+
+providers:
+  - name: 'Standard'
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/provisioning/dashboards

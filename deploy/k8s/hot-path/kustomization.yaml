@@ -12,4 +12,4 @@ resources:
 #   configmap-env.yaml.tpl
 #   secret-env.yaml.tpl
 #   deployment-trackers.yaml.tpl
-# Render via scripts/deploy/k8s_hot_path_up.sh or deploy/terraform/envs/local/hot_path.tf.
+# Render via scripts/k8s/k8s_hot_path_up.sh or deploy/terraform/envs/local/hot_path.tf.

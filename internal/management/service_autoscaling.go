@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
-	"espx/pkg/cold"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
+	"espx/pkg/coldpath"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -16,7 +16,7 @@ import (
 )
 
 // AutoscaleBudgets shifts budget from low-CTR campaigns to high-CTR siblings under the same customer.
-func (s *Service) AutoscaleBudgets(ctx context.Context, syncWorkers []*ads.SyncWorker) error {
+func (s *Service) AutoscaleBudgets(ctx context.Context, syncWorkers []*ingestion.SyncWorker) error {
 	if s.cfg == nil {
 		return nil
 	}
@@ -158,7 +158,7 @@ func (s *Service) autoscaleBudgetsTx(ctx context.Context, tx pgx.Tx, merge deliv
 		}
 
 		_, err = q.UpdateCustomerBalanceManagement(ctx, db.UpdateCustomerBalanceManagementParams{
-			ID:      ads.ToUUID(custID),
+			ID:      ingestion.ToUUID(custID),
 			Balance: shiftAmount,
 		})
 		if err != nil {
@@ -166,7 +166,7 @@ func (s *Service) autoscaleBudgetsTx(ctx context.Context, tx pgx.Tx, merge deliv
 		}
 
 		_, err = q.CreateLedgerEntry(ctx, db.CreateLedgerEntryParams{
-			CustomerID:      ads.ToUUID(custID),
+			CustomerID:      ingestion.ToUUID(custID),
 			CampaignID:      worstLocked.ID,
 			Amount:          shiftAmount,
 			Type:            db.LedgerTypeRELEASE,
@@ -178,7 +178,7 @@ func (s *Service) autoscaleBudgetsTx(ctx context.Context, tx pgx.Tx, merge deliv
 		}
 
 		_, err = q.UpdateCustomerBalanceManagement(ctx, db.UpdateCustomerBalanceManagementParams{
-			ID:      ads.ToUUID(custID),
+			ID:      ingestion.ToUUID(custID),
 			Balance: -shiftAmount,
 		})
 		if err != nil {
@@ -186,7 +186,7 @@ func (s *Service) autoscaleBudgetsTx(ctx context.Context, tx pgx.Tx, merge deliv
 		}
 
 		_, err = q.CreateLedgerEntry(ctx, db.CreateLedgerEntryParams{
-			CustomerID:      ads.ToUUID(custID),
+			CustomerID:      ingestion.ToUUID(custID),
 			CampaignID:      bestLocked.ID,
 			Amount:          shiftAmount,
 			Type:            db.LedgerTypeFREEZE,
@@ -232,14 +232,14 @@ func (s *Service) autoscaleBudgetsTx(ctx context.Context, tx pgx.Tx, merge deliv
 			"source":     worstID.String(),
 		}, nil)
 
-		worstPayload, err := cold.MarshalJSON(CampaignPayload{
+		worstPayload, err := coldpath.MarshalJSON(CampaignPayload{
 			CampaignID:  worstID.String(),
 			BudgetLimit: newWorstLimit,
 		})
 		if err != nil {
 			return fmt.Errorf("marshal autoscale worst campaign outbox payload: %w", err)
 		}
-		bestPayload, err := cold.MarshalJSON(CampaignPayload{
+		bestPayload, err := coldpath.MarshalJSON(CampaignPayload{
 			CampaignID:  bestID.String(),
 			BudgetLimit: newBestLimit,
 		})

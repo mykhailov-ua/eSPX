@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"espx/internal/ads"
-	"espx/internal/ads/db"
+	"espx/internal/ingestion"
+	"espx/internal/ingestion/sqlc"
 	"espx/internal/rtb"
-	"espx/pkg/cold"
+	"espx/pkg/coldpath"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -86,7 +86,7 @@ func parseDealCustomerID(raw string) (uuid.UUID, error) {
 	if raw == "" {
 		return uuid.Nil, errValidation("customer_id is required")
 	}
-	return cold.ParseUUID(raw)
+	return coldpath.ParseUUID(raw)
 }
 
 func isUniqueViolation(err error) bool {
@@ -105,7 +105,7 @@ func normalizeDealSeats(seats int32) (int32, error) {
 }
 
 func (s *Service) enqueueRtbCatalogReload(ctx context.Context, q db.Querier, trigger string) error {
-	payload, err := cold.MarshalJSON(RtbCatalogReloadPayload{Trigger: trigger})
+	payload, err := coldpath.MarshalJSON(RtbCatalogReloadPayload{Trigger: trigger})
 	if err != nil {
 		return err
 	}
@@ -122,7 +122,7 @@ func (s *Service) PublishRtbCatalogReload(ctx context.Context) error {
 	if rdb == nil {
 		return fmt.Errorf("no redis pubsub client available")
 	}
-	return rdb.Publish(ctx, ads.RtbCatalogReloadChannel(s.cfg), "reload").Err()
+	return rdb.Publish(ctx, ingestion.RtbCatalogReloadChannel(s.cfg), "reload").Err()
 }
 
 // ListRtbDeals returns all PMP deals for admin CRUD.
@@ -131,7 +131,7 @@ func (s *Service) ListRtbDeals(ctx context.Context) ([]RtbDealDTO, error) {
 	if err != nil {
 		return nil, err
 	}
-	return cold.MapSlice(rows, toRtbDealDTO), nil
+	return coldpath.MapSlice(rows, toRtbDealDTO), nil
 }
 
 // GetRtbDeal returns one deal by internal id.
@@ -170,7 +170,7 @@ func (s *Service) CreateRtbDeal(ctx context.Context, spec RtbDealCreateSpec) (Rt
 	var out RtbDealDTO
 	err = pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
-		if _, err := q.GetCustomerByID(ctx, ads.ToUUID(customerID)); err != nil {
+		if _, err := q.GetCustomerByID(ctx, ingestion.ToUUID(customerID)); err != nil {
 			return ErrDealCustomerMissing
 		}
 		row, err := q.CreateRtbDeal(ctx, db.CreateRtbDealParams{
@@ -179,7 +179,7 @@ func (s *Service) CreateRtbDeal(ctx context.Context, spec RtbDealCreateSpec) (Rt
 			GeoMask:    spec.GeoMask,
 			CatMask:    spec.CatMask,
 			Pacing:     pacing,
-			CustomerID: ads.ToUUID(customerID),
+			CustomerID: ingestion.ToUUID(customerID),
 			Seats:      seats,
 		})
 		if err != nil {
@@ -230,7 +230,7 @@ func (s *Service) UpdateRtbDeal(ctx context.Context, id int64, spec RtbDealUpdat
 	var out RtbDealDTO
 	err = pgx.BeginFunc(ctx, s.GetPool(), func(tx pgx.Tx) error {
 		q := db.New(tx)
-		if _, err := q.GetCustomerByID(ctx, ads.ToUUID(customerID)); err != nil {
+		if _, err := q.GetCustomerByID(ctx, ingestion.ToUUID(customerID)); err != nil {
 			return ErrDealCustomerMissing
 		}
 		row, err := q.UpdateRtbDeal(ctx, db.UpdateRtbDealParams{
@@ -240,7 +240,7 @@ func (s *Service) UpdateRtbDeal(ctx context.Context, id int64, spec RtbDealUpdat
 			GeoMask:    spec.GeoMask,
 			CatMask:    spec.CatMask,
 			Pacing:     pacing,
-			CustomerID: ads.ToUUID(customerID),
+			CustomerID: ingestion.ToUUID(customerID),
 			Seats:      seats,
 		})
 		if err != nil {

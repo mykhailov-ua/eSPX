@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"espx/internal/ads"
-	ads_db "espx/internal/ads/db"
 	"espx/internal/config"
+	"espx/internal/ingestion"
+	ads_db "espx/internal/ingestion/sqlc"
 	"espx/internal/management"
 	mgmt_pb "espx/internal/management/pb"
 	"espx/internal/payment/db"
@@ -76,7 +76,7 @@ func setupPaymentChaosInfra(t *testing.T) (*paymentChaosInfra, func()) {
 	_, filename, _, ok := runtime.Caller(0)
 	require.True(t, ok)
 	baseDir := filepath.Join(filepath.Dir(filename), "..", "..")
-	applyMigrations(t, pool, filepath.Join(baseDir, "internal/ads/migrations"))
+	applyMigrations(t, pool, filepath.Join(baseDir, "internal/ingestion/migrations"))
 	applyMigrations(t, pool, filepath.Join(baseDir, "internal/payment/migrations"))
 
 	redisContainer, err := rediscontainer.Run(ctx, "redis:7-alpine")
@@ -96,7 +96,7 @@ func setupPaymentChaosInfra(t *testing.T) (*paymentChaosInfra, func()) {
 	}
 
 	rdbs := []redis.UniversalClient{rdb}
-	mgmtSvc := management.NewService(pool, rdbs, ads.NewStaticSlotSharder(len(rdbs)), cfg)
+	mgmtSvc := management.NewService(pool, rdbs, ingestion.NewStaticSlotSharder(len(rdbs)), cfg)
 	settleHandler := management.NewSettlementHandler(mgmtSvc, cfg)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
@@ -198,7 +198,7 @@ func seedCustomer(t *testing.T, pool *pgxpool.Pool, customerID uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()
 	_, err := ads_db.New(pool).CreateCustomer(ctx, ads_db.CreateCustomerParams{
-		ID:       ads.ToUUID(customerID),
+		ID:       ingestion.ToUUID(customerID),
 		Name:     "chaos customer",
 		Balance:  0,
 		Currency: "USD",
@@ -273,7 +273,7 @@ func ledgerRefundCountForIntent(t *testing.T, pool *pgxpool.Pool, intentID uuid.
 	var n int
 	err := pool.QueryRow(context.Background(), `
 		SELECT COUNT(*) FROM balance_ledger
-		WHERE payment_intent_id = $1 AND type = 'PAYMENT_REFUND'`, ads.ToUUID(intentID)).Scan(&n)
+		WHERE payment_intent_id = $1 AND type = 'PAYMENT_REFUND'`, ingestion.ToUUID(intentID)).Scan(&n)
 	require.NoError(t, err)
 	return n
 }
@@ -314,7 +314,7 @@ func ledgerChargebackCountForIntent(t *testing.T, pool *pgxpool.Pool, intentID u
 	var n int
 	err := pool.QueryRow(context.Background(), `
 		SELECT COUNT(*) FROM balance_ledger
-		WHERE payment_intent_id = $1 AND type = 'PAYMENT_CHARGEBACK'`, ads.ToUUID(intentID)).Scan(&n)
+		WHERE payment_intent_id = $1 AND type = 'PAYMENT_CHARGEBACK'`, ingestion.ToUUID(intentID)).Scan(&n)
 	require.NoError(t, err)
 	return n
 }
@@ -325,7 +325,7 @@ func ledgerChargebackReversalCountForIntent(t *testing.T, pool *pgxpool.Pool, in
 	var n int
 	err := pool.QueryRow(context.Background(), `
 		SELECT COUNT(*) FROM balance_ledger
-		WHERE payment_intent_id = $1 AND type = 'PAYMENT_CHARGEBACK_REVERSAL'`, ads.ToUUID(intentID)).Scan(&n)
+		WHERE payment_intent_id = $1 AND type = 'PAYMENT_CHARGEBACK_REVERSAL'`, ingestion.ToUUID(intentID)).Scan(&n)
 	require.NoError(t, err)
 	return n
 }
@@ -342,7 +342,7 @@ func assertPaymentChargebackInvariants(t *testing.T, pool *pgxpool.Pool, seed se
 func customerBalance(t *testing.T, pool *pgxpool.Pool, customerID uuid.UUID) int64 {
 	t.Helper()
 	ctx := context.Background()
-	cust, err := ads_db.New(pool).GetCustomerForUpdate(ctx, ads.ToUUID(customerID))
+	cust, err := ads_db.New(pool).GetCustomerForUpdate(ctx, ingestion.ToUUID(customerID))
 	require.NoError(t, err)
 	return cust.Balance
 }
@@ -353,7 +353,7 @@ func ledgerCountForIntent(t *testing.T, pool *pgxpool.Pool, intentID uuid.UUID) 
 	var n int
 	err := pool.QueryRow(context.Background(), `
 		SELECT COUNT(*) FROM balance_ledger
-		WHERE payment_intent_id = $1 AND type = 'PAYMENT_TOPUP'`, ads.ToUUID(intentID)).Scan(&n)
+		WHERE payment_intent_id = $1 AND type = 'PAYMENT_TOPUP'`, ingestion.ToUUID(intentID)).Scan(&n)
 	require.NoError(t, err)
 	return n
 }

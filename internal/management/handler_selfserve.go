@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"espx/internal/ads/db"
-	"espx/pkg/cold"
+	"espx/internal/ingestion/sqlc"
+	"espx/pkg/coldpath"
 	"espx/pkg/httpresponse"
 
 	"github.com/google/uuid"
@@ -36,13 +36,13 @@ func (h *Handler) selfServePerm(next http.HandlerFunc, permission string) http.H
 
 // createSelfServeCampaign handles POST /api/v1/selfserve/campaigns for tenant-scoped campaign creation.
 func (h *Handler) createSelfServeCampaign(w http.ResponseWriter, r *http.Request) {
-	body, err := cold.ReadLimitedBody(w, r, cold.DefaultMaxBody)
+	body, err := coldpath.ReadLimitedBody(w, r, coldpath.DefaultMaxBody)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "failed to read request body")
 		return
 	}
 
-	req, err := cold.DecodeBody[struct {
+	req, err := coldpath.DecodeBody[struct {
 		CustomerID       *uuid.UUID `json:"customer_id,omitempty"`
 		BrandID          *uuid.UUID `json:"brand_id,omitempty"`
 		Name             string     `json:"name"`
@@ -157,9 +157,9 @@ func (h *Handler) pauseSelfServeCampaign(w http.ResponseWriter, r *http.Request)
 		writeServiceError(w, err)
 		return
 	}
-	req, err := cold.DecodeRequest[struct {
+	req, err := coldpath.DecodeRequest[struct {
 		Reason string `json:"reason"`
-	}](w, r, cold.DefaultMaxBody)
+	}](w, r, coldpath.DefaultMaxBody)
 	if err != nil {
 		slog.Warn("failed to decode pause campaign request", "error", err)
 	}
@@ -180,9 +180,9 @@ func (h *Handler) resumeSelfServeCampaign(w http.ResponseWriter, r *http.Request
 		writeServiceError(w, err)
 		return
 	}
-	req, err := cold.DecodeRequest[struct {
+	req, err := coldpath.DecodeRequest[struct {
 		Reason string `json:"reason"`
-	}](w, r, cold.DefaultMaxBody)
+	}](w, r, coldpath.DefaultMaxBody)
 	if err != nil {
 		slog.Warn("failed to decode resume campaign request", "error", err)
 	}
@@ -201,13 +201,13 @@ type selfServePaymentIntentRequest struct {
 
 // createSelfServePaymentIntent proxies top-ups to payment gRPC for authenticated tenants.
 func (h *Handler) createSelfServePaymentIntent(w http.ResponseWriter, r *http.Request) {
-	body, err := cold.ReadLimitedBody(w, r, 16*1024)
+	body, err := coldpath.ReadLimitedBody(w, r, 16*1024)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
 
-	req, err := cold.DecodeBody[selfServePaymentIntentRequest](body)
+	req, err := coldpath.DecodeBody[selfServePaymentIntentRequest](body)
 	if err != nil {
 		httpresponse.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
@@ -333,9 +333,9 @@ func (h *Handler) createSelfServeAPIKey(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	req, err := cold.DecodeRequest[struct {
+	req, err := coldpath.DecodeRequest[struct {
 		Name string `json:"name"`
-	}](w, r, cold.DefaultMaxBody)
+	}](w, r, coldpath.DefaultMaxBody)
 	if err != nil {
 		return
 	}

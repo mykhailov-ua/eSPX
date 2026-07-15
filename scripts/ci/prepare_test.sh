@@ -3,7 +3,7 @@
 # Truncates hot-path stores and re-seeds campaigns so every run starts from the same state.
 set -e
 
-source "$(cd "$(dirname "$0")/../_common" && pwd)/paths.sh"
+source "$(cd "$(dirname "$0")/../lib" && pwd)/paths.sh"
 cd "$ROOT"
 
 echo "Stopping and cleaning up containers (including orphans)"
