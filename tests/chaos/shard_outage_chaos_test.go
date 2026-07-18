@@ -1,3 +1,6 @@
+// Package chaos_test runs fault-injection scenarios against a multi-shard Redis
+// topology. Each test stops or partitions individual shards and asserts ingest,
+// budget, and outbox behavior described in docs/CHAOS.md.
 package chaos_test
 
 import (
@@ -10,18 +13,22 @@ import (
 	"espx/internal/config"
 	"espx/internal/database"
 	"espx/internal/ingestion"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 	"espx/internal/management"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"espx/internal/testutil"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// TestChaos_Shard0Outage automates CHAOS.md §6 scenario A: shard 0 down must not
-// stop tracking on shards 1-3; outbox stays PENDING until recovery.
+// TestChaos_Shard0Outage implements CHAOS.md section 6 scenario A. With shard 0
+// unreachable, campaigns on shards 1-3 continue to accept track requests within
+// the baseline latency budget. Outbox events that require shard 0 remain PENDING
+// until the shard recovers and the worker can process them.
 func TestChaos_Shard0Outage(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")
@@ -159,6 +166,8 @@ func TestChaos_Shard0Outage(t *testing.T) {
 	})
 }
 
+// postClickCampaign sends a JSON click to the gnet handler and returns the HTTP
+// status code and wall-clock latency for the request.
 func postClickCampaign(t *testing.T, h *ingestion.AdsPacketHandler, campaignID uuid.UUID, clickID string) (int, time.Duration) {
 	t.Helper()
 	start := time.Now()
@@ -174,6 +183,7 @@ func postClickCampaign(t *testing.T, h *ingestion.AdsPacketHandler, campaignID u
 	return status, time.Since(start)
 }
 
+// latestOutboxEventID returns the highest outbox_events.id for the given event_type.
 func latestOutboxEventID(t *testing.T, pool *pgxpool.Pool, eventType string) int64 {
 	t.Helper()
 	var id int64
@@ -183,6 +193,7 @@ func latestOutboxEventID(t *testing.T, pool *pgxpool.Pool, eventType string) int
 	return id
 }
 
+// outboxStatus reads the status column for a single outbox_events row.
 func outboxStatus(t *testing.T, pool *pgxpool.Pool, eventID int64) string {
 	t.Helper()
 	var status string

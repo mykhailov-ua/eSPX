@@ -1289,6 +1289,47 @@ func (q *Queries) ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([
 	return items, nil
 }
 
+const listAuditLogsExport = `-- name: ListAuditLogsExport :many
+SELECT id, admin_id, action, target_type, target_id, changes, metadata, created_at FROM admin_audit_log
+WHERE ($1::bigint = 0 OR id > $1)
+ORDER BY id ASC
+LIMIT $2
+`
+
+type ListAuditLogsExportParams struct {
+	Column1 int64 `json:"column_1"`
+	Limit   int32 `json:"limit"`
+}
+
+func (q *Queries) ListAuditLogsExport(ctx context.Context, arg ListAuditLogsExportParams) ([]AdminAuditLog, error) {
+	rows, err := q.db.Query(ctx, listAuditLogsExport, arg.Column1, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AdminAuditLog
+	for rows.Next() {
+		var i AdminAuditLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.AdminID,
+			&i.Action,
+			&i.TargetType,
+			&i.TargetID,
+			&i.Changes,
+			&i.Metadata,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAuditLogsInRange = `-- name: ListAuditLogsInRange :many
 SELECT id, admin_id, action, target_type, target_id, changes, metadata, created_at FROM admin_audit_log
 WHERE created_at >= $1 AND created_at < $2

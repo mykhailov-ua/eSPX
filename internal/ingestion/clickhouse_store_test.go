@@ -11,6 +11,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // ClickHouse batch stub recording appended rows for store tests.
@@ -72,8 +73,7 @@ func TestClickHouseStore_StoreBatch_DeduplicationTokenFromContext(t *testing.T) 
 		},
 	}
 
-	store := NewClickHouseStore(connMock, 100*time.Millisecond)
-	store.SetBatching(1, 0)
+	store := NewClickHouseStore(connMock, 100*time.Millisecond, "", DefaultCHSpoolConfig(), nil)
 
 	ctx := context.WithValue(context.Background(), campaignmodel.DeduplicationTokenKey, "my-custom-test-token")
 	err := store.StoreBatch(ctx, []*campaignmodel.Event{evt})
@@ -107,8 +107,7 @@ func TestClickHouseStore_StoreBatch_DeterministicTokenGeneration(t *testing.T) {
 		},
 	}
 
-	store := NewClickHouseStore(connMock, 100*time.Millisecond)
-	store.SetBatching(1, 0)
+	store := NewClickHouseStore(connMock, 100*time.Millisecond, "", DefaultCHSpoolConfig(), nil)
 
 	err := store.StoreBatch(context.Background(), []*campaignmodel.Event{evt1, evt2})
 	assert.NoError(t, err)
@@ -161,17 +160,24 @@ func TestClickHouseStore_StoreBatch_PartialFailureRetry(t *testing.T) {
 		},
 	}
 
-	store := NewClickHouseStore(connMock, 100*time.Millisecond)
-	store.SetBatching(1, 0)
+	store := NewClickHouseStore(connMock, 100*time.Millisecond, "", DefaultCHSpoolConfig(), nil)
 
 	err := store.StoreBatch(context.Background(), []*campaignmodel.Event{evt1, evt2})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "clickhouse connection refused on clicks")
 
-	assert.Len(t, preparedQueries, 8, "Should retry 4 times (MaxRetries=3), preparing both impressions and clicks on each attempt")
-	assert.Len(t, sentQueries, 8, "Should attempt to send both impressions and clicks on each attempt")
-	assert.Contains(t, preparedQueries[0], "impressions")
-	assert.Contains(t, preparedQueries[1], "clicks")
+	dir := t.TempDir()
+	spool, spoolErr := OpenCHSpool(dir)
+	require.NoError(t, spoolErr)
+	storeWithSpool := NewClickHouseStore(connMock, 100*time.Millisecond, "", DefaultCHSpoolConfig(), nil)
+	storeWithSpool.SetSpool(spool)
+
+	err = storeWithSpool.StoreBatch(context.Background(), []*campaignmodel.Event{evt1, evt2})
+	assert.NoError(t, err)
+
+	records, scanErr := spool.Scan()
+	require.NoError(t, scanErr)
+	assert.Len(t, records, 1)
 }
 
 func TestClickHouseStore_StoreBatch_ContextCancellationDuringBackoff(t *testing.T) {
@@ -191,8 +197,7 @@ func TestClickHouseStore_StoreBatch_ContextCancellationDuringBackoff(t *testing.
 		},
 	}
 
-	store := NewClickHouseStore(connMock, 100*time.Millisecond)
-	store.SetBatching(1, 0)
+	store := NewClickHouseStore(connMock, 100*time.Millisecond, "", DefaultCHSpoolConfig(), nil)
 
 	err := store.StoreBatch(ctx, []*campaignmodel.Event{evt})
 	assert.Error(t, err)

@@ -1,3 +1,5 @@
+// multishard_test.go validates ingest routing across four standalone Redis masters
+// using StaticSlotSharder, matching the production shard topology.
 package e2e_test
 
 import (
@@ -21,8 +23,9 @@ import (
 
 const multishardCount = 4
 
-// TestE2E_Multishard exercises the full ingest chain on production topology:
-// four standalone Redis masters and StaticSlotSharder routing.
+// TestE2E_Multishard places one campaign per shard, posts a click to each, and
+// asserts that budget keys and stream entries exist only on the owning shard.
+// Per-shard consumers must settle all four campaigns in Postgres.
 func TestE2E_Multishard(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")

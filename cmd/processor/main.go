@@ -71,6 +71,9 @@ func main() {
 	}
 	defer pool.Close()
 
+	procPgGate := ingestion.NewProcessorPgGate(cfg.ProcessorPGGateSlots, cfg.DBProcessorMaxConns)
+	procChGate := ingestion.NewProcessorChGate(cfg.ProcessorCHGateSlots, cfg.CHMaxConns)
+
 	queries := db.New(pool)
 	partManager := database.NewPartitionManager(pool, cfg.LogRetentionDays, cfg.PartitionPreCreateDays)
 	partManager.StartBackground(ctx)
@@ -111,8 +114,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	pgStore := ingestion.NewPostgresStore(queries, time.Duration(cfg.WriteTimeoutMs)*time.Millisecond)
-	chStore := ingestion.NewClickHouseStore(chConn, time.Duration(cfg.WriteTimeoutMs)*time.Millisecond)
+	pgStore := ingestion.NewPostgresStoreWithGate(queries, time.Duration(cfg.WriteTimeoutMs)*time.Millisecond, procPgGate)
+	spoolCfg := ingestion.CHCfgFromConfig(cfg.CHSpoolSegmentMB, cfg.CHSpoolMaxSegments)
+	chStore := ingestion.NewClickHouseStore(chConn, time.Duration(cfg.WriteTimeoutMs)*time.Millisecond, cfg.CHSpoolDir, spoolCfg, procChGate)
+	if err := chStore.RecoverSpool(ctx); err != nil {
+		slog.Error("failed to recover clickhouse spool", "error", err)
+		os.Exit(1)
+	}
 
 	var fraudScorer fraudscoring.Scorer
 	if cfg.FraudScoringEnabled() {
@@ -137,7 +145,7 @@ func main() {
 	for i, rdb := range rdbs {
 		shardID := fmt.Sprintf("shard_%d", i)
 
-		sw := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond)
+		sw := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond, procPgGate, 0)
 		syncWorkers = append(syncWorkers, sw)
 		sw.Start(syncCtx)
 
@@ -148,7 +156,7 @@ func main() {
 			cfg.RedisGroupName+"_pg",
 			cfg.RedisConsumerID+"_"+shardID,
 			cfg.EventBatchSize,
-			cfg.MaxWorkers,
+			cfg.ProcessorPGStreamWorkers(),
 			time.Duration(cfg.EventFlushMs)*time.Millisecond,
 			time.Duration(cfg.WriteTimeoutMs)*time.Millisecond,
 			time.Duration(cfg.RetryInitialWaitMs)*time.Millisecond,
@@ -169,7 +177,7 @@ func main() {
 			cfg.RedisGroupName+"_ch",
 			cfg.RedisConsumerID+"_"+shardID,
 			cfg.CHBatchSize,
-			cfg.CHMaxWorkers,
+			cfg.ProcessorCHStreamWorkers(),
 			time.Duration(cfg.CHFlushIntervalMs)*time.Millisecond,
 			time.Duration(cfg.WriteTimeoutMs)*time.Millisecond,
 			time.Duration(cfg.RetryInitialWaitMs)*time.Millisecond,
@@ -197,7 +205,7 @@ func main() {
 			cfg.RedisGroupName+"_fraud",
 			cfg.RedisConsumerID+"_fraud_"+shardID,
 			cfg.CHBatchSize,
-			cfg.CHMaxWorkers,
+			cfg.ProcessorCHStreamWorkers(),
 			time.Duration(cfg.CHFlushIntervalMs)*time.Millisecond,
 			time.Duration(cfg.WriteTimeoutMs)*time.Millisecond,
 			time.Duration(cfg.RetryInitialWaitMs)*time.Millisecond,

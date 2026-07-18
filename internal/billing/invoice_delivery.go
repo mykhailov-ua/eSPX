@@ -125,5 +125,5 @@ func (s *Service) invoicePDFURL(invoiceID string) string {
 	if s == nil || s.invoiceBaseURL == "" {
 		return ""
 	}
-	return s.invoiceBaseURL + "/admin/invoices/" + invoiceID + "/pdf"
+	return s.invoiceBaseURL + "/api/v1/billing/invoices/" + invoiceID + "/pdf"
 }

@@ -274,6 +274,20 @@ var (
 		Help: "Failed notifier enqueue attempts from OpsAlerter and Alertmanager webhook",
 	})
 
+	AdminFanoutSourcesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ad_admin_fanout_sources_total",
+		Help: "Fan-out source polls per admin route",
+	}, []string{"route"})
+	AdminFanoutPartialTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ad_admin_fanout_partial_total",
+		Help: "Fan-out responses with at least one source failure",
+	}, []string{"route"})
+	AdminFanoutLatencySeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "ad_admin_fanout_latency_seconds",
+		Help:    "End-to-end fan-out request latency per admin route",
+		Buckets: prometheus.DefBuckets,
+	}, []string{"route"})
+
 	GeoIPUpdateErrorsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ad_geoip_update_errors_total",
 		Help: "MaxMind GeoIP database update failures",
@@ -558,4 +572,30 @@ var (
 		Name: "ad_micro_batch_boosts_written_total",
 		Help: "Total number of score boosts written to Redis from the micro-batcher",
 	})
+	CHSpoolAppendTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_ch_spool_append_total",
+		Help: "ClickHouse batches durably spooled to mmap WAL during outages",
+	})
+	CHSpoolReplayTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_ch_spool_replay_total",
+		Help: "ClickHouse spool WAL batches replayed after recovery",
+	})
+	CHSpoolRotateTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_ch_spool_rotate_total",
+		Help: "ClickHouse spool segment rotations during long outages",
+	})
+	ProcessorPgAcquireWaitSeconds = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "ad_processor_pg_acquire_wait_seconds",
+		Help:    "Wait time to acquire a processor-global Postgres write slot (alias of ad_processor_write_acquire_wait_seconds{backend=\"postgres\"})",
+		Buckets: prometheus.ExponentialBuckets(0.001, 2, 16),
+	})
+	ProcessorWriteAcquireWaitSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "ad_processor_write_acquire_wait_seconds",
+		Help:    "Wait time to acquire a processor-global store write slot",
+		Buckets: prometheus.ExponentialBuckets(0.001, 2, 16),
+	}, []string{"backend"})
+	ProcessorStreamBackpressureActive = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ad_processor_stream_backpressure_active",
+		Help: "Stream consumer paused XREADGROUP while store circuit is open (1=active)",
+	}, []string{"group"})
 )

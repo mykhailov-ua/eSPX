@@ -103,6 +103,12 @@ WHERE created_at >= $1 AND created_at < $2
 ORDER BY created_at ASC, id ASC
 LIMIT $3 OFFSET $4;
 
+-- name: ListAuditLogsExport :many
+SELECT * FROM admin_audit_log
+WHERE ($1::bigint = 0 OR id > $1)
+ORDER BY id ASC
+LIMIT $2;
+
 -- name: GetLedgerByPaymentIntent :one
 SELECT * FROM balance_ledger
 WHERE payment_intent_id = $1 AND type = 'PAYMENT_TOPUP'

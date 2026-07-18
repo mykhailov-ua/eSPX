@@ -28,6 +28,8 @@ const (
 	filterRejectFraud
 	filterRejectConsent
 	filterRejectInfra
+	filterRejectLicenseExpired
+	filterRejectDailyQuotaExceeded
 )
 
 // filterRejectSpec holds the HTTP response template for a rejection kind.
@@ -40,20 +42,22 @@ type filterRejectSpec struct {
 
 // filterRejectSpecs is the lookup table from rejection kind to client response.
 var filterRejectSpecs = [...]filterRejectSpec{
-	filterRejectEmergencyBreaker: {http.StatusServiceUnavailable, "service temporarily unavailable", respEmergencyBreaker, "emergency_breaker"},
-	filterRejectRateLimit:        {http.StatusTooManyRequests, "rate limit exceeded", respRateLimit, "rate_limit"},
-	filterRejectDuplicate:        {http.StatusConflict, "duplicate event", respDuplicate, "duplicate"},
-	filterRejectBudget:           {http.StatusPaymentRequired, "budget exhausted", respBudget, "budget"},
-	filterRejectPacing:           {http.StatusTooManyRequests, "pacing limit reached", respPacing, "pacing"},
-	filterRejectFreq:             {http.StatusForbidden, "frequency limit reached", respFreq, "freq"},
-	filterRejectGeo:              {http.StatusForbidden, "geo-targeting blocked", respGeo, "geo"},
-	filterRejectSchedule:         {http.StatusForbidden, "outside delivery schedule", respSchedule, "schedule"},
-	filterRejectCampaignNotFound: {http.StatusNotFound, "campaign not found", respCampaignNotFound, "campaign_not_found"},
-	filterRejectBidFloor:         {http.StatusPaymentRequired, "bid floor not met", respBidFloorNotMet, "bid_floor"},
-	filterRejectTimeout:          {http.StatusGatewayTimeout, "filter timeout", respFilterTimeout, "filter_timeout"},
-	filterRejectFraud:            {http.StatusAccepted, "", nil, "fraud"},
-	filterRejectConsent:          {http.StatusNoContent, "", respConsentDenied, "consent_denied"},
-	filterRejectInfra:            {http.StatusServiceUnavailable, "service unavailable", respInfraUnavailable, "infra_unavailable"},
+	filterRejectEmergencyBreaker:   {http.StatusServiceUnavailable, "service temporarily unavailable", respEmergencyBreaker, "emergency_breaker"},
+	filterRejectRateLimit:          {http.StatusTooManyRequests, "rate limit exceeded", respRateLimit, "rate_limit"},
+	filterRejectDuplicate:          {http.StatusConflict, "duplicate event", respDuplicate, "duplicate"},
+	filterRejectBudget:             {http.StatusPaymentRequired, "budget exhausted", respBudget, "budget"},
+	filterRejectPacing:             {http.StatusTooManyRequests, "pacing limit reached", respPacing, "pacing"},
+	filterRejectFreq:               {http.StatusForbidden, "frequency limit reached", respFreq, "freq"},
+	filterRejectGeo:                {http.StatusForbidden, "geo-targeting blocked", respGeo, "geo"},
+	filterRejectSchedule:           {http.StatusForbidden, "outside delivery schedule", respSchedule, "schedule"},
+	filterRejectCampaignNotFound:   {http.StatusNotFound, "campaign not found", respCampaignNotFound, "campaign_not_found"},
+	filterRejectBidFloor:           {http.StatusPaymentRequired, "bid floor not met", respBidFloorNotMet, "bid_floor"},
+	filterRejectTimeout:            {http.StatusGatewayTimeout, "filter timeout", respFilterTimeout, "filter_timeout"},
+	filterRejectFraud:              {http.StatusAccepted, "", nil, "fraud"},
+	filterRejectConsent:            {http.StatusNoContent, "", respConsentDenied, "consent_denied"},
+	filterRejectInfra:              {http.StatusServiceUnavailable, "service unavailable", respInfraUnavailable, "infra_unavailable"},
+	filterRejectLicenseExpired:     {http.StatusForbidden, "license expired", respLicenseExpired, "license_expired"},
+	filterRejectDailyQuotaExceeded: {http.StatusTooManyRequests, "daily quota exceeded", respDailyQuotaExceeded, "daily_quota_exceeded"},
 }
 
 // FraudReasonID indexes stable fraud signal codes shared by filters, metrics, and ClickHouse.
@@ -159,6 +163,10 @@ func classifyFilterErr(err error) (filterRejectKind, bool) {
 		return filterRejectFraud, true
 	case errors.Is(err, ErrConsentDenied):
 		return filterRejectConsent, true
+	case errors.Is(err, ErrLicenseExpired):
+		return filterRejectLicenseExpired, true
+	case errors.Is(err, ErrDailyQuotaExceeded):
+		return filterRejectDailyQuotaExceeded, true
 	case isInfraFilterErr(err):
 		return filterRejectInfra, true
 	default:
@@ -219,6 +227,8 @@ func (m *preboundTrackMetrics) recordFilterReject(kind filterRejectKind) {
 	case filterRejectInfra:
 		m.blockedInfra.Inc()
 		m.decisionInfraUnavailable.Inc()
+	case filterRejectLicenseExpired, filterRejectDailyQuotaExceeded:
+		// Not tracked in preboundTrackMetrics, handled via dynamic recordHTTPFilterReject
 	}
 }
 

@@ -2,12 +2,14 @@ package billing
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"espx/internal/billing/db"
 	"espx/internal/billing/pb"
+	"espx/internal/licensing"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -75,6 +77,7 @@ func (service *Service) GenerateInvoice(ctx context.Context, customerID uuid.UUI
 	}
 	if err := CheckLedgerBalanceInvariant(ctx, service.pool, customerID); err != nil {
 		LedgerDriftTotal.Inc()
+		LedgerInvariantFailuresTotal.Inc()
 		InvoiceErrorsTotal.WithLabelValues("ledger_drift").Inc()
 		if service.driftAlerter != nil {
 			service.driftAlerter.AlertLedgerDrift(ctx, customerID.String(), err)
@@ -120,6 +123,85 @@ func (service *Service) GenerateInvoice(ctx context.Context, customerID uuid.UUI
 		return nil, fmt.Errorf("%w: balance=%d ledger_sum=%d diff=%d", ErrLedgerDrift, cust.Balance, ledgerSum, diff)
 	}
 
+	var subscriptionFeeCharged int64 = 0
+	var overageFeeCharged int64 = 0
+
+	sub, err := qtx.GetCustomerSubscription(ctx, pgtype.UUID{Bytes: customerID, Valid: true})
+	if err == nil {
+		plan, err := qtx.GetSubscriptionPlan(ctx, sub.PlanCode)
+		if err == nil {
+			var limits licensing.Limits
+			_ = json.Unmarshal(plan.LimitsJson, &limits)
+
+			if len(sub.OverridesJson) > 0 {
+				var overrides struct {
+					Limits *licensing.Limits `json:"limits,omitempty"`
+				}
+				if json.Unmarshal(sub.OverridesJson, &overrides) == nil && overrides.Limits != nil {
+					if overrides.Limits.MaxEventsPerMonth != 0 {
+						limits.MaxEventsPerMonth = overrides.Limits.MaxEventsPerMonth
+					}
+				}
+			}
+
+			// 1. Charge base fee
+			baseFee := plan.BaseFeeMicro
+			baseHash := fmt.Sprintf("subscription:base:%s:%s", customerID.String(), monthStart.Format("2006-01"))
+
+			res, execErr := tx.Exec(ctx, `
+				INSERT INTO public.balance_ledger (customer_id, amount, type, idempotency_hash, created_at)
+				VALUES ($1, $2, 'FEE', $3, $4)
+				ON CONFLICT (idempotency_hash) DO NOTHING
+			`, customerID, -baseFee, baseHash, monthStart)
+			if execErr == nil && res.RowsAffected() > 0 {
+				subscriptionFeeCharged += baseFee
+				_, _ = tx.Exec(ctx, `
+					UPDATE public.customers SET balance = balance - $1 WHERE id = $2
+				`, baseFee, customerID)
+			}
+
+			// 2. Charge overage
+			limitEvents := int64(limits.MaxEventsPerMonth)
+			if limitEvents > 0 {
+				var currentEvents int64 = 0
+				meter, err := qtx.GetUsageMeter(ctx, db.GetUsageMeterParams{
+					CustomerID: pgtype.UUID{Bytes: customerID, Valid: true},
+					Meter:      "events",
+					Period:     pgtype.Date{Time: monthStart, Valid: true},
+				})
+				if err == nil {
+					currentEvents = meter.Value
+				}
+
+				overageEvents := currentEvents - limitEvents
+				if overageEvents > 0 {
+					var ratePerEvent int64 = 50 // default pro ($50 per 1M)
+					if sub.PlanCode == "basic" {
+						ratePerEvent = 100 // $100 per 1M
+					} else if sub.PlanCode == "enterprise" {
+						ratePerEvent = 20 // $20 per 1M
+					}
+					overageFee := overageEvents * ratePerEvent
+					overageHash := fmt.Sprintf("subscription:overage:%s:%s", customerID.String(), monthStart.Format("2006-01"))
+
+					res, execErr = tx.Exec(ctx, `
+						INSERT INTO public.balance_ledger (customer_id, amount, type, idempotency_hash, created_at)
+						VALUES ($1, $2, 'FEE', $3, $4)
+						ON CONFLICT (idempotency_hash) DO NOTHING
+					`, customerID, -overageFee, overageHash, monthStart)
+					if execErr == nil && res.RowsAffected() > 0 {
+						overageFeeCharged += overageFee
+						_, _ = tx.Exec(ctx, `
+							UPDATE public.customers SET balance = balance - $1 WHERE id = $2
+						`, overageFee, customerID)
+					}
+				}
+			}
+		}
+	}
+
+	ledgerSum = ledgerSum - subscriptionFeeCharged - overageFeeCharged
+
 	spendMicro, err := qtx.SumCustomerSpendInWindow(ctx, db.SumCustomerSpendInWindowParams{
 		CustomerID:  pgtype.UUID{Bytes: customerID, Valid: true},
 		CreatedAt:   pgTimestamp(monthStart),
@@ -141,6 +223,11 @@ func (service *Service) GenerateInvoice(ctx context.Context, customerID uuid.UUI
 	profile := service.resolveTaxProfile(ctx, qtx, customerID, cust.Currency)
 	taxMicro, rateBPS := service.tax.Compute(spendMicro, profile)
 	totalMicro := spendMicro + taxMicro
+
+	if spendMicro == 0 {
+		_ = tx.Rollback(ctx)
+		return nil, ErrNoSpend
+	}
 
 	invoiceID, err := uuid.NewV7()
 	if err != nil {

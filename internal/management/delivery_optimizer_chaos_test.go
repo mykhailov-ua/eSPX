@@ -67,7 +67,7 @@ func TestChaos_DeliveryOptimizerSingleWriter(t *testing.T) {
 	var maxIDBefore int64
 	require.NoError(t, pool.QueryRow(ctx, `SELECT COALESCE(MAX(id), 0) FROM outbox_events`).Scan(&maxIDBefore))
 
-	syncWorker := ingestion.NewSyncWorker(rdb, ingestion.NewCampaignRepo(db.New(pool)), ingestion.NewCustomerRepo(db.New(pool)), 0)
+	syncWorker := ingestion.NewSyncWorker(rdb, ingestion.NewCampaignRepo(db.New(pool)), ingestion.NewCustomerRepo(db.New(pool)), 0, nil, 0)
 	require.NoError(t, svc.RunDeliveryOptimizerTick(ctx, []*ingestion.SyncWorker{syncWorker}, false))
 
 	rows, err := pool.Query(ctx, `SELECT event_type, payload FROM outbox_events WHERE id > $1 ORDER BY id`, maxIDBefore)

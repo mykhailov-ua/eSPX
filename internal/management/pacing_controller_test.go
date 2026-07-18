@@ -54,7 +54,7 @@ func TestClosedLoopPacingController(t *testing.T) {
 	queries := db.New(pool)
 	campaignRepo := ingestion.NewCampaignRepo(queries)
 	customerRepo := ingestion.NewCustomerRepo(queries)
-	syncWorker := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, 100*time.Millisecond)
+	syncWorker := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, 100*time.Millisecond, nil, 0)
 
 	_, err = pool.Exec(ctx, "UPDATE campaigns SET current_spend = 50000, pacing_mode = 'EVEN' WHERE id = $1", ingestion.ToUUID(campaignID))
 	require.NoError(t, err)
@@ -136,7 +136,7 @@ func TestClosedLoopPacingController_EdgeCases(t *testing.T) {
 	queries := db.New(pool)
 	campaignRepo := ingestion.NewCampaignRepo(queries)
 	customerRepo := ingestion.NewCustomerRepo(queries)
-	syncWorker := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, 100*time.Millisecond)
+	syncWorker := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, 100*time.Millisecond, nil, 0)
 
 	err = svc.ClosedLoopPacingController(ctx, []*ingestion.SyncWorker{syncWorker})
 	require.NoError(t, err)
@@ -193,7 +193,7 @@ func BenchmarkClosedLoopPacingController(b *testing.B) {
 	queries := db.New(pool)
 	campaignRepo := ingestion.NewCampaignRepo(queries)
 	customerRepo := ingestion.NewCustomerRepo(queries)
-	syncWorker := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, 100*time.Millisecond)
+	syncWorker := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, 100*time.Millisecond, nil, 0)
 
 	b.ResetTimer()
 	b.ReportAllocs()

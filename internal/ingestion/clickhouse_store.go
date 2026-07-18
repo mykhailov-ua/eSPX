@@ -33,7 +33,7 @@ func fraudGhostFlag(e *campaignmodel.Event) uint8 {
 	return 0
 }
 
-// slicePool recycles event batch slices for the ClickHouse background flusher.
+// slicePool recycles event batch slices for ClickHouse table routing.
 var slicePool = sync.Pool{
 	New: func() any {
 		s := make([]*campaignmodel.Event, 0, 20000)
@@ -41,259 +41,72 @@ var slicePool = sync.Pool{
 	},
 }
 
-// ClickHouseStore batches telemetry writes to limit LSM part fragmentation under burst load.
+// ClickHouseStore batches telemetry writes and blocks until ClickHouse or the mmap WAL confirms durability.
 type ClickHouseStore struct {
 	conn          driver.Conn
 	writeTimeout  time.Duration
-	batchSize     atomic.Int64
-	flushInterval atomic.Int64
-	eventChan     chan *campaignmodel.Event
-	wg            sync.WaitGroup
+	spool         *CHSpool
+	chGate        *ProcessorChGate
 	ctx           context.Context
 	cancel        context.CancelFunc
+	replayWg      sync.WaitGroup
+	replayRunning atomic.Bool
 }
 
-// NewClickHouseStore starts the async flusher with default batch size and interval.
-func NewClickHouseStore(conn driver.Conn, writeTimeout time.Duration) *ClickHouseStore {
+// NewClickHouseStore starts the spool replayer when spoolDir is non-empty.
+func NewClickHouseStore(conn driver.Conn, writeTimeout time.Duration, spoolDir string, spoolCfg CHSpoolConfig, chGate *ProcessorChGate) *ClickHouseStore {
 	ctx, cancel := context.WithCancel(context.Background())
 	chStore := &ClickHouseStore{
 		conn:         conn,
 		writeTimeout: writeTimeout,
-		eventChan:    make(chan *campaignmodel.Event, 1000000),
+		chGate:       chGate,
 		ctx:          ctx,
 		cancel:       cancel,
 	}
-	chStore.batchSize.Store(20000)
-	chStore.flushInterval.Store(int64(5 * time.Second))
-
-	chStore.wg.Add(1)
-	go chStore.backgroundFlusher()
-
+	if spoolDir != "" {
+		spool, err := OpenCHSpoolWithConfig(spoolDir, spoolCfg)
+		if err != nil {
+			slog.Error("failed to open clickhouse spool", "error", err, "dir", spoolDir)
+		} else {
+			chStore.spool = spool
+			chStore.startSpoolReplayer()
+		}
+	}
 	return chStore
 }
 
-// getBatchSize reads the runtime batch threshold without blocking the async flusher.
-func (chStore *ClickHouseStore) getBatchSize() int {
-	return int(chStore.batchSize.Load())
-}
-
-// getFlushInterval reads the time-based flush cadence without blocking the async flusher.
-func (chStore *ClickHouseStore) getFlushInterval() time.Duration {
-	return time.Duration(chStore.flushInterval.Load())
-}
-
-// SetBatching tunes batch size and flush interval at runtime.
-func (chStore *ClickHouseStore) SetBatching(size int, interval time.Duration) {
-	chStore.batchSize.Store(int64(size))
-	chStore.flushInterval.Store(int64(interval))
-}
-
-// StoreBatch enqueues events for async flush or writes synchronously when batching is disabled.
+// StoreBatch blocks until ClickHouse acknowledges the batch or the batch is fsynced to the mmap WAL.
 func (chStore *ClickHouseStore) StoreBatch(ctx context.Context, events []*campaignmodel.Event) error {
 	if len(events) == 0 {
 		return nil
 	}
 
-	if chStore.getBatchSize() <= 1 {
-		var err error
-		waitTime := InitialWait
-
-		for i := 0; i <= MaxRetries; i++ {
-			dbCtx, cancel := context.WithTimeout(ctx, chStore.writeTimeout)
-			err = chStore.insertToClickHouse(dbCtx, events)
-			cancel()
-
-			if err == nil {
-				return nil
-			}
-
-			if i < MaxRetries {
-				timer := time.NewTimer(waitTime)
-				select {
-				case <-ctx.Done():
-					timer.Stop()
-					return ctx.Err()
-				case <-timer.C:
-					waitTime *= 2
-					if waitTime > MaxWait {
-						waitTime = MaxWait
-					}
-				}
-			}
+	if chStore.chGate != nil {
+		if err := chStore.chGate.Acquire(ctx); err != nil {
+			return err
 		}
-
-		metrics.DbWriteErrors.WithLabelValues("clickhouse").Inc()
-		return err
+		defer chStore.chGate.Release()
 	}
 
-	for _, e := range events {
-		select {
-		case chStore.eventChan <- e:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	return nil
-}
-
-// backgroundFlusher drains the event channel into table-specific batches with retry.
-func (chStore *ClickHouseStore) backgroundFlusher() {
-	defer chStore.wg.Done()
-
-	interval := chStore.getFlushInterval()
-	if interval <= 0 {
-		interval = 5 * time.Second
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	pImps := slicePool.Get().(*[]*campaignmodel.Event)
-	pClicks := slicePool.Get().(*[]*campaignmodel.Event)
-	pConvs := slicePool.Get().(*[]*campaignmodel.Event)
-	pFraud := slicePool.Get().(*[]*campaignmodel.Event)
-
-	defer func() {
-		for i := range *pImps {
-			(*pImps)[i] = nil
-		}
-		*pImps = (*pImps)[:0]
-
-		for i := range *pClicks {
-			(*pClicks)[i] = nil
-		}
-		*pClicks = (*pClicks)[:0]
-
-		for i := range *pConvs {
-			(*pConvs)[i] = nil
-		}
-		*pConvs = (*pConvs)[:0]
-
-		for i := range *pFraud {
-			(*pFraud)[i] = nil
-		}
-		*pFraud = (*pFraud)[:0]
-
-		if cap(*pImps) <= 100000 {
-			slicePool.Put(pImps)
-		}
-		if cap(*pClicks) <= 100000 {
-			slicePool.Put(pClicks)
-		}
-		if cap(*pConvs) <= 100000 {
-			slicePool.Put(pConvs)
-		}
-		if cap(*pFraud) <= 100000 {
-			slicePool.Put(pFraud)
-		}
-	}()
-
-	flushAll := func() {
-		if len(*pImps) > 0 {
-			chStore.flushTableWithRetry("impressions", *pImps, false)
-			*pImps = (*pImps)[:0]
-		}
-		if len(*pClicks) > 0 {
-			chStore.flushTableWithRetry("clicks", *pClicks, false)
-			*pClicks = (*pClicks)[:0]
-		}
-		if len(*pConvs) > 0 {
-			chStore.flushTableWithRetry("conversions", *pConvs, false)
-			*pConvs = (*pConvs)[:0]
-		}
-		if len(*pFraud) > 0 {
-			chStore.flushTableWithRetry("fraud_events", *pFraud, true)
-			*pFraud = (*pFraud)[:0]
-		}
-	}
-
-	for {
-		select {
-		case <-chStore.ctx.Done():
-			for {
-				select {
-				case e := <-chStore.eventChan:
-					if isFraudTelemetry(e) {
-						*pFraud = append(*pFraud, e)
-					} else {
-						switch e.Type {
-						case "impression":
-							*pImps = append(*pImps, e)
-						case "click":
-							*pClicks = append(*pClicks, e)
-						case "conversion":
-							*pConvs = append(*pConvs, e)
-						}
-					}
-				default:
-					goto drained
-				}
-			}
-		drained:
-			flushAll()
-			return
-
-		case e := <-chStore.eventChan:
-			if isFraudTelemetry(e) {
-				*pFraud = append(*pFraud, e)
-				if len(*pFraud) >= chStore.getBatchSize() {
-					chStore.flushTableWithRetry("fraud_events", *pFraud, true)
-					*pFraud = (*pFraud)[:0]
-				}
-			} else {
-				switch e.Type {
-				case "impression":
-					*pImps = append(*pImps, e)
-					if len(*pImps) >= chStore.getBatchSize() {
-						chStore.flushTableWithRetry("impressions", *pImps, false)
-						*pImps = (*pImps)[:0]
-					}
-				case "click":
-					*pClicks = append(*pClicks, e)
-					if len(*pClicks) >= chStore.getBatchSize() {
-						chStore.flushTableWithRetry("clicks", *pClicks, false)
-						*pClicks = (*pClicks)[:0]
-					}
-				case "conversion":
-					*pConvs = append(*pConvs, e)
-					if len(*pConvs) >= chStore.getBatchSize() {
-						chStore.flushTableWithRetry("conversions", *pConvs, false)
-						*pConvs = (*pConvs)[:0]
-					}
-				}
-			}
-
-		case <-ticker.C:
-			flushAll()
-		}
-	}
-}
-
-// flushTableWithRetry inserts one table batch with exponential backoff on failure.
-func (chStore *ClickHouseStore) flushTableWithRetry(table string, evts []*campaignmodel.Event, isFraud bool) {
-	if len(evts) == 0 {
-		return
-	}
-
-	waitTime := InitialWait
+	token := chStore.getDeduplicationToken(ctx, events)
 	var err error
+	waitTime := InitialWait
 
 	for i := 0; i <= MaxRetries; i++ {
-		ctx, cancel := context.WithTimeout(chStore.ctx, chStore.writeTimeout)
-		err = chStore.insertTable(ctx, table, evts, isFraud)
+		dbCtx, cancel := context.WithTimeout(ctx, chStore.writeTimeout)
+		err = chStore.insertToClickHouse(dbCtx, events)
 		cancel()
 
 		if err == nil {
-			return
+			return nil
 		}
-
-		slog.Error("failed to flush table to ClickHouse, retrying...", "table", table, "attempt", i, "error", err)
 
 		if i < MaxRetries {
 			timer := time.NewTimer(waitTime)
 			select {
-			case <-chStore.ctx.Done():
+			case <-ctx.Done():
 				timer.Stop()
-				return
+				return ctx.Err()
 			case <-timer.C:
 				waitTime *= 2
 				if waitTime > MaxWait {
@@ -303,8 +116,106 @@ func (chStore *ClickHouseStore) flushTableWithRetry(table string, evts []*campai
 		}
 	}
 
-	slog.Error("failed to flush table to ClickHouse after all retries", "table", table, "error", err)
-	metrics.DbWriteErrors.WithLabelValues("clickhouse").Inc()
+	if chStore.spool == nil {
+		metrics.DbWriteErrors.WithLabelValues("clickhouse").Inc()
+		return err
+	}
+
+	if spoolErr := chStore.spool.AppendDurably(token, events); spoolErr != nil {
+		metrics.DbWriteErrors.WithLabelValues("clickhouse_spool").Inc()
+		return fmt.Errorf("clickhouse write failed and spool append failed: ch=%w spool=%w", err, spoolErr)
+	}
+
+	metrics.CHSpoolAppendTotal.Inc()
+	slog.Warn("clickhouse unavailable, batch spooled to mmap WAL", "events", len(events), "token", token)
+	return nil
+}
+
+// startSpoolReplayer drains mmap WAL entries to ClickHouse when the database recovers.
+func (chStore *ClickHouseStore) startSpoolReplayer() {
+	if chStore.spool == nil || chStore.replayRunning.Swap(true) {
+		return
+	}
+	chStore.replayWg.Add(1)
+	go func() {
+		defer chStore.replayWg.Done()
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-chStore.ctx.Done():
+				return
+			case <-ticker.C:
+				chStore.replaySpoolOnce()
+			}
+		}
+	}()
+}
+
+// replaySpoolOnce replays the oldest WAL record and releases it when ClickHouse accepts the batch.
+func (chStore *ClickHouseStore) replaySpoolOnce() {
+	if chStore.spool == nil {
+		return
+	}
+	records, err := chStore.spool.Scan()
+	if err != nil || len(records) == 0 {
+		return
+	}
+
+	rec := records[0]
+	ctx, cancel := context.WithTimeout(chStore.ctx, chStore.writeTimeout)
+	ctx = context.WithValue(ctx, campaignmodel.DeduplicationTokenKey, rec.DedupToken)
+	insertErr := chStore.insertToClickHouse(ctx, rec.Events)
+	cancel()
+	if insertErr != nil {
+		for _, e := range rec.Events {
+			campaignmodel.EventPool.Put(e)
+		}
+		return
+	}
+	for _, e := range rec.Events {
+		campaignmodel.EventPool.Put(e)
+	}
+	if err := chStore.spool.ReleaseRecord(rec); err != nil {
+		slog.Error("failed to release ch spool record", "error", err, "offset", rec.EndOffset)
+		return
+	}
+	metrics.CHSpoolReplayTotal.Inc()
+}
+
+// RecoverSpool replays pending WAL records synchronously; used on processor startup.
+func (chStore *ClickHouseStore) RecoverSpool(ctx context.Context) error {
+	if chStore.spool == nil {
+		return nil
+	}
+	for {
+		records, err := chStore.spool.Scan()
+		if err != nil {
+			return err
+		}
+		if len(records) == 0 {
+			return nil
+		}
+		rec := records[0]
+		replayCtx, cancel := context.WithTimeout(ctx, chStore.writeTimeout)
+		replayCtx = context.WithValue(replayCtx, campaignmodel.DeduplicationTokenKey, rec.DedupToken)
+		insertErr := chStore.insertToClickHouse(replayCtx, rec.Events)
+		cancel()
+		if insertErr != nil {
+			for _, e := range rec.Events {
+				campaignmodel.EventPool.Put(e)
+			}
+			return insertErr
+		}
+		for _, e := range rec.Events {
+			campaignmodel.EventPool.Put(e)
+		}
+		if err := chStore.spool.ReleaseRecord(rec); err != nil {
+			return err
+		}
+		metrics.CHSpoolReplayTotal.Inc()
+	}
 }
 
 // getDeduplicationToken supplies ClickHouse insert deduplication for at-least-once retries.
@@ -380,7 +291,7 @@ func (chStore *ClickHouseStore) insertTable(ctx context.Context, table string, e
 	return nil
 }
 
-// insertToClickHouse writes a multi-table batch synchronously for low-latency mode.
+// insertToClickHouse writes a multi-table batch synchronously.
 func (chStore *ClickHouseStore) insertToClickHouse(ctx context.Context, events []*campaignmodel.Event) error {
 	start := time.Now()
 
@@ -452,52 +363,7 @@ func (chStore *ClickHouseStore) insertToClickHouse(ctx context.Context, events [
 		if len(evts) == 0 {
 			return nil
 		}
-
-		token := chStore.getDeduplicationToken(ctx, evts)
-		query := fmt.Sprintf("INSERT INTO %s", table)
-		if token != "" {
-			query = fmt.Sprintf("INSERT INTO %s SETTINGS insert_deduplicate=1, insert_deduplication_token='%s'", table, token)
-		}
-
-		batch, err := chStore.conn.PrepareBatch(ctx, query)
-		if err != nil {
-			return fmt.Errorf("prepare batch %s: %w", table, err)
-		}
-
-		for _, e := range evts {
-			if isFraud {
-				err = batch.Append(
-					e.ClickID,
-					e.CampaignID,
-					e.UserID,
-					e.Type,
-					e.IP,
-					e.UA,
-					unsafeString(e.Payload),
-					e.FraudReason,
-					e.FraudScore,
-					fraudGhostFlag(e),
-					e.CreatedAt,
-				)
-			} else {
-				err = batch.Append(
-					e.ClickID,
-					e.CampaignID,
-					e.IP,
-					e.UA,
-					unsafeString(e.Payload),
-					e.CreatedAt,
-				)
-			}
-			if err != nil {
-				return fmt.Errorf("append %s: %w", table, err)
-			}
-		}
-
-		if err := batch.Send(); err != nil {
-			return fmt.Errorf("send %s: %w", table, err)
-		}
-		return nil
+		return chStore.insertTable(ctx, table, evts, isFraud)
 	}
 
 	if err := insert("impressions", imps, false); err != nil {
@@ -519,9 +385,27 @@ func (chStore *ClickHouseStore) insertToClickHouse(ctx context.Context, events [
 	return nil
 }
 
-// Close stops the flusher and closes the ClickHouse connection.
+// Close stops the spool replayer and closes connections.
 func (chStore *ClickHouseStore) Close() error {
 	chStore.cancel()
-	chStore.wg.Wait()
+	chStore.replayWg.Wait()
+	if chStore.spool != nil {
+		_ = chStore.spool.Close()
+	}
 	return chStore.conn.Close()
+}
+
+// SetChGate attaches the processor ClickHouse write gate for SEM-P5 backpressure.
+func (chStore *ClickHouseStore) SetChGate(gate *ProcessorChGate) {
+	chStore.chGate = gate
+}
+
+// SetSpool exposes the mmap WAL for tests.
+func (chStore *ClickHouseStore) SetSpool(spool *CHSpool) {
+	chStore.spool = spool
+}
+
+// Spool returns the active mmap WAL when configured.
+func (chStore *ClickHouseStore) Spool() *CHSpool {
+	return chStore.spool
 }

@@ -12,13 +12,16 @@ import (
 )
 
 // SyncWorker flushes Redis budget deltas to Postgres without losing inflight spend.
+// When pgGate is set (processor), spend TX shares the global PG budget with StreamConsumer (SEM-P2).
 type SyncWorker struct {
-	rdb          redis.Cmdable
-	campaignRepo campaignmodel.CampaignRepository
-	customerRepo campaignmodel.CustomerRepository
-	interval     time.Duration
-	wg           sync.WaitGroup
-	syncMu       sync.Mutex
+	rdb            redis.Cmdable
+	campaignRepo   campaignmodel.CampaignRepository
+	customerRepo   campaignmodel.CustomerRepository
+	interval       time.Duration
+	pgGate         *ProcessorPgGate
+	maxConcurrency int
+	wg             sync.WaitGroup
+	syncMu         sync.Mutex
 }
 
 // NewSyncWorker creates a periodic budget sync worker for campaigns and customers.
@@ -27,12 +30,19 @@ func NewSyncWorker(
 	campaignRepo campaignmodel.CampaignRepository,
 	customerRepo campaignmodel.CustomerRepository,
 	interval time.Duration,
+	pgGate *ProcessorPgGate,
+	maxConcurrency int,
 ) *SyncWorker {
+	if maxConcurrency <= 0 && pgGate == nil {
+		maxConcurrency = maxConcurrencyDefault
+	}
 	return &SyncWorker{
-		rdb:          rdb,
-		campaignRepo: campaignRepo,
-		customerRepo: customerRepo,
-		interval:     interval,
+		rdb:            rdb,
+		campaignRepo:   campaignRepo,
+		customerRepo:   customerRepo,
+		interval:       interval,
+		pgGate:         pgGate,
+		maxConcurrency: maxConcurrency,
 	}
 }
 
@@ -186,18 +196,28 @@ func (w *SyncWorker) syncEntity(ctx context.Context, prefix string, idStr string
 		return
 	}
 
+	if w.pgGate != nil {
+		if err := w.pgGate.Acquire(ctx); err != nil {
+			return
+		}
+		defer w.pgGate.Release()
+	}
+
 	if err := updateFn(ctx, id, amountMicro, txIDVal); err == nil {
 		w.rdb.Eval(ctx, commitSyncScript, []string{inFlightKey, dirtySet, lockKey, txKey, syncKey}, amountMicro, idStr)
 	}
 }
 
-// maxConcurrency limits parallel entity syncs to protect Postgres during dirty bursts.
-const maxConcurrency = 32
+// maxConcurrencyDefault is the management-path parallel sync cap when no processor PG gate is set.
+const maxConcurrencyDefault = 32
 
-// syncCampaigns scans dirty campaign keys and syncs each in parallel up to maxConcurrency.
+// syncCampaigns scans dirty campaign keys and syncs each in parallel.
 func (w *SyncWorker) syncCampaigns(ctx context.Context) {
 	var cursor uint64
-	sem := make(chan struct{}, maxConcurrency)
+	sem := make(chan struct{}, w.maxConcurrency)
+	if w.pgGate != nil {
+		sem = nil
+	}
 	var wg sync.WaitGroup
 
 	for {
@@ -208,10 +228,14 @@ func (w *SyncWorker) syncCampaigns(ctx context.Context) {
 
 		for _, idStr := range keys {
 			wg.Add(1)
-			sem <- struct{}{}
+			if sem != nil {
+				sem <- struct{}{}
+			}
 			go func(id string) {
 				defer wg.Done()
-				defer func() { <-sem }()
+				if sem != nil {
+					defer func() { <-sem }()
+				}
 				w.syncEntity(ctx, "campaign", id, w.campaignRepo.UpdateSpend)
 			}(idStr)
 		}
@@ -224,10 +248,13 @@ func (w *SyncWorker) syncCampaigns(ctx context.Context) {
 	wg.Wait()
 }
 
-// syncCustomers scans dirty customer keys and syncs each in parallel up to maxConcurrency.
+// syncCustomers scans dirty customer keys and syncs each in parallel.
 func (w *SyncWorker) syncCustomers(ctx context.Context) {
 	var cursor uint64
-	sem := make(chan struct{}, maxConcurrency)
+	sem := make(chan struct{}, w.maxConcurrency)
+	if w.pgGate != nil {
+		sem = nil
+	}
 	var wg sync.WaitGroup
 
 	for {
@@ -238,10 +265,14 @@ func (w *SyncWorker) syncCustomers(ctx context.Context) {
 
 		for _, idStr := range keys {
 			wg.Add(1)
-			sem <- struct{}{}
+			if sem != nil {
+				sem <- struct{}{}
+			}
 			go func(id string) {
 				defer wg.Done()
-				defer func() { <-sem }()
+				if sem != nil {
+					defer func() { <-sem }()
+				}
 				w.syncEntity(ctx, "customer", id, w.customerRepo.UpdateBalance)
 			}(idStr)
 		}

@@ -15,6 +15,7 @@ services:
     environment:
       - SERVER_PORT=8181
       - METRICS_PORT=9101
+      - TRACKER_PG_FALLBACK=${TRACKER_PG_FALLBACK:-0}
       - GOMEMLIMIT=700MiB   # hard memory limit; triggers GC before OOM killer fires
       - GOGC=50             # aggressive GC target: trade CPU for lower heap steady-state
     volumes:
@@ -266,6 +267,7 @@ services:
       - .env
     volumes:
       - espx_logs:/var/log/espx:rw
+      - espx_ch_spool:/var/spool/espx/ch:rw
       - ./deploy/geoip:/deploy/geoip:rw
     environment:
       - DB_DSN=${DB_DSN}
@@ -277,6 +279,8 @@ services:
       - GEOIP_UPDATER_ENABLED=${GEOIP_UPDATER_ENABLED:-false}
       - MAXMIND_LICENSE_KEY=${MAXMIND_LICENSE_KEY:-}
       - DB_PROCESSOR_MAX_CONNS=${DB_PROCESSOR_MAX_CONNS}
+      - CH_SPOOL_DIR=/var/spool/espx/ch
+      - TRACKER_PG_FALLBACK=${TRACKER_PG_FALLBACK:-0}
       - ENV=${ENV:-development}
       - GOMEMLIMIT=1500MiB  # processor holds larger in-flight batches; needs wider heap
       - GOGC=100            # standard GC pace; processor is not latency-critical
@@ -945,4 +949,5 @@ volumes:
   redis_4_data:
   redis_5_data:
   espx_logs:           # shared mmap audit logs from all trackers/processor
+  espx_ch_spool:       # processor ClickHouse mmap WAL during outages
   log_compactor_state: # warm-tier compactor checkpoints and output

@@ -39,6 +39,7 @@ func main() {
 
 	queries := db.New(pool)
 	registry := ingestion.NewRegistry(queries)
+	registry.SetPool(pool)
 	count, err := registry.Sync(ctx)
 	if err != nil {
 		slog.Warn("initial campaign registry sync failed", "error", err)
@@ -124,8 +125,10 @@ func main() {
 		cfg.StreamMaxLen,
 	)
 
+	entitlementsFilter := ingestion.NewEntitlementsFilter(registry, sharder, rdbs)
 	filterEngine := ingestion.NewFilterEngine(
 		time.Duration(cfg.FilterTimeoutMs)*time.Millisecond,
+		entitlementsFilter,
 		breakerFilter,
 		geoFilter,
 		scheduleFilter,

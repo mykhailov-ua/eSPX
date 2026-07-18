@@ -236,6 +236,10 @@ func (consumer *StreamConsumer) worker(ctx context.Context, workerIdx int) {
 	}
 
 	for {
+		if consumer.pauseStreamReads(ctx) {
+			continue
+		}
+
 		select {
 		case <-ctx.Done():
 			drainCtx, drainCancel := context.WithTimeout(context.Background(), consumer.drainTimeout)
@@ -244,8 +248,10 @@ func (consumer *StreamConsumer) worker(ctx context.Context, workerIdx int) {
 					for _, e := range batch {
 						campaignmodel.EventPool.Put(e)
 					}
-				} else {
+				} else if !isRetriableStoreError(err) {
 					slog.Error("drain flush of existing batch failed, GC will reclaim objects", "error", err, "group", consumer.groupName, "worker", workerID)
+				} else {
+					slog.Warn("drain flush deferred, retaining batch in PEL", "error", err, "group", consumer.groupName, "worker", workerID)
 				}
 				batch = batch[:0]
 				msgIDs = msgIDs[:0]
@@ -322,6 +328,26 @@ func (consumer *StreamConsumer) worker(ctx context.Context, workerIdx int) {
 			consumer.tryFlush(ctx, &batch, &msgIDs, &retryCount, workerID, nil, &retryWait)
 			lastFlush = time.Now()
 		}
+	}
+}
+
+// pauseStreamReads blocks XREADGROUP while the store circuit is open (stream-level backpressure).
+func (consumer *StreamConsumer) pauseStreamReads(ctx context.Context) bool {
+	if consumer.cb.State() != CircuitOpen {
+		metrics.ProcessorStreamBackpressureActive.WithLabelValues(consumer.groupName).Set(0)
+		return false
+	}
+
+	metrics.ProcessorStreamBackpressureActive.WithLabelValues(consumer.groupName).Set(1)
+	wait := consumer.cb.WaitDuration()
+	if wait <= 0 {
+		wait = 100 * time.Millisecond
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(wait):
+		return true
 	}
 }
 
@@ -406,6 +432,19 @@ func (consumer *StreamConsumer) tryFlush(ctx context.Context, batch *[]*campaign
 	}
 
 	if hasPoisonPill {
+		if isRetriableStoreError(err) {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(*retryWait):
+			}
+			*retryWait *= 2
+			if *retryWait > consumer.retryMaxWait {
+				*retryWait = consumer.retryMaxWait
+			}
+			return
+		}
+
 		slog.Error("poison pill detected, decomposing batch", "error", err, "group", consumer.groupName, "worker", workerID)
 
 		failedIndices := make([]int, 0, len(*batch))
@@ -759,7 +798,8 @@ func firstN(ids []string, n int) []string {
 	return ids[:n]
 }
 
-// flushBatch stores a batch and acks Redis only after a durable write succeeds.
+// flushBatch persists the in-memory batch via EventStore.StoreBatch (Postgres or ClickHouse+mmap spool),
+// then XAcks Redis stream IDs only after StoreBatch returns nil. PG writes honor ProcessorPgGate (SEM-P1).
 func (consumer *StreamConsumer) flushBatch(ctx context.Context, batch []*campaignmodel.Event, msgIDs []string, workerID string) error {
 	if len(batch) == 0 {
 		return nil
@@ -782,6 +822,10 @@ func (consumer *StreamConsumer) flushBatch(ctx context.Context, batch []*campaig
 			slog.Error("store failed, NOT ACKING", "error", err, "group", consumer.groupName, "batch_size", len(batch), "first_ids", firstN(msgIDs, 5))
 		}
 		return err
+	}
+
+	if len(batch) > 0 && !batch[0].CreatedAt.IsZero() {
+		metrics.ProcessorStreamLagSeconds.Set(time.Since(batch[0].CreatedAt).Seconds())
 	}
 
 	if consumer.logger != nil {
@@ -836,6 +880,13 @@ func (consumer *StreamConsumer) recoverPending(ctx context.Context, consumerID s
 			if err := consumer.flushBatch(ctx, batch, msgIDs, consumerID); err != nil {
 				if !errors.Is(err, context.Canceled) {
 					consumer.recordFailure(consumerID)
+					if isRetriableStoreError(err) {
+						slog.Warn("recovery flush deferred, retaining PEL", "error", err, "group", consumer.groupName)
+						for _, e := range batch {
+							campaignmodel.EventPool.Put(e)
+						}
+						return
+					}
 					slog.Error("recovery flush failed, moving to DLQ", "error", err, "group", consumer.groupName)
 					_ = consumer.moveToDLQ(ctx, batch, msgIDs, consumerID, 1, fmt.Errorf("recovery flush failed: %w", err))
 					_ = consumer.rdb.HDel(ctx, "ad:events:retries", msgIDs...).Err()
@@ -891,7 +942,11 @@ func (consumer *StreamConsumer) drainNewMessages(ctx context.Context, consumerID
 
 			if err := consumer.flushBatch(ctx, batch, msgIDs, consumerID); err != nil {
 				if !errors.Is(err, context.Canceled) {
-					slog.Error("drain: failed to flush batch", "error", err, "group", consumer.groupName, "worker", consumerID)
+					if isRetriableStoreError(err) {
+						slog.Warn("drain: flush deferred, retaining PEL", "error", err, "group", consumer.groupName, "worker", consumerID)
+					} else {
+						slog.Error("drain: failed to flush batch", "error", err, "group", consumer.groupName, "worker", consumerID)
+					}
 				}
 				for _, e := range batch {
 					campaignmodel.EventPool.Put(e)

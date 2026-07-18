@@ -69,6 +69,7 @@ func main() {
 
 	queries := db.New(pool)
 	registry := ingestion.NewRegistry(queries)
+	registry.SetPool(pool)
 	count, err := registry.Sync(ctx)
 	if err != nil {
 		slog.Warn("initial campaign registry sync failed", "error", err)
@@ -184,13 +185,15 @@ func main() {
 	unifiedFilter.SetMetricsSampleMask(cfg.MetricsHistogramSampleMask)
 	unifiedFilter.SetQuotaConfig(cfg.QuotaMode, cfg.QuotaChunkSize, cfg.QuotaRefillThresholdPct)
 	unifiedFilter.SetLuaFastPathEnabled(cfg.LuaFastPathEnabled)
+	unifiedFilter.SetPGFallbackAllowed(cfg.TrackerPGFallback)
 	if cfg.TTCFailClosed {
 		slog.Info("TTC fail-closed enabled: clicks without impression timestamp are rejected")
 	}
 	slog.Info("redis lua scripts preloaded", "shards", len(rdbs))
 
 	creativeStore := ingestion.NewBrandCreativeStore(rdbs[0])
-	filterEngine := ingestion.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, breakerFilter, geoFilter, scheduleFilter, l3Filter, fraudFilter, deviceFilter, consentFilter, unifiedFilter)
+	entitlementsFilter := ingestion.NewEntitlementsFilter(registry, sharder, rdbs)
+	filterEngine := ingestion.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, entitlementsFilter, breakerFilter, geoFilter, scheduleFilter, l3Filter, fraudFilter, deviceFilter, consentFilter, unifiedFilter)
 	filterEngine.SetSettingsWatcher(settingsWatcher)
 
 	var rtbCatalog *ingestion.RtbCatalog

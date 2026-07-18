@@ -619,6 +619,15 @@ func (service *Service) ChangePassword(ctx context.Context, userID uuid.UUID, ol
 		return err
 	}
 
+	select {
+	case service.cryptoSem <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return ErrRateLimitExceeded
+	}
+	defer func() { <-service.cryptoSem }()
+
 	match, verifyErr := VerifyPassword(oldPassword, user.PasswordHash)
 	if !match || (verifyErr != nil && !errors.Is(verifyErr, ErrInsecureHashParameters)) {
 		service.AuditLog(ctx, userID, "PASSWORD_CHANGE_FAILED", "user", userID.String(), clientIP, userAgent,
@@ -732,6 +741,15 @@ func (service *Service) VerifyAPIKey(ctx context.Context, rawKey string) (db.Use
 		}
 		return db.User{}, err
 	}
+
+	select {
+	case service.cryptoSem <- struct{}{}:
+	case <-ctx.Done():
+		return db.User{}, ctx.Err()
+	default:
+		return db.User{}, ErrRateLimitExceeded
+	}
+	defer func() { <-service.cryptoSem }()
 
 	match, err := VerifyPassword(rawKey, row.KeyHash)
 	if err != nil || !match {

@@ -1,3 +1,5 @@
+// shutdown_test.go verifies that accepted events survive consumer drain during
+// graceful shutdown of the stream consumer.
 package e2e_test
 
 import (
@@ -23,8 +25,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestGracefulShutdown_NoDataLoss proves that events already accepted (202)
-// are persisted after consumer drain-rolling deploys must not drop in-flight work.
+// TestE2E_GracefulShutdown_NoDataLoss posts concurrent track requests, drains
+// the stream consumer, and asserts that every HTTP 202 response has a matching
+// row in the events table. Rolling deploys must not drop in-flight work.
 func TestE2E_GracefulShutdown_NoDataLoss(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")

@@ -180,6 +180,7 @@ type UnifiedFilter struct {
 	quotaMode                    string
 	localQuotaCache              *LocalQuotaCache
 	dbLookupTimeout              time.Duration
+	pgFallbackAllowed            bool
 	luaMetricsSeq                atomic.Uint64
 	fastScript                   *redis.Script
 	fastScriptHashAny            any
@@ -191,6 +192,11 @@ type UnifiedFilter struct {
 	luaFullPathCounters      []prometheus.Counter
 	luaNoScriptCounters      []prometheus.Counter
 	redisObservability       redisShardObservability
+}
+
+// SetPGFallbackAllowed toggles Postgres budget reload on Redis cache miss (disabled in production).
+func (f *UnifiedFilter) SetPGFallbackAllowed(allowed bool) {
+	f.pgFallbackAllowed = allowed
 }
 
 // SetTTCMin configures click fraud time-to-click thresholds for the Lua script.
@@ -328,6 +334,7 @@ func NewUnifiedFilter(
 		luaNoScriptCounters:          newRedisLuaNoScriptCounters(len(rdbs)),
 		redisObservability:           newRedisShardObservability(len(rdbs), luaMetricsSampleMask),
 		dbLookupTimeout:              2 * time.Second,
+		pgFallbackAllowed:            true,
 	}
 }
 

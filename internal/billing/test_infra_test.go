@@ -127,3 +127,18 @@ func seedCustomerWithLedger(t testing.TB, pool *pgxpool.Pool, feeAt time.Time) u
 	AssertLedgerBalanceInvariant(t, ctx, pool, customerID)
 	return customerID
 }
+
+func seedCustomerOnly(t testing.TB, pool *pgxpool.Pool) uuid.UUID {
+	t.Helper()
+	ctx := context.Background()
+	q := ingestdb.New(pool)
+	customerID, _ := uuid.NewV7()
+	_, err := q.CreateCustomer(ctx, ingestdb.CreateCustomerParams{
+		ID:       ingestion.ToUUID(customerID),
+		Name:     "billing-empty",
+		Balance:  0,
+		Currency: "USD",
+	})
+	require.NoError(t, err)
+	return customerID
+}

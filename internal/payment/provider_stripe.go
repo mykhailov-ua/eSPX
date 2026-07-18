@@ -55,7 +55,7 @@ func createStripeCheckoutSession(secretKey, successURL, cancelURL string, amount
 		cur = "usd"
 	}
 	if successURL == "" || cancelURL == "" {
-		return "", "", fmt.Errorf("stripe checkout success/cancel URLs are required")
+		return "", "", ErrProviderNotConfigured
 	}
 
 	stripe.Key = secretKey

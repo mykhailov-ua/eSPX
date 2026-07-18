@@ -1,3 +1,5 @@
+// flow_test.go covers JSON and protobuf wire formats through the ingest handler,
+// Redis unified filter, stream consumer, and Postgres store.
 package e2e_test
 
 import (
@@ -22,8 +24,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestE2E_Flow is the JSON wire-format smoke test for the full ingest chain:
-// HTTP accept, Redis filter/stream, async consumer, and Postgres persistence.
+// TestE2E_Flow sends a JSON click through the ingest handler and waits until
+// campaign_stats and events each contain exactly one row for the campaign.
 func TestE2E_Flow(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")
@@ -115,8 +117,9 @@ func TestE2E_Flow(t *testing.T) {
 	}, 5*time.Second, 100*time.Millisecond, "Should have 1 event in events table")
 }
 
-// TestE2E_Flow_Protobuf covers the production ingest codec; JSON-only e2e would
-// miss vtproto unmarshaling and Content-Type routing on the hot /track path.
+// TestE2E_Flow_Protobuf sends an application/x-protobuf impression and asserts
+// that vtproto unmarshaling, Content-Type routing, and stream settlement persist
+// one impression in campaign_stats.
 func TestE2E_Flow_Protobuf(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")

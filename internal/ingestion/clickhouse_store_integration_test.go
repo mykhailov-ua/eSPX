@@ -86,9 +86,8 @@ func TestClickHouseStore_InsertDeduplicate_RealCH(t *testing.T) {
 	conn, cleanup := setupClickHouseIntegration(t)
 	defer cleanup()
 
-	store := NewClickHouseStore(conn, 5*time.Second)
+	store := NewClickHouseStore(conn, 5*time.Second, "", DefaultCHSpoolConfig(), nil)
 	defer func() { _ = store.Close() }()
-	store.SetBatching(1, 0)
 
 	clickID := "ch-dedup-" + uuid.NewString()
 	campID := uuid.New()
@@ -118,9 +117,8 @@ func TestClickHouseStore_InsertDeduplicate_DeterministicToken_RealCH(t *testing.
 	conn, cleanup := setupClickHouseIntegration(t)
 	defer cleanup()
 
-	store := NewClickHouseStore(conn, 5*time.Second)
+	store := NewClickHouseStore(conn, 5*time.Second, "", DefaultCHSpoolConfig(), nil)
 	defer func() { _ = store.Close() }()
-	store.SetBatching(1, 0)
 
 	clickID := "ch-dedup-det-" + uuid.NewString()
 	campID := uuid.New()

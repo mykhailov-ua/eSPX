@@ -57,7 +57,7 @@ func TestChaos_AutoscaleNoDoubleFreeze(t *testing.T) {
 	require.NoError(t, err)
 
 	queries := db.New(pool)
-	syncWorker := ingestion.NewSyncWorker(rdb, ingestion.NewCampaignRepo(queries), ingestion.NewCustomerRepo(queries), 100*time.Millisecond)
+	syncWorker := ingestion.NewSyncWorker(rdb, ingestion.NewCampaignRepo(queries), ingestion.NewCustomerRepo(queries), 100*time.Millisecond, nil, 0)
 	_, err = pool.Exec(ctx, `DELETE FROM outbox_events`)
 	require.NoError(t, err)
 

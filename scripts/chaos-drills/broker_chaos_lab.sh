@@ -8,7 +8,7 @@ cd "$ROOT"
 LOG="${BROKER_CHAOS_LAB_LOG:-/tmp/espx-broker-chaos-lab.log}"
 export BROKER_CHAOS_LAB=1
 
-echo "=== Broker chaos lab (durability and coordination) ==="
+echo "Broker chaos lab (durability and coordination)"
 if command -v stress-ng >/dev/null 2>&1; then
 	echo "stress-ng: $(stress-ng --version 2>&1 | head -1)"
 else
@@ -26,7 +26,7 @@ echo "chaos_proof lines: $PROOFS"
 test "$PROOFS" -ge 2
 
 if command -v docker >/dev/null 2>&1 && [ "${BROKER_CHAOS_SKIP_SENTINEL:-0}" != "1" ]; then
-	echo "=== Sentinel coordination lab (optional) ==="
+	echo "Sentinel coordination lab (optional)"
 	COMPOSE_BASE="deploy/broker/docker-compose.yaml"
 	COMPOSE_SENTINEL="deploy/broker/docker-compose.sentinel.yaml"
 	docker compose -f "$COMPOSE_BASE" -f "$COMPOSE_SENTINEL" up -d redis redis-replica redis-sentinel

@@ -32,7 +32,7 @@ Request flow: Nginx (:8180) load-balances `/track` to tracker replicas (:8181-81
 
 Client-sharded standalone Redis masters (**not Redis Cluster**). Production locks **`N = 4`** shards (`config.ExpectedRedisShardCount`; `ENV=production` rejects `len(REDIS_ADDRS) != 4`). Lua scripts require multi-key atomicity on one instance; cluster hash tags would not remove cross-shard coordination for global config.
 
-Full design, chaos profile, and rollout: **[Edge layer](docs/EDGE.md)** (Part II sharding, Part III control plane).
+Full design, chaos profile, and rollout: **[Edge layer](docs/EDGE.md)** (Part II sharding, Part III control plane). Legal/compliance guardrails (Art. 361 UK, passive telemetry, eBPF): **[GUIDE_COMPLIANCE.md](GUIDE_COMPLIANCE.md)**.
 
 ### Campaign → shard routing
 
@@ -178,3 +178,6 @@ Local workflows use `Makefile`, optional [Task](Taskfile.yaml), and categorized 
 - [Go hot path](docs/GO.md) — gnet, zero-alloc, filter engine
 - [Edge layer](docs/EDGE.md) — ingress, Redis/Lua, UDP control (Part III)
 - [Databases](docs/DATABASE.md) — PostgreSQL ledger + ClickHouse analytics (incl. ML features)
+- [Redis hot state](docs/REDIS.md) — sharding, Lua validation, risks
+- [Crypto payments](docs/CRYPTO_GATEWAY.md) — BTC/ETH/USDT gateway options; Stripe patterns
+- [Administrative complex](docs/MANAGEMENT.md) — cold-path admin API, billing, reports, roadmap

@@ -12,6 +12,7 @@ vendor/
 
 # IDE
 .idea/
+.vscode/
 .vscode/*
 !.vscode/extensions.json
 !.vscode/settings.json
@@ -55,6 +56,3 @@ deploy/terraform/**/terraform.tfstate*
 
 # Rendered deploy configs (scripts/k8s/render_prometheus_k3s.sh, etc.)
 deploy/monitoring/*.rendered.yaml
-
-# Personal scratch docs
-GUIDE_*.md

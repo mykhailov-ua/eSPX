@@ -12,8 +12,10 @@ import (
 
 	"espx/internal/campaignmodel"
 	"espx/internal/ingestion/sqlc"
+	"espx/internal/licensing"
 	"espx/internal/metrics"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	redis "github.com/redis/go-redis/v9"
 )
 
@@ -53,13 +55,21 @@ type campaignReplicaDTO struct {
 	RegistryStatus   string                       `json:"registry_status"`
 }
 
+type entitlementsSnapshot struct {
+	byCustomerID map[uuid.UUID]licensing.Entitlements
+	license      licensing.Entitlements
+	licenseState licensing.LicenseState
+}
+
 // Registry maintains an in-memory replica of active campaigns for lock-free hot-path reads.
 //
 // Reads (Exists, GetCampaign, GetCustomerID) use atomic.Value map swaps with no mutex.
 // Writes (Add, Sync) clone the map under mu and publish a new pointer for readers.
 type Registry struct {
 	repo          db.Querier
+	pool          *pgxpool.Pool
 	data          atomic.Value // holds *campaignMapSnapshot
+	entitlements  atomic.Value // holds *entitlementsSnapshot
 	manuallyAdded map[uuid.UUID]bool
 	mu            sync.Mutex // guards writes (updates to data map, manuallyAdded)
 	replicaPath   string
@@ -74,7 +84,15 @@ func NewRegistry(repo db.Querier) *Registry {
 		replicaPath:   "campaigns_replica.json",
 	}
 	r.data.Store(&campaignMapSnapshot{byID: make(map[uuid.UUID]campaignInfo, 100_000)})
+	r.entitlements.Store(&entitlementsSnapshot{
+		byCustomerID: make(map[uuid.UUID]licensing.Entitlements),
+		licenseState: licensing.StateExpired,
+	})
 	return r
+}
+
+func (r *Registry) SetPool(pool *pgxpool.Pool) {
+	r.pool = pool
 }
 
 // SetBudgetWarmer wires incremental Redis budget warming after registry updates.
@@ -235,6 +253,11 @@ func (r *Registry) Add(id, customerID uuid.UUID, brandID *uuid.UUID, brandFcapKe
 // Sync reloads active campaigns from Postgres into a new map and atomically swaps readers.
 // When Postgres is down and memory is empty, falls back to campaigns_replica.json on disk.
 func (r *Registry) Sync(ctx context.Context) (int, error) {
+	if r.pool != nil {
+		if err := r.SyncEntitlements(ctx); err != nil {
+			slog.Error("entitlements sync failed", "error", err)
+		}
+	}
 	rows, err := r.repo.ListActiveCampaigns(ctx)
 	if err != nil {
 		r.mu.Lock()
@@ -528,4 +551,149 @@ func (r *Registry) Wait(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+func (r *Registry) SyncEntitlements(ctx context.Context) error {
+	if r.pool == nil {
+		return nil
+	}
+
+	var planCode string
+	var stateStr string
+	var entitlementsBytes []byte
+	var validUntil time.Time
+
+	var licEnt licensing.Entitlements
+	var licState licensing.LicenseState = licensing.StateActive // Default active if not configured
+
+	row := r.pool.QueryRow(ctx, "SELECT plan_code, state, entitlements_json, valid_until FROM billing.license_status LIMIT 1")
+	err := row.Scan(&planCode, &stateStr, &entitlementsBytes, &validUntil)
+	if err == nil {
+		licState = licensing.LicenseState(stateStr)
+		_ = json.Unmarshal(entitlementsBytes, &licEnt)
+	} else {
+		// Default limits for testing/development
+		licEnt.Limits.MaxRPS = 999999
+		licEnt.Limits.MaxRequestsPerDay = 999999999
+		licEnt.Limits.MaxActiveCampaigns = 99999
+		licEnt.Limits.MaxRegions = 9
+		licEnt.Features.RtbLive = true
+		licEnt.Features.MlFraudBoost = true
+		licEnt.Features.MultiRegion = true
+		licEnt.Features.SlotMigration = true
+	}
+
+	custRows, err := r.pool.Query(ctx, `
+		SELECT s.customer_id, s.plan_code, s.status, p.limits_json, p.features_json, s.overrides_json
+		FROM billing.customer_subscriptions s
+		JOIN billing.subscription_plans p ON s.plan_code = p.code
+	`)
+
+	byCust := make(map[uuid.UUID]licensing.Entitlements)
+	if err == nil {
+		defer custRows.Close()
+		for custRows.Next() {
+			var custID uuid.UUID
+			var planCode string
+			var status string
+			var limitsBytes []byte
+			var featuresBytes []byte
+			var overridesBytes []byte
+
+			err := custRows.Scan(&custID, &planCode, &status, &limitsBytes, &featuresBytes, &overridesBytes)
+			if err != nil {
+				continue
+			}
+
+			var limits licensing.Limits
+			_ = json.Unmarshal(limitsBytes, &limits)
+
+			var features licensing.FeatureSet
+			_ = json.Unmarshal(featuresBytes, &features)
+
+			if len(overridesBytes) > 0 {
+				var overrides struct {
+					Limits   *licensing.Limits     `json:"limits,omitempty"`
+					Features *licensing.FeatureSet `json:"features,omitempty"`
+				}
+				if json.Unmarshal(overridesBytes, &overrides) == nil {
+					if overrides.Limits != nil {
+						mergeLimits(&limits, *overrides.Limits)
+					}
+					if overrides.Features != nil {
+						mergeFeatures(&features, *overrides.Features)
+					}
+				}
+			}
+
+			custEnt := licensing.Entitlements{
+				Limits:   limits,
+				Features: features,
+			}
+
+			byCust[custID] = licensing.Effective(licEnt, custEnt)
+		}
+	}
+
+	r.entitlements.Store(&entitlementsSnapshot{
+		byCustomerID: byCust,
+		license:      licEnt,
+		licenseState: licState,
+	})
+
+	return nil
+}
+
+func (r *Registry) GetEntitlements(customerID uuid.UUID) (licensing.Entitlements, bool) {
+	snap, ok := r.entitlements.Load().(*entitlementsSnapshot)
+	if !ok || snap == nil {
+		return licensing.Entitlements{}, false
+	}
+	ent, ok := snap.byCustomerID[customerID]
+	return ent, ok
+}
+
+func (r *Registry) GetLicenseState() (licensing.LicenseState, licensing.Entitlements) {
+	snap, ok := r.entitlements.Load().(*entitlementsSnapshot)
+	if !ok || snap == nil {
+		return licensing.StateExpired, licensing.Entitlements{}
+	}
+	return snap.licenseState, snap.license
+}
+
+func mergeLimits(dst *licensing.Limits, src licensing.Limits) {
+	if src.MaxRPS != 0 {
+		dst.MaxRPS = src.MaxRPS
+	}
+	if src.MaxRequestsPerDay != 0 {
+		dst.MaxRequestsPerDay = src.MaxRequestsPerDay
+	}
+	if src.MaxActiveCampaigns != 0 {
+		dst.MaxActiveCampaigns = src.MaxActiveCampaigns
+	}
+	if src.MaxRegions != 0 {
+		dst.MaxRegions = src.MaxRegions
+	}
+	if src.MaxTenants != 0 {
+		dst.MaxTenants = src.MaxTenants
+	}
+	if src.MaxEventsPerMonth != 0 {
+		dst.MaxEventsPerMonth = src.MaxEventsPerMonth
+	}
+	if src.MaxAPIKeys != 0 {
+		dst.MaxAPIKeys = src.MaxAPIKeys
+	}
+	if src.MaxExportChunkBytes != 0 {
+		dst.MaxExportChunkBytes = src.MaxExportChunkBytes
+	}
+	if src.QuotaResetTimezone != "" {
+		dst.QuotaResetTimezone = src.QuotaResetTimezone
+	}
+}
+
+func mergeFeatures(dst *licensing.FeatureSet, src licensing.FeatureSet) {
+	dst.RtbLive = src.RtbLive
+	dst.MlFraudBoost = src.MlFraudBoost
+	dst.MultiRegion = src.MultiRegion
+	dst.SlotMigration = src.SlotMigration
 }

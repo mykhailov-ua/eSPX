@@ -113,7 +113,7 @@ func main() {
 	customerRepo := ingestion.NewCustomerRepo(queries)
 	var syncWorkers []*ingestion.SyncWorker
 	for _, rdb := range rdbs {
-		sw := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond)
+		sw := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond, nil, 0)
 		syncWorkers = append(syncWorkers, sw)
 		svc.StartBackgroundWorker(func() {
 			sw.Start(ctx)

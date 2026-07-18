@@ -99,6 +99,8 @@ func mapRPCError(err error) error {
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, ErrLedgerDrift):
 		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, ErrNoSpend):
+		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, pgx.ErrNoRows):
 		return status.Error(codes.NotFound, "not found")
 	default:

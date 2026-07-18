@@ -42,10 +42,20 @@ type Config struct {
 	StatsFlushMs                    int
 	MaxWorkers                      int
 	CHMaxWorkers                    int
+	ProcessorPGStreamMaxWorkers     int
+	ProcessorCHStreamMaxWorkers     int
+	ProcessorPGGateSlots            int
+	ProcessorCHGateSlots            int
+	SyncWorkerMaxConcurrency        int
 	LogRetentionDays                int
 	DBTrackerMaxConns               int
 	DBProcessorMaxConns             int
 	DBMinConns                      int
+	CHMaxConns                      int
+	CHSpoolDir                      string
+	CHSpoolSegmentMB                int
+	CHSpoolMaxSegments              int
+	TrackerPGFallback               bool
 	WriteTimeoutMs                  int
 	FilterTimeoutMs                 int
 	MetricsHistogramSampleMask      int
@@ -118,7 +128,11 @@ type Config struct {
 		OpsAlertOutboxStuckSec      int
 		AuditExportPath             string
 		AuditExportRetentionDays    int
+		BillingExportPath           string
 		SupplyExportPath            string
+		AdminFanoutMaxConcurrency   int
+		LowBalanceThresholdMicro    int64
+		LowBalanceAlertEnabled      bool
 	}
 	CampaignUpdateChannel   string
 	RtbCatalogReloadChannel string
@@ -289,6 +303,8 @@ type Config struct {
 		ServerHost           string
 		MetricsPort          string
 		InvoiceWorkerEnabled bool
+		PaymentProvider      string
+		PaymentProviderKey   Secret
 	}
 
 	BillingInternalToken Secret
@@ -318,6 +334,7 @@ func (c *Config) ResolveRedisMasterNames() []string {
 
 // Load builds a validated Config from the process environment.
 func Load() (*Config, error) {
+	appEnv := os.Getenv("ENV")
 	cfg := &Config{
 		ServerPort:                      os.Getenv("SERVER_PORT"),
 		ProcessorPort:                   os.Getenv("PROCESSOR_PORT"),
@@ -338,10 +355,20 @@ func Load() (*Config, error) {
 		StatsFlushMs:                    getEnvInt("STATS_FLUSH_MS", 5000),
 		MaxWorkers:                      getEnvInt("MAX_WORKERS", 16),
 		CHMaxWorkers:                    getEnvInt("CH_MAX_WORKERS", 1),
+		ProcessorPGStreamMaxWorkers:     getEnvInt("PROCESSOR_PG_STREAM_MAX_WORKERS", 0),
+		ProcessorCHStreamMaxWorkers:     getEnvInt("PROCESSOR_CH_STREAM_MAX_WORKERS", 0),
+		ProcessorPGGateSlots:            getEnvInt("PROCESSOR_PG_GATE_SLOTS", 0),
+		ProcessorCHGateSlots:            getEnvInt("PROCESSOR_CH_GATE_SLOTS", 0),
+		SyncWorkerMaxConcurrency:        getEnvInt("SYNC_WORKER_MAX_CONCURRENCY", 32),
 		LogRetentionDays:                getEnvInt("LOG_RETENTION_DAYS", 7),
 		DBTrackerMaxConns:               getEnvInt("DB_TRACKER_MAX_CONNS", 4),
 		DBProcessorMaxConns:             getEnvInt("DB_PROCESSOR_MAX_CONNS", 16),
 		DBMinConns:                      getEnvInt("DB_MIN_CONNS", 2),
+		CHMaxConns:                      getEnvInt("CH_MAX_CONNS", 8),
+		CHSpoolDir:                      envOrDefault("CH_SPOOL_DIR", "/var/spool/espx/ch"),
+		CHSpoolSegmentMB:                getEnvInt("CH_SPOOL_SEGMENT_MB", 512),
+		CHSpoolMaxSegments:              getEnvInt("CH_SPOOL_MAX_SEGMENTS", 8),
+		TrackerPGFallback:               getEnvBool("TRACKER_PG_FALLBACK", appEnv != "production"),
 		WriteTimeoutMs:                  getEnvInt("WRITE_TIMEOUT_MS", 5000),
 		FilterTimeoutMs:                 getEnvInt("FILTER_TIMEOUT_MS", 0),
 		MetricsHistogramSampleMask:      getEnvInt("METRICS_HISTOGRAM_SAMPLE_MASK", 127),
@@ -383,7 +410,7 @@ func Load() (*Config, error) {
 		AdminAPIKey:                     Secret(os.Getenv("ADMIN_API_KEY")),
 		AllowedOrigins:                  strings.Split(os.Getenv("ALLOWED_ORIGINS"), ","),
 		TrustedProxies:                  strings.Split(os.Getenv("TRUSTED_PROXIES"), ","),
-		Env:                             os.Getenv("ENV"),
+		Env:                             appEnv,
 		AuthMetricsPort:                 os.Getenv("AUTH_METRICS_PORT"),
 		CampaignUpdateChannel:           os.Getenv("CAMPAIGN_UPDATE_CHANNEL"),
 		RtbCatalogReloadChannel:         os.Getenv("RTB_CATALOG_RELOAD_CHANNEL"),
@@ -598,6 +625,11 @@ func Load() (*Config, error) {
 		cfg.Billing.MetricsPort = "9092"
 	}
 	cfg.Billing.InvoiceWorkerEnabled = getEnvBool("BILLING_INVOICE_WORKER_ENABLED", true)
+	cfg.Billing.PaymentProvider = envOrDefault("BILLING_PAYMENT_PROVIDER", "placeholder")
+	cfg.Billing.PaymentProviderKey = Secret(os.Getenv("BILLING_PAYMENT_PROVIDER_KEY"))
+	if cfg.Billing.PaymentProviderKey == "" {
+		cfg.Billing.PaymentProviderKey = "placeholder_dev"
+	}
 	cfg.BillingInternalToken = Secret(os.Getenv("BILLING_INTERNAL_TOKEN"))
 
 	if len(cfg.AllowedOrigins) == 1 && cfg.AllowedOrigins[0] == "" {
@@ -625,10 +657,17 @@ func Load() (*Config, error) {
 		cfg.Management.AuditExportPath = "./data/audit-export"
 	}
 	cfg.Management.AuditExportRetentionDays = getEnvInt("AUDIT_EXPORT_RETENTION_DAYS", 90)
+	cfg.Management.BillingExportPath = os.Getenv("BILLING_EXPORT_PATH")
+	if cfg.Management.BillingExportPath == "" {
+		cfg.Management.BillingExportPath = "./data/billing-export"
+	}
 	cfg.Management.SupplyExportPath = os.Getenv("SUPPLY_EXPORT_PATH")
 	if cfg.Management.SupplyExportPath == "" {
 		cfg.Management.SupplyExportPath = "./data/supply-export"
 	}
+	cfg.Management.AdminFanoutMaxConcurrency = getEnvInt("ADMIN_FANOUT_MAX_CONCURRENCY", 8)
+	cfg.Management.LowBalanceThresholdMicro = int64(getEnvInt("LOW_BALANCE_THRESHOLD_MICRO", 5_000_000))
+	cfg.Management.LowBalanceAlertEnabled = getEnvBool("LOW_BALANCE_ALERT_ENABLED", true)
 
 	cfg.GeoIP.DBPath = os.Getenv("GEOIP_DB_PATH")
 	if cfg.GeoIP.DBPath == "" {
@@ -745,6 +784,9 @@ func Load() (*Config, error) {
 	if cfg.Env == "production" && cfg.FilterTimeoutMs > 100 {
 		return nil, fmt.Errorf("production FILTER_TIMEOUT_MS must be <= 100 (got %d)", cfg.FilterTimeoutMs)
 	}
+	if cfg.Env == "production" && cfg.TrackerPGFallback {
+		return nil, fmt.Errorf("production TRACKER_PG_FALLBACK must be 0")
+	}
 
 	return cfg, nil
 }
@@ -809,6 +851,34 @@ func (c *Config) IVTDetectorEnabled() bool {
 // FraudScoringEnabled reports whether the ML analytics shadow scoring should run.
 func (c *Config) FraudScoringEnabled() bool {
 	return c != nil && c.FraudScoring.Enabled
+}
+
+// ProcessorPGStreamWorkers returns PG stream consumer workers per shard (PROCESSOR_PG_STREAM_MAX_WORKERS or MAX_WORKERS).
+func (c *Config) ProcessorPGStreamWorkers() int {
+	if c == nil {
+		return 16
+	}
+	if c.ProcessorPGStreamMaxWorkers > 0 {
+		return c.ProcessorPGStreamMaxWorkers
+	}
+	if c.MaxWorkers > 0 {
+		return c.MaxWorkers
+	}
+	return 16
+}
+
+// ProcessorCHStreamWorkers returns CH stream consumer workers per shard (PROCESSOR_CH_STREAM_MAX_WORKERS or CH_MAX_WORKERS).
+func (c *Config) ProcessorCHStreamWorkers() int {
+	if c == nil {
+		return 1
+	}
+	if c.ProcessorCHStreamMaxWorkers > 0 {
+		return c.ProcessorCHStreamMaxWorkers
+	}
+	if c.CHMaxWorkers > 0 {
+		return c.CHMaxWorkers
+	}
+	return 1
 }
 
 // FraudScorerStandalone reports whether the ML analytics is running as a standalone service.

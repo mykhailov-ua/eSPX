@@ -119,6 +119,7 @@ type Querier interface {
 	ListActiveCampaigns(ctx context.Context) ([]Campaign, error)
 	ListAdsTxtEntries(ctx context.Context) ([]AdsTxtEntry, error)
 	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AdminAuditLog, error)
+	ListAuditLogsExport(ctx context.Context, arg ListAuditLogsExportParams) ([]AdminAuditLog, error)
 	ListAuditLogsInRange(ctx context.Context, arg ListAuditLogsInRangeParams) ([]AdminAuditLog, error)
 	ListAuditPaginated(ctx context.Context, arg ListAuditPaginatedParams) ([]AdminAuditLog, error)
 	ListBlacklist(ctx context.Context, arg ListBlacklistParams) ([]IpBlacklist, error)

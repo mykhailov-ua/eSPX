@@ -1,3 +1,5 @@
+// rtb_live_budget_test.go exercises live RTB winner selection when budget
+// authority is held by the in-process RTB store rather than Redis Lua.
 package e2e_test
 
 import (
@@ -18,7 +20,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// staticGeoCountry is a minimal GeoIP stub for RTB ingest geo deduplication in e2e.
+// staticGeoCountry is a fixed-country GeoIP stub used to satisfy RTB geo targeting
+// without loading a MaxMind database in the test harness.
 type staticGeoCountry struct {
 	country string
 }
@@ -27,8 +30,10 @@ func (g staticGeoCountry) GetCountry(string) (string, error) { return g.country,
 func (g staticGeoCountry) IsAnonymous(string) (bool, error)  { return false, nil }
 func (g staticGeoCountry) Close() error                      { return nil }
 
-// TestE2E_RtbLiveBudgetAuthority exercises live RTB winner selection with RTB budget
-// authority: Lua skip_budget preserves Redis keys; in-process BudgetStore debits spend.
+// TestE2E_RtbLiveBudgetAuthority runs live RTB mode with BudgetAuthorityRTB.
+// The unified filter uses Lua skip_budget so the Redis campaign key is unchanged.
+// The in-process rtb.BudgetStore debits the clearing price and the stream
+// consumer persists the resulting click.
 func TestE2E_RtbLiveBudgetAuthority(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")

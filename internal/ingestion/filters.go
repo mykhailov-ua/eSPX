@@ -26,6 +26,8 @@ var (
 	ErrEmergencyBreakerActive = errors.New("service temporarily unavailable (emergency breaker active)")
 	ErrBidFloorNotMet         = errors.New("bid floor not met")
 	ErrMigrationFenced        = errors.New("campaign debit fenced")
+	ErrLicenseExpired         = errors.New("license expired")
+	ErrDailyQuotaExceeded     = errors.New("daily quota exceeded")
 )
 
 // bufWrapper holds a reusable byte buffer for zero-allocation Redis key construction.

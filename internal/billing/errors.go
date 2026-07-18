@@ -15,4 +15,6 @@ var (
 	ErrInvoiceNotFound = errors.New("invoice not found")
 	// ErrLedgerDrift is returned when customer balance does not match the ledger sum.
 	ErrLedgerDrift = errors.New("ledger balance drift detected")
+	// ErrNoSpend is returned when a billing month has zero spend and no invoice should be created.
+	ErrNoSpend = errors.New("no spend in billing period")
 )

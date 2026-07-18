@@ -39,6 +39,8 @@ func main() {
 	defer pool.Close()
 
 	svc := billing.NewService(pool)
+	provider := billing.NewPaymentProvider(cfg.Billing.PaymentProvider, string(cfg.Billing.PaymentProviderKey))
+	slog.Info("billing payment provider configured", "provider", provider.Name(), "configured", provider.Configured())
 
 	notifierClient, closeNotifier, err := billing.NewNotifierClient(cfg)
 	if err != nil {

@@ -11,7 +11,7 @@ func ModuleRoot() string {
 }
 
 func AdsMigrationsDir() string {
-	return filepath.Join(ModuleRoot(), "internal", "ads", "migrations")
+	return filepath.Join(ModuleRoot(), "internal", "ingestion", "migrations")
 }
 
 func AuthMigrationsDir() string {
@@ -20,4 +20,8 @@ func AuthMigrationsDir() string {
 
 func PaymentMigrationsDir() string {
 	return filepath.Join(ModuleRoot(), "internal", "payment", "migrations")
+}
+
+func BillingMigrationsDir() string {
+	return filepath.Join(ModuleRoot(), "internal", "billing", "migrations")
 }

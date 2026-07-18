@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -75,6 +76,9 @@ func (w *InvoiceWorker) runMonth(ctx context.Context, month time.Time) {
 		for _, customerID := range ids {
 			inv, genErr := w.service.GenerateInvoice(opCtx, customerID, month)
 			if genErr != nil {
+				if errors.Is(genErr, ErrNoSpend) {
+					continue
+				}
 				continue
 			}
 			_ = w.service.DeliverInvoice(opCtx, inv)

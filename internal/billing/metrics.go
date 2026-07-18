@@ -20,4 +20,9 @@ var (
 		Name: "billing_ledger_drift_total",
 		Help: "Customer balance vs ledger sum drift detected",
 	})
+
+	LedgerInvariantFailuresTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "billing_ledger_invariant_failures_total",
+		Help: "Ledger invariant check failures detected",
+	})
 )

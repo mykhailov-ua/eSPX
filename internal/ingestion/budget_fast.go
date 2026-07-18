@@ -235,6 +235,10 @@ func (f *UnifiedFilter) recoverBudgetAfterMiss(
 		return true, nil
 	}
 
+	if !f.pgFallbackAllowed {
+		return false, ErrBudgetExhausted
+	}
+
 	dbTimeout := f.dbLookupTimeout
 	if rem, ok := filterDeadlineRemainingEvt(evt, ctx); ok {
 		if rem <= 0 {
