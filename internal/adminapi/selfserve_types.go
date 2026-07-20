@@ -61,5 +61,5 @@ type APIKeyCreator interface {
 	CreateAPIKey(ctx context.Context, accessToken, name string) (APIKeyResult, error)
 }
 
-// InvoiceLister lists tenant billing history (reuses billing facet gRPC client).
+// InvoiceLister lists tenant billing history (reuses billing gRPC client).
 type InvoiceLister = InvoiceGRPCClient

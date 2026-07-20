@@ -136,6 +136,11 @@ func (m *mockRedisClient) SetNX(ctx context.Context, key string, value any, expi
 	return staticBoolCmd
 }
 
+func (m *mockRedisClient) HExists(ctx context.Context, key string, field string) *redis.BoolCmd {
+	staticBoolCmd.SetVal(false)
+	return staticBoolCmd
+}
+
 type errFilter struct {
 	err error
 }

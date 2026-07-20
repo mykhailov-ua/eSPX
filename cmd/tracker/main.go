@@ -161,6 +161,7 @@ func main() {
 
 	breakerFilter := ingestion.NewEmergencyBreakerFilter(settingsWatcher)
 	consentFilter := ingestion.NewConsentFilter(registry, consentStore)
+	placementFilter := ingestion.NewPlacementBlacklistFilter(rdbs)
 
 	unifiedFilter := ingestion.NewUnifiedFilter(
 		rdbs,
@@ -193,7 +194,7 @@ func main() {
 
 	creativeStore := ingestion.NewBrandCreativeStore(rdbs[0])
 	entitlementsFilter := ingestion.NewEntitlementsFilter(registry, sharder, rdbs)
-	filterEngine := ingestion.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, entitlementsFilter, breakerFilter, geoFilter, scheduleFilter, l3Filter, fraudFilter, deviceFilter, consentFilter, unifiedFilter)
+	filterEngine := ingestion.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, entitlementsFilter, breakerFilter, geoFilter, scheduleFilter, placementFilter, l3Filter, fraudFilter, deviceFilter, consentFilter, unifiedFilter)
 	filterEngine.SetSettingsWatcher(settingsWatcher)
 
 	var rtbCatalog *ingestion.RtbCatalog

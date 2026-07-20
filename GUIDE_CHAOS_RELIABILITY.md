@@ -433,44 +433,36 @@ Testing Rules:
 2. Verify: Ingestion path remains stable; schedule logic handles time step.
 3. Proof: `chaos_proof fault=clock_step_backward schedule_stable=true`.
 
+### M4 Extended Matrix (UDP, Redis Engine, Lua, FD, CPU)
+
+**Full catalog:** [MILESTONE.md](docs/MILESTONE.md#24-milestone-4-chaos-matrix) — **90+ scenarios** for M4 elastic triplets:
+
+| Domain | IDs | Focus |
+| :--- | :--- | :--- |
+| UDP control plane | UDP-01…26 | Loss, reorder, epoch gap, stale/canary, TCP snapshot |
+| Redis single-thread | REDIS-01…15 | Blocking commands, migrate COPY, triplet A/B/R |
+| Lua (Redis 5.1, no JIT) | LUA-01…11 | SCRIPT FLUSH, tier degrade, routing_epoch fence |
+| Edge LuaJIT | EDGE-LUA-01…02 | OpenResty only (not Redis) |
+| Network | NET-01…10 | RTT, partition, churn, cross-AZ SLA |
+| FD exhaustion | FD-01…06 | ulimit, lazy dial, EMFILE on migrate |
+| CPU / host | CPU-01…08 | cgroup throttle, false sharing, scrape overhead |
+| Shard Orchestrator | SO-01…08 | False migrate, scale-up, quorum gate |
+| Cascading | CAS-01…05 | Multi-fault game days |
+
+Implement per [R10 #11, #13](GUIDE_CHAOS_RELIABILITY.md); update `CHAOS_MIN_PROOFS` when new CI proofs land.
+
 ---
 
-### Zero-Allocation Benchmark Example
+### Performance Benchmarking Guidelines
 
-```go
-func BenchmarkProcessTrack_ZeroAlloc(b *testing.B) {
-    // fixtures...
-    b.ReportAllocs()
-    b.ResetTimer()
-    for i := 0; i < b.N; i++ {
-        // Hot-path target call
-    }
-    // Target metrics check: allocs/op must be strictly 0
-}
-```
+Hot-path benchmarks in `internal/ingestion` MUST enforce zero heap allocations. Developers execute benchmarks using `go test -bench=. -benchmem` and verify that `allocs/op` equals zero. Any PR introducing non-zero allocations on `/track` ingestion is blocked by performance gate automation.
 
-### Alertmanager Rules Example
+### Alerting & Circuit Breaker Thresholds
 
-```yaml
-groups:
-  - name: espx_chaos_alerts
-    rules:
-      - alert: TrackerLatencyP99Critical
-        expr: histogram_quantile(0.99, sum(rate(ad_http_request_duration_seconds_bucket[1m])) by (le)) > 0.080
-        for: 30s
-        labels:
-          severity: page
-      - alert: CircuitBreakerOpenTooLong
-        expr: ad_redis_breaker_state == 2
-        for: 5m
-        labels:
-          severity: critical
-      - alert: DeadLetterQueueSpike
-        expr: ad_processor_dlq_length > 100
-        for: 1m
-        labels:
-          severity: page
-```
+Chaos automation monitors core observability rules configured in Alertmanager:
+- **p99 Latency SLA Breach**: Alert triggers when `ad_http_request_duration_seconds` p99 latency exceeds 80 ms for over 30 seconds.
+- **Persistent Circuit Breaker**: Alert triggers when `ad_redis_breaker_state == 2` (Open) for over 5 minutes.
+- **Dead-Letter Queue Backlog**: Alert triggers when `ad_processor_dlq_length` exceeds 100 pending messages for over 1 minute.
 
 ---
 

@@ -11,12 +11,13 @@ import (
 
 // trackIngestFields holds decoded /track POST fields before processTrack.
 type trackIngestFields struct {
-	campaignID uuid.UUID
-	eventType  string
-	userID     string
-	payload    []byte
-	clickID    string
-	deviceType []byte
+	campaignID  uuid.UUID
+	eventType   string
+	userID      string
+	payload     []byte
+	clickID     string
+	placementID string
+	deviceType  []byte
 }
 
 // parseTrackIngest decodes protobuf or JSON /track bodies into shared ingest fields.
@@ -64,6 +65,8 @@ func (h *AdsPacketHandler) parseTrackIngest(
 			}
 			if len(pbReq.Metadata.ExtraBytes) > 0 {
 				fields.payload = pbReq.Metadata.ExtraBytes
+				// Extract placement_id from ExtraBytes if possible, but protobuf usually has dedicated fields if needed.
+				// For now, we rely on JSON path for placements.
 			} else if len(pbReq.Metadata.ExtraKeys) > 0 {
 				ctx.extraBuf = marshalExtra(ctx.extraBuf, pbReq.Metadata.ExtraKeys, pbReq.Metadata.ExtraValues)
 				fields.payload = ctx.extraBuf
@@ -84,6 +87,7 @@ func (h *AdsPacketHandler) parseTrackIngest(
 	fields.userID = trackReq.UserID
 	fields.eventType = trackReq.Type
 	fields.payload = trackReq.Payload
+	fields.placementID = trackReq.PlacementID
 	if trackReq.ClickID != "" {
 		fields.clickID = trackReq.ClickID
 	}
@@ -96,6 +100,7 @@ func fillTrackEvent(evt *campaignmodel.Event, fields trackIngestFields, ip, ua s
 	evt.CampaignID = fields.campaignID
 	evt.UserID = fields.userID
 	evt.Type = fields.eventType
+	evt.PlacementID = fields.placementID
 	evt.Payload = append(evt.Payload[:0], fields.payload...)
 	evt.IP = ip
 	evt.UA = ua

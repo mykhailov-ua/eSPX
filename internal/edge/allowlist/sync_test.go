@@ -2,6 +2,8 @@ package allowlist
 
 import (
 	"context"
+	"os"
+	"sync"
 	"testing"
 
 	"espx/internal/edge/lpm"
@@ -75,4 +77,23 @@ func TestApplyDiff_cidrRemoval(t *testing.T) {
 	var val uint8
 	err = m.Lookup(lpm.IPv4Key{PrefixLen: 24, Addr: lpm.ToBPFAddr(0xc6336400)}, &val)
 	assert.Error(t, err)
+}
+
+func TestIsProtected(t *testing.T) {
+	// Setup environment
+	os.Setenv("INSTALL_LAN_CIDR", "192.168.1.0/24")
+	defer os.Unsetenv("INSTALL_LAN_CIDR")
+
+	// Reset once for test
+	initOnce = sync.Once{}
+	protectedCIDRs = nil
+
+	assert.True(t, IsProtected("8.8.8.8"))
+	assert.True(t, IsProtected("1.1.1.1"))
+	assert.True(t, IsProtected("127.0.0.1"))
+	assert.True(t, IsProtected("192.168.1.50"))
+
+	assert.False(t, IsProtected("8.8.8.9"))
+	assert.False(t, IsProtected("192.168.2.50"))
+	assert.False(t, IsProtected("invalid-ip"))
 }

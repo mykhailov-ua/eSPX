@@ -270,6 +270,7 @@ func (chStore *ClickHouseStore) insertTable(ctx context.Context, table string, e
 			err = batch.Append(
 				e.ClickID,
 				e.CampaignID,
+				e.PlacementID,
 				e.IP,
 				e.UA,
 				unsafeString(e.Payload),

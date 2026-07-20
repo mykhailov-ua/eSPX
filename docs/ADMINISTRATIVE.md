@@ -1,5 +1,5 @@
 # Administrative Features
 
-Содержимое объединено в **[MANAGEMENT.md](./MANAGEMENT.md)** — единый документ по cold-path admin: архитектура, реализованные endpoints, паттерны данных, UX по ролям (DTO), backlog, roadmap, мультирегион.
+Content consolidated into **[MANAGEMENT.md](./MANAGEMENT.md)** — unified documentation for cold-path admin: architecture, implemented endpoints, data patterns, role-based UX (DTO), backlog, roadmap, and multi-region operations.
 
-Для milestone-чеклистов и DoD по M2.8 см. [MILESTONE.md](./MILESTONE.md).
+For milestone checklists and DoD criteria regarding M2.8, see [MILESTONE.md](./MILESTONE.md).

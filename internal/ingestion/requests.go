@@ -6,11 +6,12 @@ import (
 
 // TrackRequest is the JSON track payload parsed without reflection on the hot path.
 type TrackRequest struct {
-	CampaignID uuid.UUID
-	UserID     string
-	Type       string
-	ClickID    string
-	Payload    []byte
+	CampaignID  uuid.UUID
+	UserID      string
+	Type        string
+	ClickID     string
+	PlacementID string
+	Payload     []byte
 }
 
 // Reset clears fields before reuse; Payload is nil'd to drop input-buffer references.
@@ -19,6 +20,7 @@ func (v *TrackRequest) Reset() {
 	v.UserID = ""
 	v.Type = ""
 	v.ClickID = ""
+	v.PlacementID = ""
 	v.Payload = nil
 }
 

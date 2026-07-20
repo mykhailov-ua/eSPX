@@ -15,7 +15,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// SelfServeHTTPHandlers serves customer-facing /api/v1/selfserve routes (M4.1–M4.5).
+// SelfServeHTTPHandlers serves customer-facing /api/v1/selfserve routes.
 type SelfServeHTTPHandlers struct {
 	Campaigns                  CampaignAdmin
 	PaymentIntents             PaymentIntents

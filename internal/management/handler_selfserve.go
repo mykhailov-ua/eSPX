@@ -16,7 +16,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// registerSelfServeRoutes mounts customer-facing /api/v1/selfserve endpoints (M4.1–M4.5).
+// registerSelfServeRoutes mounts customer-facing /api/v1/selfserve endpoints.
 func (h *Handler) registerSelfServeRoutes(mux *http.ServeMux) {
 	ss := h.selfServePerm
 	mux.HandleFunc("POST /api/v1/selfserve/campaigns", h.limit(ss(h.createSelfServeCampaign, PermCampaignsWrite)))

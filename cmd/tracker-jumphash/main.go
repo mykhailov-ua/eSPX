@@ -109,6 +109,7 @@ func main() {
 
 	breakerFilter := ingestion.NewEmergencyBreakerFilter(settingsWatcher)
 	consentFilter := ingestion.NewConsentFilter(registry, consentStore)
+	placementFilter := ingestion.NewPlacementBlacklistFilter(rdbs)
 
 	unifiedFilter := ingestion.NewUnifiedFilter(
 		rdbs,
@@ -132,6 +133,7 @@ func main() {
 		breakerFilter,
 		geoFilter,
 		scheduleFilter,
+		placementFilter,
 		l3Filter,
 		fraudFilter,
 		deviceFilter,

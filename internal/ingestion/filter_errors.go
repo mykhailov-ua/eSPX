@@ -30,6 +30,7 @@ const (
 	filterRejectInfra
 	filterRejectLicenseExpired
 	filterRejectDailyQuotaExceeded
+	filterRejectPlacementBlocked
 )
 
 // filterRejectSpec holds the HTTP response template for a rejection kind.
@@ -58,6 +59,7 @@ var filterRejectSpecs = [...]filterRejectSpec{
 	filterRejectInfra:              {http.StatusServiceUnavailable, "service unavailable", respInfraUnavailable, "infra_unavailable"},
 	filterRejectLicenseExpired:     {http.StatusForbidden, "license expired", respLicenseExpired, "license_expired"},
 	filterRejectDailyQuotaExceeded: {http.StatusTooManyRequests, "daily quota exceeded", respDailyQuotaExceeded, "daily_quota_exceeded"},
+	filterRejectPlacementBlocked:   {http.StatusForbidden, "placement blocked", respPlacementBlocked, "placement_blocked"},
 }
 
 // FraudReasonID indexes stable fraud signal codes shared by filters, metrics, and ClickHouse.
@@ -167,6 +169,8 @@ func classifyFilterErr(err error) (filterRejectKind, bool) {
 		return filterRejectLicenseExpired, true
 	case errors.Is(err, ErrDailyQuotaExceeded):
 		return filterRejectDailyQuotaExceeded, true
+	case errors.Is(err, ErrPlacementBlocked):
+		return filterRejectPlacementBlocked, true
 	case isInfraFilterErr(err):
 		return filterRejectInfra, true
 	default:

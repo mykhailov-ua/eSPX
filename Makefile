@@ -4,7 +4,7 @@ fmt:
 	go fmt ./...
 
 gen:
-	bash scripts/codegen/gen.sh
+	bash scripts/codegen/gen.sh --proto
 
 lint: gen fmt
 	@if [ -z "$$(which golangci-lint 2> /dev/null)" ]; then \

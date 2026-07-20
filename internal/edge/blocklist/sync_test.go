@@ -2,6 +2,7 @@ package blocklist
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"espx/internal/edge/lpm"
@@ -102,5 +103,35 @@ func TestApplyDiff_fraudRemoval(t *testing.T) {
 	key := KeyFromHost(198, 51, 100, 1)
 	var val uint8
 	err = m.Lookup(key, &val)
+	assert.Error(t, err)
+}
+
+func TestApplyDiff_skipsProtected(t *testing.T) {
+	os.Setenv("INSTALL_LAN_CIDR", "192.168.1.0/24")
+	defer os.Unsetenv("INSTALL_LAN_CIDR")
+
+	m := newLPMMap(t)
+	store := NewStore()
+
+	// Try to block:
+	// - 8.8.8.8 (resolver, protected)
+	// - 192.168.1.10 (customer LAN, protected)
+	// - 198.51.100.1 (not protected)
+	added, removed, err := store.ApplyDiff(m, []string{"8.8.8.8", "192.168.1.10", "198.51.100.1"}, nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, added) // only 198.51.100.1 should be added
+	assert.Equal(t, 0, removed)
+
+	// Verify 198.51.100.1 is in the map
+	var val uint8
+	err = m.Lookup(KeyFromHost(198, 51, 100, 1), &val)
+	require.NoError(t, err)
+
+	// Verify 8.8.8.8 is NOT in the map
+	err = m.Lookup(KeyFromHost(8, 8, 8, 8), &val)
+	assert.Error(t, err)
+
+	// Verify 192.168.1.10 is NOT in the map
+	err = m.Lookup(KeyFromHost(192, 168, 1, 10), &val)
 	assert.Error(t, err)
 }

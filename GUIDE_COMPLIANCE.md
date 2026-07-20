@@ -121,10 +121,10 @@ Inbound packet/request
 
 | Defensive §1 | Component | Status |
 | :--- | :--- | :--- |
-| A XDP drop | `edge_filter.c`, `cmd/edge-xdp`, `cmd/edge-bpf-sync` | Implemented; allowlist guard M5 |
-| B TLS/JA3 class | `DeviceFilter`, nginx TLS hash header | Partial; impersonation worker M5 |
+| A XDP drop | `edge_filter.c`, `cmd/edge-xdp`, `cmd/edge-bpf-sync`, `allowlist.IsProtected` | Implemented |
+| B TLS/JA3 class | `DeviceFilter`, nginx TLS hash header, `TLSImpersonationWorker` | Implemented |
 | C Tarpit | nginx/gnet | **Not implemented** — optional M5 |
-| Audit | `admin_audit_log`, `edge_block_audit` | Partial |
+| Audit | `admin_audit_log`, `edge_block_audit` | Implemented |
 
 Library: [`github.com/cilium/ebpf`](https://github.com/cilium/ebpf) — official map API only; no raw kernel memory.
 

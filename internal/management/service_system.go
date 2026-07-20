@@ -6,12 +6,14 @@ import (
 	"log/slog"
 	"time"
 
+	"espx/internal/edge/allowlist"
 	"espx/internal/ingestion"
 	"espx/internal/ingestion/sqlc"
 	"espx/pkg/coldpath"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // BlacklistDTO exposes blocked IP entries to the admin API.
@@ -30,6 +32,10 @@ func (s *Service) BlockIP(ctx context.Context, ip string, source string) error {
 
 // BlockIPWithTTL persists a blacklist entry with optional per-request TTL override.
 func (s *Service) BlockIPWithTTL(ctx context.Context, ip string, source string, ttlSeconds *int64) error {
+	if allowlist.IsProtected(ip) {
+		return fmt.Errorf("IP %s is protected by allowlist", ip)
+	}
+
 	reason := normalizeBlacklistReason(source)
 	expiresAt := resolveBlacklistExpiry(reason, ttlSeconds, blacklistTTLFromConfig(s.cfg))
 
@@ -39,6 +45,24 @@ func (s *Service) BlockIPWithTTL(ctx context.Context, ip string, source string, 
 			Ip:        ip,
 			Reason:    reason,
 			ExpiresAt: expiresAt,
+		})
+		if err != nil {
+			return err
+		}
+
+		var ttlVal pgtype.Int4
+		if expiresAt.Valid {
+			diff := expiresAt.Time.Sub(time.Now().UTC())
+			if diff > 0 {
+				ttlVal = pgtype.Int4{Int32: int32(diff.Seconds()), Valid: true}
+			}
+		}
+
+		_, err = q.CreateEdgeBlockAudit(ctx, db.CreateEdgeBlockAuditParams{
+			Ip:       ip,
+			ReasonID: reason,
+			Ttl:      ttlVal,
+			Source:   source,
 		})
 		if err != nil {
 			return err

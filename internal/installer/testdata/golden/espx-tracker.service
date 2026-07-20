@@ -1,0 +1,14 @@
+[Unit]
+Description=eSPX Tracker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/espx/secrets.env
+ExecStart=/usr/local/bin/tracker
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

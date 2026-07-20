@@ -11,16 +11,9 @@ This document describes subsystem topology, data flows, and operational contract
 | [DATABASE.md](./DATABASE.md) | PostgreSQL and ClickHouse: reliability and idempotency |
 | [GO.md](./GO.md) | Go runtime, zero allocations, and compiler optimization |
 | [REDIS.md](./REDIS.md) | Shard topology, Lua scripts, and risks |
-| [AUTH.md](./AUTH.md) | Authentication, security, and chaos tests |
-| [MULTI_REGION.md](./MULTI_REGION.md) | Multi-region scaling and Global UUID |
-| [REMEDIATION.md](./REMEDIATION.md) | Architectural debt remediation plan |
-| [IDEMPOTENCY_CORE.md](./IDEMPOTENCY_CORE.md) | High-performance token generation core |
-| [DEVELOPMENT.md](./DEVELOPMENT.md) | Development and run instructions |
-| [MANAGEMENT.md](./MANAGEMENT.md) | Cold-path admin: API, billing, UX/DTO, backlog, multi-region |
-| [CRYPTO_GATEWAY.md](./CRYPTO_GATEWAY.md) | Cryptocurrency payment integration |
-| [SUBSCRIPTIONS.md](./SUBSCRIPTIONS.md) | Tenant plans: Pro / Enterprise |
-| [LICENSING.md](./LICENSING.md) | On-prem licensing and license server |
-| [MILESTONE.md](./MILESTONE.md) | Project roadmap |
+| [SHIPPED.md](./SHIPPED.md) | Delivered capabilities (M1–M3 core, M2, M5) |
+| [PROPOSALS.md](./PROPOSALS.md) | System proposals: volume licensing, edge localization, eBPF filter |
+| [MILESTONE.md](./MILESTONE.md) | Milestone index, roadmap, and delivery criteria |
 
 ## Topology
 

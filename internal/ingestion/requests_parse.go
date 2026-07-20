@@ -87,6 +87,7 @@ func ParseTrackRequestJSON(v *TrackRequest, data []byte) error {
 		isType := false
 		isClickID := false
 		isPayload := false
+		isPlacementID := false
 
 		switch len(key) {
 		case 4: // "type"
@@ -107,10 +108,14 @@ func ParseTrackRequestJSON(v *TrackRequest, data []byte) error {
 			if key[0] == 'c' && key[1] == 'a' && key[2] == 'm' && key[3] == 'p' && key[4] == 'a' && key[5] == 'i' && key[6] == 'g' && key[7] == 'n' && key[8] == '_' && key[9] == 'i' && key[10] == 'd' {
 				isCampaignID = true
 			}
+		case 12: // "placement_id"
+			if key[0] == 'p' && key[1] == 'l' && key[2] == 'a' && key[3] == 'c' && key[4] == 'e' && key[5] == 'm' && key[6] == 'e' && key[7] == 'n' && key[8] == 't' && key[9] == '_' && key[10] == 'i' && key[11] == 'd' {
+				isPlacementID = true
+			}
 		}
 
 		// Parse value
-		if isCampaignID || isUserID || isType || isClickID {
+		if isCampaignID || isUserID || isType || isClickID || isPlacementID {
 			if data[i] != '"' {
 				return errMalformedJSON
 			}
@@ -140,6 +145,8 @@ func ParseTrackRequestJSON(v *TrackRequest, data []byte) error {
 				v.Type = unsafeString(valBytes)
 			} else if isClickID {
 				v.ClickID = unsafeString(valBytes)
+			} else if isPlacementID {
+				v.PlacementID = unsafeString(valBytes)
 			}
 		} else if isPayload {
 			valStart := i

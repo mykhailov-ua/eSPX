@@ -12,6 +12,9 @@ type RouteRegistry struct {
 	DashboardsHTTP *DashboardsHTTPHandlers
 	ViewsHTTP      *ViewsHTTPHandlers
 	SelfServeHTTP  *SelfServeHTTPHandlers
+	PostbackHTTP    *PostbackHTTPHandlers
+	CostSyncHTTP    *CostSyncHTTPHandlers
+	MarginGuardHTTP *MarginGuardHTTPHandlers
 }
 
 // RegisterRoutes mounts adminapi handlers on mux.
@@ -39,5 +42,14 @@ func RegisterRoutes(mux *http.ServeMux, routes RouteRegistry) {
 	}
 	if routes.SelfServeHTTP != nil {
 		routes.SelfServeHTTP.Register(mux)
+	}
+	if routes.PostbackHTTP != nil {
+		routes.PostbackHTTP.Register(mux)
+	}
+	if routes.CostSyncHTTP != nil {
+		routes.CostSyncHTTP.Register(mux)
+	}
+	if routes.MarginGuardHTTP != nil {
+		routes.MarginGuardHTTP.Register(mux)
 	}
 }

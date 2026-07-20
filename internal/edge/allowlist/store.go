@@ -3,6 +3,9 @@ package allowlist
 
 import (
 	"fmt"
+	"net"
+	"os"
+	"sync"
 
 	"espx/internal/edge/lpm"
 
@@ -14,6 +17,45 @@ const (
 	DefaultMapPath = "/sys/fs/bpf/espx/allow_v4"
 	allowedMarker  = byte(1)
 )
+
+var (
+	protectedCIDRs []*net.IPNet
+	initOnce       sync.Once
+)
+
+func initProtectedCIDRs() {
+	// Default resolvers
+	_, r1, _ := net.ParseCIDR("8.8.8.8/32")
+	_, r2, _ := net.ParseCIDR("1.1.1.1/32")
+	// Loopback
+	_, loopback, _ := net.ParseCIDR("127.0.0.0/8")
+
+	protectedCIDRs = append(protectedCIDRs, r1, r2, loopback)
+
+	// Customer LAN
+	if lan := os.Getenv("INSTALL_LAN_CIDR"); lan != "" {
+		if _, ipNet, err := net.ParseCIDR(lan); err == nil {
+			protectedCIDRs = append(protectedCIDRs, ipNet)
+		}
+	}
+}
+
+// IsProtected returns true if the IP is protected (customer LAN, resolvers, loopback).
+func IsProtected(ipStr string) bool {
+	initOnce.Do(initProtectedCIDRs)
+
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+
+	for _, cidr := range protectedCIDRs {
+		if cidr.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
 
 // LoadPinnedMap opens the allowlist map pinned by edge-xdp.
 func LoadPinnedMap(path string) (*ebpf.Map, error) {

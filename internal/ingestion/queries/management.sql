@@ -191,6 +191,11 @@ ON CONFLICT (ip) DO UPDATE
         expires_at = EXCLUDED.expires_at
 RETURNING *;
 
+-- name: CreateEdgeBlockAudit :one
+INSERT INTO edge_block_audit (ip, reason_id, ttl, source)
+VALUES ($1, $2, $3, $4)
+RETURNING *;
+
 -- name: DeleteBlacklistIP :exec
 DELETE FROM ip_blacklist
 WHERE ip = $1;

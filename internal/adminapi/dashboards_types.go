@@ -135,3 +135,10 @@ type FraudOverviewDTO struct {
 type OperatorDashboardDTO struct {
 	Period PeriodDTO `json:"period"`
 }
+
+// CampaignDashboardDTO is GET /api/v1/dashboards/campaign/{id}.
+type CampaignDashboardDTO struct {
+	CampaignID string           `json:"campaign_id"`
+	KPIs       MetricsBlockDTO  `json:"kpis"`
+	Freshness  DataFreshnessDTO `json:"freshness"`
+}

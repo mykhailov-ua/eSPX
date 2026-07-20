@@ -598,4 +598,38 @@ var (
 		Name: "ad_processor_stream_backpressure_active",
 		Help: "Stream consumer paused XREADGROUP while store circuit is open (1=active)",
 	}, []string{"group"})
+
+	EdgeBlocklistSkipAllowlistedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "edge_blocklist_skip_allowlisted_total",
+		Help: "Total number of blocklist sync attempts skipped because the IP is allowlisted",
+	})
+
+	EdgeTarpitDelaySeconds = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "edge_tarpit_delay_seconds",
+		Help:    "Duration of tarpit delays introduced on suspicious requests",
+		Buckets: prometheus.ExponentialBuckets(0.1, 2, 12),
+	})
+
+	// Cost sync metrics track network ingest health for M16 buy/sell-side ROI pipeline.
+	CostSyncRunsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ad_cost_sync_runs_total",
+		Help: "Cost sync runs by outcome (success, failed)",
+	}, []string{"status"})
+	CostSyncRowsImported = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_cost_sync_rows_imported_total",
+		Help: "Campaign cost line items imported from network APIs",
+	})
+	CostSyncDurationSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "ad_cost_sync_duration_seconds",
+		Help:    "Duration of one network cost sync run",
+		Buckets: []float64{0.5, 1, 2, 5, 10, 30, 60, 90, 120},
+	}, []string{"network"})
+	CostSyncReconciliationDelta = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_cost_sync_reconciliation_delta_micro_total",
+		Help: "Absolute micro-unit delta applied via RECONCILIATION_ADJUST entries",
+	})
+	CostSyncCHErrors = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_cost_sync_ch_errors_total",
+		Help: "ClickHouse cost_snapshots insert failures",
+	})
 )

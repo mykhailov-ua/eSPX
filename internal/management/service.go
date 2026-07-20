@@ -12,7 +12,7 @@ import (
 
 	"espx/internal/config"
 	"espx/internal/ingestion"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 	"espx/internal/metrics"
 	"espx/pkg/coldpath"
 
@@ -84,6 +84,9 @@ func NewService(pool *pgxpool.Pool, rdbs []redis.UniversalClient, sharder ingest
 	})
 	s.startWorker(func() {
 		NewScheduleWorker(s).Start(ctx)
+	})
+	s.startWorker(func() {
+		NewTLSImpersonationWorker(s).Start(ctx, 1*time.Hour)
 	})
 	s.startWorker(func() {
 		s.RunSystemStateSyncer(ctx)

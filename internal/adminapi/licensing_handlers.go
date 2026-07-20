@@ -272,6 +272,21 @@ func (h *LicensingHTTPHandlers) getSelfServeUsage(w http.ResponseWriter, r *http
 	}
 	periodDate := time.Date(time.Now().UTC().Year(), time.Now().UTC().Month(), 1, 0, 0, 0, 0, time.UTC)
 	q := db.New(h.Pool)
+
+	sub, err := q.GetCustomerSubscription(r.Context(), ingestion.ToUUID(custID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			httpresponse.Error(w, http.StatusForbidden, "FORBIDDEN", "Pro or Enterprise plan required")
+			return
+		}
+		httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	if sub.PlanCode != "pro" && sub.PlanCode != "enterprise" {
+		httpresponse.Error(w, http.StatusForbidden, "FORBIDDEN", "Pro or Enterprise plan required")
+		return
+	}
+
 	meters, err := q.ListUsageMeters(r.Context(), db.ListUsageMetersParams{
 		CustomerID: ingestion.ToUUID(custID),
 		Period:     pgtype.Date{Time: periodDate, Valid: true},

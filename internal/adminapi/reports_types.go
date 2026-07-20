@@ -9,6 +9,47 @@ type TableDTO struct {
 	NextCursor string           `json:"next_cursor,omitempty"`
 }
 
+// PlacementReportRowDTO is a row in the placements report.
+type PlacementReportRowDTO struct {
+	PlacementID  string  `json:"placement_id"`
+	CampaignID   string  `json:"campaign_id"`
+	Impressions  int64   `json:"impressions"`
+	Clicks       int64   `json:"clicks"`
+	Conversions  int64   `json:"conversions"`
+	SpendMicro   int64   `json:"spend_micro"`
+	RevenueMicro int64   `json:"revenue_micro"`
+	ProfitMicro  int64   `json:"profit_micro"`
+	ROIPct       float64 `json:"roi_pct"`
+	CPAMicro     int64   `json:"cpa_micro"`
+}
+
+// PlacementReportResponse is the response payload for placements report.
+type PlacementReportResponse struct {
+	Rows       []PlacementReportRowDTO `json:"rows"`
+	Freshness  DataFreshnessDTO        `json:"freshness"`
+	NextCursor string                  `json:"next_cursor,omitempty"`
+}
+
+// KeywordReportRowDTO is a row in the keywords report.
+type KeywordReportRowDTO struct {
+	Keyword      string  `json:"keyword"`
+	CampaignID   string  `json:"campaign_id"`
+	Impressions  int64   `json:"impressions"`
+	Clicks       int64   `json:"clicks"`
+	Conversions  int64   `json:"conversions"`
+	SpendMicro   int64   `json:"spend_micro"`
+	RevenueMicro int64   `json:"revenue_micro"`
+	ProfitMicro  int64   `json:"profit_micro"`
+	ROIPct       float64 `json:"roi_pct"`
+}
+
+// KeywordReportResponse is the response payload for keywords report.
+type KeywordReportResponse struct {
+	Rows       []KeywordReportRowDTO `json:"rows"`
+	Freshness  DataFreshnessDTO      `json:"freshness"`
+	NextCursor string                `json:"next_cursor,omitempty"`
+}
+
 // ColumnDTO describes one report column.
 type ColumnDTO struct {
 	Key   string `json:"key"`

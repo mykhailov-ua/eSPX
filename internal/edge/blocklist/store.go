@@ -4,7 +4,9 @@ package blocklist
 import (
 	"fmt"
 
+	"espx/internal/edge/allowlist"
 	"espx/internal/edge/lpm"
+	"espx/internal/metrics"
 
 	"github.com/cilium/ebpf"
 )
@@ -65,6 +67,13 @@ func (s *Store) ApplyDiff(m *ebpf.Map, manual, auto, fraud []string) (added, rem
 	lpm.MergeHosts(s.scratch, manual, auto, fraud)
 
 	for addr := range s.scratch {
+		be := lpm.IPv4Key{PrefixLen: 32, Addr: addr}.BEAddr()
+		ipStr := fmt.Sprintf("%d.%d.%d.%d", byte(be>>24), byte(be>>16), byte(be>>8), byte(be))
+		if allowlist.IsProtected(ipStr) {
+			metrics.EdgeBlocklistSkipAllowlistedTotal.Inc()
+			continue
+		}
+
 		if _, ok := s.hosts[addr]; ok {
 			continue
 		}

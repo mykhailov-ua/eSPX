@@ -87,34 +87,7 @@ Same JWT format and embedded vendor public key in binaries for both modes.
 
 Ed25519 or PASETO v4 public. Private key — license server only. Public key — `//go:embed` in `management` and `tracker`.
 
-```json
-{
-  "iss": "espx-license",
-  "sub": "license_uuid",
-  "kid": "2026-01",
-  "deployment_id": "uuid",
-  "customer_name": "Acme Corp",
-  "plan": "growth",
-  "valid_from": "2026-04-01T00:00:00Z",
-  "valid_until": "2026-05-01T00:00:00Z",
-  "grace_days": 7,
-  "limits": {
-    "max_rps": 100000,
-    "max_requests_per_day": 50000000,
-    "max_active_campaigns": 2000,
-    "max_regions": 2,
-    "max_tenants": 50
-  },
-  "features": {
-    "rtb_live": true,
-    "ml_fraud_boost": true,
-    "multi_region": true,
-    "slot_migration": false
-  },
-  "bind": { "mode": "soft", "fingerprint": "" },
-  "support_tier": "standard"
-}
-```
+The deployment license JWT is signed using Ed25519 or PASETO v4. The private key resides exclusively on the vendor license server, while the public key is embedded (`//go:embed`) inside `management` and `tracker` binaries. Claims specify: `iss`, `sub` (license UUID), `kid`, `deployment_id`, `customer_name`, `plan` (`starter` | `growth` | `enterprise`), `valid_from`, `valid_until`, `grace_days`, `limits` (`max_rps`, `max_requests_per_day`, `max_active_campaigns`, `max_regions`, `max_tenants`), `features` (`rtb_live`, `ml_fraud_boost`, `multi_region`, `slot_migration`), hardware `bind` mode, and `support_tier`.
 
 `plan` here is the **deployment ceiling**: `starter` | `growth` | `enterprise` (not tenant `basic` | `pro`).
 
@@ -197,38 +170,13 @@ Renewal in grace: new JWT → watcher updates snapshot → registry reload witho
 
 ## 8. Heartbeat Privacy
 
-Allowed:
-
-```json
-{
-  "license_id": "uuid",
-  "deployment_id": "uuid",
-  "version": { "management": "1.4.2", "tracker": "1.4.2" },
-  "uptime_seconds": 86400,
-  "optional_metrics": { "events_24h": 1000000 }
-}
-```
-
-`optional_metrics` only if `ESPX_LICENSE_TELEMETRY=1`.
-
-Must not send: click_id, campaign payloads, end-user IPs, DSN, ledger contents.
+Telemetry heartbeats (when `ESPX_LICENSE_TELEMETRY=1` is explicitly opted in) transmit only aggregate operational metadata: `license_id`, `deployment_id`, binary software versions (`management`, `tracker`), system `uptime_seconds`, and aggregate 24-hour event counts. Transmitting user IP addresses, click IDs, financial ledger entries, or campaign payloads is strictly forbidden.
 
 ---
 
 ## 9. Customer PG Mirror
 
-```sql
-CREATE TABLE license_status (
-    deployment_id      UUID PRIMARY KEY,
-    license_id         UUID NOT NULL,
-    plan_code          TEXT NOT NULL,
-    valid_until        TIMESTAMPTZ NOT NULL,
-    state              TEXT NOT NULL,
-    entitlements_json  JSONB NOT NULL,
-    last_verified_at   TIMESTAMPTZ NOT NULL,
-    last_refresh_error TEXT
-);
-```
+The `license_status` table in PostgreSQL acts as the local system-of-record mirror for active entitlements. Schema fields: `deployment_id` (Primary Key), `license_id`, `plan_code`, `valid_until` (TIMESTAMPTZ), `state`, `entitlements_json` (JSONB), `last_verified_at`, and `last_refresh_error`.
 
 API: `GET /api/v1/license/status` — `LicenseStatusDTO` in MANAGEMENT.md §19.8.
 
@@ -236,18 +184,7 @@ API: `GET /api/v1/license/status` — `LicenseStatusDTO` in MANAGEMENT.md §19.8
 
 ## 10. Unified Entitlements
 
-```go
-// internal/licensing/entitlements.go
-type Entitlements struct {
-    Plan       string
-    Limits     Limits
-    Features   FeatureSet
-    ValidUntil time.Time
-    State      LicenseState
-}
-
-func Effective(deployment, customer Entitlements) Entitlements
-```
+The `internal/licensing` package exports unified entitlement merging logic (`Effective(deployment, customer)`). It merges deployment ceilings with tenant subscription parameters, enforcing `min(deployment, customer)` for quantitative limits and boolean `AND` for feature flags.
 
 | Source | Redis key |
 | :--- | :--- |
@@ -281,5 +218,5 @@ Hot path uses `Effective()` per campaign's customer.
 
 - [SUBSCRIPTIONS.md](./SUBSCRIPTIONS.md) — Basic / Pro / Enterprise tenants
 - [MANAGEMENT.md](./MANAGEMENT.md) — §18–21
-- [proposals/ESPX-LP-2026-V1.md](./proposals/ESPX-LP-2026-V1.md) — **PROPOSAL:** hybrid volume licensing (optional)
+- [PROPOSALS.md](./PROPOSALS.md) — **PROPOSAL:** hybrid volume licensing (optional)
 - [MILESTONE.md](./MILESTONE.md) — Milestone 6 (LIC-*, SUB-*)

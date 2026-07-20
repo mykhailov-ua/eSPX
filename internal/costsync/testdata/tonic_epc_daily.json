@@ -1,0 +1,18 @@
+{
+  "data": [
+    {
+      "campaign_id": "tonic-camp-1",
+      "country": "US",
+      "epc": 0.25,
+      "clicks": 50,
+      "revenue": 12.5
+    },
+    {
+      "campaign_id": "tonic-camp-2",
+      "country": "DE",
+      "epc": 0.10,
+      "clicks": 0,
+      "revenue": 0
+    }
+  ]
+}

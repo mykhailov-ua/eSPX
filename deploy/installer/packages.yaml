@@ -1,0 +1,8 @@
+debian:
+  - curl
+  - git
+  - docker.io
+  - docker-compose-plugin
+  - libpcap-dev
+  - libelf-dev
+  - ethtool

@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"espx/internal/ingestion"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 	"espx/pkg/coldpath"
 
 	"github.com/google/uuid"
@@ -76,6 +76,8 @@ func (w *OutboxWorker) handleOutboxEvent(opCtx, ctx context.Context, ev db.Outbo
 		return w.handleFraudBlacklistAdd(ctx, ev.Payload)
 	case "ML_MODEL_VERSION":
 		return w.handleFraudModelVersion(ctx, ev.Payload)
+	case "PAUSE_PLACEMENT":
+		return w.handlePausePlacement(ctx, ev.Payload)
 	default:
 		return fmt.Errorf("unknown outbox event type: %s", ev.EventType)
 	}
@@ -478,4 +480,40 @@ func (w *OutboxWorker) handleFraudModelVersion(ctx context.Context, payload []by
 	}
 
 	return nil
+}
+
+// handlePausePlacement adds or removes a placement to the campaign-specific blacklist across all Redis shards.
+func (w *OutboxWorker) handlePausePlacement(ctx context.Context, payload []byte) error {
+	p := coldpath.UnmarshalLenient[PausePlacementPayload](payload)
+	if p.CampaignID == "" || p.PlacementID == "" {
+		return nil
+	}
+	if _, err := uuid.Parse(p.CampaignID); err != nil {
+		return fmt.Errorf("invalid campaign id: %w", err)
+	}
+
+	key := fmt.Sprintf("blacklist:placement:%s", p.CampaignID)
+	for _, rdb := range w.svc.rdbs {
+		if rdb == nil {
+			continue
+		}
+		if p.Action == "remove" {
+			if err := rdb.HDel(ctx, key, p.PlacementID).Err(); err != nil {
+				return fmt.Errorf("failed to hdel placement blacklist on shard: %w", err)
+			}
+		} else {
+			// We use HSET with a value of "1" to mark as paused.
+			// The tracker will check HEXISTS or HGET.
+			if err := rdb.HSet(ctx, key, p.PlacementID, "1").Err(); err != nil {
+				return fmt.Errorf("failed to hset placement blacklist on shard: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+type PausePlacementPayload struct {
+	CampaignID  string `json:"campaign_id"`
+	PlacementID string `json:"placement_id"`
+	Action      string `json:"action,omitempty"` // "add" (default) or "remove"
 }

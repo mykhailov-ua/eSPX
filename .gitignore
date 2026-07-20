@@ -6,9 +6,25 @@
 bin/
 vendor/
 
-# Generated code (sqlc, proto, etc.)
-/gen/
+# Generated code (make gen / make proto — repo keeps sources only)
 /api/gen/
+/gen/
+
+# sqlc (queries/*.sql + migrations/)
+internal/*/db/*.sql.go
+internal/*/db/db.go
+internal/*/db/models.go
+internal/*/db/querier.go
+internal/ingestion/sqlc/
+
+# protobuf / vtproto (api/*.proto → internal/*/pb/)
+internal/*/pb/*.pb.go
+internal/*/pb/*_grpc.pb.go
+internal/*/pb/*_vtproto.pb.go
+
+# bpf2go (deploy/edge-xdp/bpf/*.c → internal/edge/bpf/)
+internal/edge/bpf/edge_bpf*.go
+internal/edge/bpf/*.o
 
 # IDE
 .idea/

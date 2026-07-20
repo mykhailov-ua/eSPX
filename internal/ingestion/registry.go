@@ -11,9 +11,10 @@ import (
 	"time"
 
 	"espx/internal/campaignmodel"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 	"espx/internal/licensing"
 	"espx/internal/metrics"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	redis "github.com/redis/go-redis/v9"
@@ -696,4 +697,5 @@ func mergeFeatures(dst *licensing.FeatureSet, src licensing.FeatureSet) {
 	dst.MlFraudBoost = src.MlFraudBoost
 	dst.MultiRegion = src.MultiRegion
 	dst.SlotMigration = src.SlotMigration
+	dst.MarginGuard = src.MarginGuard
 }

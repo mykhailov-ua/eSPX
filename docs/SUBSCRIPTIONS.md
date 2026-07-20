@@ -41,7 +41,7 @@ Entry tier: single buyer or small team, proof of value, strict caps.
 | :--- | :--- |
 | Regions | 1 |
 | Active campaigns | up to 50 |
-| RPS (ingress) | до 10,000 | до 50,000 | 200,000+ |
+| RPS (ingress) | up to 10,000 | up to 50,000 | 200,000+ |
 | **Requests / day (RPD)** | 500,000 | 10,000,000 | contract |
 | Events / month | up to 5M | up to 50M | committed + overage |
 | API keys | up to 2 |
@@ -152,68 +152,13 @@ Enforced on hot path (RPS, RPD) or cold path (campaigns, regions). Hot path read
 
 ---
 
-## 6. Data Model
+The subscription relational model consists of four primary PostgreSQL tables:
+- **`subscription_plans`**: Master plan catalog (`code` PK, `display_name`, `limits_json` JSONB, `features_json` JSONB, `base_fee_micro` BIGINT). Seed plan codes: `basic`, `pro`, `enterprise`.
+- **`customer_subscriptions`**: Active tenant assignments (`customer_id` PK, `plan_code` FK, `status` enum `active|past_due|cancelled|suspended`, `period_start`, `period_end`, `overrides_json` JSONB).
+- **`usage_meters`**: Monthly usage tracking (`customer_id`, `meter`, `period` primary key composite, `value` BIGINT).
+- **`usage_daily`**: Daily ingress RPD mirror (`customer_id`, `usage_date`, `meter`, `value` primary key composite), periodically updated by `DailyQuotaFlushWorker` on the cold path for meters `requests` and `events`.
 
-```sql
-CREATE TABLE subscription_plans (
-    code            TEXT PRIMARY KEY,
-    display_name    TEXT NOT NULL,
-    limits_json     JSONB NOT NULL,
-    features_json   JSONB NOT NULL,
-    base_fee_micro  BIGINT NOT NULL DEFAULT 0
-);
-
-CREATE TABLE customer_subscriptions (
-    customer_id     UUID PRIMARY KEY REFERENCES customers(id),
-    plan_code       TEXT NOT NULL REFERENCES subscription_plans(code),
-    status          TEXT NOT NULL,
-    period_start    DATE NOT NULL,
-    period_end      DATE,
-    overrides_json  JSONB,
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE usage_meters (
-    customer_id     UUID NOT NULL,
-    meter           TEXT NOT NULL,
-    period          DATE NOT NULL,
-    value           BIGINT NOT NULL DEFAULT 0,
-    PRIMARY KEY (customer_id, meter, period)
-);
-```
-
-Seed plans: `basic`, `pro`, `enterprise`.
-
-Example `limits_json` (Basic):
-
-```json
-{
-  "max_active_campaigns": 50,
-  "max_rps": 10000,
-  "max_requests_per_day": 500000,
-  "max_events_per_month": 5000000,
-  "max_regions": 1,
-  "max_api_keys": 2,
-  "max_export_chunk_bytes": 1048576,
-  "quota_reset_timezone": "UTC"
-}
-```
-
-### 6.1 Daily usage mirror
-
-```sql
-CREATE TABLE usage_daily (
-    customer_id   UUID NOT NULL,
-    usage_date    DATE NOT NULL,
-    meter         TEXT NOT NULL,
-    value         BIGINT NOT NULL DEFAULT 0,
-    PRIMARY KEY (customer_id, usage_date, meter)
-);
-```
-
-Flushed from Redis by `DailyQuotaFlushWorker` (cold path). Meters: `requests`, `events`.
-
-`customer_subscriptions.status`: `active`, `past_due`, `cancelled`, `suspended`.
+`limits_json` specifies: `max_active_campaigns`, `max_rps`, `max_requests_per_day`, `max_events_per_month`, `max_regions`, `max_api_keys`, `max_export_chunk_bytes`, and `quota_reset_timezone`.
 
 ---
 

@@ -1,6 +1,8 @@
 # Redis: Topology, Lua Validation, and Risks
 
-The eSPX operational data layer consists of 4 isolated Redis Master nodes. Client-side sharding by `campaign_id` is used. Atomic financial validation runs through embedded Lua scripts (`EVALSHA`).
+The eSPX operational data layer consists of 4 isolated Redis Master nodes (production today). Client-side sharding by `campaign_id` is used. Atomic financial validation runs through embedded Lua scripts (`EVALSHA`).
+
+**Roadmap:** Milestone 4 (exec #12) replaces fixed StaticSlot with a [Shard Orchestrator](./MILESTONE.md#m4--shard-orchestrator--elastic-triplets-tier-xl-exec-12) and **N×(2 primary + 1 reserve)** clusters. Until M4 ships, the sections below describe the **current** production model (documented in [SHIPPED.md](./SHIPPED.md)).
 
 ---
 

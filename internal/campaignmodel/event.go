@@ -21,6 +21,7 @@ type Event struct {
 	CampaignID   uuid.UUID
 	UserID       string
 	Type         string
+	PlacementID  string
 	Payload      []byte
 	IP           string
 	UA           string
@@ -50,6 +51,7 @@ func (event *Event) Reset() {
 	event.CampaignID = uuid.Nil
 	event.UserID = ""
 	event.Type = ""
+	event.PlacementID = ""
 	if cap(event.Payload) > 4096 {
 		event.Payload = make([]byte, 0, 1024)
 	} else {

@@ -19,6 +19,7 @@ type FeatureSet struct {
 	MlFraudBoost  bool `json:"ml_fraud_boost"`
 	MultiRegion   bool `json:"multi_region"`
 	SlotMigration bool `json:"slot_migration"`
+	MarginGuard   bool `json:"margin_guard"`
 }
 
 // Entitlements bundles Limits and FeatureSet.
@@ -46,6 +47,7 @@ type FeatureSetDTO struct {
 	MlFraudBoost  bool `json:"ml_fraud_boost"`
 	MultiRegion   bool `json:"multi_region"`
 	SlotMigration bool `json:"slot_migration"`
+	MarginGuard   bool `json:"margin_guard"`
 }
 
 // LicenseStatusDTO represents the DTO for GET /api/v1/license/status.

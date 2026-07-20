@@ -154,34 +154,17 @@ Non-Go resources bound to the service (e.g., `unified-filter.lua` in ads) **MUST
 1. **Tag = first `_` segment** — `billing_handlers.go`, `ops_recon.go`, `selfserve_types.go`.
 2. **Handler types** — `BillingHTTPHandlers`, `OpsHTTPHandlers`, … (unique per tag).
 3. **Single register** — `register.go` mounts all handlers; `cmd/management` wires deps.
-4. **No management import** — facets **MUST NOT** import `internal/management` (PKG-IMP-01).
-5. **No facet subfolders** — `internal/adminapi/billing/` forbidden; domain = filename tag, not a nested package.
+4. **No management import** — `adminapi` **MUST NOT** import `internal/management`.
+5. **No subfolders** — `internal/adminapi/billing/` forbidden; domain = filename tag, not a nested package.
 6. **R1 generated subdirs** — `db/`, `queries/`, `migrations/`, `pb/` allowed per R1 when this package owns SQL or protos. Today `adminapi` has none: reads go through `internal/billing/db`, `internal/billing/pb`, `internal/ingestion/sqlc`; subscription DDL stays in `internal/management/queries/` + migrations.
 7. **Hot path unchanged** — `internal/ingestion/`, `internal/rtb/` remain flat per R1.
 
-Reference: `docs/milestones/m4/INTERNAL_LAYOUT.md`.
-
 **Anti-patterns (reject in review):**
 - New `/api/v1` handlers in `internal/management/handler_*.go`.
-- Facet subpackages under `adminapi/`.
-- Facet named `api`, `http`, `common`, or `utils`.
+- Domain subpackages under `adminapi/` or `management/`.
+- Names like `api`, `http`, `common`, or `utils` as filename tags.
 
-### R1c. Domain Facet Packages (cold path)
-
-Cold-path domains **MAY** use the same facet layout as R1b:
-
-```text
-internal/licensing/     verify.go, watcher.go, entitlements.go   ← sibling when shared across binaries
-internal/billing/       invoices/, ledger/, tax/                   ← optional one-level facets inside a binary package
-```
-
-1. **Meaning over layer** — name files/facets by domain (`campaigns.go`, `consent.go`), not by transport tag (`handler_campaigns.go` + `service_campaigns.go` for the same feature).
-2. **Colocate** HTTP + business logic for one slice in the same file/facet when reasonable (< ~500 LOC). No `usecase/` / `repository/` trees.
-3. **Depth ≤ 1** under each service root (same as R1b).
-
-Legacy `handler_*` / `service_*` pairs in `management/` are **deprecated** — colocate on touch (`fraud_config.go`), do not extract subpackages.
-
-### R1d. `internal/management` — flat package, tag navigation
+### R1c. `internal/management` — flat package, tag navigation
 
 `cmd/management` = **one** Go package (`package management`). No theme subfolders (`management/fraud/` forbidden).
 
@@ -195,7 +178,9 @@ Legacy `handler_*` / `service_*` pairs in `management/` are **deprecated** — c
 
 Cross-cutting: `service.go`, `handler.go`, `workers.go`, `middleware.go`, `ops.go`, `errors.go`.
 
-**Extract as sibling** only when shared across binaries (`internal/licensing/`) or separate HTTP surface (`internal/adminapi/`). ClickHouse connect + query helpers stay in `internal/database/` — do not split `chquery/` or `clickhouse/` siblings for connection code.
+**Extract as sibling** only when shared across binaries (`internal/licensing/`) or separate HTTP surface (`internal/adminapi/`). ClickHouse connect + query helpers stay in `internal/database/` — no extra `chquery/` or `clickhouse/` subpackages for connection code.
+
+Legacy `handler_*` / `service_*` pairs are **deprecated** — colocate on touch (`fraud_config.go`), do not extract subpackages.
 
 ### R2. File Naming
 
@@ -205,13 +190,13 @@ Cross-cutting: `service.go`, `handler.go`, `workers.go`, `middleware.go`, `ops.g
 <domain>_<rest>.go
 ```
 
-**New cold-path code (R1b/R1c facets)** — files named by **domain meaning**, no `handler_` / `service_` layer pair for the same feature:
+**New cold-path code in `adminapi`** — same tag convention as R1b (`billing_handlers.go`, `reports_metrics.go`). Prefer colocating HTTP + logic in one file when < ~500 LOC.
 
 ```text
-# preferred (facet or sibling package)
-campaigns.go          brands.go          consent.go
+# preferred (adminapi)
+billing_handlers.go   reports_metrics.go   licensing_handlers.go
 
-# legacy (management — migrate on touch)
+# legacy (management — colocate on touch)
 handler_campaigns.go  service_campaigns.go
 ```
 
@@ -261,13 +246,10 @@ Binary name **MUST** match the process name (`tracker`, `management`, `payment`,
 
 ### R5. Imports
 
-```go
-import (
-    "espx/internal/payment"
-    paymentdb "espx/internal/payment/db"
-    paymentpb "espx/internal/payment/pb"
-)
-```
+Import structure guidelines:
+- Import the main flat service package for binary entry points (`internal/payment`).
+- Import generated sqlc database models explicitly (`internal/payment/db` aliased as `paymentdb`).
+- Import generated Protobuf/gRPC message packages (`internal/payment/pb` aliased as `paymentpb`).
 
 1. Import the flat service package for the API: `payment.NewService`.
 2. Import `db/` and `pb/` only where sqlc or gRPC types are required.
@@ -325,22 +307,8 @@ Hot-path: rejecting a request is an expected outcome (budget, geo, no-bid), not 
 7. **gRPC** — map to `codes.NotFound`, `InvalidArgument`, `Internal` at the handler boundary; do not pass raw `err.Error()` to the client.
 8. **FORBIDDEN:** `log.Fatal` and `panic` in request processing paths (acceptable only in `main` on fatal misconfiguration).
 
-```go
-// management/handler_errors.go - cold-path HTTP boundary
-func writeServiceError(w http.ResponseWriter, err error, logAttrs ...any) {
-    status, code, message := mapServiceError(err)
-    if status >= http.StatusInternalServerError {
-        slog.Error("management request failed", append([]any{slog.String("error", err.Error())}, logAttrs...)...)
-    }
-    httpresponse.Error(w, status, code, message)
-}
-
-// management/service_rtb_deals.go - DB boundary
-if errors.Is(err, pgx.ErrNoRows) {
-    return RtbDealDTO{}, ErrRtbDealNotFound
-}
-return RtbDealDTO{}, err
-```
+- **HTTP Error Boundary**: Management handlers write service errors using `mapServiceError` and `writeServiceError`. 5xx errors log structural attributes via `slog.Error`, while client responses receive a sanitized JSON error payload.
+- **DB Error Boundary**: Service layer checks `errors.Is(err, pgx.ErrNoRows)` explicitly to translate database missing-row errors to domain sentinels (e.g., `ErrRtbDealNotFound`) while returning unmapped database errors directly.
 
 #### R8.3. Hot-Path (Allocation-Free)
 
@@ -353,22 +321,8 @@ return RtbDealDTO{}, err
 7. **FORBIDDEN on the hot path:** `defer` in loops, `interface{}` error boxing in inner loops, `log.Fatal`, dynamic error string construction for metrics (use pre-bound label values).
 8. **Type Assertions** — only safe snapshots (`campaignMapSnapshot()` — R8.7 pt. 2). **FORBIDDEN:** `m, _ := x.Load().(map[...])`.
 
-```go
-// ads/track_core.go - hot-path outcome, not error propagation to HTTP
-if err := p.filterEngine.Check(ctx, evt); err != nil {
-    if kind, ok := classifyFilterErr(err); ok {
-        return trackOutcome{Status: trackStatusRejected, RejectKind: kind}
-    }
-    filterEngineFailures.Inc()
-    return trackOutcome{Status: trackStatusInternalError}
-}
-
-// rtb/no_bid.go - auction rejects without error interface
-func (reason NoBidReason) OK() bool { return reason == NoBidNone }
-
-// ads/rtb_no_bid.go - bridge RTB enum to track metrics
-func noBidToRejectKind(reason rtb.NoBidReason) filterRejectKind { ... }
-```
+- **Hot-Path Classification**: Ingest and track handlers pass filter errors to `classifyFilterErr(err)` to convert sentinels directly into typed `trackOutcome` statuses without HTTP error wrapping. Unclassified errors increment `filterEngineFailures` counters and return `trackStatusInternalError`.
+- **RTB Auction Rejects**: OpenRTB auctions return typed `NoBidReason` enums without creating error interfaces, bridging reasons directly to `filterRejectKind` metrics.
 
 #### R8.4. Error Handling Summary
 
@@ -397,18 +351,9 @@ func noBidToRejectKind(reason rtb.NoBidReason) filterRejectKind { ... }
 6. **Silent `json.Unmarshal`** — **FORBIDDEN:** `if json.Unmarshal(...) != nil { return }` without `slog` and/or counter. Corrupt replica -> warn + drop, not panic.
 7. **Infra Errors** — `database.IsNetworkOrSystemError` and `errors.As` for `*net.OpError` before falling back to `strings.Contains` checks on text.
 
-```go
-// cold-path validation boundary
-var ve validationError
-if errors.As(err, &ve) {
-    return http.StatusBadRequest, ve.Message
-}
-
-// worker batch
-if err := flush(); err != nil {
-    return errors.Join(err, markPending(rows))
-}
-```
+Validation and worker batch guidelines:
+- **Validation**: Handlers check for typed validation errors using `errors.As(err, &ve)` to return a structured HTTP 400 Bad Request message without raw string checks.
+- **Worker Batching**: Worker flush loops combine batch execution failures and status update errors via `errors.Join(err, markPending(rows))` to preserve error context.
 
 #### R8.7. Hot-Path: Performance
 
@@ -418,21 +363,7 @@ R8.3 specifies allocation-free reject and parse. Below are additional rules for 
    - `prometheus.*.WithLabelValues(evt.CampaignID.String(), ...)`
    - `WithLabelValues(err.Error(), ...)`
    Use pre-bound counters/histograms (`filterRejectSpecs`, `preboundTrackMetrics`) or a fixed label set (`shard`, `reason`). Per-entity cardinality -> cold-path or sampled logs only.
-2. **Typed Snapshot for `atomic.Value`** — each `Store` writes the exact same wrapper type; read only via helper:
-
-```go
-type campaignMapSnapshot struct {
-    byID map[uuid.UUID]campaignInfo
-}
-
-func (r *Registry) campaignMapSnapshot() *campaignMapSnapshot {
-    v, ok := r.data.Load().(*campaignMapSnapshot)
-    if !ok || v == nil {
-        return &campaignMapSnapshot{}
-    }
-    return v
-}
-```
+2. **Typed Snapshot for `atomic.Value`** — Stores write an immutable snapshot wrapper struct (e.g., containing `byID map[uuid.UUID]campaignInfo`). Readers access the snapshot via a dedicated helper function that performs a safe type assertion to the concrete pointer, returning a zero-value fallback struct on failure. Direct untyped `Load().(map[...])` assertions are strictly forbidden.
 
    **FORBIDDEN:** `m, _ := r.data.Load().(map[uuid.UUID]...)`.
 
@@ -499,22 +430,8 @@ Tests under `tests/` follow the same ASCII and tone rules as production code (R9
 
 **Helper functions** shared within a test file should have a one-line godoc when the name alone does not convey return values or side effects.
 
-Good:
-```go
-// TestE2E_Idempotency implements CHAOS.md section 4.3. A duplicate click_id
-// replay returns HTTP 202 without debiting budget again or inserting a second
-// events row.
-
-// postClickCampaign sends a JSON click to the gnet handler and returns the HTTP
-// status code and wall-clock latency for the request.
-```
-
-Bad:
-```go
-// TestE2E_Idempotency verifies §4.3 - no double debit 🎯
-
-// posts click, returns status
-```
+- **Good Comment Patterns**: Explains why a test exists, scenario ID, or non-obvious outcome (e.g., `TestE2E_Idempotency` referencing scenario 4.3 with exact expected status 202 and zero double-debit).
+- **Bad Comment Patterns**: Fragments, subjective words, non-ASCII emojis, or telegraphic text (e.g., `verifies §4.3 - no double debit 🎯`).
 
 #### R9.1. Automated Comment Verification
 
@@ -659,30 +576,8 @@ New post-gen patches follow the same contract as `patch_vtproto_hotpath`:
 
 ### Writing Comments
 
-Good:
-```go
-// Publishes on shard 0 only; campaign budget keys may live on other shards.
-func (s *Service) PublishCampaignUpdate(ctx context.Context, campaignID string) error
-
-// Outbox worker polls with shorter interval after backlog; idle interval saves CPU when queue empty.
-func (w *OutboxWorker) Start(ctx context.Context, interval time.Duration)
-
-// TestChaos_Shard0Outage implements CHAOS.md section 6 scenario A. With shard 0
-// unreachable, campaigns on shards 1-3 continue to accept track requests.
-func TestChaos_Shard0Outage(t *testing.T)
-```
-
-Bad:
-```go
-// Returns the campaign.
-func (s *Service) GetCampaign(ctx context.Context, id uuid.UUID) (db.Campaign, error)
-
-// Simple helper
-
-// Fast path - do not block
-
-// verifies §4.3 - no double debit
-```
+- **Good Godoc Practices**: State specific operational constraints, cross-shard behavior, or non-obvious worker scheduling rules (e.g., specifying that a pub/sub update runs on shard 0 only, or that an outbox worker interval decreases under queue backlog).
+- **Bad Godoc Practices**: Stating trivial getter operations, repeating function signatures, or using subjective words like "simple", "fast path", or non-ASCII characters.
 
 ---
 
