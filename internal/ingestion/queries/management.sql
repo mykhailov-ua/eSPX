@@ -23,8 +23,11 @@ WHERE id = $1
 RETURNING *;
 
 -- name: GetCampaignFull :one
-SELECT * FROM campaigns
-WHERE id = $1;
+SELECT c.*, 
+       sa.primary_a_shard, sa.primary_b_shard, sa.reserve_shard, sa.h_ema, sa.c_ema
+FROM campaigns c
+LEFT JOIN campaign_shard_assignment sa ON c.id = sa.campaign_id
+WHERE c.id = $1;
 
 -- name: CreateLedgerEntry :one
 INSERT INTO balance_ledger (customer_id, campaign_id, amount, type, idempotency_hash, payment_intent_id)
@@ -489,3 +492,25 @@ RETURNING *;
 
 -- name: DeleteRtbDeal :exec
 DELETE FROM rtb_deals WHERE id = $1;
+
+-- name: UpsertCampaignShardAssignment :one
+INSERT INTO campaign_shard_assignment (
+    campaign_id, primary_a_shard, primary_b_shard, reserve_shard, h_ema, c_ema, updated_at
+) VALUES ($1, $2, $3, $4, $5, $6, NOW())
+ON CONFLICT (campaign_id) DO UPDATE SET
+    primary_a_shard = EXCLUDED.primary_a_shard,
+    primary_b_shard = EXCLUDED.primary_b_shard,
+    reserve_shard = EXCLUDED.reserve_shard,
+    h_ema = EXCLUDED.h_ema,
+    c_ema = EXCLUDED.c_ema,
+    updated_at = NOW()
+RETURNING *;
+
+-- name: GetCampaignShardAssignment :one
+SELECT * FROM campaign_shard_assignment
+WHERE campaign_id = $1;
+
+-- name: DeleteCampaignShardAssignment :exec
+DELETE FROM campaign_shard_assignment
+WHERE campaign_id = $1;
+

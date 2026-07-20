@@ -48,12 +48,20 @@ spec:
               readOnly: true
             - name: logs
               mountPath: /var/log/espx
+          livenessProbe:
+            exec:
+              command:
+                - /tracker
+                - --health-probe
+                - http://127.0.0.1:8181/healthz
+            initialDelaySeconds: 5
+            periodSeconds: 10
           readinessProbe:
             exec:
               command:
                 - /tracker
                 - --health-probe
-                - http://127.0.0.1:8181/health
+                - http://127.0.0.1:8181/readyz
             initialDelaySeconds: 10
             periodSeconds: 10
           resources:
@@ -120,12 +128,20 @@ spec:
               readOnly: true
             - name: logs
               mountPath: /var/log/espx
+          livenessProbe:
+            exec:
+              command:
+                - /tracker
+                - --health-probe
+                - http://127.0.0.1:8182/healthz
+            initialDelaySeconds: 5
+            periodSeconds: 10
           readinessProbe:
             exec:
               command:
                 - /tracker
                 - --health-probe
-                - http://127.0.0.1:8182/health
+                - http://127.0.0.1:8182/readyz
             initialDelaySeconds: 10
             periodSeconds: 10
           resources:
@@ -189,12 +205,20 @@ spec:
               readOnly: true
             - name: logs
               mountPath: /var/log/espx
+          livenessProbe:
+            exec:
+              command:
+                - /tracker
+                - --health-probe
+                - http://127.0.0.1:8183/healthz
+            initialDelaySeconds: 5
+            periodSeconds: 10
           readinessProbe:
             exec:
               command:
                 - /tracker
                 - --health-probe
-                - http://127.0.0.1:8183/health
+                - http://127.0.0.1:8183/readyz
             initialDelaySeconds: 10
             periodSeconds: 10
           resources:
@@ -258,12 +282,20 @@ spec:
               readOnly: true
             - name: logs
               mountPath: /var/log/espx
+          livenessProbe:
+            exec:
+              command:
+                - /tracker
+                - --health-probe
+                - http://127.0.0.1:8184/healthz
+            initialDelaySeconds: 5
+            periodSeconds: 10
           readinessProbe:
             exec:
               command:
                 - /tracker
                 - --health-probe
-                - http://127.0.0.1:8184/health
+                - http://127.0.0.1:8184/readyz
             initialDelaySeconds: 10
             periodSeconds: 10
           resources:

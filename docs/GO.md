@@ -45,10 +45,66 @@ This keeps the system stable across NTP time jumps.
 *   **BCE (Bounds-Check Elimination).** Use compiler hints to remove bounds checks in loops.
 *   **Escape Analysis.** Ensure hot-path variables stay on the stack and do not escape to the heap.
 *   **Inlining.** Keep functions simple so the compiler can inline them (reducing call overhead).
+*   **ASM Analysis.** Use `go tool objdump` to verify hot loop logic. Watch for:
+    *   `CALL runtime.morestack`: Indicates a non-inlined call or deep stack requirement.
+    *   `CALL runtime.panicIndex`: Indicates failed BCE (Bounds Check Elimination).
+    *   Register pinning: Ensure hot variables (counters, pointers) stay in registers (AX, CX, R8-R15) rather than flushing to the stack frame.
 
 ---
 
-## 5. Filter Engine (Go Layer)
+## 5. Data-Oriented Design (DoD)
+
+Hot path performance is dominated by memory latency and CPU cache utilization (L1/L2).
+
+### Structure of Arrays (SoA)
+For processing candidate lists (e.g., RTB auctions), prefer SoA over AoS (Array of Structures).
+*   **AoS (Bad):** `[]Campaign` where each campaign has 10 fields. Iterating to check one field (e.g., `DeviceMask`) pulls unnecessary data into the cache line.
+*   **SoA (Good):** `type Registry struct { DeviceMasks []uint8; Bids []int64; ... }`. Iterating `DeviceMasks` packs 64 candidates into a single cache line (64 bytes).
+
+### Pointer Chasing
+Forbid nested pointers on the hot path. Every `ptr.Field` that is also a pointer incurs a potential L3/DRAM stall. Materialize all necessary data into flat slices during the cold catalog rebuild path.
+
+---
+
+## 6. Branch Prediction and Pipeline Density
+
+CPU execution pipelines stall when branch predictions fail (TAGE/BTB).
+
+### Predictability
+*   **Monotonicity.** Presort candidate buckets (e.g., by score or bid). This makes "early break" conditions (`if score < maxScore { break }`) highly predictable after the first failure.
+*   **Bitwise Filtering.** Use bitmasks (`mask & req != 0`) instead of complex nested `if/else` or map lookups. Bitwise operations are data-dependent but branch-less or easily predicted.
+
+### Eliminating Branches
+*   **BCE.** A single window check `if end <= len(slice) { ... }` before a loop allows the compiler to remove the branch for `panicIndex` inside the loop.
+*   **Lookup Tables.** Use small stack-fixed arrays or `[256]T` tables for mapping codes to weights to avoid conditional logic.
+
+---
+
+## 7. Atomic Operations and Synchronization
+
+The `sync/atomic` package is essential for lock-free hot paths, but carries significant hardware-level risks.
+
+### False Sharing
+Adjacent atomic variables share the same CPU cache line (typically 64 bytes). Updating one causes the hardware to invalidate the line across all cores (**MESI protocol**), forcing a re-fetch even for unrelated variables.
+*   **Bottleneck:** High latency on `Store` or `Add` operations even without logic contention.
+*   **Methodic:** Use `cpu.CacheLinePad` or manual padding (`_ [56]byte`) between contended fields in global structs.
+
+### Cache Line Invalidation (Thunder)
+Frequent `atomic.Store` on a global variable (e.g., a shared configuration snapshot or budget) causes every reader core to evict that line from L1/L2.
+*   **Bottleneck:** "Thunder" effect where readers stall on DRAM while waiting for the updated line.
+*   **Methodic:** 
+    *   **Compare-and-Swap (CAS).** Only write if the value changed.
+    *   **Local Caching.** Read the atomic once into a local register and use that value throughout the loop.
+    *   **Atomic Snapshots.** Use `atomic.Value` or `atomic.Pointer` to swap entire structures rather than updating individual fields.
+
+### Atomic Loop Overhead
+Using `atomic.Load` inside a tight loop (e.g., 1000 iterations) adds a hardware memory barrier on every cycle.
+*   **Bottleneck:** Prevents the CPU from performing speculative execution and instruction reordering.
+*   **Methodic:** Load the atomic variable **once** outside the loop. If consistent state is required within the loop (e.g., a shared budget), ensure the loop body is large enough to amortize the load cost.
+
+---
+
+## 8. Filter Engine (Go Layer)
 
 Checks in `FilterEngine.Check` run before calling Redis:
 1.  **Emergency Breaker.** Global traffic circuit breaker.
@@ -60,7 +116,7 @@ Checks in `FilterEngine.Check` run before calling Redis:
 
 ---
 
-## 6. Runtime Risks
+## 9. Runtime Risks
 
 *   **GC pressure.** Garbage collection cost depends on total heap size and allocation rate. Even with 0 allocations on the hot path, cold goroutines can trigger STW pauses.
 *   **RAM limits.** OOM is controlled via `GOMEMLIMIT`. Tracker and Processor should run in separate containers to isolate risk.

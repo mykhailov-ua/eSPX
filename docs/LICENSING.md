@@ -87,7 +87,7 @@ Same JWT format and embedded vendor public key in binaries for both modes.
 
 Ed25519 or PASETO v4 public. Private key — license server only. Public key — `//go:embed` in `management` and `tracker`.
 
-The deployment license JWT is signed using Ed25519 or PASETO v4. The private key resides exclusively on the vendor license server, while the public key is embedded (`//go:embed`) inside `management` and `tracker` binaries. Claims specify: `iss`, `sub` (license UUID), `kid`, `deployment_id`, `customer_name`, `plan` (`starter` | `growth` | `enterprise`), `valid_from`, `valid_until`, `grace_days`, `limits` (`max_rps`, `max_requests_per_day`, `max_active_campaigns`, `max_regions`, `max_tenants`), `features` (`rtb_live`, `ml_fraud_boost`, `multi_region`, `slot_migration`), hardware `bind` mode, and `support_tier`.
+The deployment license JWT is signed using Ed25519 or PASETO v4. The private key resides exclusively on the vendor license server, while the public key is embedded (`//go:embed`) inside `management` and `tracker` binaries. Claims specify: `iss`, `sub` (license UUID), `kid`, `deployment_id`, `customer_name`, `plan` (`starter` | `growth` | `enterprise`), `volume_band` (`S` | `M` | `L`), `valid_from`, `valid_until`, `grace_days`, `limits` (`max_rps`, `max_requests_per_day`, `max_active_campaigns`, `max_regions`, `max_tenants`, `max_events_per_month`), `features` (`rtb_live`, `openrtb_engine`, `ivt_ml_detector`, `ebpf_xdp_edge`, `ml_fraud_boost`, `multi_region`, `slot_migration`), hardware `bind` mode, and `support_tier`.
 
 `plan` here is the **deployment ceiling**: `starter` | `growth` | `enterprise` (not tenant `basic` | `pro`).
 
@@ -150,7 +150,7 @@ Ceiling for the entire installation. Tenant subscriptions cannot exceed these wi
 
 | Component | Role |
 | :--- | :--- |
-| `management` | `LicenseWatcher`; verify on startup; PG `license_status` + Redis snapshot |
+| `management` | `LicenseWatcher`; `VolumeMeterWorker`; PG `license_status` + Redis snapshot |
 | `tracker` | Registry reads snapshot; no vendor network |
 | `processor` | Optional: pause settlement on `EXPIRED` (config) |
 | `espx-install` | `license install`, `license activate`, `license status` |
@@ -218,5 +218,40 @@ Hot path uses `Effective()` per campaign's customer.
 
 - [SUBSCRIPTIONS.md](./SUBSCRIPTIONS.md) — Basic / Pro / Enterprise tenants
 - [MANAGEMENT.md](./MANAGEMENT.md) — §18–21
-- [PROPOSALS.md](./PROPOSALS.md) — **PROPOSAL:** hybrid volume licensing (optional)
-- [MILESTONE.md](./MILESTONE.md) — Milestone 6 (LIC-*, SUB-*)
+- [PROPOSALS.md](./PROPOSALS.md) — ESPX-LP-2026-V1 hybrid volume licensing (shipped M3-T)
+- [MILESTONE.md](./MILESTONE.md) — M3-T Commercial PU Packaging
+
+---
+
+## 14. Commercial PU Packaging (M3-T)
+
+Hybrid volume licensing per [PROPOSALS.md](./PROPOSALS.md) ESPX-LP-2026-V1.
+
+| Component | Behavior |
+| :--- | :--- |
+| **Volume bands** | JWT `volume_band`: `S` (≤10B/mo), `M` (≤50B/mo), `L` (≥100B/mo billable events) |
+| **Module flags** | `openrtb_engine`, `ivt_ml_detector`, `ebpf_xdp_edge`, `ml_fraud_boost` (legacy `rtb_live` aliases OpenRTB) |
+| **Hot path** | `LicenseFilter` reads registry snapshot; rejects only `EXPIRED` / `REVOKED` (grace continues) |
+| **Ingress gates** | JWT `max_rps` → UDP shard quotas; `max_requests_per_day` → Redis `ingress:day:{customer}:{date}` |
+| **VolumeMeterWorker** | Hourly CH rollup on `audit_log_rollups`; weights: accepted=1.0, dedup_reject=0.1, ebpf_drop=0.0 → `usage_meters` |
+| **Overage** | `billing.service.GenerateInvoice` reads `usage_meters` meter `events` vs `max_events_per_month` |
+
+Environment knobs:
+
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `ESPX_LICENSE_PUBLIC_KEY` | — | Ed25519 public key (hex/base64); enables `LicenseWatcher` in management |
+| `VOLUME_METER_ENABLED` | `1` (when CH enabled) | Hourly weighted rollup |
+| `VOLUME_METER_INTERVAL` | `1h` | Rollup tick |
+| `USAGE_DAILY_FLUSH_ENABLED` | `0` | Snapshot `usage_meters` → `usage_daily` |
+| `USAGE_DAILY_FLUSH_INTERVAL` | `24h` | Daily flush tick |
+
+Module enforcement (cold path):
+
+| Worker | Flag |
+| :--- | :--- |
+| `cmd/processor` fraud micro-batcher | `ml_fraud_boost` |
+| `cmd/ivt-detector` | `ivt_ml_detector` |
+| `cmd/edge-bpf-sync` | `ebpf_xdp_edge` (Redis `entitlement:deployment`) |
+| RTB track (`bid`/`rtb` events) | `openrtb_engine` |
+

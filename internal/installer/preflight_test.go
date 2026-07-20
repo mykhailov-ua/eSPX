@@ -51,10 +51,17 @@ func TestProfileValidation(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "multi_region blocked",
+			name: "multi_region valid single_vps",
 			profile: InstallProfile{
 				Type:        ProfileSingleVPS,
 				Interface:   "eth0",
+				MultiRegion: true,
+			},
+		},
+		{
+			name: "multi_region blocked in compose_dev",
+			profile: InstallProfile{
+				Type:        ProfileComposeDev,
 				MultiRegion: true,
 			},
 			wantErr: true,

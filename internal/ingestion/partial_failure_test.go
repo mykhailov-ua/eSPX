@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"espx/internal/config"
+
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 )
@@ -64,7 +65,7 @@ func TestHealthCheckPartialFailure(t *testing.T) {
 
 		status, body := GetHealthGnet(handler)
 		assert.Equal(t, http.StatusServiceUnavailable, status)
-		assert.Contains(t, body, "DEGRADED")
+		assert.Contains(t, body, "not ready")
 	})
 
 	t.Run("Redis Shard 2 Down", func(t *testing.T) {
@@ -79,7 +80,6 @@ func TestHealthCheckPartialFailure(t *testing.T) {
 
 		status, body := GetHealthGnet(handler)
 		assert.Equal(t, http.StatusServiceUnavailable, status)
-		assert.Contains(t, body, "DEGRADED")
-		assert.Contains(t, body, "redis=")
+		assert.Contains(t, body, "not ready")
 	})
 }

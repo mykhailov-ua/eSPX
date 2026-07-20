@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"espx/internal/config"
+	"espx/pkg/money"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -278,13 +279,13 @@ func updateInt(target *int, val string) {
 	}
 }
 
-// updateMicro applies a string float dollar amount converted to micro units.
+// updateMicro applies a string decimal dollar amount converted to micro units.
 func updateMicro(target *int64, val string) {
 	if val == "" {
 		return
 	}
-	if f, err := strconv.ParseFloat(val, 64); err == nil {
-		*target = int64(f * 1_000_000)
+	if micro, err := money.ParseDecimal(val); err == nil {
+		*target = micro
 	}
 }
 

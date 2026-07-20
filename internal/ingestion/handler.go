@@ -502,6 +502,9 @@ var (
 	respLicenseExpired     = []byte("HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: 15\r\nConnection: keep-alive\r\n\r\nlicense expired")
 	respDailyQuotaExceeded = []byte("HTTP/1.1 429 Too Many Requests\r\nContent-Type: text/plain\r\nRetry-After: 60\r\nContent-Length: 21\r\nConnection: keep-alive\r\n\r\ndaily quota exceeded")
 	respPlacementBlocked   = []byte("HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: 17\r\nConnection: keep-alive\r\n\r\nplacement blocked")
+	respHealthzOK          = []byte("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nOK")
+	respReadyzOK           = []byte("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nOK")
+	respReadyz503          = []byte("HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: 9\r\nConnection: keep-alive\r\n\r\nnot ready")
 )
 
 // AdsPacketHandler serves /track over gnet with optional worker-pool offload.
@@ -521,6 +524,7 @@ type AdsPacketHandler struct {
 	trackMetrics          preboundTrackMetrics
 	trackLatencyRing      *LatencyRing
 	healthy               atomic.Int32
+	healthzHits           atomic.Uint64
 	rdbsHealthy           []atomic.Int32
 	logger                *logger.Logger
 	loggerShardCounter    atomic.Uint64
@@ -640,6 +644,19 @@ func (h *AdsPacketHandler) FlushLatency() {
 	if h.trackLatencyRing != nil {
 		h.trackLatencyRing.FlushTo(h.trackDurationObserver)
 	}
+}
+
+// HealthzHits returns the number of liveness probes served on the gnet path.
+func (h *AdsPacketHandler) HealthzHits() uint64 {
+	if h == nil {
+		return 0
+	}
+	return h.healthzHits.Load()
+}
+
+// Ready reports cached readiness from the background health probe.
+func (h *AdsPacketHandler) Ready() bool {
+	return h != nil && h.healthy.Load() == 1
 }
 
 // SetHealthProbeState mirrors StartHealthProbe atomics for gnet health tests.
@@ -1107,31 +1124,17 @@ func (h *AdsPacketHandler) React(req parsedHTTPRequest, c gnet.Conn) gnet.Action
 	}
 
 	if len(req.Method) == 3 && req.Method[0] == 'G' && req.Method[1] == 'E' && req.Method[2] == 'T' {
-		if bytes.HasPrefix(req.Path, []byte("/health")) {
-			healthy := h.healthy.Load() == 1
-			body := "OK"
-			if !healthy {
-				body = "DEGRADED"
+		if bytes.Equal(req.Path, []byte("/healthz")) {
+			h.healthzHits.Add(1)
+			h.write(c, respHealthzOK, ctx)
+			return gnet.None
+		}
+		if bytes.Equal(req.Path, []byte("/readyz")) || bytes.HasPrefix(req.Path, []byte("/health")) {
+			if h.Ready() {
+				h.write(c, respReadyzOK, ctx)
+			} else {
+				h.write(c, respReadyz503, ctx)
 			}
-			if len(h.rdbsHealthy) > 0 {
-				body += " redis="
-				for i := range h.rdbsHealthy {
-					if i > 0 {
-						body += ","
-					}
-					st := h.rdbsHealthy[i].Load()
-					body += strconv.Itoa(i) + ":" + statusStrings[st]
-				}
-			}
-			statusLine := "HTTP/1.1 200 OK\r\n"
-			if !healthy {
-				statusLine = "HTTP/1.1 503 Service Unavailable\r\n"
-			}
-			hdr := statusLine + "Content-Type: text/plain\r\nContent-Length: " + strconv.Itoa(len(body)) + "\r\nConnection: keep-alive\r\n\r\n"
-			out := make([]byte, len(hdr)+len(body))
-			copy(out, hdr)
-			copy(out[len(hdr):], body)
-			h.write(c, out, ctx)
 			return gnet.None
 		}
 		if bytes.Equal(req.Path, []byte("/metrics")) {

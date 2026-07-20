@@ -39,7 +39,7 @@ func TestIntegration_BudgetFlow(t *testing.T) {
 	registry := ingestion.NewRegistry(queries)
 
 	budgetManager := ingestion.NewRedisBudgetManager(rdb, campaignRepo, 10*time.Second)
-	syncWorker := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, 100*time.Millisecond, nil, 0)
+	syncWorker := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, 100*time.Millisecond, 0, nil, 0)
 
 	customerID := uuid.New()
 	campaignID := uuid.New()

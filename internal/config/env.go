@@ -55,11 +55,19 @@ type Config struct {
 	CHSpoolDir                      string
 	CHSpoolSegmentMB                int
 	CHSpoolMaxSegments              int
+	CHReadonlyDSN                   Secret
+	CHRawRetentionDays              int
+	CHEmergencyDropPercent          int
+	CHRecompressPartsThreshold      int
+	CHRecompressOffPeakStartUTC     int
+	CHRecompressOffPeakEndUTC       int
+	ProcessorStreamLagMaxSec        int
 	TrackerPGFallback               bool
 	WriteTimeoutMs                  int
 	FilterTimeoutMs                 int
 	MetricsHistogramSampleMask      int
 	AuditLogSampleMask              int
+	AuditLedgerFlushSampleMask      int
 	IdempotencyTTLHrs               int
 	RateLimitPerMin                 int
 	RateLimitWindowMs               int
@@ -71,6 +79,7 @@ type Config struct {
 	PartitionPreCreateDays          int
 	RegistrySyncIntervalMs          int
 	BudgetSyncIntervalMs            int
+	LedgerBatchFlushMs              int
 	HttpReadHeaderTimeoutMs         int
 	HttpReadTimeoutMs               int
 	HttpWriteTimeoutMs              int
@@ -102,6 +111,9 @@ type Config struct {
 	StripeWebhookSecret             Secret
 	StripeCheckoutSuccessURL        string
 	StripeCheckoutCancelURL         string
+	CryptoWebhookSecret             Secret
+	CryptoMinPaymentMicro           int64
+	CryptoConfirmationDepth         int
 	PaymentFinancialReconIntervalMs int
 
 	SelfServeMaxActiveCampaigns int
@@ -233,6 +245,9 @@ type Config struct {
 	UDPSyncIntervalMs  int
 	UDPDefaultShardRPS uint64
 
+	RegionCode         uint8
+	MultiRegionEnabled bool
+
 	QuotaAutoRepair bool
 
 	Notifier struct {
@@ -270,14 +285,16 @@ type Config struct {
 	}
 
 	IVT struct {
-		Enabled            bool
-		ScanIntervalMs     int
-		OutboxPendingLimit int64
-		WindowSec          int
-		MinClicks          uint64
-		MinImpressions     uint64
-		ClickToImpRatio    float64
-		MinIPsPerUA        uint64
+		Enabled              bool
+		ScanIntervalMs       int
+		OutboxPendingLimit   int64
+		WindowSec            int
+		MinClicks            uint64
+		MinImpressions       uint64
+		ClickToImpRatio      float64
+		MinIPsPerUA          uint64
+		IntervalMinIntervals uint64
+		IntervalMaxVariance  float64
 	}
 
 	FraudScoring struct {
@@ -308,6 +325,16 @@ type Config struct {
 	}
 
 	BillingInternalToken Secret
+}
+
+// MultiRegionCell reports whether this process is a regional hot-path cell (not global control).
+func (c *Config) MultiRegionCell() bool {
+	return c != nil && c.MultiRegionEnabled && c.RegionCode != 0
+}
+
+// MultiRegionGlobal reports whether this process is the global control plane in multi-region mode.
+func (c *Config) MultiRegionGlobal() bool {
+	return c != nil && c.MultiRegionEnabled && c.RegionCode == 0
 }
 
 // BrokerEnabled reports whether the processor should run the broker ingest bridge.
@@ -368,11 +395,19 @@ func Load() (*Config, error) {
 		CHSpoolDir:                      envOrDefault("CH_SPOOL_DIR", "/var/spool/espx/ch"),
 		CHSpoolSegmentMB:                getEnvInt("CH_SPOOL_SEGMENT_MB", 512),
 		CHSpoolMaxSegments:              getEnvInt("CH_SPOOL_MAX_SEGMENTS", 8),
+		CHReadonlyDSN:                   Secret(envOrDefault("CH_READONLY_DSN", os.Getenv("CH_DSN"))),
+		CHRawRetentionDays:              getEnvInt("CH_RAW_RETENTION_DAYS", 180),
+		CHEmergencyDropPercent:          getEnvInt("CH_EMERGENCY_DROP_PERCENT", 0),
+		CHRecompressPartsThreshold:      getEnvInt("CH_RECOMPRESS_PARTS_THRESHOLD", 8),
+		CHRecompressOffPeakStartUTC:     getEnvInt("CH_RECOMPRESS_OFFPEAK_START_UTC", 2),
+		CHRecompressOffPeakEndUTC:       getEnvInt("CH_RECOMPRESS_OFFPEAK_END_UTC", 6),
+		ProcessorStreamLagMaxSec:        getEnvInt("PROCESSOR_STREAM_LAG_MAX_SEC", 120),
 		TrackerPGFallback:               getEnvBool("TRACKER_PG_FALLBACK", appEnv != "production"),
 		WriteTimeoutMs:                  getEnvInt("WRITE_TIMEOUT_MS", 5000),
 		FilterTimeoutMs:                 getEnvInt("FILTER_TIMEOUT_MS", 0),
 		MetricsHistogramSampleMask:      getEnvInt("METRICS_HISTOGRAM_SAMPLE_MASK", 127),
 		AuditLogSampleMask:              getEnvInt("AUDIT_LOG_SAMPLE_RATE", 127),
+		AuditLedgerFlushSampleMask:      getEnvInt("AUDIT_LEDGER_FLUSH_SAMPLE_MASK", -1),
 		IdempotencyTTLHrs:               getEnvInt("IDEMPOTENCY_TTL_HRS", 24),
 		RateLimitPerMin:                 getEnvInt("RATE_LIMIT_PER_MIN", 100),
 		RateLimitWindowMs:               getEnvInt("RATE_LIMIT_WINDOW_MS", 60000),
@@ -388,6 +423,7 @@ func Load() (*Config, error) {
 		PartitionPreCreateDays:          getEnvInt("PARTITION_PRECREATE_DAYS", 2),
 		RegistrySyncIntervalMs:          getEnvInt("REGISTRY_SYNC_INTERVAL_MS", 60000),
 		BudgetSyncIntervalMs:            getEnvInt("BUDGET_SYNC_INTERVAL_MS", 5000),
+		LedgerBatchFlushMs:              getEnvInt("LEDGER_BATCH_FLUSH_MS", 10000),
 		HttpReadHeaderTimeoutMs:         getEnvInt("HTTP_READ_HEADER_TIMEOUT_MS", 2000),
 		HttpReadTimeoutMs:               getEnvInt("HTTP_READ_TIMEOUT_MS", 5000),
 		HttpWriteTimeoutMs:              getEnvInt("HTTP_WRITE_TIMEOUT_MS", 10000),
@@ -454,6 +490,9 @@ func Load() (*Config, error) {
 		StripeWebhookSecret:             Secret(os.Getenv("STRIPE_WEBHOOK_SECRET")),
 		StripeCheckoutSuccessURL:        os.Getenv("STRIPE_CHECKOUT_SUCCESS_URL"),
 		StripeCheckoutCancelURL:         os.Getenv("STRIPE_CHECKOUT_CANCEL_URL"),
+		CryptoWebhookSecret:             Secret(envOrDefault("CRYPTO_WEBHOOK_SECRET", "cryptosecret")),
+		CryptoMinPaymentMicro:           getEnvMicro("CRYPTO_MIN_PAYMENT_MICRO", 10.0), // default 10 USD (10,000,000 micro)
+		CryptoConfirmationDepth:         getEnvInt("CRYPTO_CONFIRMATION_DEPTH", 12),
 		PaymentFinancialReconIntervalMs: getEnvInt("PAYMENT_FINANCIAL_RECON_INTERVAL_MS", 0),
 		SelfServeMaxActiveCampaigns:     getEnvInt("SELF_SERVE_MAX_ACTIVE_CAMPAIGNS", 500),
 		SelfServeMaxCreatesPerDay:       getEnvInt("SELF_SERVE_MAX_CREATES_PER_DAY", 50),
@@ -536,6 +575,8 @@ func Load() (*Config, error) {
 	cfg.UDPTrackerID = uint32(getEnvInt("UDP_TRACKER_ID", 1))
 	cfg.UDPSyncIntervalMs = getEnvInt("UDP_SYNC_INTERVAL_MS", 10000)
 	cfg.UDPDefaultShardRPS = uint64(getEnvInt64("UDP_DEFAULT_SHARD_RPS", 50_000))
+	cfg.RegionCode = uint8(getEnvInt("ESPX_REGION_CODE", 0))
+	cfg.MultiRegionEnabled = getEnvBool("MULTI_REGION_ENABLED", false)
 	cfg.QuotaAutoRepair = getEnvBool("QUOTA_AUTO_REPAIR", false)
 	cfg.ManagementURL = os.Getenv("MANAGEMENT_URL")
 	if cfg.ManagementURL == "" && cfg.ManagementPort != "" {
@@ -602,6 +643,8 @@ func Load() (*Config, error) {
 	cfg.IVT.MinImpressions = uint64(getEnvInt64("IVT_DETECTOR_MIN_IMPRESSIONS", 1))
 	cfg.IVT.ClickToImpRatio = getEnvFloat("IVT_DETECTOR_CLICK_TO_IMP_RATIO", 5.0)
 	cfg.IVT.MinIPsPerUA = uint64(getEnvInt64("IVT_DETECTOR_MIN_IPS_PER_UA", 8))
+	cfg.IVT.IntervalMinIntervals = uint64(getEnvInt64("IVT_DETECTOR_INTERVAL_MIN_INTERVALS", 30))
+	cfg.IVT.IntervalMaxVariance = getEnvFloat("IVT_DETECTOR_INTERVAL_MAX_VARIANCE", 0.005)
 
 	cfg.FraudScoring.Enabled = getEnvBool("FRAUD_SCORING_ENABLED", false)
 	cfg.FraudScoring.ScanIntervalMs = getEnvInt("FRAUD_SCORING_SCAN_INTERVAL_MS", 300000)

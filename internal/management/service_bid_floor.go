@@ -8,7 +8,7 @@ import (
 
 	"espx/internal/config"
 	"espx/internal/ingestion"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 )
 
 // DealWinLossRate holds ClickHouse win/loss counts for one PMP deal.
@@ -54,7 +54,7 @@ func computeRecommendedFloor(base int64, rate float64, sampleN uint64, cfg *conf
 }
 
 func (s *Service) queryClickHouseDealWinRates(ctx context.Context, lookbackHours int) (map[string]DealWinLossRate, error) {
-	if s.ch == nil {
+	if s.chQuery == nil {
 		return nil, nil
 	}
 	if lookbackHours < 1 {
@@ -70,7 +70,7 @@ FROM rtb_deal_outcomes
 WHERE created_at >= now() - INTERVAL ? HOUR
 GROUP BY deal_id`
 
-	rows, err := s.ch.Query(ctx, query, lookbackHours)
+	rows, err := s.chQuery.Query(ctx, query, lookbackHours)
 	if err != nil {
 		return nil, fmt.Errorf("clickhouse deal win rates: %w", err)
 	}

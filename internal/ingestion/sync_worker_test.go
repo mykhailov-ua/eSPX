@@ -66,8 +66,8 @@ func TestMultiShardBudgetSync(t *testing.T) {
 	repo.On("UpdateSpend", mock.Anything, campaignID, int64(10500000), mock.Anything).Return(nil).Once()
 	repo.On("UpdateSpend", mock.Anything, campaignID, int64(5250000), mock.Anything).Return(nil).Once()
 
-	worker1 := NewSyncWorker(rdb1, repo, nil, 100*time.Millisecond, nil, 0)
-	worker2 := NewSyncWorker(rdb2, repo, nil, 100*time.Millisecond, nil, 0)
+	worker1 := NewSyncWorker(rdb1, repo, nil, 100*time.Millisecond, 0, nil, 0)
+	worker2 := NewSyncWorker(rdb2, repo, nil, 100*time.Millisecond, 0, nil, 0)
 
 	worker1.SyncAll(ctx)
 	worker2.SyncAll(ctx)

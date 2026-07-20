@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"espx/pkg/money"
 )
 
 // TonicRSOCProvider blends intraday EPC with stats_by_country adjustments (10-day finalization).
@@ -94,11 +96,8 @@ func (p *TonicRSOCProvider) fetchEPCDaily(ctx context.Context, client *http.Clie
 	d, _ := time.Parse("2006-01-02", date)
 	lines := make([]CostLine, 0, len(parsed.Data))
 	for _, row := range parsed.Data {
-		revenue := row.Revenue
-		if revenue <= 0 && row.EPC > 0 && row.Clicks > 0 {
-			revenue = row.EPC * float64(row.Clicks)
-		}
-		if revenue <= 0 {
+		revenueMicro, err := tonicRevenueMicro(row.Revenue, row.EPC, row.Clicks)
+		if err != nil || revenueMicro <= 0 {
 			continue
 		}
 		lines = append(lines, CostLine{
@@ -108,11 +107,25 @@ func (p *TonicRSOCProvider) fetchEPCDaily(ctx context.Context, client *http.Clie
 			Network:     p.Network(),
 			PlacementID: row.Country,
 			LineType:    LineTypeRevenue,
-			AmountMicro: int64(revenue * float64(microUnit)),
+			AmountMicro: revenueMicro,
 			Currency:    "USD",
 		})
 	}
 	return lines, nil
+}
+
+func tonicRevenueMicro(revenue, epc float64, clicks int64) (int64, error) {
+	if revenue > 0 {
+		return money.JSONAmountToMicro(revenue)
+	}
+	if epc <= 0 || clicks <= 0 {
+		return 0, nil
+	}
+	epcMicro, err := money.JSONAmountToMicro(epc)
+	if err != nil {
+		return 0, err
+	}
+	return money.MulMicro(epcMicro, clicks), nil
 }
 
 func (p *TonicRSOCProvider) fetchStatsByCountry(ctx context.Context, client *http.Client, base string, cred Credential, date string) ([]CostLine, error) {
@@ -141,7 +154,8 @@ func (p *TonicRSOCProvider) fetchStatsByCountry(ctx context.Context, client *htt
 	d, _ := time.Parse("2006-01-02", date)
 	lines := make([]CostLine, 0, len(parsed.Data))
 	for _, row := range parsed.Data {
-		if row.Revenue <= 0 {
+		revenueMicro, err := money.JSONAmountToMicro(row.Revenue)
+		if err != nil || revenueMicro <= 0 {
 			continue
 		}
 		lines = append(lines, CostLine{
@@ -151,7 +165,7 @@ func (p *TonicRSOCProvider) fetchStatsByCountry(ctx context.Context, client *htt
 			Network:     p.Network(),
 			PlacementID: row.Country,
 			LineType:    LineTypeRevenue,
-			AmountMicro: int64(row.Revenue * float64(microUnit)),
+			AmountMicro: revenueMicro,
 			Currency:    "USD",
 		})
 	}
@@ -223,7 +237,8 @@ func (p *System1RSOCProvider) Fetch(ctx context.Context, cred Credential, date t
 
 	lines := make([]CostLine, 0, len(parsed.Rows))
 	for _, row := range parsed.Rows {
-		if row.Revenue <= 0 {
+		revenueMicro, err := money.JSONAmountToMicro(row.Revenue)
+		if err != nil || revenueMicro <= 0 {
 			continue
 		}
 		lines = append(lines, CostLine{
@@ -233,7 +248,7 @@ func (p *System1RSOCProvider) Fetch(ctx context.Context, cred Credential, date t
 			Network:     p.Network(),
 			PlacementID: row.SubID,
 			LineType:    LineTypeRevenue,
-			AmountMicro: int64(row.Revenue * float64(microUnit)),
+			AmountMicro: revenueMicro,
 			Currency:    "USD",
 		})
 	}

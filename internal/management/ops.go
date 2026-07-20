@@ -7,32 +7,35 @@ import (
 	"net/http"
 	"time"
 
+	"espx/internal/database"
+	"espx/internal/health"
 	"espx/internal/ingestion"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 )
 
 // RegisterOpsRoutes mounts unauthenticated health and metrics endpoints for orchestration probes.
 func RegisterOpsRoutes(mux *http.ServeMux, pool *pgxpool.Pool, rdbs []redis.UniversalClient) {
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-		defer cancel()
-
+	live := &health.Liveness{}
+	ready := &health.ReadinessProbe{}
+	ready.StartBackground(context.Background(), 2*time.Second, func(ctx context.Context) bool {
 		if err := pool.Ping(ctx); err != nil {
-			http.Error(w, "postgres unreachable", http.StatusServiceUnavailable)
-			return
+			return false
 		}
-		for i, rdb := range rdbs {
+		for _, rdb := range rdbs {
 			if err := rdb.Ping(ctx).Err(); err != nil {
-				http.Error(w, "redis shard unreachable", http.StatusServiceUnavailable)
-				_ = i
-				return
+				return false
 			}
 		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("OK"))
+		return true
+	})
+	health.Register(mux, live, ready)
+	prometheus.MustRegister(database.NewPgTableStatsCollector(pool))
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		ready.ServeReadyz(w, r)
 	})
 	mux.Handle("GET /metrics", promhttp.Handler())
 	mux.HandleFunc("GET /ops/shards/slot-map", func(w http.ResponseWriter, r *http.Request) {

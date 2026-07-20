@@ -2,6 +2,7 @@ package management
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -32,7 +33,7 @@ func (w *PacingControllerWorker) Start(ctx context.Context, interval time.Durati
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := w.svc.ClosedLoopPacingController(ctx, w.syncWorkers); err != nil {
+			if err := w.svc.ClosedLoopPacingController(ctx, w.syncWorkers); err != nil && !errors.Is(err, ErrMgmtPgGateRejected) {
 				slog.Error("closed-loop pacing controller run failed", "error", err)
 			}
 		}

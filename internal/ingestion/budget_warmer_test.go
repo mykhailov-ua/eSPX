@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"espx/internal/campaignmodel"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 	"espx/internal/metrics"
 
 	"github.com/google/uuid"
@@ -304,8 +304,9 @@ func TestCampaignRegistry_StartWatch_IncrementalWarm(t *testing.T) {
 		return ok && camp.BudgetLimit == 5_000_000 && camp.CurrentSpend == 1_000_000
 	}, 2*time.Second, 50*time.Millisecond)
 
-	// Проверяем, что в Redis записался правильный оставшийся бюджет
-	val, err := rdb.Get(ctx, "budget:campaign:"+campID.String()).Int64()
+	campAfter, ok := r.GetCampaign(campID)
+	require.True(t, ok)
+	val, err := rdb.Get(ctx, campAfter.BudgetCampaignKey).Int64()
 	require.NoError(t, err)
 	assert.Equal(t, int64(4_000_000), val)
 }

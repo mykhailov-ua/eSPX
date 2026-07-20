@@ -9,7 +9,7 @@ const pacingLookbackDays = 90
 
 // fetchPacingHourWeights loads platform hour-of-day impression weights from ClickHouse (M5.6).
 func (s *Service) fetchPacingHourWeights(ctx context.Context) [24]float64 {
-	if s.ch == nil {
+	if s.chQuery == nil {
 		return uniformHourWeights()
 	}
 	lookbackEnd := time.Now().UTC().Truncate(time.Hour)

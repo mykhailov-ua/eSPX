@@ -331,6 +331,7 @@ func (h *LicensingHTTPHandlers) getLicenseStatus(w http.ResponseWriter, r *http.
 		DeploymentID:   licRow.DeploymentID.String(),
 		LicenseID:      licRow.LicenseID.String(),
 		Plan:           licRow.PlanCode,
+		VolumeBand:     string(lic.ParseVolumeBand(string(entitlements.VolumeBand))),
 		State:          licRow.State,
 		ValidUntil:     licRow.ValidUntil.Time.Format(time.RFC3339),
 		GraceEndsAt:    graceEndsStr,

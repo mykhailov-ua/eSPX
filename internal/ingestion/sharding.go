@@ -7,7 +7,7 @@ import (
 )
 
 // slotTable is an immutable 1024-entry shard map swapped via atomic.Value on reload.
-type slotTable [1024]uint16
+type slotTable [1024]uint8
 
 // SlotMapSnapshot bundles slot routing table and version for a single atomic swap (M1).
 type SlotMapSnapshot struct {
@@ -39,7 +39,7 @@ func buildSlotTable(numBuckets int) *slotTable {
 	}
 	var t slotTable
 	for i := range t {
-		t[i] = uint16(i % numBuckets)
+		t[i] = uint8(i % numBuckets)
 	}
 	return &t
 }
@@ -101,7 +101,10 @@ func (s *StaticSlotSharder) StoreSlotMap(table *[1024]uint16) {
 		return
 	}
 	prev := s.loadSnapshot()
-	st := slotTable(*table)
+	var st slotTable
+	for i, v := range table {
+		st[i] = uint8(v)
+	}
 	s.SwapSnapshot(prev.Version, &st, prev.MigrationGen)
 }
 

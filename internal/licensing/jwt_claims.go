@@ -9,7 +9,8 @@ type LicenseClaims struct {
 	KeyID        string     `json:"kid"`
 	DeploymentID string     `json:"deployment_id"`
 	CustomerName string     `json:"customer_name"`
-	Plan         string     `json:"plan"` // starter|growth|enterprise
+	Plan         string     `json:"plan"`        // starter|growth|enterprise
+	VolumeBand   VolumeBand `json:"volume_band"` // S|M|L commercial PU band
 	ValidFrom    time.Time  `json:"valid_from"`
 	ValidUntil   time.Time  `json:"valid_until"`
 	GraceDays    int        `json:"grace_days"`

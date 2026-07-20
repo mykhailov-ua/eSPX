@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"espx/pkg/money"
 )
 
 // TaboolaProvider fetches campaign spend from Taboola Backstage API.
@@ -78,10 +80,10 @@ func (p *TaboolaProvider) Fetch(ctx context.Context, cred Credential, date time.
 
 	lines := make([]CostLine, 0, len(parsed.Results))
 	for _, row := range parsed.Results {
-		if row.Spent <= 0 {
+		spendMicro, err := money.JSONAmountToMicro(row.Spent)
+		if err != nil || spendMicro == 0 {
 			continue
 		}
-		spendMicro := int64(row.Spent * float64(microUnit))
 		campKey := fmt.Sprintf("%d", row.CampaignID)
 		lines = append(lines, CostLine{
 			CustomerID:  cred.CustomerID,
@@ -164,7 +166,8 @@ func (p *OutbrainProvider) Fetch(ctx context.Context, cred Credential, date time
 	for _, camp := range parsed.CampaignResults {
 		campKey := fmt.Sprintf("%d", camp.Metadata.ID)
 		for _, sec := range camp.Sections {
-			if sec.Metrics.Spend <= 0 {
+			spendMicro, err := money.JSONAmountToMicro(sec.Metrics.Spend)
+			if err != nil || spendMicro <= 0 {
 				continue
 			}
 			lines = append(lines, CostLine{
@@ -174,7 +177,7 @@ func (p *OutbrainProvider) Fetch(ctx context.Context, cred Credential, date time
 				Network:     p.Network(),
 				PlacementID: fmt.Sprintf("%d", sec.Metadata.ID),
 				LineType:    LineTypeSpend,
-				AmountMicro: int64(sec.Metrics.Spend * float64(microUnit)),
+				AmountMicro: spendMicro,
 				Currency:    "USD",
 			})
 		}

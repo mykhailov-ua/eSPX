@@ -16,9 +16,9 @@ import (
 type FacebookAdapter struct{}
 
 type FacebookEvent struct {
-	EventName string             `json:"event_name"`
-	EventTime int64              `json:"event_time"`
-	UserData  FacebookUserData   `json:"user_data"`
+	EventName  string             `json:"event_name"`
+	EventTime  int64              `json:"event_time"`
+	UserData   FacebookUserData   `json:"user_data"`
 	CustomData FacebookCustomData `json:"custom_data,omitempty"`
 }
 
@@ -89,9 +89,9 @@ func (a *FacebookAdapter) Send(ctx context.Context, client *http.Client, payload
 		},
 	}
 
-	if payload.Payout > 0 {
+	if payload.PayoutMicro > 0 {
 		fbEvent.CustomData = FacebookCustomData{
-			Value:    payload.Payout,
+			Value:    payload.PayoutDollarsAPI(),
 			Currency: "USD",
 		}
 	}

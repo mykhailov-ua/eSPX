@@ -242,6 +242,11 @@ var (
 		Help:    "Registry sync lag between database update and cache loading",
 		Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0},
 	})
+	RegistryWarmDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "ad_registry_warm_duration_seconds",
+		Help:    "Duration of incremental registry warm (UpdateAndWarmCampaign)",
+		Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0},
+	})
 
 	// Geo provider status exists so production deploys that accidentally run the mock geo provider are caught before targeting goes wrong.
 	GeoProviderStatus = promauto.NewGauge(prometheus.GaugeOpts{
@@ -267,6 +272,11 @@ var (
 	ManagementOutboxOldestPendingSeconds = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "ad_management_outbox_oldest_pending_seconds",
 		Help: "Age in seconds of the oldest PENDING outbox event (0 when queue empty)",
+	})
+	BlacklistReplicationLag = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "ad_blacklist_replication_lag_seconds",
+		Help:    "Outbox-to-Redis blacklist fan-out latency (HR-BL)",
+		Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0},
 	})
 
 	ManagementOpsAlertEnqueueFailuresTotal = promauto.NewCounter(prometheus.CounterOpts{
@@ -530,6 +540,15 @@ var (
 		Name: "ad_udp_control_publish_total",
 		Help: "QUOTA_EPOCH / CONFIG_SNAPSHOT bursts sent by management",
 	})
+	RegionOutboxDeliveredTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_region_outbox_delivered_total",
+		Help: "Outbox events applied to a regional Redis cell by RegionOutboxRelay",
+	})
+	RegionOutboxDeliveryLag = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "ad_region_outbox_delivery_lag_seconds",
+		Help:    "Outbox created_at to regional DELIVERED latency",
+		Buckets: prometheus.ExponentialBuckets(0.01, 2, 16),
+	})
 	UDPIngressAcquireTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ad_udp_ingress_acquire_total",
 		Help: "Ingress quota checks passed (lock-free per worker cell)",
@@ -584,6 +603,14 @@ var (
 		Name: "ad_ch_spool_rotate_total",
 		Help: "ClickHouse spool segment rotations during long outages",
 	})
+	CHSpoolSegments = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "ad_ch_spool_segments",
+		Help: "Current ClickHouse spool segment count (active + sealed)",
+	})
+	ProcessorStreamXLen = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ad_processor_stream_xlen",
+		Help: "Redis stream length (XLEN) per shard",
+	}, []string{"shard"})
 	ProcessorPgAcquireWaitSeconds = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "ad_processor_pg_acquire_wait_seconds",
 		Help:    "Wait time to acquire a processor-global Postgres write slot (alias of ad_processor_write_acquire_wait_seconds{backend=\"postgres\"})",
@@ -631,5 +658,55 @@ var (
 	CostSyncCHErrors = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ad_cost_sync_ch_errors_total",
 		Help: "ClickHouse cost_snapshots insert failures",
+	})
+
+	// LedgerBatchPauseTotal counts campaigns paused when a consolidated spend flush cannot complete.
+	LedgerBatchPauseTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ledger_batch_pause_total",
+		Help: "Campaigns paused after ledger batch flush partial failure or insufficient balance",
+	})
+	SyncLedgerBatchSize = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "ad_sync_ledger_batch_size",
+		Help:    "Campaign count per consolidated ledger flush Postgres transaction",
+		Buckets: []float64{1, 2, 4, 8, 16, 32},
+	})
+	OutboxPollIntervalMs = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "ad_outbox_poll_interval_ms",
+		Help:    "Outbox worker idle poll interval in milliseconds (coefficient backoff)",
+		Buckets: []float64{20, 40, 80, 160, 250},
+	})
+	MgmtPgGateRejectedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ad_mgmt_pg_gate_rejected_total",
+		Help: "Management Postgres gate rejections when LOW tier budget is exhausted",
+	}, []string{"tier"})
+	MgmtPgGateAcquireWaitSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "ad_mgmt_pg_gate_acquire_wait_seconds",
+		Help:    "Wait time acquiring a management Postgres gate slot",
+		Buckets: prometheus.DefBuckets,
+	}, []string{"tier"})
+
+	CHDiskUsedPercent = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "ad_ch_disk_used_percent",
+		Help: "ClickHouse data volume used percent from system.disks",
+	})
+	CHJanitorRetentionDropTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_ch_janitor_retention_drop_total",
+		Help: "Partitions dropped by CHPartitionJanitor retention policy",
+	})
+	CHJanitorEmergencyDropTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_ch_janitor_emergency_drop_total",
+		Help: "Partitions dropped by CHPartitionJanitor emergency disk policy",
+	})
+	CHJanitorRecompressTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_ch_janitor_recompress_total",
+		Help: "Partitions recompressed (OPTIMIZE FINAL) by CHPartitionJanitor off-peak pass",
+	})
+	CHActivePartsMax = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "ad_ch_active_parts_max",
+		Help: "Max active part count across table/partition (from system.parts); alert > 100",
+	})
+	CHSingleRowInsertsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_ch_single_row_inserts_total",
+		Help: "ClickHouse store attempts narrowed to a single event during poison-pill binary split",
 	})
 )

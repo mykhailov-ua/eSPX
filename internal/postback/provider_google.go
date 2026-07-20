@@ -39,7 +39,7 @@ func (a *GoogleAdapter) Send(ctx context.Context, client *http.Client, payload *
 
 	conv := GoogleOfflineConversion{
 		Gclid:            payload.GCLID,
-		ConversionValue:  payload.Payout,
+		ConversionValue:  payload.PayoutDollarsAPI(),
 		CurrencyCode:     "USD",
 		ConversionTime:   time.Now().UTC().Format("2006-01-02 15:04:05-07:00"),
 		ConversionAction: action,

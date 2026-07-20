@@ -10,7 +10,8 @@ Counted by `scripts/chaos-drills/test_chaos.sh` (`CHAOS_MIN_PROOFS`, default 52)
 | `entitlement_buffer_oom_guard` | `internal/management` | Bounded channel rejects overload without panic |
 | `entitlement_buffer_recovery` | `internal/management` | `Recover()` replays customer IDs after restart |
 | `update_entitlements_redis_recovery` | `internal/management` | Redis outage during outbox handler, self-heal |
-| `update_entitlements_idempotent` | `internal/management` | 5× replay of `UPDATE_ENTITLEMENTS` handler |
+| `license_server_unreachable` | `internal/licensing` | Online heartbeat fails → last-known-good JWT from disk |
+| `license_grace_ingest` | `internal/ingestion` | GRACE state → ingest continues |
 
 Run locally:
 

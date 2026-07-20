@@ -186,7 +186,19 @@ func TestChaos_B3_geoBucketIdxOutOfBounds(t *testing.T) {
 		GeoBucketCount:        1,
 		GeoBucketHash:         []uint32{7},
 		GeoBucketStart:        []uint32{0, 1},
-		GeoBucketIdx:          []uint32{99},
+		GeoBucketSoA: candidateBucketSoA{
+			CatalogIdx:            []uint32{99},
+			Bids:                  []int64{100},
+			CTRPPM:                []uint32{CTRPPMUnit},
+			Reserves:              []int64{0},
+			DailyBudgets:          []int64{0},
+			PacingOpen:            []uint8{PacingOpen},
+			DeviceMasks:           []uint8{1},
+			CategoryMasks:         []uint64{1},
+			Weights:               []uint32{1},
+			BudgetIndices:         []uint32{idx},
+			CustomerBudgetIndices: []uint32{invalidCustomerBudgetIdx},
+		},
 	})
 
 	_, reason, panicked := chaosRunAuction(reg, stdReq(7, 50))

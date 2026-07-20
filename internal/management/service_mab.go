@@ -6,7 +6,7 @@ import (
 	"math"
 	"time"
 
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -20,7 +20,7 @@ type mabCreativeStat struct {
 
 // optimizeBrandCreativeMABTx updates creative weights from ClickHouse CTR and returns brands needing Redis sync (M5.7).
 func (s *Service) optimizeBrandCreativeMABTx(ctx context.Context, tx pgx.Tx) ([]uuid.UUID, error) {
-	if s.ch == nil {
+	if s.chQuery == nil {
 		return nil, nil
 	}
 	minImps := s.cfg.MABMinImpressions
@@ -185,7 +185,7 @@ FROM impressions
 WHERE created_at >= ? AND created_at < ?
 GROUP BY campaign_id, creative_id`
 
-	impRows, err := s.ch.Query(ctx, impQuery, from, to)
+	impRows, err := s.chQuery.Query(ctx, impQuery, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("mab impressions query: %w", err)
 	}
@@ -217,7 +217,7 @@ FROM clicks
 WHERE created_at >= ? AND created_at < ?
 GROUP BY campaign_id, creative_id`
 
-	clickRows, err := s.ch.Query(ctx, clickQuery, from, to)
+	clickRows, err := s.chQuery.Query(ctx, clickQuery, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("mab clicks query: %w", err)
 	}

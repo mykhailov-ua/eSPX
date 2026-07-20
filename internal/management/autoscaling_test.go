@@ -77,7 +77,7 @@ func TestSmartBudgetAutoscaling(t *testing.T) {
 	queries := db.New(pool)
 	campaignRepo := ingestion.NewCampaignRepo(queries)
 	customerRepo := ingestion.NewCustomerRepo(queries)
-	syncWorker := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, 100*time.Millisecond, nil, 0)
+	syncWorker := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, 100*time.Millisecond, 0, nil, 0)
 
 	err = rdb.Set(ctx, "budget:campaign:"+campaignA.String(), 100000000, 0).Err()
 	require.NoError(t, err)

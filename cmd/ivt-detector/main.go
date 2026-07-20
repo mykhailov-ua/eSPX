@@ -12,7 +12,10 @@ import (
 	"espx/internal/database"
 	"espx/internal/fraudscoring"
 	"espx/internal/ivtdetector"
+	"espx/internal/licensing"
 	"espx/pkg/lifecycle"
+
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
 func main() {
@@ -39,20 +42,24 @@ func main() {
 	}
 	defer pool.Close()
 
-	chConn, err := database.ConnectClickHouse(ctx, string(cfg.CHDSN))
+	chRead, err := database.ConnectCHReadonly(ctx, string(cfg.CHReadonlyDSN))
 	if err != nil {
-		slog.Error("failed to connect to clickhouse", "error", err)
+		slog.Error("failed to connect to clickhouse readonly", "error", err)
 		os.Exit(1)
 	}
-	defer func() { _ = chConn.Close() }()
+	defer func() { _ = chRead.Close() }()
+
+	chQuery := database.NewCHQuery(chRead, database.CHQueryConfig{})
 
 	analyzerCfg := ivtdetector.AnalyzerConfig{
-		Window:          time.Duration(cfg.IVT.WindowSec) * time.Second,
-		MinClicks:       cfg.IVT.MinClicks,
-		MinImpressions:  cfg.IVT.MinImpressions,
-		ClickToImpRatio: cfg.IVT.ClickToImpRatio,
-		MinIPsPerUA:     cfg.IVT.MinIPsPerUA,
-		MinEventsPerIP:  cfg.IVT.MinClicks,
+		Window:               time.Duration(cfg.IVT.WindowSec) * time.Second,
+		MinClicks:            cfg.IVT.MinClicks,
+		MinImpressions:       cfg.IVT.MinImpressions,
+		ClickToImpRatio:      cfg.IVT.ClickToImpRatio,
+		MinIPsPerUA:          cfg.IVT.MinIPsPerUA,
+		MinEventsPerIP:       cfg.IVT.MinClicks,
+		IntervalMinIntervals: cfg.IVT.IntervalMinIntervals,
+		IntervalMaxVariance:  cfg.IVT.IntervalMaxVariance,
 	}
 	detectorCfg := ivtdetector.DetectorConfig{
 		ScanInterval:       time.Duration(cfg.IVT.ScanIntervalMs) * time.Millisecond,
@@ -101,7 +108,25 @@ func main() {
 		slog.Info("FRAUD_SCORER_STANDALONE enabled; skipping embedded scorer in ivt-detector")
 	}
 
-	registry := ivtdetector.NewAnalyzerRegistry(chConn, pool, analyzerCfg, asn, scorer, cfg.FraudScoring.BatchSize)
+	var chWrite driver.Conn
+	if scorer != nil && string(cfg.CHDSN) != "" {
+		chWrite, err = database.ConnectClickHouse(ctx, string(cfg.CHDSN))
+		if err != nil {
+			slog.Error("failed to connect to clickhouse write path for shadow scores", "error", err)
+			os.Exit(1)
+		}
+		defer func() { _ = chWrite.Close() }()
+	}
+
+	snap, err := licensing.LoadDeploymentSnapshot(ctx, pool)
+	if err != nil {
+		slog.Warn("ivt detector: license_status unavailable; continuing with deployment defaults", "error", err)
+	} else if !snap.ModuleAllowed(func(f licensing.FeatureSet) bool { return f.IvtMLEnabled() }) {
+		slog.Error("ivt_ml_detector module not licensed; exiting")
+		os.Exit(1)
+	}
+
+	registry := ivtdetector.NewAnalyzerRegistry(chQuery, chWrite, pool, analyzerCfg, asn, scorer, cfg.FraudScoring.BatchSize)
 
 	detector := ivtdetector.NewDetector(
 		registry,

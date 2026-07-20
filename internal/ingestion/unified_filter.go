@@ -539,7 +539,19 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *campaignmodel.Event) err
 		}
 	}
 
-	rdb := f.getRDB(evt.CampaignID)
+	shard := f.sharder.GetShard(evt.CampaignID)
+	if campInfo.HasTriplet {
+		hash := ComputeCompositeHashUUID(evt.CampaignID, []byte(evt.UserID))
+		pct := hash % 100
+		if pct < 40 {
+			shard = int(campInfo.PrimaryAShard)
+		} else if pct < 80 {
+			shard = int(campInfo.PrimaryBShard)
+		} else {
+			shard = int(campInfo.ReserveShard)
+		}
+	}
+	rdb := f.rdbs[shard%len(f.rdbs)]
 
 	scratch := unifiedScratchPool.Get().(*unifiedCheckScratch)
 	scratch.acquire()
@@ -577,11 +589,13 @@ func (f *UnifiedFilter) runUnifiedLua(
 	wrappers := &scratch.wrappers
 
 	wRL.buf = wRL.buf[:0]
+	wRL.buf = append(wRL.buf, campaignHashTag(evt.CampaignID)...)
 	wRL.buf = append(wRL.buf, "rl:ip:"...)
 	wRL.buf = append(wRL.buf, evt.IP...)
 	rlKey := unsafeString(wRL.buf)
 
 	wDup.buf = wDup.buf[:0]
+	wDup.buf = append(wDup.buf, campaignHashTag(evt.CampaignID)...)
 	wDup.buf = append(wDup.buf, "dup:"...)
 	wDup.buf = append(wDup.buf, evt.Type...)
 	wDup.buf = append(wDup.buf, ':')
@@ -591,6 +605,7 @@ func (f *UnifiedFilter) runUnifiedLua(
 	budgetSourceKey := campInfo.BudgetCampaignKey
 
 	wIdem.buf = wIdem.buf[:0]
+	wIdem.buf = append(wIdem.buf, campaignHashTag(evt.CampaignID)...)
 	wIdem.buf = append(wIdem.buf, "idempotency:click:"...)
 	wIdem.buf = append(wIdem.buf, evt.ClickID...)
 	idempotencyKey := unsafeString(wIdem.buf)
@@ -621,6 +636,7 @@ func (f *UnifiedFilter) runUnifiedLua(
 	}
 
 	wImpTS.buf = wImpTS.buf[:0]
+	wImpTS.buf = append(wImpTS.buf, campaignHashTag(evt.CampaignID)...)
 	wImpTS.buf = append(wImpTS.buf, "imp_ts:"...)
 	wImpTS.buf = append(wImpTS.buf, evt.UserID...)
 	wImpTS.buf = append(wImpTS.buf, ':')
@@ -628,11 +644,13 @@ func (f *UnifiedFilter) runUnifiedLua(
 	impTSKey := unsafeString(wImpTS.buf)
 
 	wQuota.buf = wQuota.buf[:0]
+	wQuota.buf = append(wQuota.buf, campaignHashTag(evt.CampaignID)...)
 	wQuota.buf = append(wQuota.buf, "budget:quota:"...)
 	wQuota.buf = appendUUID(wQuota.buf, evt.CampaignID)
 	quotaKey := unsafeString(wQuota.buf)
 
 	wRefillLock.buf = wRefillLock.buf[:0]
+	wRefillLock.buf = append(wRefillLock.buf, campaignHashTag(evt.CampaignID)...)
 	wRefillLock.buf = append(wRefillLock.buf, "budget:refill_lock:"...)
 	wRefillLock.buf = appendUUID(wRefillLock.buf, evt.CampaignID)
 	refillLockKey := unsafeString(wRefillLock.buf)
@@ -724,8 +742,20 @@ func (f *UnifiedFilter) runUnifiedLua(
 	args[24] = f.quotaEnabledAny
 	args[25] = f.quotaChunkSizeAny
 	args[26] = f.quotaRefillThresholdPctAny
+	args[27] = campInfo.MigrationGen
 
 	shard := f.sharder.GetShard(evt.CampaignID)
+	if campInfo.HasTriplet {
+		hash := ComputeCompositeHashUUID(evt.CampaignID, []byte(evt.UserID))
+		pct := hash % 100
+		if pct < 40 {
+			shard = int(campInfo.PrimaryAShard)
+		} else if pct < 80 {
+			shard = int(campInfo.PrimaryBShard)
+		} else {
+			shard = int(campInfo.ReserveShard)
+		}
+	}
 	for i := 0; i < 2; i++ {
 		seq := f.luaMetricsSeq.Add(1)
 		sampleLua := shouldSampleHistogram(seq, f.redisObservability.sampleMask)

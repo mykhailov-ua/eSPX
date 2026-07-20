@@ -23,7 +23,11 @@ SET balance = balance - $2,
 WHERE id = $1;
 
 -- name: ListActiveCampaigns :many
-SELECT * FROM campaigns WHERE status = 'ACTIVE';
+SELECT c.*, 
+       sa.primary_a_shard, sa.primary_b_shard, sa.reserve_shard, sa.h_ema, sa.c_ema
+FROM campaigns c
+LEFT JOIN campaign_shard_assignment sa ON c.id = sa.campaign_id
+WHERE c.status = 'ACTIVE';
 
 -- name: GetCustomerByID :one
 SELECT * FROM customers WHERE id = $1 LIMIT 1;

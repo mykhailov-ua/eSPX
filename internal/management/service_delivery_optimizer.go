@@ -6,7 +6,7 @@ import (
 	"log/slog"
 
 	"espx/internal/ingestion"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -60,48 +60,50 @@ func (m deliveryOutboxMerge) flush(ctx context.Context, pool pgx.Tx) error {
 
 // RunDeliveryOptimizerTick is the unified M5.0 delivery pass: sync, pacing, autoscale, MAB, bid floors.
 func (s *Service) RunDeliveryOptimizerTick(ctx context.Context, syncWorkers []*ingestion.SyncWorker, runMAB bool) error {
-	opCtx, cancel := workerContext(ctx, workerBatchTimeout)
-	defer cancel()
+	return s.withPgLow(ctx, func(runCtx context.Context) error {
+		opCtx, cancel := workerContext(runCtx, workerBatchTimeout)
+		defer cancel()
 
-	for _, sw := range syncWorkers {
-		if sw != nil {
-			sw.SyncAll(opCtx)
+		for _, sw := range syncWorkers {
+			if sw != nil {
+				sw.SyncAll(opCtx)
+			}
 		}
-	}
 
-	merge := make(deliveryOutboxMerge)
-	var mabBrands []uuid.UUID
+		merge := make(deliveryOutboxMerge)
+		var mabBrands []uuid.UUID
 
-	err := pgx.BeginFunc(opCtx, s.GetPool(), func(tx pgx.Tx) error {
-		if err := s.closedLoopPacingControllerTx(opCtx, tx, merge); err != nil {
-			return err
-		}
-		if err := s.autoscaleBudgetsTx(opCtx, tx, merge); err != nil {
-			return err
-		}
-		if runMAB {
-			brands, err := s.optimizeBrandCreativeMABTx(opCtx, tx)
-			if err != nil {
+		err := pgx.BeginFunc(opCtx, s.GetPool(), func(tx pgx.Tx) error {
+			if err := s.closedLoopPacingControllerTx(opCtx, tx, merge); err != nil {
 				return err
 			}
-			mabBrands = brands
-		}
-		if err := merge.flush(opCtx, tx); err != nil {
-			return err
-		}
-		for _, brandID := range mabBrands {
-			if err := s.emitBrandCreativesOutbox(opCtx, db.New(tx), brandID); err != nil {
+			if err := s.autoscaleBudgetsTx(opCtx, tx, merge); err != nil {
 				return err
 			}
+			if runMAB {
+				brands, err := s.optimizeBrandCreativeMABTx(opCtx, tx)
+				if err != nil {
+					return err
+				}
+				mabBrands = brands
+			}
+			if err := merge.flush(opCtx, tx); err != nil {
+				return err
+			}
+			for _, brandID := range mabBrands {
+				if err := s.emitBrandCreativesOutbox(opCtx, db.New(tx), brandID); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+
+		if _, err := s.OptimizeBidFloors(opCtx); err != nil {
+			slog.Error("bid floor optimizer failed", "error", err)
 		}
 		return nil
 	})
-	if err != nil {
-		return err
-	}
-
-	if _, err := s.OptimizeBidFloors(opCtx); err != nil {
-		slog.Error("bid floor optimizer failed", "error", err)
-	}
-	return nil
 }

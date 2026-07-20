@@ -45,6 +45,14 @@ type Campaign struct {
 	FcapKeyPrefix       string
 	DailySpendKeyPrefix string
 
+	MigrationGen  int64
+	HasTriplet    bool
+	PrimaryAShard int16
+	PrimaryBShard int16
+	ReserveShard  int16
+	HEma          float64
+	CEma          float64
+
 	BrandID          *uuid.UUID
 	BudgetLimit      int64
 	CurrentSpend     int64

@@ -5,18 +5,18 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"strings"
 	"time"
 
 	db "espx/internal/ingestion/sqlc"
+	"espx/pkg/money"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const microUnit = int64(1_000_000)
+const microUnit = money.MicroUnit
 
 // CurrencyConverter converts foreign amounts to USD micro-units using ECB daily rates.
 type CurrencyConverter struct {
@@ -88,9 +88,11 @@ func (c *CurrencyConverter) usdPerUnitMicro(ctx context.Context, currency string
 	}
 
 	if currency == "EUR" {
-		// 1 EUR = (1/eurPerUSD) USD
-		usdPerEUR := 1.0 / eurPerUSD
-		return floatToMicro(usdPerEUR), nil
+		usdPerEURMicro, err := rateToMicro(1.0 / eurPerUSD)
+		if err != nil {
+			return 0, err
+		}
+		return usdPerEURMicro, nil
 	}
 
 	eurPerUnit, ok := rates[currency]
@@ -98,9 +100,11 @@ func (c *CurrencyConverter) usdPerUnitMicro(ctx context.Context, currency string
 		return 0, fmt.Errorf("ecb: unknown currency %s", currency)
 	}
 
-	// 1 unit = (eurPerUnit/eurPerUSD) USD
 	usdPerUnit := eurPerUnit / eurPerUSD
-	micro := floatToMicro(usdPerUnit)
+	micro, err := rateToMicro(usdPerUnit)
+	if err != nil {
+		return 0, err
+	}
 
 	if c.pool != nil {
 		q := db.New(c.pool)
@@ -144,8 +148,8 @@ func (c *CurrencyConverter) fetchECBRates(ctx context.Context) (map[string]float
 	return out, nil
 }
 
-func floatToMicro(v float64) int64 {
-	return int64(math.Round(v * float64(microUnit)))
+func rateToMicro(v float64) (int64, error) {
+	return money.LegacyFloatToMicro(v)
 }
 
 // ConvertEURToUSD is a test helper using a fixed ECB sample rate (1 EUR = 1.10 USD).

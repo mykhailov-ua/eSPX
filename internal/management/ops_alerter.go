@@ -234,6 +234,20 @@ func (a *OpsAlerter) AlertLedgerDrift(customerID string, driftErr error) {
 	a.sendAsync(key, title, body, true)
 }
 
+// AlertCHEmergencyDrop notifies operators when CHPartitionJanitor drops a partition under disk pressure.
+func (a *OpsAlerter) AlertCHEmergencyDrop(table, partition string, diskUsedPct float64, thresholdPct int) {
+	if a == nil {
+		return
+	}
+	key := fmt.Sprintf("ch:emergency:%s:%s", table, partition)
+	title := "eSPX: ClickHouse emergency partition drop"
+	body := fmt.Sprintf(
+		"<b>CH emergency drop</b>\nTable: %s\nPartition: %s\nDisk used: %.1f%%\nThreshold: %d%%\nReview retention and ingest volume.",
+		table, partition, diskUsedPct, thresholdPct,
+	)
+	a.sendAsync(key, title, body, true)
+}
+
 // AlertSlotMigrationError notifies operators when slot migration orchestrator ticks fail persistently.
 func (a *OpsAlerter) AlertSlotMigrationError(stage string, err error) {
 	if a == nil || err == nil {

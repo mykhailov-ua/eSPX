@@ -8,10 +8,11 @@ import (
 	"time"
 
 	"espx/internal/config"
+	"espx/internal/database"
 	"espx/internal/ingestion"
 	notifierpb "espx/internal/notifier/pb"
+	"espx/pkg/money"
 
-	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -21,13 +22,13 @@ type Notifier interface {
 
 type Worker struct {
 	pool     *pgxpool.Pool
-	ch       driver.Conn
+	ch       *database.CHQuery
 	cfg      *config.Config
 	registry *ingestion.Registry
 	notifier Notifier
 }
 
-func NewWorker(pool *pgxpool.Pool, ch driver.Conn, cfg *config.Config, registry *ingestion.Registry, notifier Notifier) *Worker {
+func NewWorker(pool *pgxpool.Pool, ch *database.CHQuery, cfg *config.Config, registry *ingestion.Registry, notifier Notifier) *Worker {
 	return &Worker{
 		pool:     pool,
 		ch:       ch,
@@ -190,10 +191,10 @@ func (w *Worker) applyDecision(ctx context.Context, d *Decision) error {
 		// 4. Send alert via Notifier
 		if w.notifier != nil {
 			title := fmt.Sprintf("Margin Guard: Placement Paused (%s)", d.PlacementID)
-			body := fmt.Sprintf("Campaign: %s\nPlacement: %s\nReason: %s\nROI: %.2f%%\nSpend: %.4f USD\nRevenue: %.4f USD\nClicks: %d\nConversions: %d",
+			body := fmt.Sprintf("Campaign: %s\nPlacement: %s\nReason: %s\nROI: %.2f%%\nSpend: %s USD\nRevenue: %s USD\nClicks: %d\nConversions: %d",
 				d.CampaignID, d.PlacementID, d.Reason, d.Metrics["roi_pct"],
-				float64(d.Metrics["spend_micro"].(int64))/1000000.0,
-				float64(d.Metrics["revenue_micro"].(int64))/1000000.0,
+				money.FormatDecimal(d.Metrics["spend_micro"].(int64)),
+				money.FormatDecimal(d.Metrics["revenue_micro"].(int64)),
 				d.Metrics["clicks"], d.Metrics["conversions"])
 
 			_, alertErr := w.notifier.SendNotification(ctx, notifierpb.Provider_PROVIDER_TELEGRAM, "admin", title, body)

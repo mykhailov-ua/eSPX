@@ -6,15 +6,16 @@ import (
 	"time"
 
 	"espx/internal/campaignmodel"
-	"espx/internal/licensing"
+
 	"github.com/google/uuid"
 	redis "github.com/redis/go-redis/v9"
 )
 
 type EntitlementsFilter struct {
-	registry *Registry
-	sharder  Sharder
-	rdbs     []redis.UniversalClient
+	registry   *Registry
+	sharder    Sharder
+	rdbs       []redis.UniversalClient
+	regionCode uint8
 }
 
 func NewEntitlementsFilter(registry *Registry, sharder Sharder, rdbs []redis.UniversalClient) *EntitlementsFilter {
@@ -25,26 +26,27 @@ func NewEntitlementsFilter(registry *Registry, sharder Sharder, rdbs []redis.Uni
 	}
 }
 
+// SetRegionCode scopes daily ingress counters to a regional cell (M7).
+func (f *EntitlementsFilter) SetRegionCode(code uint8) {
+	if f != nil {
+		f.regionCode = code
+	}
+}
+
 func (f *EntitlementsFilter) getRDB(id uuid.UUID) redis.UniversalClient {
 	shard := f.sharder.GetShard(id)
 	return f.rdbs[shard]
 }
 
 func (f *EntitlementsFilter) Check(ctx context.Context, evt *campaignmodel.Event) error {
-	// 1. Check License State
-	state, _ := f.registry.GetLicenseState()
-	if state == licensing.StateExpired || state == licensing.StateRevoked {
-		return ErrLicenseExpired
-	}
-
-	// 2. Get customer ID
+	// 1. Get customer ID
 	campInfo, ok := f.registry.GetCampaign(evt.CampaignID)
 	if !ok {
 		return ErrCampaignNotFound
 	}
 	custID := campInfo.CustomerID
 
-	// 3. Check customer subscription entitlements
+	// 2. Check customer subscription entitlements
 	ent, ok := f.registry.GetEntitlements(custID)
 	if !ok {
 		// If subscription doesn't exist, we fall back to open/unlimited
@@ -53,12 +55,12 @@ func (f *EntitlementsFilter) Check(ctx context.Context, evt *campaignmodel.Event
 
 	// Feature flag check
 	if evt.Type == "bid" || evt.Type == "rtb" {
-		if !ent.Features.RtbLive {
+		if !ent.Features.OpenRTBEnabled() {
 			return ErrLicenseExpired
 		}
 	}
 
-	// 4. RPD daily quota check
+	// 3. RPD daily quota check
 	if ent.Limits.MaxRequestsPerDay == 0 {
 		return nil
 	}
@@ -75,12 +77,8 @@ func (f *EntitlementsFilter) Check(ctx context.Context, evt *campaignmodel.Event
 
 	dateStr := time.Now().In(loc).Format("20060102")
 
-	// Key formatting with 0 allocations
 	var keyBuf [128]byte
-	b := append(keyBuf[:0], "ingress:day:"...)
-	b = appendUUID(b, custID)
-	b = append(b, ':')
-	b = append(b, dateStr...)
+	b := IngressDayKey(keyBuf[:0], f.regionCode, custID, dateStr)
 	redisKey := unsafeString(b)
 
 	rdb := f.getRDB(custID)

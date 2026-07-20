@@ -4,7 +4,7 @@ import (
 	"sort"
 )
 
-// geoRange returns the half-open [start,end) slice into GeoBucketIdx for one geo hash.
+// geoRange returns the half-open [start,end) slice into GeoBucketSoA for one geo hash.
 func (reg *CampaignAuctionRegistry) geoRange(geoHash uint32) (start int, end int, ok bool) {
 	if reg == nil || reg.GeoBucketCount == 0 {
 		return 0, 0, false
@@ -21,10 +21,11 @@ func (reg *CampaignAuctionRegistry) geoRange(geoHash uint32) (start int, end int
 	return start, end, true
 }
 
-// buildGeoIndex materializes per-geo candidate index lists on the cold catalog rebuild path.
+// buildGeoIndex materializes per-geo candidate SoA buckets on the cold catalog rebuild path.
 func buildGeoIndex(reg *CampaignAuctionRegistry) {
 	if reg == nil || reg.Count == 0 {
 		reg.GeoBucketCount = 0
+		resetBucketSoA(&reg.GeoBucketSoA)
 		return
 	}
 
@@ -44,10 +45,13 @@ func buildGeoIndex(reg *CampaignAuctionRegistry) {
 	})
 
 	reg.GeoBucketStart = make([]uint32, reg.GeoBucketCount+1)
-	reg.GeoBucketIdx = make([]uint32, 0, reg.Count)
+	resetBucketSoA(&reg.GeoBucketSoA)
+	ensureBucketSoACap(&reg.GeoBucketSoA, reg.Count)
 	for i, geo := range reg.GeoBucketHash {
-		reg.GeoBucketStart[i] = uint32(len(reg.GeoBucketIdx))
-		reg.GeoBucketIdx = append(reg.GeoBucketIdx, buckets[geo]...)
+		reg.GeoBucketStart[i] = uint32(reg.GeoBucketSoA.len())
+		for _, catalogIdx := range buckets[geo] {
+			appendBucketCandidate(&reg.GeoBucketSoA, reg, catalogIdx)
+		}
 	}
-	reg.GeoBucketStart[reg.GeoBucketCount] = uint32(len(reg.GeoBucketIdx))
+	reg.GeoBucketStart[reg.GeoBucketCount] = uint32(reg.GeoBucketSoA.len())
 }

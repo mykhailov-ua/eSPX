@@ -25,7 +25,7 @@ func TestStaticSlotSharder_SnapshotAtomic_concurrentStress(t *testing.T) {
 			default:
 				var table slotTable
 				for j := range table {
-					table[j] = uint16((j + n) % 4)
+					table[j] = uint8((j + n) % 4)
 				}
 				s.SwapSnapshot(int32((n%100)+1), &table, int64(n))
 			}
@@ -49,7 +49,7 @@ func TestStaticSlotSharder_SnapshotAtomic_versionTableBundle(t *testing.T) {
 
 	var table slotTable
 	for i := range table {
-		table[i] = uint16((i + 2) % 4)
+		table[i] = uint8((i + 2) % 4)
 	}
 	s.SwapSnapshot(42, &table, 7)
 

@@ -11,10 +11,12 @@ import (
 	"time"
 
 	"espx/internal/config"
+	"espx/internal/database"
 	"espx/internal/ingestion"
 	db "espx/internal/ingestion/sqlc"
 	"espx/internal/metrics"
 	"espx/pkg/coldpath"
+	"espx/pkg/money"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/google/uuid"
@@ -30,8 +32,10 @@ type Service struct {
 	rdbs        []redis.UniversalClient
 	sharder     ingestion.Sharder
 	cfg         *config.Config
+	pgGate      *MgmtPgGate
 	alerter     *OpsAlerter
-	ch          driver.Conn
+	chWrite     driver.Conn
+	chQuery     *database.CHQuery
 	paymentPool *pgxpool.Pool
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -73,8 +77,17 @@ func NewService(pool *pgxpool.Pool, rdbs []redis.UniversalClient, sharder ingest
 		ctx:     ctx,
 		cancel:  cancel,
 	}
+	if cfg != nil {
+		s.pgGate = NewMgmtPgGate(cfg.DBTrackerMaxConns)
+	}
 	s.startWorker(func() {
-		NewOutboxWorker(s).Start(ctx, 20*time.Millisecond)
+		if cfg.MultiRegionCell() {
+			NewRegionOutboxRelay(s).Start(ctx, 20*time.Millisecond)
+			return
+		}
+		if !cfg.MultiRegionGlobal() {
+			NewOutboxWorker(s).Start(ctx, 20*time.Millisecond)
+		}
 	})
 	s.startWorker(func() {
 		NewCampaignDrainWorker(s).Start(ctx, 20*time.Millisecond)
@@ -120,6 +133,14 @@ func (s *Service) GetPool() *pgxpool.Pool {
 	return s.pool
 }
 
+// PgGate exposes the management Postgres gate for tests.
+func (s *Service) PgGate() *MgmtPgGate {
+	if s == nil {
+		return nil
+	}
+	return s.pgGate
+}
+
 // SetPool replaces the Postgres pool after reconnect (e.g. DB failover).
 func (s *Service) SetPool(pool *pgxpool.Pool) {
 	s.pool = pool
@@ -162,7 +183,7 @@ func (s *Service) StartDeliveryOptimizerWorker(syncWorkers []*ingestion.SyncWork
 
 // GetCampaign loads the full campaign row for internal authorization and lifecycle checks.
 func (s *Service) GetCampaign(ctx context.Context, id uuid.UUID) (db.Campaign, error) {
-	return db.New(s.pool).GetCampaignFull(ctx, ingestion.ToUUID(id))
+	return db.New(s.pool).GetCampaign(ctx, ingestion.ToUUID(id))
 }
 
 // CreateCustomer registers a new billing account with an optional opening balance.
@@ -214,7 +235,7 @@ func (s *Service) TopUpBalance(ctx context.Context, customerID uuid.UUID, amount
 			PaymentIntentID: pgtype.UUID{},
 		})
 		if err == nil {
-			metrics.BalanceTopupsTotal.WithLabelValues("USD").Add(float64(amount) / ingestion.MicroUnitFactor)
+			metrics.BalanceTopupsTotal.WithLabelValues("USD").Add(money.APIValueFloat(amount))
 			s.AuditLog(ctx, q, uuid.Nil, "TOPUP_BALANCE", "customer", &customerID, map[string]any{"amount": amount}, map[string]any{"idempotency_key": idempotencyKey})
 		}
 		return err
@@ -286,7 +307,7 @@ func (s *Service) ApplyPaymentCredit(ctx context.Context, customerID uuid.UUID, 
 		ledgerEntryID = row.ID
 		applied = true
 
-		metrics.BalanceTopupsTotal.WithLabelValues("USD").Add(float64(amount) / ingestion.MicroUnitFactor)
+		metrics.BalanceTopupsTotal.WithLabelValues("USD").Add(money.APIValueFloat(amount))
 		s.AuditLog(ctx, q, uuid.Nil, "PAYMENT_SETTLEMENT", "customer", &customerID, map[string]any{"amount": amount, "payment_intent_id": paymentIntentID.String(), "provider": provider, "provider_ref": providerRef}, map[string]any{"idempotency_key": ledgerIdempotencyKey})
 		return nil
 	})
@@ -564,7 +585,7 @@ func (s *Service) finalizeDrainingCampaign(ctx context.Context, q db.Querier, ca
 	if s.cfg != nil {
 		feePercent = s.cfg.Management.CancellationFeePercent
 	}
-	fee := int64(float64(remaining) * (feePercent / 100.0))
+	fee := money.PercentFromFloat(remaining, feePercent)
 	refund := remaining - fee
 	if refund > 0 {
 		_, err := q.UpdateCustomerBalanceManagement(ctx, db.UpdateCustomerBalanceManagementParams{
@@ -596,7 +617,7 @@ func (s *Service) finalizeDrainingCampaign(ctx context.Context, q db.Querier, ca
 		if err != nil {
 			return err
 		}
-		metrics.CommissionsCollectedTotal.Add(float64(fee) / ingestion.MicroUnitFactor)
+		metrics.CommissionsCollectedTotal.Add(money.APIValueFloat(fee))
 	}
 	if err := q.SoftDeleteCampaign(ctx, ingestion.ToUUID(campaignID)); err != nil {
 		return err
@@ -807,8 +828,8 @@ func (s *Service) UpdateOverdraft(ctx context.Context, id uuid.UUID, newOverdraf
 		}
 
 		s.AuditLog(ctx, q, uuid.Nil, "UPDATE_CUSTOMER_OVERDRAFT", "customer", &id, map[string]any{
-			"old_overdraft": fmt.Sprintf("%.2f", float64(prevOverdraft)/ingestion.MicroUnitFactor),
-			"new_overdraft": fmt.Sprintf("%.2f", float64(newOverdraft)/ingestion.MicroUnitFactor),
+			"old_overdraft": money.FormatDecimal(prevOverdraft),
+			"new_overdraft": money.FormatDecimal(newOverdraft),
 		}, nil)
 		return nil
 	})

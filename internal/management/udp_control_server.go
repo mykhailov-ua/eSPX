@@ -204,12 +204,55 @@ func (s *UDPControlServer) buildLimits() *ingestion.UDPControlLimits {
 		n = ingestion.UDPMaxControlShards
 	}
 	limits := &ingestion.UDPControlLimits{NumShards: uint8(n)}
-	rps := s.cfg.UDPDefaultShardRPS
-	if rps == 0 {
-		rps = 50_000
+
+	var maxRPS uint64
+	var maxRPD uint64
+	if s.pool != nil {
+		var entitlementsJSON []byte
+		err := s.pool.QueryRow(context.Background(), `
+			SELECT entitlements_json FROM billing.license_status LIMIT 1`).Scan(&entitlementsJSON)
+		if err == nil && len(entitlementsJSON) > 0 {
+			var ent struct {
+				Limits struct {
+					MaxRPS            uint64 `json:"max_rps"`
+					MaxRequestsPerDay uint64 `json:"max_requests_per_day"`
+					MaxRegions        uint64 `json:"max_regions"`
+				} `json:"limits"`
+				Features struct {
+					MultiRegion bool `json:"multi_region"`
+				} `json:"features"`
+			}
+			if json.Unmarshal(entitlementsJSON, &ent) == nil {
+				maxRPS = ent.Limits.MaxRPS
+				maxRPD = ent.Limits.MaxRequestsPerDay
+			}
+		}
 	}
-	for i := 0; i < n; i++ {
-		limits.Limits[i] = rps
+
+	if maxRPS > 0 {
+		shardRPS := maxRPS / uint64(n)
+		if shardRPS == 0 {
+			shardRPS = 1
+		}
+		for i := 0; i < n; i++ {
+			limits.Limits[i] = shardRPS
+		}
+	} else {
+		fallback := s.cfg.UDPDefaultShardRPS
+		if fallback == 0 {
+			fallback = 50_000
+		}
+		for i := 0; i < n; i++ {
+			limits.Limits[i] = fallback
+		}
+	}
+
+	if s.cfg != nil && s.cfg.MultiRegionEnabled && maxRPD > 0 && s.pool != nil {
+		var regionCount int64
+		if err := s.pool.QueryRow(context.Background(), `
+			SELECT COUNT(*) FROM regions WHERE active = TRUE`).Scan(&regionCount); err == nil && regionCount > 0 {
+			limits.MaxRPD = maxRPD / uint64(regionCount)
+		}
 	}
 	return limits
 }

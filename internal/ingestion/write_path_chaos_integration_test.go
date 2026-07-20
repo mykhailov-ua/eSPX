@@ -122,7 +122,7 @@ func TestChaos_SyncWorker_PgGateOverflow(t *testing.T) {
 	campaignRepo := NewCampaignRepo(infra.Queries)
 
 	gate := NewProcessorPgGate(3, 4)
-	worker := NewSyncWorker(infra.Redis, campaignRepo, nil, time.Hour, gate, 0)
+	worker := NewSyncWorker(infra.Redis, campaignRepo, nil, time.Hour, 0, gate, 0)
 
 	syncKey := "budget:sync:campaign:" + campaignID.String()
 	require.NoError(t, infra.Redis.SAdd(ctx, "budget:dirty_campaigns", campaignID.String()).Err())

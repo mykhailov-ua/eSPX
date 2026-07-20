@@ -53,16 +53,17 @@ func main() {
 		defer notifier.Close()
 	}
 
-	// 2. Connect to ClickHouse
-	ch, err := database.ConnectClickHouse(ctx, string(cfg.CHDSN))
+	chRead, err := database.ConnectCHReadonly(ctx, string(cfg.CHReadonlyDSN))
 	if err != nil {
-		slog.Error("failed to connect to clickhouse", "error", err)
+		slog.Error("failed to connect to clickhouse readonly", "error", err)
 		os.Exit(1)
 	}
-	defer ch.Close()
+	defer chRead.Close()
+
+	chQuery := database.NewCHQuery(chRead, database.CHQueryConfig{})
 
 	// 3. Start worker
-	worker := marginguard.NewWorker(pool, ch, cfg, registry, notifier)
+	worker := marginguard.NewWorker(pool, chQuery, cfg, registry, notifier)
 
 	// Evaluation interval: 60s as per spec
 	go worker.Start(ctx, 60*time.Second)

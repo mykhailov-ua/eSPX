@@ -28,6 +28,23 @@ func TestOpsAlerter_AlertOutboxStuck(t *testing.T) {
 	assert.Equal(t, notifierpb.DeliveryMode_DELIVERY_MODE_BROADCAST, requests[0].DeliveryMode)
 }
 
+func TestOpsAlerter_AlertCHEmergencyDrop(t *testing.T) {
+	stub := &stubNotifierGRPCClient{}
+	cfg := testNotifierConfig()
+	cfg.Management.OpsAlertsEnabled = true
+
+	alerter := NewOpsAlerter(&NotifierClient{client: stub}, cfg)
+	require.NotNil(t, alerter)
+
+	alerter.AlertCHEmergencyDrop("impressions", "202401", 92.5, 90)
+	time.Sleep(100 * time.Millisecond)
+
+	requests := stub.snapshot()
+	require.Len(t, requests, 1)
+	assert.Contains(t, requests[0].Body, "CH emergency drop")
+	assert.Equal(t, notifierpb.DeliveryMode_DELIVERY_MODE_BROADCAST, requests[0].DeliveryMode)
+}
+
 func TestOpsAlerter_AlertBlacklistJanitorFailed(t *testing.T) {
 	stub := &stubNotifierGRPCClient{}
 	cfg := testNotifierConfig()

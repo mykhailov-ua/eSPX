@@ -4,14 +4,14 @@ import "net/http"
 
 // RouteRegistry wires cold-path admin JSON handlers into cmd/management.
 type RouteRegistry struct {
-	BillingHTTP    *BillingHTTPHandlers
-	OpsHTTP        *OpsHTTPHandlers
-	ExportHTTP     *ExportHTTPHandlers
-	LicensingHTTP  *LicensingHTTPHandlers
-	ReportsHTTP    *ReportsHTTPHandlers
-	DashboardsHTTP *DashboardsHTTPHandlers
-	ViewsHTTP      *ViewsHTTPHandlers
-	SelfServeHTTP  *SelfServeHTTPHandlers
+	BillingHTTP     *BillingHTTPHandlers
+	OpsHTTP         *OpsHTTPHandlers
+	ExportHTTP      *ExportHTTPHandlers
+	LicensingHTTP   *LicensingHTTPHandlers
+	ReportsHTTP     *ReportsHTTPHandlers
+	DashboardsHTTP  *DashboardsHTTPHandlers
+	ViewsHTTP       *ViewsHTTPHandlers
+	SelfServeHTTP   *SelfServeHTTPHandlers
 	PostbackHTTP    *PostbackHTTPHandlers
 	CostSyncHTTP    *CostSyncHTTPHandlers
 	MarginGuardHTTP *MarginGuardHTTPHandlers

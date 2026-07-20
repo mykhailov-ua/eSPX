@@ -335,7 +335,7 @@ func TestStaticSlotSharder_StoreSlotMap_concurrent(t *testing.T) {
 			default:
 				var table slotTable
 				for i := range table {
-					table[i] = uint16((i + 1) % 4)
+					table[i] = uint8((i + 1) % 4)
 				}
 				s.SwapSnapshot(int32((n%100)+1), &table, int64(n))
 			}

@@ -2,6 +2,7 @@ package management
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 )
@@ -63,12 +64,19 @@ func (w *ReconWorker) Start(ctx context.Context) {
 		case <-ticker.C:
 			end := time.Now().Truncate(time.Hour).Add(-2 * time.Hour)
 			start := end.Add(-time.Hour)
-			if err := reconSvc.ReconcileWindow(ctx, start, end); err != nil {
+			if err := w.svc.withPgLow(ctx, func(runCtx context.Context) error {
+				return reconSvc.ReconcileWindow(runCtx, start, end)
+			}); err != nil && !errors.Is(err, ErrMgmtPgGateRejected) {
 				slog.Error("recon worker iteration failed", "error", err, "window", start)
 			}
 		case <-quotaTicker.C:
 			if w.svc.cfg != nil && (w.svc.cfg.QuotaMode == "shadow" || w.svc.cfg.QuotaMode == "live") {
-				w.ReconcileQuotas(ctx)
+				if err := w.svc.withPgLow(ctx, func(runCtx context.Context) error {
+					w.ReconcileQuotas(runCtx)
+					return nil
+				}); err != nil && !errors.Is(err, ErrMgmtPgGateRejected) {
+					slog.Error("quota recon failed", "error", err)
+				}
 			}
 		case <-drainCheckTicker.C:
 			w.svc.CheckStuckDrainJobs(ctx)

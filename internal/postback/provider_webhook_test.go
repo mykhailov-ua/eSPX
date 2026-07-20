@@ -28,8 +28,8 @@ func TestWebhookAdapter_Send_UsesMacros(t *testing.T) {
 	tpl := srv.URL + "/postback?clickid={click_id}&amt={payout}"
 	a := &WebhookAdapter{}
 	err := a.Send(context.Background(), srv.Client(), &PostbackPayload{
-		ClickID: "abc",
-		Payout:  10.5,
+		ClickID:     "abc",
+		PayoutMicro: 10_500_000,
 	}, tpl, "")
 	if err != nil {
 		t.Fatalf("Send: %v", err)

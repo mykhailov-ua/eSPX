@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"espx/pkg/money"
 )
 
 // FacebookProvider fetches spend from Meta Marketing API insights.
@@ -83,7 +85,7 @@ func (p *FacebookProvider) Fetch(ctx context.Context, cred Credential, date time
 
 	lines := make([]CostLine, 0, len(parsed.Data))
 	for _, row := range parsed.Data {
-		spendMicro, err := dollarsToMicro(row.Spend)
+		spendMicro, err := money.ParseDecimal(row.Spend)
 		if err != nil || spendMicro == 0 {
 			continue
 		}
@@ -105,32 +107,6 @@ func (p *FacebookProvider) Fetch(ctx context.Context, cred Credential, date time
 		})
 	}
 	return lines, nil
-}
-
-func dollarsToMicro(s string) (int64, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0, nil
-	}
-	var whole, frac int64
-	if strings.Contains(s, ".") {
-		parts := strings.SplitN(s, ".", 2)
-		fmt.Sscanf(parts[0], "%d", &whole)
-		fracStr := parts[1]
-		if len(fracStr) > 6 {
-			fracStr = fracStr[:6]
-		}
-		for len(fracStr) < 6 {
-			fracStr += "0"
-		}
-		fmt.Sscanf(fracStr, "%d", &frac)
-	} else {
-		fmt.Sscanf(s, "%d", &whole)
-	}
-	if whole < 0 {
-		return 0, fmt.Errorf("negative spend")
-	}
-	return whole*microUnit + frac, nil
 }
 
 func mapExternalCampaignID(customerID uuid.UUID, externalID string) uuid.UUID {

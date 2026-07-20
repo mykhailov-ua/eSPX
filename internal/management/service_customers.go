@@ -2,12 +2,12 @@ package management
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"espx/internal/ingestion"
 	"espx/internal/ingestion/sqlc"
 	"espx/pkg/coldpath"
+	"espx/pkg/money"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -54,7 +54,7 @@ func ledgerToDTO(r db.BalanceLedger) LedgerDTO {
 
 // formatMicro converts micro-unit balances to a two-decimal string for JSON responses.
 func formatMicro(m int64) string {
-	return fmt.Sprintf("%.2f", float64(m)/1_000_000.0)
+	return money.FormatFixed2(m)
 }
 
 // ListCustomers returns a paginated customer list enriched with campaign spend aggregates.

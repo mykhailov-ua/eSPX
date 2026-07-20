@@ -10,16 +10,19 @@ import (
 // Guards buildGeoIndex groups campaigns by geo hash for bucket iteration.
 func TestBuildGeoIndex_groupsByGeo(t *testing.T) {
 	reg := &CampaignAuctionRegistry{
-		Count:         4,
-		CampaignIDs:   []CampaignID{1, 2, 3, 4},
-		Bids:          []int64{10, 20, 30, 40},
-		CTRPPM:        []uint32{CTRPPMUnit, CTRPPMUnit, CTRPPMUnit, CTRPPMUnit},
-		Reserves:      []int64{0, 0, 0, 0},
-		DeviceMasks:   []uint8{1, 1, 1, 1},
-		CategoryMasks: []uint64{1, 1, 1, 1},
-		GeoHashes:     []uint32{7, 7, 9, 9},
-		Weights:       []uint32{1, 2, 3, 4},
-		BudgetIndices: []uint32{0, 1, 2, 3},
+		Count:                 4,
+		CampaignIDs:           []CampaignID{1, 2, 3, 4},
+		Bids:                  []int64{10, 20, 30, 40},
+		CTRPPM:                []uint32{CTRPPMUnit, CTRPPMUnit, CTRPPMUnit, CTRPPMUnit},
+		Reserves:              []int64{0, 0, 0, 0},
+		DailyBudgets:          []int64{0, 0, 0, 0},
+		PacingOpen:            []uint8{PacingOpen, PacingOpen, PacingOpen, PacingOpen},
+		DeviceMasks:           []uint8{1, 1, 1, 1},
+		CategoryMasks:         []uint64{1, 1, 1, 1},
+		GeoHashes:             []uint32{7, 7, 9, 9},
+		Weights:               []uint32{1, 2, 3, 4},
+		BudgetIndices:         []uint32{0, 1, 2, 3},
+		CustomerBudgetIndices: []uint32{invalidCustomerBudgetIdx, invalidCustomerBudgetIdx, invalidCustomerBudgetIdx, invalidCustomerBudgetIdx},
 	}
 	buildGeoIndex(reg)
 

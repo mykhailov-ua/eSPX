@@ -7,8 +7,9 @@ import (
 	"time"
 
 	"espx/internal/ingestion"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 	"espx/pkg/coldpath"
+	"espx/pkg/money"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -16,17 +17,19 @@ import (
 
 // ClosedLoopPacingController switches campaigns between ASAP and EVEN when spend diverges from the daypart curve.
 func (s *Service) ClosedLoopPacingController(ctx context.Context, syncWorkers []*ingestion.SyncWorker) error {
-	opCtx, cancel := workerContext(ctx, workerBatchTimeout)
-	defer cancel()
+	return s.withPgLow(ctx, func(runCtx context.Context) error {
+		opCtx, cancel := workerContext(runCtx, workerBatchTimeout)
+		defer cancel()
 
-	for _, sw := range syncWorkers {
-		if sw != nil {
-			sw.SyncAll(opCtx)
+		for _, sw := range syncWorkers {
+			if sw != nil {
+				sw.SyncAll(opCtx)
+			}
 		}
-	}
 
-	return pgx.BeginFunc(opCtx, s.GetPool(), func(tx pgx.Tx) error {
-		return s.closedLoopPacingControllerTx(opCtx, tx, nil)
+		return pgx.BeginFunc(opCtx, s.GetPool(), func(tx pgx.Tx) error {
+			return s.closedLoopPacingControllerTx(opCtx, tx, nil)
+		})
 	})
 }
 
@@ -67,13 +70,15 @@ func (s *Service) closedLoopPacingControllerTx(ctx context.Context, tx pgx.Tx, m
 		}
 
 		actualSpendMicro := camp.CurrentSpend
-		expectedSpendMicro := int64(float64(budgetMicro) * timeRatio)
+		ratioPPM := int64(timeRatio * 1_000_000)
+		expectedSpendMicro := money.ScalePPM(budgetMicro, ratioPPM)
 
 		var targetPacing db.PacingModeType
 		var shouldUpdate bool
 
-		overThresholdMicro := int64(float64(expectedSpendMicro) * (1.0 + s.cfg.PacingToleranceMargin))
-		underThresholdMicro := int64(float64(expectedSpendMicro) * (1.0 - s.cfg.PacingToleranceMargin))
+		tolerancePPM := int64(s.cfg.PacingToleranceMargin * 1_000_000)
+		overThresholdMicro := money.ScalePPM(expectedSpendMicro, 1_000_000+tolerancePPM)
+		underThresholdMicro := money.ScalePPM(expectedSpendMicro, 1_000_000-tolerancePPM)
 
 		if camp.PacingMode == db.PacingModeTypeASAP && actualSpendMicro > overThresholdMicro {
 			targetPacing = db.PacingModeTypeEVEN
@@ -96,8 +101,8 @@ func (s *Service) closedLoopPacingControllerTx(ctx context.Context, tx pgx.Tx, m
 			return fmt.Errorf("failed to update pacing mode: %w", err)
 		}
 
-		actualSpendStr := fmt.Sprintf("%.2f", float64(actualSpendMicro)/1_000_000.0)
-		expectedSpendStr := fmt.Sprintf("%.2f", float64(expectedSpendMicro)/1_000_000.0)
+		actualSpendStr := money.FormatDecimal(actualSpendMicro)
+		expectedSpendStr := money.FormatDecimal(expectedSpendMicro)
 
 		s.AuditLog(ctx, q, uuid.Nil, "PACING_LOOP_ADJUSTMENT", "campaign", &campID, map[string]any{
 			"old_pacing": string(camp.PacingMode),

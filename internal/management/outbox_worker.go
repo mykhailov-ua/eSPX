@@ -9,7 +9,8 @@ import (
 
 	"espx/internal/database"
 	"espx/internal/ingestion"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
+	"espx/internal/metrics"
 	"espx/pkg/coldpath"
 
 	"github.com/google/uuid"
@@ -72,6 +73,7 @@ func (w *OutboxWorker) Start(ctx context.Context, interval time.Duration) {
 
 	slog.Info("outbox worker starting polling loop", "interval", interval)
 
+	pollBackoff := newOutboxPollBackoff()
 	pollTimer := time.NewTimer(interval)
 	defer pollTimer.Stop()
 
@@ -86,7 +88,17 @@ func (w *OutboxWorker) Start(ctx context.Context, interval time.Duration) {
 			w.reclaimStaleProcessing(ctx)
 			w.recordOutboxLagMetrics(ctx)
 		case <-pollTimer.C:
-			processed, err := w.ProcessOutboxWithCount(ctx, 1000)
+			var processed int
+			var err error
+			if w.svc != nil {
+				err = w.svc.withPgHigh(ctx, func(runCtx context.Context) error {
+					var innerErr error
+					processed, innerErr = w.ProcessOutboxWithCount(runCtx, 1000)
+					return innerErr
+				})
+			} else {
+				processed, err = w.ProcessOutboxWithCount(ctx, 1000)
+			}
 			w.recordOutboxLagMetrics(ctx)
 			if err != nil {
 				if ctx.Err() != nil {
@@ -100,12 +112,7 @@ func (w *OutboxWorker) Start(ctx context.Context, interval time.Duration) {
 				continue
 			}
 
-			if processed > 0 {
-				pollTimer.Reset(0)
-				continue
-			}
-
-			pollTimer.Reset(interval)
+			pollTimer.Reset(pollBackoff.next(processed))
 		}
 	}
 }
@@ -242,9 +249,10 @@ func ToUUID(u uuid.UUID) pgtype.UUID {
 }
 
 const fraudQuarantineChannel = "fraud:quarantine"
+const blacklistUpdateChannel = "blacklist:update"
 
 // applyBlacklistPayload mirrors a blacklist change to every Redis shard.
-func (w *OutboxWorker) applyBlacklistPayload(ctx context.Context, p BlacklistPayload) error {
+func (w *OutboxWorker) applyBlacklistPayload(ctx context.Context, p BlacklistPayload, queuedAt time.Time) error {
 	if len(w.svc.rdbs) == 0 {
 		return fmt.Errorf("no redis client available")
 	}
@@ -266,6 +274,15 @@ func (w *OutboxWorker) applyBlacklistPayload(ctx context.Context, p BlacklistPay
 	}
 	if reason == "fraud" && p.Action == "add" && w.svc.rdbs[0] != nil {
 		_ = w.svc.rdbs[0].Publish(ctx, fraudQuarantineChannel, p.IP).Err()
+	}
+	if w.svc.rdbs[0] != nil {
+		_ = w.svc.rdbs[0].Publish(ctx, blacklistUpdateChannel, p.IP+":"+reason).Err()
+	}
+	if !queuedAt.IsZero() {
+		lag := time.Since(queuedAt).Seconds()
+		if lag >= 0 {
+			metrics.BlacklistReplicationLag.Observe(lag)
+		}
 	}
 	return nil
 }

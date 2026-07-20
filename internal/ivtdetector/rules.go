@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"espx/internal/database"
 	"espx/internal/fraudscoring"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -40,14 +41,14 @@ func (r *fingerprintRule) Find(ctx context.Context) ([]SuspiciousIP, error) {
 }
 
 type campaignCTRSpikeRule struct {
-	conn driver.Conn
-	cfg  AnalyzerConfig
+	q   *database.CHQuery
+	cfg AnalyzerConfig
 }
 
 func (r *campaignCTRSpikeRule) Name() string { return "campaign_ctr_spike" }
 
 func (r *campaignCTRSpikeRule) Find(ctx context.Context) ([]SuspiciousIP, error) {
-	if r.conn == nil {
+	if r.q == nil {
 		return nil, fmt.Errorf("campaign ctr rule: nil connection")
 	}
 	windowSec := int64(r.cfg.Window / time.Second)
@@ -88,7 +89,7 @@ FROM (
 )
 GROUP BY ip_address`
 
-	rows, err := r.conn.Query(ctx, query, windowSec, windowSec, minClicks, ratio)
+	rows, err := r.q.Query(ctx, query, windowSec, windowSec, minClicks, ratio)
 	if err != nil {
 		return nil, fmt.Errorf("campaign ctr spike query: %w", err)
 	}
@@ -113,15 +114,15 @@ GROUP BY ip_address`
 }
 
 type datacenterASNRule struct {
-	conn driver.Conn
-	cfg  AnalyzerConfig
-	asn  ASNClassifier
+	q   *database.CHQuery
+	cfg AnalyzerConfig
+	asn ASNClassifier
 }
 
 func (r *datacenterASNRule) Name() string { return "datacenter_asn" }
 
 func (r *datacenterASNRule) Find(ctx context.Context) ([]SuspiciousIP, error) {
-	if r.conn == nil {
+	if r.q == nil {
 		return nil, fmt.Errorf("datacenter asn rule: nil connection")
 	}
 	windowSec := int64(r.cfg.Window / time.Second)
@@ -145,7 +146,7 @@ FROM (
 GROUP BY ip_address
 HAVING event_count >= ?`
 
-	rows, err := r.conn.Query(ctx, query, windowSec, windowSec, minEvents)
+	rows, err := r.q.Query(ctx, query, windowSec, windowSec, minEvents)
 	if err != nil {
 		return nil, fmt.Errorf("datacenter asn query: %w", err)
 	}
@@ -204,17 +205,18 @@ func hasIPPrefix(ip, prefix string) bool {
 }
 
 // NewAnalyzerRegistry wires default detection rules for production.
-func NewAnalyzerRegistry(conn driver.Conn, pool *pgxpool.Pool, cfg AnalyzerConfig, asn ASNClassifier, scorer fraudscoring.Scorer, fraudScoringBatchSize int) *RuleRegistry {
-	analyzer := NewAnalyzer(conn, cfg)
+func NewAnalyzerRegistry(q *database.CHQuery, writeConn driver.Conn, pool *pgxpool.Pool, cfg AnalyzerConfig, asn ASNClassifier, scorer fraudscoring.Scorer, fraudScoringBatchSize int) *RuleRegistry {
+	analyzer := NewAnalyzer(q, cfg)
 	reg := NewRuleRegistry()
 	reg.Register(&highCTRRule{analyzer: analyzer})
 	reg.Register(&fingerprintRule{analyzer: analyzer})
-	reg.Register(&campaignCTRSpikeRule{conn: conn, cfg: cfg})
+	reg.Register(&campaignCTRSpikeRule{q: q, cfg: cfg})
+	reg.Register(&intervalBotnetRule{q: q, cfg: cfg})
 	if asn != nil {
-		reg.Register(&datacenterASNRule{conn: conn, cfg: cfg, asn: asn})
+		reg.Register(&datacenterASNRule{q: q, cfg: cfg, asn: asn})
 	}
 	if scorer != nil {
-		reg.Register(NewFraudScoringRule(conn, pool, scorer, fraudScoringBatchSize))
+		reg.Register(NewFraudScoringRule(q, writeConn, pool, scorer, fraudScoringBatchSize))
 	}
 	return reg
 }

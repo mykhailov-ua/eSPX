@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"espx/internal/database"
 	"espx/internal/fraudscoring"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -20,16 +21,18 @@ type campaignFraudConfig struct {
 }
 
 type fraudScoringRule struct {
-	conn      driver.Conn
+	q         *database.CHQuery
+	writeConn driver.Conn
 	pool      *pgxpool.Pool
 	scorer    fraudscoring.Scorer
 	batchSize int
 }
 
 // NewFraudScoringRule scores ClickHouse feature rows and writes shadow scores.
-func NewFraudScoringRule(conn driver.Conn, pool *pgxpool.Pool, scorer fraudscoring.Scorer, batchSize int) Rule {
+func NewFraudScoringRule(q *database.CHQuery, writeConn driver.Conn, pool *pgxpool.Pool, scorer fraudscoring.Scorer, batchSize int) Rule {
 	return &fraudScoringRule{
-		conn:      conn,
+		q:         q,
+		writeConn: writeConn,
 		pool:      pool,
 		scorer:    scorer,
 		batchSize: batchSize,
@@ -69,7 +72,7 @@ func (r *fraudScoringRule) Name() string {
 }
 
 func (r *fraudScoringRule) Find(ctx context.Context) ([]SuspiciousIP, error) {
-	if r.conn == nil || r.scorer == nil {
+	if r.q == nil || r.scorer == nil {
 		return nil, nil
 	}
 
@@ -96,7 +99,7 @@ WHERE window_start >= now() - INTERVAL 5 MINUTE
 ORDER BY window_start DESC
 LIMIT ?`
 
-	rows, err := r.conn.Query(ctx, query, r.batchSize)
+	rows, err := r.q.Query(ctx, query, r.batchSize)
 	if err != nil {
 		fraudScoringErrorsTotal.Inc()
 		slog.Warn("fraud shadow scoring skipped: clickhouse query failed", "error", err)
@@ -144,6 +147,12 @@ LIMIT ?`
 		return nil, nil
 	}
 
+	if r.writeConn != nil {
+		if err := r.insertShadowScores(ctx, featureRows, scores); err != nil {
+			slog.Error("failed to insert ml shadow scores batch to clickhouse", "error", err, "rows", len(scores))
+		}
+	}
+
 	var out []SuspiciousIP
 	for i, score := range scores {
 		ip := featureRows[i].IPAddress
@@ -152,13 +161,6 @@ LIMIT ?`
 			"fraud_shadow_score", score,
 			"model", r.scorer.Name(),
 		)
-
-		insertQuery := `
-INSERT INTO ml_shadow_scores (ip_address, score, model_name, created_at)
-VALUES (?, ?, ?, ?)`
-		if err := r.conn.Exec(ctx, insertQuery, ip, score, r.scorer.Name(), time.Now()); err != nil {
-			slog.Error("failed to insert ml shadow score to clickhouse", "error", err, "ip", ip)
-		}
 
 		// Map probability to fraud score
 		fraudScore := fraudscoring.ProbabilityToFraudScore(score)

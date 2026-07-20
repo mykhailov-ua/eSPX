@@ -18,7 +18,7 @@ var budgetFastLuaAny any
 
 const (
 	budgetFastKeyCount = 9
-	budgetFastArgCount = 12
+	budgetFastArgCount = 13
 )
 
 // budgetFastScratch holds pooled buffers for one budget-fast Lua round trip.
@@ -116,8 +116,20 @@ func (f *UnifiedFilter) runBudgetFastLua(
 	args[9] = &wrappers.ua
 	args[10] = &wrappers.userID
 	args[11] = f.skipBudgetDebitAny
+	args[12] = campInfo.MigrationGen
 
 	shard := f.sharder.GetShard(evt.CampaignID)
+	if campInfo.HasTriplet {
+		hash := ComputeCompositeHashUUID(evt.CampaignID, []byte(evt.UserID))
+		pct := hash % 100
+		if pct < 40 {
+			shard = int(campInfo.PrimaryAShard)
+		} else if pct < 80 {
+			shard = int(campInfo.PrimaryBShard)
+		} else {
+			shard = int(campInfo.ReserveShard)
+		}
+	}
 	for i := 0; i < 2; i++ {
 		seq := f.luaMetricsSeq.Add(1)
 		sampleLua := shouldSampleHistogram(seq, f.redisObservability.sampleMask)

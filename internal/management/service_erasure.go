@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"espx/internal/ingestion"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 	"espx/pkg/coldpath"
 	"fmt"
 	"log/slog"
@@ -146,9 +146,9 @@ func (s *Service) enqueueErasureRedisPurge(ctx context.Context, row db.PrivacyEr
 
 func (s *Service) advanceErasureCH(ctx context.Context, row db.PrivacyErasureRequest) error {
 	userID := row.SubjectUserID
-	if s.ch != nil && userID != "" {
+	if s.chWrite != nil && userID != "" {
 		query := `ALTER TABLE fraud_events DELETE WHERE user_id = ?`
-		if err := s.ch.Exec(ctx, query, userID); err != nil {
+		if err := s.chWrite.Exec(ctx, query, userID); err != nil {
 			return s.failErasure(ctx, row.ID, err)
 		}
 	}

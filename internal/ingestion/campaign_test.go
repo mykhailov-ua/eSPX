@@ -7,7 +7,8 @@ import (
 	"time"
 
 	"espx/internal/campaignmodel"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stretchr/testify/assert"
@@ -20,12 +21,12 @@ type MockRepo struct {
 	ids     []pgtype.UUID
 	err     error
 	budgets map[uuid.UUID]db.GetCampaignBudgetRow
-	full    map[uuid.UUID]db.Campaign
+	full    map[uuid.UUID]db.GetCampaignFullRow
 }
 
-func (m *MockRepo) GetCampaignFull(ctx context.Context, id pgtype.UUID) (db.Campaign, error) {
+func (m *MockRepo) GetCampaignFull(ctx context.Context, id pgtype.UUID) (db.GetCampaignFullRow, error) {
 	if m.err != nil {
-		return db.Campaign{}, m.err
+		return db.GetCampaignFullRow{}, m.err
 	}
 	uid := uuid.UUID(id.Bytes)
 	if m.full != nil {
@@ -35,7 +36,7 @@ func (m *MockRepo) GetCampaignFull(ctx context.Context, id pgtype.UUID) (db.Camp
 	}
 	if m.budgets != nil {
 		if row, ok := m.budgets[uid]; ok {
-			return db.Campaign{
+			return db.GetCampaignFullRow{
 				ID:           row.ID,
 				CustomerID:   row.CustomerID,
 				BudgetLimit:  row.BudgetLimit,
@@ -44,7 +45,7 @@ func (m *MockRepo) GetCampaignFull(ctx context.Context, id pgtype.UUID) (db.Camp
 			}, nil
 		}
 	}
-	return db.Campaign{
+	return db.GetCampaignFullRow{
 		ID:           id,
 		CustomerID:   id,
 		BudgetLimit:  1000,
@@ -53,10 +54,10 @@ func (m *MockRepo) GetCampaignFull(ctx context.Context, id pgtype.UUID) (db.Camp
 	}, nil
 }
 
-func (m *MockRepo) ListActiveCampaigns(ctx context.Context) ([]db.Campaign, error) {
-	var res []db.Campaign
+func (m *MockRepo) ListActiveCampaigns(ctx context.Context) ([]db.ListActiveCampaignsRow, error) {
+	var res []db.ListActiveCampaignsRow
 	for _, id := range m.ids {
-		res = append(res, db.Campaign{
+		res = append(res, db.ListActiveCampaignsRow{
 			ID:         id,
 			CustomerID: id,
 			Status:     db.CampaignStatusTypeACTIVE,

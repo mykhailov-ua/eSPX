@@ -69,7 +69,7 @@ func TestReports_Placements(t *testing.T) {
 
 	assert.Len(t, resp.Rows, 5)
 	assert.True(t, resp.Freshness.Stale)
-	assert.Equal(t, 360, resp.Freshness.CHLagSeconds)
+	assert.Equal(t, 0, resp.Freshness.CHLagSeconds)
 	assert.NotEmpty(t, resp.NextCursor)
 
 	// 2. Test pagination with cursor
@@ -107,7 +107,7 @@ func TestReports_Keywords(t *testing.T) {
 
 	assert.Len(t, resp.Rows, 5)
 	assert.True(t, resp.Freshness.Stale)
-	assert.Equal(t, 360, resp.Freshness.CHLagSeconds)
+	assert.Equal(t, 0, resp.Freshness.CHLagSeconds)
 	assert.NotEmpty(t, resp.NextCursor)
 
 	// 2. Test pagination with cursor

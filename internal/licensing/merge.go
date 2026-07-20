@@ -33,8 +33,13 @@ func MergeLimits(dst *Limits, src Limits) {
 
 // MergeFeatures overlays src feature flags onto dst.
 func MergeFeatures(dst *FeatureSet, src FeatureSet) {
+	src = src.Normalized()
 	dst.RtbLive = src.RtbLive
+	dst.OpenRTBEngine = src.OpenRTBEngine
+	dst.IvtMLDetector = src.IvtMLDetector
+	dst.EbpfXDPEdge = src.EbpfXDPEdge
 	dst.MlFraudBoost = src.MlFraudBoost
 	dst.MultiRegion = src.MultiRegion
 	dst.SlotMigration = src.SlotMigration
+	dst.MarginGuard = src.MarginGuard
 }

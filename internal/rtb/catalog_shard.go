@@ -25,12 +25,12 @@ type CampaignAuctionRegistry struct {
 	GeoBucketCount int
 	GeoBucketHash  []uint32
 	GeoBucketStart []uint32
-	GeoBucketIdx   []uint32
+	GeoBucketSoA   candidateBucketSoA
 
 	TargetBucketCount int
 	TargetBucketKey   []uint64
 	TargetBucketStart []uint32
-	TargetBucketIdx   []uint32
+	TargetBucketSoA   candidateBucketSoA
 }
 
 // CampaignData is the cold-path input shape used when management sync rebuilds auction shards.

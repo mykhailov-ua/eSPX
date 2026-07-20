@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 	"espx/pkg/coldpath"
 
 	"github.com/jackc/pgx/v5"
@@ -221,7 +221,7 @@ func (o *FraudModelSyncOrchestrator) rollbackShard(ctx context.Context, shardID 
 // runCanaryCheck runs a validation replay of ClickHouse events through the scorer.
 func (o *FraudModelSyncOrchestrator) runCanaryCheck(ctx context.Context, shardID int, versionID string) (bool, error) {
 	// If ClickHouse is not available, default to pass in production but allow mock checks in tests.
-	if o.svc.ch == nil {
+	if o.svc.chQuery == nil {
 		return true, nil
 	}
 
@@ -232,7 +232,7 @@ func (o *FraudModelSyncOrchestrator) runCanaryCheck(ctx context.Context, shardID
 		WHERE window_start >= now() - INTERVAL 1 HOUR
 		LIMIT 1000`
 
-	rows, err := o.svc.ch.Query(ctx, query)
+	rows, err := o.svc.chQuery.Query(ctx, query)
 	if err != nil {
 		return false, fmt.Errorf("clickhouse query failed: %w", err)
 	}

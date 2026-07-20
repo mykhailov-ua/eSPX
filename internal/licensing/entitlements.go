@@ -16,6 +16,9 @@ type Limits struct {
 // FeatureSet holds boolean capabilities.
 type FeatureSet struct {
 	RtbLive       bool `json:"rtb_live"`
+	OpenRTBEngine bool `json:"openrtb_engine"`
+	IvtMLDetector bool `json:"ivt_ml_detector"`
+	EbpfXDPEdge   bool `json:"ebpf_xdp_edge"`
 	MlFraudBoost  bool `json:"ml_fraud_boost"`
 	MultiRegion   bool `json:"multi_region"`
 	SlotMigration bool `json:"slot_migration"`
@@ -24,8 +27,9 @@ type FeatureSet struct {
 
 // Entitlements bundles Limits and FeatureSet.
 type Entitlements struct {
-	Limits   Limits     `json:"limits"`
-	Features FeatureSet `json:"features"`
+	VolumeBand VolumeBand `json:"volume_band,omitempty"`
+	Limits     Limits     `json:"limits"`
+	Features   FeatureSet `json:"features"`
 }
 
 // LimitsDTO is a DTO copy of Limits for JSON stability.
@@ -44,6 +48,9 @@ type LimitsDTO struct {
 // FeatureSetDTO is a DTO copy of FeatureSet for JSON stability.
 type FeatureSetDTO struct {
 	RtbLive       bool `json:"rtb_live"`
+	OpenRTBEngine bool `json:"openrtb_engine"`
+	IvtMLDetector bool `json:"ivt_ml_detector"`
+	EbpfXDPEdge   bool `json:"ebpf_xdp_edge"`
 	MlFraudBoost  bool `json:"ml_fraud_boost"`
 	MultiRegion   bool `json:"multi_region"`
 	SlotMigration bool `json:"slot_migration"`
@@ -54,8 +61,9 @@ type FeatureSetDTO struct {
 type LicenseStatusDTO struct {
 	DeploymentID   string        `json:"deployment_id"`
 	LicenseID      string        `json:"license_id"`
-	Plan           string        `json:"plan"`  // starter|growth|enterprise
-	State          string        `json:"state"` // ACTIVE|GRACE|EXPIRED|REVOKED
+	Plan           string        `json:"plan"`        // starter|growth|enterprise
+	VolumeBand     string        `json:"volume_band"` // S|M|L
+	State          string        `json:"state"`       // ACTIVE|GRACE|EXPIRED|REVOKED
 	ValidUntil     string        `json:"valid_until"`
 	GraceEndsAt    string        `json:"grace_ends_at,omitempty"`
 	Limits         LimitsDTO     `json:"limits"`

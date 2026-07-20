@@ -10,7 +10,7 @@ import (
 	"espx/internal/config"
 	"espx/internal/database"
 	"espx/internal/ingestion"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 	"espx/pkg/lifecycle"
 
 	"github.com/panjf2000/gnet/v2"
@@ -126,9 +126,12 @@ func main() {
 		cfg.StreamMaxLen,
 	)
 
+	licenseFilter := ingestion.NewLicenseFilter(registry)
 	entitlementsFilter := ingestion.NewEntitlementsFilter(registry, sharder, rdbs)
+	entitlementsFilter.SetRegionCode(cfg.RegionCode)
 	filterEngine := ingestion.NewFilterEngine(
 		time.Duration(cfg.FilterTimeoutMs)*time.Millisecond,
+		licenseFilter,
 		entitlementsFilter,
 		breakerFilter,
 		geoFilter,

@@ -61,8 +61,12 @@ func main() {
 
 	denyStore := blocklist.NewStore()
 	allowStore := allowlist.NewStore()
-	if err := runSync(ctx, rdb, denyMap, allowMap, denyStore, allowStore); err != nil {
-		slog.Warn("initial edge bpf sync failed", "error", err)
+	if ebpfEdgeLicensed(ctx, rdb) {
+		if err := runSync(ctx, rdb, denyMap, allowMap, denyStore, allowStore); err != nil {
+			slog.Warn("initial edge bpf sync failed", "error", err)
+		}
+	} else {
+		slog.Warn("ebpf_xdp_edge module not licensed; edge-bpf-sync idle")
 	}
 
 	ticker := time.NewTicker(syncInterval)
@@ -74,11 +78,22 @@ func main() {
 			slog.Info("edge-bpf-sync stopped")
 			return
 		case <-ticker.C:
+			if !ebpfEdgeLicensed(ctx, rdb) {
+				continue
+			}
 			if err := runSync(ctx, rdb, denyMap, allowMap, denyStore, allowStore); err != nil {
 				slog.Warn("edge bpf sync failed", "error", err)
 			}
 		}
 	}
+}
+
+func ebpfEdgeLicensed(ctx context.Context, rdb *redis.Client) bool {
+	enabled, err := rdb.HGet(ctx, "entitlement:deployment", "ebpf_xdp_edge").Int()
+	if err != nil {
+		return true // fail-open when entitlement snapshot missing (dev)
+	}
+	return enabled == 1
 }
 
 func runSync(ctx context.Context, rdb *redis.Client, denyMap, allowMap *ebpf.Map, denyStore *blocklist.Store, allowStore *allowlist.Store) error {

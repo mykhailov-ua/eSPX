@@ -6,7 +6,7 @@ import (
 
 	"espx/internal/campaignmodel"
 	"espx/internal/ingestion"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 	"espx/pkg/coldpath"
 
 	"github.com/google/uuid"
@@ -58,7 +58,7 @@ func validateFraudThresholds(pass, suspect, ivt, block uint8) error {
 
 // GetCampaignFraudConfig returns the current fraud configuration for a campaign.
 func (s *Service) GetCampaignFraudConfig(ctx context.Context, campaignID uuid.UUID) (CampaignFraudConfigDTO, error) {
-	row, err := db.New(s.GetPool()).GetCampaignFull(ctx, ingestion.ToUUID(campaignID))
+	row, err := db.New(s.GetPool()).GetCampaign(ctx, ingestion.ToUUID(campaignID))
 	if err != nil {
 		return CampaignFraudConfigDTO{}, mapNotFound(err, ErrCampaignNotFound)
 	}

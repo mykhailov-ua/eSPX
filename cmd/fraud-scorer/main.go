@@ -103,7 +103,8 @@ func main() {
 	}
 
 	registry := ivtdetector.NewRuleRegistry()
-	registry.Register(ivtdetector.NewFraudScoringRule(chConn, pool, scorer, cfg.FraudScoring.BatchSize))
+	chQuery := database.NewCHQuery(chConn, database.CHQueryConfig{})
+	registry.Register(ivtdetector.NewFraudScoringRule(chQuery, chConn, pool, scorer, cfg.FraudScoring.BatchSize))
 
 	detector := ivtdetector.NewDetector(
 		registry,

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -46,7 +46,10 @@ func LoadActiveSlotMap(
 		return version, err
 	}
 
-	st := slotTable(*table)
+	var st slotTable
+	for i, v := range table {
+		st[i] = uint8(v)
+	}
 	sharder.SwapSnapshot(version, &st, 0)
 	slog.Info("loaded active slot map from postgres", "version", version, "buckets", fallbackBuckets)
 	return version, nil

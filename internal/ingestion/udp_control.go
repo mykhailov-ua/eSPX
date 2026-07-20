@@ -442,10 +442,17 @@ func EncodeQuotaEpochDatagram(dst []byte, msgType uint8, hdr *UDPHeader, limits 
 		return 0
 	}
 	hdr.Magic = udpMagic
-	hdr.Version = udpProtocolVersion
+	if limits.MaxRPD > 0 {
+		hdr.Version = udpProtocolVersion2
+	} else {
+		hdr.Version = udpProtocolVersion
+	}
 	hdr.MsgType = msgType
 	hdr.NumShards = limits.NumShards
 	payloadLen := udpShardPayloadLen(limits.NumShards)
+	if limits.MaxRPD > 0 {
+		payloadLen += 8
+	}
 	hdr.PayloadLen = uint16(payloadLen)
 	if len(dst) < UDPHeaderSize+payloadLen {
 		return 0

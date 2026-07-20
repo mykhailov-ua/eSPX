@@ -1,6 +1,7 @@
 package adminapi
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"espx/internal/billing/db"
+	"espx/internal/database"
 	"espx/pkg/coldpath"
 	"espx/pkg/httpresponse"
 
@@ -23,6 +25,7 @@ type ReportsHTTPHandlers struct {
 	CampaignStats             CampaignStatsReader
 	CampaignForecaster        CampaignForecaster
 	Pool                      *pgxpool.Pool
+	CHQuery                   *database.CHQuery
 	ApplyRateLimit            func(http.HandlerFunc) http.HandlerFunc
 	RequirePermission         func(string, http.HandlerFunc) http.HandlerFunc
 	AuthorizeCampaignAccess   func(*http.Request, uuid.UUID) error
@@ -132,6 +135,24 @@ func decodeCursor(cursorStr string) (int, error) {
 	return strconv.Atoi(string(decoded))
 }
 
+func (h *ReportsHTTPHandlers) reportFreshness(ctx context.Context) DataFreshnessDTO {
+	dto := DataFreshnessDTO{
+		AsOf:        time.Now().UTC().Format(time.RFC3339),
+		Consistency: "eventual",
+	}
+	if h == nil || h.CHQuery == nil {
+		dto.Stale = true
+		return dto
+	}
+	lag, err := h.CHQuery.IngestionLag(ctx)
+	if err != nil {
+		dto.Stale = true
+		return dto
+	}
+	dto.Stale, dto.CHLagSeconds = database.Freshness(lag, 5*time.Minute)
+	return dto
+}
+
 func (h *ReportsHTTPHandlers) getPlacementsReport(w http.ResponseWriter, r *http.Request) {
 	var customerID uuid.UUID
 	if custIDStr := r.URL.Query().Get("customer_id"); custIDStr != "" {
@@ -226,13 +247,8 @@ func (h *ReportsHTTPHandlers) getPlacementsReport(w http.ResponseWriter, r *http
 	}
 
 	resp := PlacementReportResponse{
-		Rows: paginatedRows,
-		Freshness: DataFreshnessDTO{
-			AsOf:         time.Now().UTC().Format(time.RFC3339),
-			Consistency:  "eventual",
-			Stale:        true,
-			CHLagSeconds: 360,
-		},
+		Rows:       paginatedRows,
+		Freshness:  h.reportFreshness(r.Context()),
 		NextCursor: nextCursor,
 	}
 
@@ -334,13 +350,8 @@ func (h *ReportsHTTPHandlers) getKeywordsReport(w http.ResponseWriter, r *http.R
 	}
 
 	resp := KeywordReportResponse{
-		Rows: paginatedRows,
-		Freshness: DataFreshnessDTO{
-			AsOf:         time.Now().UTC().Format(time.RFC3339),
-			Consistency:  "eventual",
-			Stale:        true,
-			CHLagSeconds: 360,
-		},
+		Rows:       paginatedRows,
+		Freshness:  h.reportFreshness(r.Context()),
 		NextCursor: nextCursor,
 	}
 

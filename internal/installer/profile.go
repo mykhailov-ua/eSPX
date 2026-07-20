@@ -40,8 +40,8 @@ func (p *InstallProfile) Validate() error {
 		return errors.New("edge_xdp requires BTF support (PF-BTF)")
 	}
 
-	if p.MultiRegion {
-		return errors.New("multi_region is blocked until M7")
+	if p.MultiRegion && p.Type == ProfileComposeDev {
+		return errors.New("multi_region is not supported in compose_dev profile")
 	}
 
 	if p.Interface == "" && (p.Type == ProfileSingleVPS || p.Type == ProfileK8sK3s) {

@@ -36,7 +36,7 @@ func TestApplyBlacklistPayload_publishesQuarantine(t *testing.T) {
 		Action: "add",
 		IP:     "203.0.113.10",
 		Reason: "fraud",
-	}))
+	}, time.Now()))
 
 	msg, err := pubsub.ReceiveTimeout(ctx, 3*time.Second)
 	require.NoError(t, err)

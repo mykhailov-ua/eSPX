@@ -63,8 +63,8 @@ func (a *TikTokAdapter) Send(ctx context.Context, client *http.Client, payload *
 		},
 	}
 
-	if payload.Payout > 0 {
-		ttEvent.Value = payload.Payout
+	if payload.PayoutMicro > 0 {
+		ttEvent.Value = payload.PayoutDollarsAPI()
 		ttEvent.Currency = "USD"
 	}
 

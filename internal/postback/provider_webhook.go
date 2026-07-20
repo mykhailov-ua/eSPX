@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"sync"
+
+	"espx/pkg/money"
 )
 
 type WebhookAdapter struct {
@@ -28,7 +29,7 @@ func (a *WebhookAdapter) Send(ctx context.Context, client *http.Client, payload 
 	mt := a.cachedTemplate(urlTemplate)
 	evtCtx := &EventContext{
 		ClickID:   payload.ClickID,
-		Payout:    strconv.FormatFloat(payload.Payout, 'f', -1, 64),
+		Payout:    money.FormatDecimal(payload.PayoutMicro),
 		TxID:      payload.TxID,
 		SubID1:    payload.SubID1,
 		Param10:   payload.Param10,

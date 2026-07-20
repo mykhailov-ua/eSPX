@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"espx/internal/database"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -33,7 +33,9 @@ func (w *CampaignDrainWorker) Start(ctx context.Context, interval time.Duration)
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := w.ProcessDraining(ctx); err != nil {
+			if err := w.svc.withPgHigh(ctx, func(runCtx context.Context) error {
+				return w.ProcessDraining(runCtx)
+			}); err != nil {
 				if database.IsShutdownError(err) {
 					return
 				}

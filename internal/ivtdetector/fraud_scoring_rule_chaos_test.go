@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"espx/internal/database"
 	"espx/internal/fraudscoring"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -39,7 +40,7 @@ func TestFraudScoringRule_EmptyWindow(t *testing.T) {
 	scorer, err := fraudscoring.NewLGBMScorer("../fraudscoring/testdata/model.txt")
 	require.NoError(t, err)
 
-	rule := NewFraudScoringRule(conn, nil, scorer, 100)
+	rule := NewFraudScoringRule(database.NewCHQuery(conn, database.CHQueryConfig{}), conn, nil, scorer, 100)
 	candidates, err := rule.Find(context.Background())
 	require.NoError(t, err)
 	assert.Nil(t, candidates)
@@ -54,7 +55,7 @@ func TestChaos_FraudClickHouseDown(t *testing.T) {
 	scorer, err := fraudscoring.NewLGBMScorer("../fraudscoring/testdata/model.txt")
 	require.NoError(t, err)
 
-	rule := NewFraudScoringRule(&failingCHConn{queryErr: errors.New("clickhouse unavailable")}, nil, scorer, 100)
+	rule := NewFraudScoringRule(database.NewCHQuery(&failingCHConn{queryErr: errors.New("clickhouse unavailable")}, database.CHQueryConfig{}), nil, nil, scorer, 100)
 
 	require.NotPanics(t, func() {
 		candidates, findErr := rule.Find(context.Background())

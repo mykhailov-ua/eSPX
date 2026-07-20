@@ -34,10 +34,11 @@ func forEachCategoryBit(mask uint64, fn func(bit uint64)) {
 	}
 }
 
-// buildTargetingIndex materializes geo+device+category inverted lists on the cold rebuild path.
+// buildTargetingIndex materializes geo+device+category inverted SoA buckets on the cold rebuild path.
 func buildTargetingIndex(reg *CampaignAuctionRegistry) {
 	if reg == nil || reg.Count == 0 {
 		reg.TargetBucketCount = 0
+		resetBucketSoA(&reg.TargetBucketSoA)
 		return
 	}
 
@@ -62,15 +63,18 @@ func buildTargetingIndex(reg *CampaignAuctionRegistry) {
 	})
 
 	reg.TargetBucketStart = make([]uint32, reg.TargetBucketCount+1)
-	reg.TargetBucketIdx = make([]uint32, 0, reg.Count)
+	resetBucketSoA(&reg.TargetBucketSoA)
+	ensureBucketSoACap(&reg.TargetBucketSoA, reg.Count)
 	for i, key := range reg.TargetBucketKey {
-		reg.TargetBucketStart[i] = uint32(len(reg.TargetBucketIdx))
-		reg.TargetBucketIdx = append(reg.TargetBucketIdx, buckets[key]...)
+		reg.TargetBucketStart[i] = uint32(reg.TargetBucketSoA.len())
+		for _, catalogIdx := range buckets[key] {
+			appendBucketCandidate(&reg.TargetBucketSoA, reg, catalogIdx)
+		}
 	}
-	reg.TargetBucketStart[reg.TargetBucketCount] = uint32(len(reg.TargetBucketIdx))
+	reg.TargetBucketStart[reg.TargetBucketCount] = uint32(reg.TargetBucketSoA.len())
 }
 
-// targetingRange returns the half-open [start,end) slice into TargetBucketIdx for one request tuple.
+// targetingRange returns the half-open [start,end) slice into TargetBucketSoA for one request tuple.
 func (reg *CampaignAuctionRegistry) targetingRange(geo uint32, deviceType uint8, categoryMask uint64) (start int, end int, ok bool) {
 	if reg == nil || reg.TargetBucketCount == 0 {
 		return 0, 0, false

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"espx/internal/database"
 )
 
 // SuspiciousIP is a candidate address flagged by a ClickHouse anomaly rule.
@@ -21,40 +21,44 @@ type SuspiciousIP struct {
 
 // AnalyzerConfig tunes ClickHouse window and detection thresholds.
 type AnalyzerConfig struct {
-	Window          time.Duration
-	MinClicks       uint64
-	MinImpressions  uint64
-	ClickToImpRatio float64
-	MinIPsPerUA     uint64
-	MinEventsPerIP  uint64
+	Window               time.Duration
+	MinClicks            uint64
+	MinImpressions       uint64
+	ClickToImpRatio      float64
+	MinIPsPerUA          uint64
+	MinEventsPerIP       uint64
+	IntervalMinIntervals uint64
+	IntervalMaxVariance  float64
 }
 
 // DefaultAnalyzerConfig returns production-oriented thresholds for IVT clustering.
 func DefaultAnalyzerConfig() AnalyzerConfig {
 	return AnalyzerConfig{
-		Window:          time.Hour,
-		MinClicks:       10,
-		MinImpressions:  1,
-		ClickToImpRatio: 5.0,
-		MinIPsPerUA:     8,
-		MinEventsPerIP:  5,
+		Window:               time.Hour,
+		MinClicks:            10,
+		MinImpressions:       1,
+		ClickToImpRatio:      5.0,
+		MinIPsPerUA:          8,
+		MinEventsPerIP:       5,
+		IntervalMinIntervals: defaultIntervalMinIntervals,
+		IntervalMaxVariance:  defaultIntervalMaxVariance,
 	}
 }
 
 // Analyzer runs cold-path ClickHouse queries for click-ratio and fingerprint-collision anomalies.
 type Analyzer struct {
-	conn driver.Conn
-	cfg  AnalyzerConfig
+	q   *database.CHQuery
+	cfg AnalyzerConfig
 }
 
-// NewAnalyzer binds a ClickHouse connection and detection thresholds.
-func NewAnalyzer(conn driver.Conn, cfg AnalyzerConfig) *Analyzer {
-	return &Analyzer{conn: conn, cfg: cfg}
+// NewAnalyzer binds a governed ClickHouse query client and detection thresholds.
+func NewAnalyzer(q *database.CHQuery, cfg AnalyzerConfig) *Analyzer {
+	return &Analyzer{q: q, cfg: cfg}
 }
 
 // FindSuspiciousIPs returns deduplicated candidates from all enabled detection rules.
 func (analyzer *Analyzer) FindSuspiciousIPs(ctx context.Context) ([]SuspiciousIP, error) {
-	reg := NewAnalyzerRegistry(analyzer.conn, nil, analyzer.cfg, nil, nil, 0)
+	reg := NewAnalyzerRegistry(analyzer.q, nil, nil, analyzer.cfg, nil, nil, 0)
 	return reg.FindSuspiciousIPs(ctx)
 }
 
@@ -85,7 +89,7 @@ WHERE c.click_count >= ?
     OR (toFloat64(c.click_count) / greatest(toFloat64(imp_count), 1.0)) >= ?
   )`
 
-	rows, err := analyzer.conn.Query(
+	rows, err := analyzer.q.Query(
 		ctx,
 		query,
 		windowSec,
@@ -154,7 +158,7 @@ ARRAY JOIN ips AS ip_address
 GROUP BY ip_address
 HAVING count() >= 1`
 
-	rows, err := analyzer.conn.Query(
+	rows, err := analyzer.q.Query(
 		ctx,
 		query,
 		windowSec,

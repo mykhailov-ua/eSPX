@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"time"
 
+	"espx/internal/database"
 	"espx/internal/ingestion"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/google/uuid"
@@ -43,9 +44,16 @@ type CampaignStatsDTO struct {
 	Consistency  string                    `json:"consistency"`
 }
 
-// SetClickHouse attaches an optional analytics connection for reporting endpoints.
+// SetClickHouse attaches a read-only analytics connection for reporting endpoints.
 func (s *Service) SetClickHouse(conn driver.Conn) {
-	s.ch = conn
+	if conn != nil {
+		s.chQuery = database.NewCHQuery(conn, database.CHQueryConfig{})
+	}
+}
+
+// SetClickHouseWrite attaches the write DSN for mutations (privacy erasure only).
+func (s *Service) SetClickHouseWrite(conn driver.Conn) {
+	s.chWrite = conn
 }
 
 // GetCampaignStats merges Postgres spend and counters with ClickHouse hourly MVs.
@@ -88,7 +96,7 @@ func (s *Service) GetCampaignStats(ctx context.Context, campaignID uuid.UUID, fr
 		Consistency: "strong",
 	}
 
-	if s.ch == nil {
+	if s.chQuery == nil {
 		return report, nil
 	}
 
@@ -103,6 +111,9 @@ func (s *Service) GetCampaignStats(ctx context.Context, campaignID uuid.UUID, fr
 }
 
 func (s *Service) queryClickHouseHourly(ctx context.Context, campaignID uuid.UUID, from, to time.Time) ([]CampaignHourlyBucketDTO, time.Duration, error) {
+	if s.chQuery == nil {
+		return nil, 0, nil
+	}
 	type row struct {
 		hour        time.Time
 		impressions uint64
@@ -132,7 +143,7 @@ FROM (
 GROUP BY hour
 ORDER BY hour`
 
-	rows, err := s.ch.Query(ctx, query,
+	rows, err := s.chQuery.Query(ctx, query,
 		campaignID, from.UTC(), to.UTC(),
 		campaignID, from.UTC(), to.UTC(),
 		campaignID, from.UTC(), to.UTC(),
@@ -167,8 +178,11 @@ ORDER BY hour`
 }
 
 func (s *Service) clickHouseIngestionLag(ctx context.Context) (time.Duration, error) {
+	if s.chQuery == nil {
+		return 0, nil
+	}
 	var latest time.Time
-	err := s.ch.QueryRow(ctx, `
+	err := s.chQuery.QueryRow(ctx, `
 SELECT max(latest) FROM (
     SELECT max(created_at) AS latest FROM impressions
     UNION ALL

@@ -15,7 +15,7 @@ This document consolidates proposals for the eSPX platform:
 
 ---
 
-## 2. Proposal 1 — Hybrid Volume Licensing (ESPX-LP-2026-V1)
+## 2. Proposal 1 — Hybrid Volume Licensing (ESPX-LP-2026-V1) `Shipped (M3-T)`
 
 ### 2.1 Overview & Architecture
 

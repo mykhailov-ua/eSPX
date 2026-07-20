@@ -68,6 +68,9 @@ func main() {
 	outboxWorker.SetSettlementFailedAlerter(payment.NewSettlementFailedAlerter(notifierClient, cfg))
 	go outboxWorker.Start(ctx, 100*time.Millisecond)
 
+	cryptoHoldWorker := payment.NewCryptoHoldWorker(pool, cfg)
+	go cryptoHoldWorker.Start(ctx, 100*time.Millisecond)
+
 	var reconWorker *payment.ReconService
 	settlementLedger := payment.NewSettlementLedgerClient(cfg)
 	defer settlementLedger.Close()

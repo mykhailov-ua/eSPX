@@ -3,12 +3,11 @@ package management
 import (
 	"context"
 	"errors"
+	db "espx/internal/ingestion/sqlc"
 	"fmt"
 	"math"
 	"sort"
 	"time"
-
-	"espx/internal/ingestion/sqlc"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -71,7 +70,7 @@ type forecastHourlySample struct {
 
 // ForecastCampaign estimates delivery for a planned campaign using ClickHouse hourly MVs (M5.1–M5.4).
 func (s *Service) ForecastCampaign(ctx context.Context, in CampaignForecastInput) (CampaignForecastDTO, error) {
-	if s.ch == nil {
+	if s.chQuery == nil {
 		return CampaignForecastDTO{}, ErrClickHouseNotConfigured
 	}
 	if in.BudgetLimitMicro <= 0 {
@@ -176,7 +175,7 @@ ORDER BY hr`
 		args = []any{from, to, campaignIDs}
 	}
 
-	rows, err := s.ch.Query(ctx, query, args...)
+	rows, err := s.chQuery.Query(ctx, query, args...)
 	if err != nil {
 		return 0, nil, err
 	}

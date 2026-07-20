@@ -14,10 +14,16 @@ import (
 	"espx/internal/config"
 	"espx/internal/database"
 	"espx/internal/fraudscoring"
+	"espx/internal/health"
 	"espx/internal/ingestion"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
+	"espx/internal/licensing"
+	"espx/internal/management"
+	"espx/internal/metrics"
 	"espx/pkg/logger"
 	"fmt"
+	"strconv"
+
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 )
@@ -105,6 +111,31 @@ func main() {
 		os.Exit(1)
 	}
 
+	notifierClient, notifierErr := management.NewNotifierClient(cfg)
+	if notifierErr != nil {
+		slog.Warn("notifier client initialization failed", "error", notifierErr)
+	}
+	if notifierClient != nil {
+		defer notifierClient.Close()
+	}
+	opsAlerter := management.NewOpsAlerter(notifierClient, cfg)
+	var onEmergencyDrop database.EmergencyDropAlerter
+	if opsAlerter != nil && cfg.CHEmergencyDropPercent > 0 {
+		threshold := cfg.CHEmergencyDropPercent
+		onEmergencyDrop = func(table, partition string, diskPct float64) {
+			opsAlerter.AlertCHEmergencyDrop(table, partition, diskPct, threshold)
+		}
+	}
+	chJanitor := database.NewCHPartitionJanitor(chConn, database.CHJanitorOptions{
+		RetentionDays:            cfg.CHRawRetentionDays,
+		EmergencyDropPercent:     cfg.CHEmergencyDropPercent,
+		RecompressPartsThreshold: cfg.CHRecompressPartsThreshold,
+		OffPeakStartHourUTC:      cfg.CHRecompressOffPeakStartUTC,
+		OffPeakEndHourUTC:        cfg.CHRecompressOffPeakEndUTC,
+		OnEmergencyDrop:          onEmergencyDrop,
+	})
+	chJanitor.StartBackground(ctx, 24*time.Hour)
+
 	var rdbs []redis.UniversalClient
 	rdbs, err = database.ConnectRedisShards(ctx, cfg, database.RedisShardOptions{
 		PoolSize: cfg.RedisPoolSize,
@@ -124,17 +155,23 @@ func main() {
 
 	var fraudScorer fraudscoring.Scorer
 	if cfg.FraudScoringEnabled() {
-		var err error
-		fraudScorer, err = fraudscoring.NewLGBMScorer(cfg.FraudScoring.ModelPath)
-		if err != nil {
-			slog.Error("failed to initialize fraud scorer for processor micro-batching", "error", err, "path", cfg.FraudScoring.ModelPath)
-			os.Exit(1)
+		snap, snapErr := licensing.LoadDeploymentSnapshot(ctx, pool)
+		if snapErr == nil && snap.ModuleAllowed(func(f licensing.FeatureSet) bool { return f.MlFraudBoostEnabled() }) {
+			var err error
+			fraudScorer, err = fraudscoring.NewLGBMScorer(cfg.FraudScoring.ModelPath)
+			if err != nil {
+				slog.Error("failed to initialize fraud scorer for processor micro-batching", "error", err, "path", cfg.FraudScoring.ModelPath)
+				os.Exit(1)
+			}
+			slog.Info("initialized fraud scorer for processor micro-batching", "path", cfg.FraudScoring.ModelPath)
+		} else {
+			slog.Info("ml_fraud_boost not licensed; processor fraud micro-batching disabled")
 		}
-		slog.Info("initialized fraud scorer for processor micro-batching", "path", cfg.FraudScoring.ModelPath)
 	}
 
-	campaignRepo := ingestion.NewCampaignRepo(queries)
-	customerRepo := ingestion.NewCustomerRepo(queries)
+	campaignRepo := ingestion.NewCampaignRepoWithDB(pool, queries)
+	campaignRepo.ConfigureAuditLedgerFlush(cfg.AuditLedgerFlushSampleMask)
+	customerRepo := ingestion.NewCustomerRepoWithDB(pool, queries)
 
 	var pgConsumers []*ingestion.StreamConsumer
 	var chConsumers []*ingestion.StreamConsumer
@@ -145,7 +182,7 @@ func main() {
 	for i, rdb := range rdbs {
 		shardID := fmt.Sprintf("shard_%d", i)
 
-		sw := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond, procPgGate, 0)
+		sw := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond, time.Duration(cfg.LedgerBatchFlushMs)*time.Millisecond, procPgGate, 0)
 		syncWorkers = append(syncWorkers, sw)
 		sw.Start(syncCtx)
 
@@ -296,32 +333,40 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", promhttp.Handler())
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-		defer cancel()
-
-		if err := pool.Ping(ctx); err != nil {
-			slog.Error("processor health check failed: postgres", "error", err)
-			http.Error(w, "postgres unreachable", http.StatusServiceUnavailable)
-			return
+	live := &health.Liveness{}
+	ready := &health.ReadinessProbe{}
+	ready.StartBackground(ctx, 2*time.Second, func(probeCtx context.Context) bool {
+		if err := pool.Ping(probeCtx); err != nil {
+			return false
 		}
-
-		if err := chConn.Ping(ctx); err != nil {
-			slog.Error("processor health check failed: clickhouse", "error", err)
-			http.Error(w, "clickhouse unreachable", http.StatusServiceUnavailable)
-			return
+		if err := chConn.Ping(probeCtx); err != nil {
+			return false
 		}
-
 		for i, rdb := range rdbs {
-			if err := rdb.Ping(ctx).Err(); err != nil {
-				slog.Error("processor health check failed: redis shard", "shard", i, "error", err)
-				http.Error(w, "redis shard unreachable", http.StatusServiceUnavailable)
-				return
+			if err := rdb.Ping(probeCtx).Err(); err != nil {
+				return false
+			}
+			if cfg.RedisStreamName != "" {
+				if n, err := rdb.XLen(probeCtx, cfg.RedisStreamName).Result(); err == nil {
+					metrics.ProcessorStreamXLen.WithLabelValues(strconv.Itoa(i)).Set(float64(n))
+				}
 			}
 		}
-
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("OK"))
+		if spool := chStore.Spool(); spool != nil {
+			seg := spool.SegmentCount()
+			metrics.CHSpoolSegments.Set(float64(seg))
+			if seg > cfg.CHSpoolMaxSegments {
+				return false
+			}
+		}
+		if cfg.ProcessorStreamLagMaxSec > 0 && ingestion.ProcessorStreamLagSec() > int64(cfg.ProcessorStreamLagMaxSec) {
+			return false
+		}
+		return true
+	})
+	health.Register(mux, live, ready)
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		ready.ServeReadyz(w, r)
 	})
 
 	server := &http.Server{
@@ -398,6 +443,7 @@ func main() {
 	if err := partManager.Wait(waitCtx); err != nil {
 		slog.Error("partition manager wait failed", "error", err)
 	}
+	chJanitor.Wait()
 
 	cancel()
 

@@ -17,10 +17,12 @@ import (
 	"espx/internal/config"
 	"espx/internal/database"
 	"espx/internal/ingestion"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
+	"espx/internal/licensing"
 	"espx/internal/management"
 	mgmt_pb "espx/internal/management/pb"
 
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -46,6 +48,15 @@ func main() {
 		os.Exit(1)
 	}
 	defer pool.Close()
+
+	if cfg.MultiRegionEnabled {
+		snap, snapErr := licensing.LoadDeploymentSnapshot(ctx, pool)
+		if snapErr != nil || !snap.ModuleAllowed(func(f licensing.FeatureSet) bool { return f.MultiRegionEnabled() }) {
+			slog.Error("multi_region requires Enterprise license with multi_region JWT feature")
+			os.Exit(1)
+		}
+		slog.Info("multi-region mode enabled", "region_code", cfg.RegionCode, "cell", cfg.MultiRegionCell(), "global", cfg.MultiRegionGlobal())
+	}
 
 	var rdbs []redis.UniversalClient
 	rdbs, err = database.ConnectRedisShards(ctx, cfg, database.RedisShardOptions{
@@ -94,26 +105,83 @@ func main() {
 	}
 
 	if cfg.ClickHouseEnabled() {
-		chConn, err := database.ConnectClickHouse(ctx, string(cfg.CHDSN))
+		var chWrite driver.Conn
+		if string(cfg.CHDSN) != "" {
+			var err error
+			chWrite, err = database.ConnectClickHouse(ctx, string(cfg.CHDSN))
+			if err != nil {
+				slog.Error("failed to connect to clickhouse for migrations", "error", err)
+				os.Exit(1)
+			}
+			if err := migrate.ApplyClickHouseMigrations(ctx, chWrite); err != nil {
+				slog.Error("failed to apply clickhouse migrations", "error", err)
+				os.Exit(1)
+			}
+			svc.SetClickHouseWrite(chWrite)
+		}
+
+		chRead, err := database.ConnectCHReadonly(ctx, string(cfg.CHReadonlyDSN))
 		if err != nil {
 			slog.Error("failed to connect to clickhouse for reporting", "error", err)
 			os.Exit(1)
 		}
-		defer chConn.Close()
-		if err := migrate.ApplyClickHouseMigrations(ctx, chConn); err != nil {
-			slog.Error("failed to apply clickhouse migrations", "error", err)
+		defer chRead.Close()
+		if chWrite != nil {
+			defer chWrite.Close()
+		}
+		svc.SetClickHouse(chRead)
+		chQuery := database.NewCHQuery(chRead, database.CHQueryConfig{})
+		slog.Info("clickhouse reporting enabled", "readonly_dsn", "CH_READONLY_DSN")
+
+		volumeInterval := time.Hour
+		if v := os.Getenv("VOLUME_METER_INTERVAL"); v != "" {
+			if d, err := time.ParseDuration(v); err == nil && d > 0 {
+				volumeInterval = d
+			}
+		}
+		if os.Getenv("VOLUME_METER_ENABLED") != "0" {
+			svc.StartBackgroundWorker(func() {
+				management.NewVolumeMeterWorker(pool, chQuery, volumeInterval, svc.PgGate()).Start(ctx)
+			})
+			slog.Info("started volume meter worker", "interval", volumeInterval)
+		}
+
+		if os.Getenv("USAGE_DAILY_FLUSH_ENABLED") == "1" {
+			flushInterval := 24 * time.Hour
+			if v := os.Getenv("USAGE_DAILY_FLUSH_INTERVAL"); v != "" {
+				if d, err := time.ParseDuration(v); err == nil && d > 0 {
+					flushInterval = d
+				}
+			}
+			svc.StartBackgroundWorker(func() {
+				management.NewUsageDailyFlushWorker(pool, flushInterval).Start(ctx)
+			})
+			slog.Info("started usage daily flush worker", "interval", flushInterval)
+		}
+	}
+
+	if pubKeyRaw := os.Getenv("ESPX_LICENSE_PUBLIC_KEY"); pubKeyRaw != "" {
+		pubKey, err := licensing.ParsePublicKey([]byte(pubKeyRaw))
+		if err != nil {
+			slog.Error("invalid ESPX_LICENSE_PUBLIC_KEY", "error", err)
 			os.Exit(1)
 		}
-		svc.SetClickHouse(chConn)
-		slog.Info("clickhouse reporting enabled")
+		watcher := licensing.NewLicenseWatcher(pool, rdbs[0], pubKey)
+		svc.StartBackgroundWorker(func() {
+			if err := watcher.Start(ctx); err != nil && err != context.Canceled {
+				slog.Error("license watcher stopped", "error", err)
+			}
+		})
+		slog.Info("started license watcher", "mode", os.Getenv("ESPX_LICENSE_MODE"))
 	}
 
 	queries := db.New(pool)
-	campaignRepo := ingestion.NewCampaignRepo(queries)
-	customerRepo := ingestion.NewCustomerRepo(queries)
+	campaignRepo := ingestion.NewCampaignRepoWithDB(pool, queries)
+	campaignRepo.ConfigureAuditLedgerFlush(cfg.AuditLedgerFlushSampleMask)
+	customerRepo := ingestion.NewCustomerRepoWithDB(pool, queries)
 	var syncWorkers []*ingestion.SyncWorker
 	for _, rdb := range rdbs {
-		sw := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond, nil, 0)
+		sw := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond, time.Duration(cfg.LedgerBatchFlushMs)*time.Millisecond, nil, 0)
 		syncWorkers = append(syncWorkers, sw)
 		svc.StartBackgroundWorker(func() {
 			sw.Start(ctx)

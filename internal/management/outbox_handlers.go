@@ -55,7 +55,7 @@ func (w *OutboxWorker) handleOutboxEvent(opCtx, ctx context.Context, ev db.Outbo
 	case "UPDATE_SETTINGS":
 		return w.handleUpdateSettings(opCtx, ev.ID, ev.Payload)
 	case "UPDATE_BLACKLIST":
-		return w.handleUpdateBlacklist(ctx, ev.Payload)
+		return w.handleUpdateBlacklist(ctx, ev.Payload, ev.CreatedAt.Time)
 	case "CONFIGURE_BRAND_FCAP":
 		return w.handleConfigureBrandFcap(ctx, ev.Payload)
 	case "UPDATE_SUPPLY_FILES":
@@ -235,12 +235,12 @@ func (w *OutboxWorker) handleUpdateSettings(opCtx context.Context, eventID int64
 }
 
 // handleUpdateBlacklist applies an IP block or unblock to every Redis shard.
-func (w *OutboxWorker) handleUpdateBlacklist(ctx context.Context, payload []byte) error {
+func (w *OutboxWorker) handleUpdateBlacklist(ctx context.Context, payload []byte, queuedAt time.Time) error {
 	p, err := coldpath.UnmarshalStrict[BlacklistPayload](payload)
 	if err != nil {
 		return err
 	}
-	return w.applyBlacklistPayload(ctx, p)
+	return w.applyBlacklistPayload(ctx, p, queuedAt)
 }
 
 // handleConfigureBrandFcap invalidates active campaigns when brand frequency caps change.
@@ -492,7 +492,7 @@ func (w *OutboxWorker) handlePausePlacement(ctx context.Context, payload []byte)
 		return fmt.Errorf("invalid campaign id: %w", err)
 	}
 
-	key := fmt.Sprintf("blacklist:placement:%s", p.CampaignID)
+	key := ingestion.PlacementBlacklistKey(uuid.MustParse(p.CampaignID))
 	for _, rdb := range w.svc.rdbs {
 		if rdb == nil {
 			continue

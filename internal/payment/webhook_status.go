@@ -21,3 +21,17 @@ func updateStripeWebhookStatus(ctx context.Context, q db.Querier, eventID string
 		ErrorMessage:    msg,
 	})
 }
+
+// updateCryptoWebhookStatus records webhook processing outcome for a Crypto event id.
+func updateCryptoWebhookStatus(ctx context.Context, q db.Querier, eventID string, status db.PaymentWebhookEventStatus, errMsg string) error {
+	var msg pgtype.Text
+	if errMsg != "" {
+		msg = pgtype.Text{String: errMsg, Valid: true}
+	}
+	return q.UpdateWebhookEventStatus(ctx, db.UpdateWebhookEventStatusParams{
+		Provider:        "crypto",
+		ProviderEventID: eventID,
+		Status:          status,
+		ErrorMessage:    msg,
+	})
+}

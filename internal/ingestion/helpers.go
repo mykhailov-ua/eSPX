@@ -5,10 +5,11 @@ import (
 	"unsafe"
 
 	"espx/internal/ingestion/pb"
+	"espx/pkg/money"
 )
 
 // MicroUnitFactor converts dollar floats to micro-dollar integers.
-const MicroUnitFactor = 1_000_000
+const MicroUnitFactor = money.MicroUnit
 
 // SliceToMap builds O(1) country lookup sets from string slices.
 func SliceToMap(slice []string) map[string]struct{} {

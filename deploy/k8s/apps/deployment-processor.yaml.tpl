@@ -44,12 +44,20 @@ spec:
           ports:
             - name: http
               containerPort: 8186
+          livenessProbe:
+            exec:
+              command:
+                - /processor
+                - --health-probe
+                - http://127.0.0.1:8186/healthz
+            initialDelaySeconds: 5
+            periodSeconds: 10
           readinessProbe:
             exec:
               command:
                 - /processor
                 - --health-probe
-                - http://127.0.0.1:8186/health
+                - http://127.0.0.1:8186/readyz
             initialDelaySeconds: 15
             periodSeconds: 10
           resources:

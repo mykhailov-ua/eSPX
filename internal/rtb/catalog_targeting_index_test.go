@@ -9,16 +9,19 @@ import (
 
 func TestBuildTargetingIndex_groupsByGeoDeviceCategory(t *testing.T) {
 	reg := &CampaignAuctionRegistry{
-		Count:         3,
-		CampaignIDs:   []CampaignID{1, 2, 3},
-		Bids:          []int64{100, 200, 300},
-		CTRPPM:        []uint32{CTRPPMUnit, CTRPPMUnit, CTRPPMUnit},
-		Reserves:      []int64{0, 0, 0},
-		DeviceMasks:   []uint8{1, 2, 1},
-		CategoryMasks: []uint64{1, 1, 2},
-		GeoHashes:     []uint32{7, 7, 7},
-		Weights:       []uint32{1, 1, 1},
-		BudgetIndices: []uint32{0, 1, 2},
+		Count:                 3,
+		CampaignIDs:           []CampaignID{1, 2, 3},
+		Bids:                  []int64{100, 200, 300},
+		CTRPPM:                []uint32{CTRPPMUnit, CTRPPMUnit, CTRPPMUnit},
+		Reserves:              []int64{0, 0, 0},
+		DailyBudgets:          []int64{0, 0, 0},
+		PacingOpen:            []uint8{PacingOpen, PacingOpen, PacingOpen},
+		DeviceMasks:           []uint8{1, 2, 1},
+		CategoryMasks:         []uint64{1, 1, 2},
+		GeoHashes:             []uint32{7, 7, 7},
+		Weights:               []uint32{1, 1, 1},
+		BudgetIndices:         []uint32{0, 1, 2},
+		CustomerBudgetIndices: []uint32{invalidCustomerBudgetIdx, invalidCustomerBudgetIdx, invalidCustomerBudgetIdx},
 	}
 	buildTargetingIndex(reg)
 

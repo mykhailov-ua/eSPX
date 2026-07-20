@@ -3,14 +3,13 @@ package adminapi
 import (
 	"context"
 	"errors"
-	"math"
 	"net/http"
 	"strconv"
 	"time"
 
 	"espx/pkg/coldpath"
-
 	"espx/pkg/httpresponse"
+	"espx/pkg/money"
 
 	"github.com/google/uuid"
 )
@@ -18,7 +17,6 @@ import (
 const (
 	forecastHandlerTimeout       = 2 * time.Second
 	forecastDefaultRetryAfterSec = 30
-	forecastMicroUnitFactor      = 1_000_000
 )
 
 // CampaignForecaster estimates delivery for a planned campaign.
@@ -126,10 +124,11 @@ func forecastParseBudgetMicro(micro *int64, legacy float64, hasLegacy bool) (int
 		return *micro, nil
 	}
 	if hasLegacy {
-		if legacy <= 0 || math.IsNaN(legacy) || math.IsInf(legacy, 0) {
+		v, err := money.LegacyFloatToMicro(legacy)
+		if err != nil || v <= 0 {
 			return 0, errInvalidQuery("budget must be positive")
 		}
-		return int64(math.Round(legacy * forecastMicroUnitFactor)), nil
+		return v, nil
 	}
 	return 0, errInvalidQuery("budget is required")
 }

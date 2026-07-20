@@ -2,6 +2,7 @@ package payment
 
 import (
 	"espx/pkg/coldpath"
+	"espx/pkg/money"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -143,11 +144,11 @@ func parseCreateIntentInput(contentType string, body []byte) (uuid.UUID, int64, 
 			}
 			form.AmountMicro = &micro
 		} else if amountStr := values.Get("amount"); amountStr != "" {
-			amount, err := strconv.ParseFloat(amountStr, 64)
-			if err != nil || amount <= 0 {
+			micro, err := money.ParseDecimal(amountStr)
+			if err != nil || micro <= 0 {
 				return uuid.Nil, 0, errValidation("amount is required")
 			}
-			form.Amount = amount
+			form.AmountMicro = &micro
 		}
 	}
 
@@ -161,7 +162,11 @@ func parseCreateIntentInput(contentType string, body []byte) (uuid.UUID, int64, 
 	case form.AmountMicro != nil:
 		amountMicro = *form.AmountMicro
 	case form.Amount > 0:
-		amountMicro = int64(form.Amount * 1_000_000)
+		var err error
+		amountMicro, err = money.LegacyFloatToMicro(form.Amount)
+		if err != nil {
+			return uuid.Nil, 0, errValidation("amount is required")
+		}
 	default:
 		return uuid.Nil, 0, errValidation("amount is required")
 	}

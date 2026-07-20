@@ -168,7 +168,7 @@ func TestE2E_Idempotency(t *testing.T) {
 		return err == nil && clicks == 1
 	}, 5*time.Second, 100*time.Millisecond)
 
-	syncWorker := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Hour, nil, 0)
+	syncWorker := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Hour, 0, nil, 0)
 	syncWorker.SyncAll(ctx)
 
 	var syncIdemAfterFirst int

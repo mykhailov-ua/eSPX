@@ -16,6 +16,7 @@ import (
 	"espx/internal/metrics"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	redis "github.com/redis/go-redis/v9"
 )
@@ -103,32 +104,46 @@ func (r *Registry) SetBudgetWarmer(w *BudgetCacheWarmer) {
 	r.budgetWarmer = w
 }
 
-// UpdateAndWarmCampaign reloads one campaign from Postgres and warms its Redis budget key.
+// UpdateAndWarmCampaign reloads one campaign from Postgres and warms its Redis budget key (HR-PUB).
 func (r *Registry) UpdateAndWarmCampaign(ctx context.Context, id uuid.UUID) error {
-	camp, err := NewCampaignRepo(r.repo).GetByID(ctx, id)
+	start := time.Now()
+	defer func() {
+		metrics.RegistryWarmDuration.Observe(time.Since(start).Seconds())
+	}()
+
+	row, err := r.repo.GetCampaignFull(ctx, pgtype.UUID{Bytes: id, Valid: true})
 	if err != nil {
 		return err
 	}
+
 	r.mu.Lock()
 	currentMap := r.campaignMapSnapshot().byID
 	newMap := make(map[uuid.UUID]campaignInfo, len(currentMap)+1)
 	for k, v := range currentMap {
 		newMap[k] = v
 	}
-	if info, ok := newMap[id]; ok && info.campaign != nil {
-		info.campaign.BudgetLimit = camp.BudgetLimit
-		info.campaign.CurrentSpend = camp.CurrentSpend
-		info.campaign.DailyBudget = camp.DailyBudget
-		info.campaign.DailyBudgetMicro = camp.DailyBudgetMicro
-		info.campaign.DailyBudgetMicroAny = camp.DailyBudgetMicro
-		newMap[id] = info
+	if row.Status == db.CampaignStatusTypeACTIVE {
+		if row.UpdatedAt.Valid {
+			lag := time.Since(row.UpdatedAt.Time).Seconds()
+			if lag >= 0 {
+				metrics.RegistrySyncLag.Observe(lag)
+			}
+		}
+		newMap[id] = campaignInfo{
+			campaign: campaignFromGetCampaignFullRow(row),
+			status:   row.Status,
+		}
+	} else {
+		delete(newMap, id)
 	}
 	r.data.Store(&campaignMapSnapshot{byID: newMap})
 	w := r.budgetWarmer
 	r.mu.Unlock()
-	if w == nil {
+
+	if row.Status != db.CampaignStatusTypeACTIVE || w == nil {
 		return nil
 	}
+	camp := campaignFromGetCampaignFullRow(row)
 	_, err = w.WarmOne(ctx, camp)
 	return err
 }
@@ -195,12 +210,7 @@ func (r *Registry) Add(id, customerID uuid.UUID, brandID *uuid.UUID, brandFcapKe
 	customerIDStr := customerID.String()
 	dailyBudgetMicro := dailyBudget
 
-	var fcapPrefix string
-	if brandFcapKey != "" {
-		fcapPrefix = brandFcapKey + ":u:"
-	} else {
-		fcapPrefix = "fcap:c:" + idStr + ":u:"
-	}
+	fcapPrefix := fcapKeyPrefix(id, brandFcapKey)
 
 	info := campaignInfo{
 		campaign: &campaignmodel.Campaign{
@@ -224,11 +234,11 @@ func (r *Registry) Add(id, customerID uuid.UUID, brandID *uuid.UUID, brandFcapKe
 			FreqWindowAny:       freqWindow,
 			TargetCountries:     countries,
 			Status:              campaignmodel.CampaignStatusActive,
-			BudgetCampaignKey:   "budget:campaign:" + idStr,
-			CampaignSyncKey:     "budget:sync:campaign:" + idStr,
-			CustomerSyncKey:     "budget:sync:customer:" + customerIDStr,
+			BudgetCampaignKey:   budgetCampaignKey(id),
+			CampaignSyncKey:     campaignSyncKey(id),
+			CustomerSyncKey:     customerSyncKey(id, customerID),
 			FcapKeyPrefix:       fcapPrefix,
-			DailySpendKeyPrefix: "budget:daily_spent:campaign:" + idStr + ":",
+			DailySpendKeyPrefix: dailySpendKeyPrefix(id),
 		},
 		status: db.CampaignStatusTypeACTIVE,
 	}
@@ -291,7 +301,7 @@ func (r *Registry) Sync(ctx context.Context) (int, error) {
 		}
 
 		fresh[id] = campaignInfo{
-			campaign: campaignFromDBRow(row),
+			campaign: campaignFromListActiveCampaignsRow(row),
 			status:   row.Status,
 		}
 	}
@@ -419,12 +429,7 @@ func (r *Registry) loadReplica() (*campaignMapSnapshot, error) {
 		idStr := dto.ID.String()
 		customerIDStr := dto.CustomerID.String()
 
-		var fcapPrefix string
-		if dto.BrandFcapKey != "" {
-			fcapPrefix = dto.BrandFcapKey + ":u:"
-		} else {
-			fcapPrefix = "fcap:c:" + idStr + ":u:"
-		}
+		fcapPrefix := fcapKeyPrefix(dto.ID, dto.BrandFcapKey)
 
 		m[dto.ID] = campaignInfo{
 			campaign: &campaignmodel.Campaign{
@@ -451,11 +456,11 @@ func (r *Registry) loadReplica() (*campaignMapSnapshot, error) {
 				FreqWindow:          dto.FreqWindow,
 				FreqWindowAny:       dto.FreqWindow,
 				TargetCountries:     countries,
-				BudgetCampaignKey:   "budget:campaign:" + idStr,
-				CampaignSyncKey:     "budget:sync:campaign:" + idStr,
-				CustomerSyncKey:     "budget:sync:customer:" + customerIDStr,
+				BudgetCampaignKey:   budgetCampaignKey(dto.ID),
+				CampaignSyncKey:     campaignSyncKey(dto.ID),
+				CustomerSyncKey:     customerSyncKey(dto.ID, dto.CustomerID),
 				FcapKeyPrefix:       fcapPrefix,
-				DailySpendKeyPrefix: "budget:daily_spent:campaign:" + idStr + ":",
+				DailySpendKeyPrefix: dailySpendKeyPrefix(dto.ID),
 			},
 			status: db.CampaignStatusType(dto.RegistryStatus),
 		}
@@ -494,27 +499,6 @@ func (r *Registry) StartWatch(ctx context.Context, rdb redis.UniversalClient, ch
 		defer pubsub.Close()
 
 		ch := pubsub.Channel(redis.WithChannelSize(1000))
-		syncTrigger := make(chan struct{}, 1)
-
-		r.wg.Add(1)
-		go func() {
-			defer r.wg.Done()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-syncTrigger:
-					count, err := r.Sync(ctx)
-					if err != nil {
-						slog.Error("live campaign registry sync failed", "error", err)
-					} else {
-						slog.Debug("live campaign registry synced via trigger", "campaigns", count)
-					}
-					time.Sleep(100 * time.Millisecond)
-				}
-			}
-		}()
-
 		for {
 			select {
 			case <-ctx.Done():
@@ -529,11 +513,11 @@ func (r *Registry) StartWatch(ctx context.Context, rdb redis.UniversalClient, ch
 					slog.Warn("received invalid campaign id in pubsub", "payload", msg.Payload)
 					continue
 				}
-				select {
-				case syncTrigger <- struct{}{}:
-				default:
+				if err := r.UpdateAndWarmCampaign(ctx, id); err != nil {
+					slog.Error("incremental campaign registry reload failed", "campaign_id", id, "error", err)
+					continue
 				}
-				slog.Debug("registry sync triggered via pubsub", "campaign_id", id)
+				slog.Debug("campaign registry incremental reload", "campaign_id", id)
 			}
 		}
 	}()
@@ -693,9 +677,5 @@ func mergeLimits(dst *licensing.Limits, src licensing.Limits) {
 }
 
 func mergeFeatures(dst *licensing.FeatureSet, src licensing.FeatureSet) {
-	dst.RtbLive = src.RtbLive
-	dst.MlFraudBoost = src.MlFraudBoost
-	dst.MultiRegion = src.MultiRegion
-	dst.SlotMigration = src.SlotMigration
-	dst.MarginGuard = src.MarginGuard
+	licensing.MergeFeatures(dst, src)
 }

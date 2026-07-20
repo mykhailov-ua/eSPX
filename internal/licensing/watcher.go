@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"espx/internal/billing/db"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -303,8 +304,9 @@ func (w *LicenseWatcher) updateDatabaseAndRedis(ctx context.Context, token strin
 	}
 
 	entitlements := Entitlements{
-		Limits:   claims.Limits,
-		Features: claims.Features,
+		VolumeBand: ParseVolumeBand(string(claims.VolumeBand)),
+		Limits:     claims.Limits,
+		Features:   claims.Features.Normalized(),
 	}
 	entitlementsJSON, err := json.Marshal(entitlements)
 	if err != nil {
@@ -333,16 +335,21 @@ func (w *LicenseWatcher) updateDatabaseAndRedis(ctx context.Context, token strin
 
 	// 2. Update Redis snapshot: entitlement:deployment
 	redisKey := "entitlement:deployment"
+	features := claims.Features.Normalized()
 	fields := map[string]any{
 		"state":                string(state),
 		"plan":                 claims.Plan,
+		"volume_band":          string(ParseVolumeBand(string(claims.VolumeBand))),
 		"valid_until":          claims.ValidUntil.Format(time.RFC3339),
 		"max_rps":              claims.Limits.MaxRPS,
 		"max_requests_per_day": claims.Limits.MaxRequestsPerDay,
-		"rtb_live":             boolToInt(claims.Features.RtbLive),
-		"ml_fraud_boost":       boolToInt(claims.Features.MlFraudBoost),
-		"multi_region":         boolToInt(claims.Features.MultiRegion),
-		"slot_migration":       boolToInt(claims.Features.SlotMigration),
+		"rtb_live":             boolToInt(features.RtbLive),
+		"openrtb_engine":       boolToInt(features.OpenRTBEnabled()),
+		"ivt_ml_detector":      boolToInt(features.IvtMLDetector),
+		"ebpf_xdp_edge":        boolToInt(features.EbpfXDPEdge),
+		"ml_fraud_boost":       boolToInt(features.MlFraudBoost),
+		"multi_region":         boolToInt(features.MultiRegion),
+		"slot_migration":       boolToInt(features.SlotMigration),
 	}
 
 	if err := w.rdb.HMSet(ctx, redisKey, fields).Err(); err != nil {

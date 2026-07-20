@@ -365,6 +365,7 @@ func DecryptAESGCM(ciphertext []byte, key []byte) ([]byte, error) {
 	nonce, actualCiphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
 	return gcm.Open(nil, nonce, actualCiphertext, nil)
 }
+
 type PostbackAdapter interface {
 	Send(ctx context.Context, client *http.Client, payload *PostbackPayload, urlTemplate string, apiTokenDecrypted string) error
 }

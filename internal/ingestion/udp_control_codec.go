@@ -8,6 +8,7 @@ import (
 const (
 	udpMagic            uint32 = 0x45535058 // "ESPX"
 	udpProtocolVersion  uint8  = 1
+	udpProtocolVersion2 uint8  = 2
 	UDPHeaderSize              = 48
 	UDPMaxControlShards        = 16
 	udpCanaryFloorRPS          = 100
@@ -25,6 +26,7 @@ const (
 type UDPControlLimits struct {
 	NumShards uint8
 	Limits    [UDPMaxControlShards]uint64
+	MaxRPD    uint64 // per-region daily ingress cap (protocol v2 extension)
 }
 
 // UDPHeader is the fixed 48-byte control datagram prefix (little-endian).
@@ -94,7 +96,10 @@ func udpDecodeHeader(src []byte, hdr *UDPHeader) bool {
 		return false
 	}
 	hdr.Magic = binary.LittleEndian.Uint32(src[0:4])
-	if hdr.Magic != udpMagic || src[4] != udpProtocolVersion {
+	if hdr.Magic != udpMagic {
+		return false
+	}
+	if src[4] != udpProtocolVersion && src[4] != udpProtocolVersion2 {
 		return false
 	}
 	hdr.Version = src[4]
@@ -121,6 +126,10 @@ func udpDecodeShardLimits(payload []byte, numShards uint8, out *UDPControlLimits
 	for i := uint8(0); i < numShards; i++ {
 		out.Limits[i] = binary.LittleEndian.Uint64(payload[i*8 : i*8+8])
 	}
+	out.MaxRPD = 0
+	if len(payload) >= need+8 {
+		out.MaxRPD = binary.LittleEndian.Uint64(payload[need : need+8])
+	}
 	return true
 }
 
@@ -129,13 +138,20 @@ func udpEncodeShardLimits(dst []byte, limits *UDPControlLimits) int {
 		return 0
 	}
 	need := udpShardPayloadLen(limits.NumShards)
-	if len(dst) < need {
+	extra := 0
+	if limits.MaxRPD > 0 {
+		extra = 8
+	}
+	if len(dst) < need+extra {
 		return 0
 	}
 	for i := uint8(0); i < limits.NumShards; i++ {
 		binary.LittleEndian.PutUint64(dst[i*8:i*8+8], limits.Limits[i])
 	}
-	return need
+	if extra > 0 {
+		binary.LittleEndian.PutUint64(dst[need:need+8], limits.MaxRPD)
+	}
+	return need + extra
 }
 
 func udpEncodeConfigRequest(dst []byte, req *UDPConfigRequestPayload) int {
@@ -172,6 +188,10 @@ func ComputeUDPConfigHash(epoch int64, slotVersion int32, limits *UDPControlLimi
 	_, _ = h.Write(buf[:4])
 	for i := uint8(0); i < limits.NumShards; i++ {
 		binary.LittleEndian.PutUint64(buf[:], limits.Limits[i])
+		_, _ = h.Write(buf[:])
+	}
+	if limits.MaxRPD > 0 {
+		binary.LittleEndian.PutUint64(buf[:], limits.MaxRPD)
 		_, _ = h.Write(buf[:])
 	}
 	sum := h.Sum(nil)

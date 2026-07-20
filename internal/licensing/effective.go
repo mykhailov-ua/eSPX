@@ -21,10 +21,21 @@ func Effective(dep, cust Entitlements) Entitlements {
 		eff.Limits.QuotaResetTimezone = "UTC"
 	}
 
-	eff.Features.RtbLive = dep.Features.RtbLive && cust.Features.RtbLive
-	eff.Features.MlFraudBoost = dep.Features.MlFraudBoost && cust.Features.MlFraudBoost
-	eff.Features.MultiRegion = dep.Features.MultiRegion && cust.Features.MultiRegion
-	eff.Features.SlotMigration = dep.Features.SlotMigration && cust.Features.SlotMigration
+	eff.VolumeBand = dep.VolumeBand
+	if eff.VolumeBand == "" {
+		eff.VolumeBand = cust.VolumeBand
+	}
+
+	depFeat := dep.Features.Normalized()
+	custFeat := cust.Features.Normalized()
+	eff.Features.RtbLive = depFeat.RtbLive && custFeat.RtbLive
+	eff.Features.OpenRTBEngine = depFeat.OpenRTBEnabled() && custFeat.OpenRTBEnabled()
+	eff.Features.IvtMLDetector = depFeat.IvtMLDetector && custFeat.IvtMLDetector
+	eff.Features.EbpfXDPEdge = depFeat.EbpfXDPEdge && custFeat.EbpfXDPEdge
+	eff.Features.MlFraudBoost = depFeat.MlFraudBoost && custFeat.MlFraudBoost
+	eff.Features.MultiRegion = depFeat.MultiRegion && custFeat.MultiRegion
+	eff.Features.SlotMigration = depFeat.SlotMigration && custFeat.SlotMigration
+	eff.Features.MarginGuard = depFeat.MarginGuard && custFeat.MarginGuard
 
 	return eff
 }

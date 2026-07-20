@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"espx/internal/config"
 	"espx/internal/payment/db"
@@ -19,17 +20,24 @@ import (
 
 // Service owns intent persistence and webhook state transitions in the payment schema.
 type Service struct {
-	pool     *pgxpool.Pool
-	provider Provider
-	cfg      *config.Config
+	pool      *pgxpool.Pool
+	provider  Provider
+	providers map[string]Provider
+	cfg       *config.Config
 }
 
 // NewService binds Postgres and a checkout provider so intent persistence and provider calls share one lifecycle.
 func NewService(pool *pgxpool.Pool, prov Provider, cfg *config.Config) *Service {
+	providers := make(map[string]Provider)
+	providers[prov.Name()] = prov
+	cryptoProv := NewCryptoProvider(cfg.CryptoConfirmationDepth, cfg.CryptoMinPaymentMicro, string(cfg.CryptoWebhookSecret))
+	providers[cryptoProv.Name()] = cryptoProv
+
 	return &Service{
-		pool:     pool,
-		provider: prov,
-		cfg:      cfg,
+		pool:      pool,
+		provider:  prov,
+		providers: providers,
+		cfg:       cfg,
 	}
 }
 
@@ -39,16 +47,58 @@ type CreateIntentResult struct {
 	CheckoutURL string
 }
 
-// CreatePaymentIntent uses an advisory lock and idempotency key so concurrent retries cannot double-create checkouts.
+// CreatePaymentIntent claims the idempotency key under a brief advisory lock, calls the provider
+// without holding a pool connection, then finalizes the intent row (M-DB-PG-5).
 func (service *Service) CreatePaymentIntent(ctx context.Context, customerID uuid.UUID, amountMicro int64, currency string, idempotencyKey string, metadata map[string]string) (CreateIntentResult, error) {
+	prov := service.provider
+	if pName, ok := metadata["provider"]; ok {
+		if p, exists := service.providers[pName]; exists {
+			prov = p
+		}
+	}
+
+	intent, claimed, err := service.claimPaymentIntent(ctx, customerID, amountMicro, currency, idempotencyKey, metadata, prov.Name())
+	if err != nil {
+		return CreateIntentResult{}, err
+	}
+	if !claimed {
+		return service.awaitFinalizedIntent(ctx, intent, customerID, amountMicro, currency)
+	}
+
+	provRef, checkoutURL, err := prov.CreateCheckout(ctx, amountMicro, currency, metadata, idempotencyKey)
+	if err != nil {
+		_ = service.markIntentFailed(ctx, intent.ID)
+		if errors.Is(err, ErrProviderNotConfigured) {
+			return CreateIntentResult{}, err
+		}
+		return CreateIntentResult{}, fmt.Errorf("%w: %w", ErrCheckoutUnavailable, err)
+	}
+
+	finalized, err := service.finalizePaymentIntent(ctx, intent.ID, provRef, checkoutURL, metadata)
+	if err != nil {
+		return CreateIntentResult{}, err
+	}
+
+	IntentsTotal.WithLabelValues(string(finalized.Status)).Inc()
+	return CreateIntentResult{Intent: finalized, CheckoutURL: checkoutURL}, nil
+}
+
+func (service *Service) claimPaymentIntent(
+	ctx context.Context,
+	customerID uuid.UUID,
+	amountMicro int64,
+	currency, idempotencyKey string,
+	metadata map[string]string,
+	providerName string,
+) (db.PaymentPaymentIntent, bool, error) {
 	conn, err := service.pool.Acquire(ctx)
 	if err != nil {
-		return CreateIntentResult{}, fmt.Errorf("acquire conn for idempotency lock: %w", err)
+		return db.PaymentPaymentIntent{}, false, fmt.Errorf("acquire conn for idempotency lock: %w", err)
 	}
 	defer conn.Release()
 
 	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(hashtextextended($1::text, 0))`, idempotencyKey); err != nil {
-		return CreateIntentResult{}, fmt.Errorf("idempotency lock: %w", err)
+		return db.PaymentPaymentIntent{}, false, fmt.Errorf("idempotency lock: %w", err)
 	}
 	defer func() {
 		unlockCtx := context.WithoutCancel(ctx)
@@ -56,36 +106,21 @@ func (service *Service) CreatePaymentIntent(ctx context.Context, customerID uuid
 	}()
 
 	q := db.New(conn)
-
 	existing, err := q.GetPaymentIntentByIdempotencyKey(ctx, idempotencyKey)
 	if err == nil {
-		IntentsTotal.WithLabelValues(string(existing.Status)).Inc()
-		return reconcileIdempotentIntent(existing, customerID, amountMicro, currency)
+		return existing, false, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
-		return CreateIntentResult{}, fmt.Errorf("failed to lookup payment intent: %w", err)
-	}
-
-	provRef, checkoutURL, err := service.provider.CreateCheckout(ctx, amountMicro, currency, metadata, idempotencyKey)
-	if err != nil {
-		if errors.Is(err, ErrProviderNotConfigured) {
-			return CreateIntentResult{}, err
-		}
-		return CreateIntentResult{}, fmt.Errorf("%w: %w", ErrCheckoutUnavailable, err)
+		return db.PaymentPaymentIntent{}, false, fmt.Errorf("failed to lookup payment intent: %w", err)
 	}
 
 	intentID, err := uuid.NewV7()
 	if err != nil {
-		return CreateIntentResult{}, fmt.Errorf("generate payment intent id: %w", err)
+		return db.PaymentPaymentIntent{}, false, fmt.Errorf("generate payment intent id: %w", err)
 	}
-	metaBytes, err := mergeIntentMetadata(metadata, checkoutURL)
+	metaBytes, err := mergeIntentMetadata(metadata, "")
 	if err != nil {
-		return CreateIntentResult{}, fmt.Errorf("failed to encode intent metadata: %w", err)
-	}
-
-	status := db.PaymentPaymentIntentStatusCREATED
-	if provRef != "" {
-		status = db.PaymentPaymentIntentStatusPENDINGPROVIDER
+		return db.PaymentPaymentIntent{}, false, fmt.Errorf("failed to encode intent metadata: %w", err)
 	}
 
 	var intent db.PaymentPaymentIntent
@@ -97,9 +132,9 @@ func (service *Service) CreatePaymentIntent(ctx context.Context, customerID uuid
 			CustomerID:     pgtype.UUID{Bytes: customerID, Valid: true},
 			AmountMicro:    amountMicro,
 			Currency:       currency,
-			Status:         status,
-			Provider:       service.provider.Name(),
-			ProviderRef:    pgtype.Text{String: provRef, Valid: provRef != ""},
+			Status:         db.PaymentPaymentIntentStatusCREATED,
+			Provider:       providerName,
+			ProviderRef:    pgtype.Text{},
 			IdempotencyKey: idempotencyKey,
 			Metadata:       metaBytes,
 		})
@@ -109,15 +144,85 @@ func (service *Service) CreatePaymentIntent(ctx context.Context, customerID uuid
 		if coldpath.IsUniqueViolation(err) {
 			existing, lookupErr := q.GetPaymentIntentByIdempotencyKey(ctx, idempotencyKey)
 			if lookupErr != nil {
-				return CreateIntentResult{}, fmt.Errorf("idempotency race recovery failed: %w", lookupErr)
+				return db.PaymentPaymentIntent{}, false, fmt.Errorf("idempotency race recovery failed: %w", lookupErr)
 			}
-			return reconcileIdempotentIntent(existing, customerID, amountMicro, currency)
+			return existing, false, nil
 		}
-		return CreateIntentResult{}, fmt.Errorf("failed to insert payment intent: %w", err)
+		return db.PaymentPaymentIntent{}, false, fmt.Errorf("failed to insert payment intent: %w", err)
+	}
+	return intent, true, nil
+}
+
+func (service *Service) finalizePaymentIntent(
+	ctx context.Context,
+	intentID pgtype.UUID,
+	provRef, checkoutURL string,
+	metadata map[string]string,
+) (db.PaymentPaymentIntent, error) {
+	metaBytes, err := mergeIntentMetadata(metadata, checkoutURL)
+	if err != nil {
+		return db.PaymentPaymentIntent{}, fmt.Errorf("failed to encode intent metadata: %w", err)
 	}
 
-	IntentsTotal.WithLabelValues(string(intent.Status)).Inc()
-	return CreateIntentResult{Intent: intent, CheckoutURL: checkoutURL}, nil
+	status := db.PaymentPaymentIntentStatusCREATED
+	if provRef != "" {
+		status = db.PaymentPaymentIntentStatusPENDINGPROVIDER
+	}
+
+	var intent db.PaymentPaymentIntent
+	err = pgx.BeginFunc(ctx, service.pool, func(tx pgx.Tx) error {
+		row := tx.QueryRow(ctx, `
+			UPDATE payment.payment_intents
+			SET status = $2,
+			    provider_ref = COALESCE(NULLIF($3, ''), provider_ref),
+			    metadata = $4,
+			    updated_at = now()
+			WHERE id = $1
+			RETURNING id, customer_id, amount_micro, currency, status, provider, provider_ref, idempotency_key, metadata, created_at, updated_at, refunded_amount_micro`,
+			intentID, status, provRef, metaBytes)
+		return row.Scan(
+			&intent.ID, &intent.CustomerID, &intent.AmountMicro, &intent.Currency, &intent.Status,
+			&intent.Provider, &intent.ProviderRef, &intent.IdempotencyKey, &intent.Metadata,
+			&intent.CreatedAt, &intent.UpdatedAt, &intent.RefundedAmountMicro,
+		)
+	})
+	if err != nil {
+		return db.PaymentPaymentIntent{}, fmt.Errorf("failed to finalize payment intent: %w", err)
+	}
+	return intent, nil
+}
+
+func (service *Service) awaitFinalizedIntent(
+	ctx context.Context,
+	existing db.PaymentPaymentIntent,
+	customerID uuid.UUID,
+	amountMicro int64,
+	currency string,
+) (CreateIntentResult, error) {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if existing.Status != db.PaymentPaymentIntentStatusCREATED || existing.ProviderRef.Valid {
+			IntentsTotal.WithLabelValues(string(existing.Status)).Inc()
+			return reconcileIdempotentIntent(existing, customerID, amountMicro, currency)
+		}
+		if time.Now().After(deadline) {
+			return CreateIntentResult{}, fmt.Errorf("timeout waiting for payment intent checkout")
+		}
+		time.Sleep(10 * time.Millisecond)
+		refreshed, err := db.New(service.pool).GetPaymentIntentByIdempotencyKey(ctx, existing.IdempotencyKey)
+		if err != nil {
+			return CreateIntentResult{}, err
+		}
+		existing = refreshed
+	}
+}
+
+func (service *Service) markIntentFailed(ctx context.Context, intentID pgtype.UUID) error {
+	_, err := db.New(service.pool).UpdatePaymentIntentStatus(ctx, db.UpdatePaymentIntentStatusParams{
+		ID:     intentID,
+		Status: db.PaymentPaymentIntentStatusFAILED,
+	})
+	return err
 }
 
 // reconcileIdempotentIntent enforces that an idempotency key cannot be reused with different money fields.
@@ -311,6 +416,146 @@ func (service *Service) ProcessStripeWebhook(ctx context.Context, eventID string
 		}
 
 		return updateStripeWebhookStatus(ctx, txQueries, eventID, db.PaymentWebhookEventStatusPROCESSED, "")
+	})
+	if err == nil {
+		WebhookEventsTotal.WithLabelValues("processed").Inc()
+	}
+	return err
+}
+
+// ProcessCryptoWebhook commits crypto intent status and hold creation in one transaction.
+func (service *Service) ProcessCryptoWebhook(ctx context.Context, eventID string, eventType string, payload []byte, providerRef string, amountMicro int64, txHash string, confirmations int) error {
+	h := sha256.New()
+	h.Write(payload)
+	payloadHash := h.Sum(nil)
+
+	err := pgx.BeginFunc(ctx, service.pool, func(tx pgx.Tx) error {
+		txQueries := db.New(tx)
+
+		_, err := txQueries.GetWebhookEvent(ctx, db.GetWebhookEventParams{
+			Provider:        "crypto",
+			ProviderEventID: eventID,
+		})
+		if err == nil {
+			slog.Info("crypto webhook event already processed", "event_id", eventID)
+			WebhookEventsTotal.WithLabelValues("duplicate").Inc()
+			return nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+
+		_, err = txQueries.CreateWebhookEvent(ctx, db.CreateWebhookEventParams{
+			Provider:        "crypto",
+			ProviderEventID: eventID,
+			EventType:       eventType,
+			PayloadHash:     payloadHash,
+			PayloadRedacted: payload,
+			Status:          db.PaymentWebhookEventStatusRECEIVED,
+			ErrorMessage:    pgtype.Text{},
+		})
+		if err != nil {
+			if coldpath.IsUniqueViolation(err) {
+				slog.Info("crypto webhook event deduplicated by unique constraint", "event_id", eventID)
+				WebhookEventsTotal.WithLabelValues("duplicate").Inc()
+				return nil
+			}
+			return err
+		}
+
+		var intent db.PaymentPaymentIntent
+		err = tx.QueryRow(ctx, `
+			SELECT id, customer_id, amount_micro, currency, status, provider, provider_ref, idempotency_key, metadata, created_at, updated_at
+			FROM payment.payment_intents
+			WHERE provider = 'crypto' AND provider_ref = $1
+			FOR UPDATE`, providerRef).Scan(
+			&intent.ID, &intent.CustomerID, &intent.AmountMicro, &intent.Currency, &intent.Status, &intent.Provider, &intent.ProviderRef, &intent.IdempotencyKey, &intent.Metadata, &intent.CreatedAt, &intent.UpdatedAt,
+		)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				slog.Warn("received crypto event for unknown provider_ref", "provider_ref", providerRef)
+				return updateCryptoWebhookStatus(ctx, txQueries, eventID, db.PaymentWebhookEventStatusIGNORED, "unknown provider_ref")
+			}
+			return err
+		}
+
+		if amountMicro <= 0 {
+			return updateCryptoWebhookStatus(ctx, txQueries, eventID, db.PaymentWebhookEventStatusIGNORED, "zero or negative amount")
+		}
+
+		// Underpay check: Reject below expected amount or minimum payment
+		if amountMicro < intent.AmountMicro {
+			slog.Warn("crypto webhook amount underpay", "intent_id", uuid.UUID(intent.ID.Bytes), "intent_amount", intent.AmountMicro, "webhook_amount", amountMicro)
+			_, _ = txQueries.UpdatePaymentIntentStatus(ctx, db.UpdatePaymentIntentStatusParams{
+				ID:          intent.ID,
+				Status:      db.PaymentPaymentIntentStatusFAILED,
+				ProviderRef: pgtype.Text{String: providerRef, Valid: true},
+			})
+			return updateCryptoWebhookStatus(ctx, txQueries, eventID, db.PaymentWebhookEventStatusIGNORED, "underpay")
+		}
+
+		if amountMicro < service.cfg.CryptoMinPaymentMicro {
+			slog.Warn("crypto webhook amount below minimum", "intent_id", uuid.UUID(intent.ID.Bytes), "min_amount", service.cfg.CryptoMinPaymentMicro, "webhook_amount", amountMicro)
+			_, _ = txQueries.UpdatePaymentIntentStatus(ctx, db.UpdatePaymentIntentStatusParams{
+				ID:          intent.ID,
+				Status:      db.PaymentPaymentIntentStatusFAILED,
+				ProviderRef: pgtype.Text{String: providerRef, Valid: true},
+			})
+			return updateCryptoWebhookStatus(ctx, txQueries, eventID, db.PaymentWebhookEventStatusIGNORED, "below minimum payment limit")
+		}
+
+		// Check confirmation depth
+		if confirmations < service.cfg.CryptoConfirmationDepth {
+			slog.Info("crypto webhook pending confirmations", "intent_id", uuid.UUID(intent.ID.Bytes), "confirmations", confirmations, "required", service.cfg.CryptoConfirmationDepth)
+			_, err = txQueries.UpdatePaymentIntentStatus(ctx, db.UpdatePaymentIntentStatusParams{
+				ID:          intent.ID,
+				Status:      db.PaymentPaymentIntentStatusPROCESSING,
+				ProviderRef: pgtype.Text{String: providerRef, Valid: true},
+			})
+			if err != nil {
+				return err
+			}
+			return updateCryptoWebhookStatus(ctx, txQueries, eventID, db.PaymentWebhookEventStatusPROCESSED, "pending confirmations")
+		}
+
+		// We have enough confirmations!
+		targetStatus := db.PaymentPaymentIntentStatusSUCCEEDED
+		if !isValidTransition(intent.Status, targetStatus) {
+			slog.Warn("invalid state transition skipped", "intent_id", uuid.UUID(intent.ID.Bytes), "from", intent.Status, "to", targetStatus)
+			return updateCryptoWebhookStatus(ctx, txQueries, eventID, db.PaymentWebhookEventStatusIGNORED,
+				fmt.Sprintf("invalid transition from %s to %s", intent.Status, targetStatus))
+		}
+
+		alreadySettled := intent.Status == db.PaymentPaymentIntentStatusSUCCEEDED
+
+		_, err = txQueries.UpdatePaymentIntentStatus(ctx, db.UpdatePaymentIntentStatusParams{
+			ID:          intent.ID,
+			Status:      targetStatus,
+			ProviderRef: pgtype.Text{String: providerRef, Valid: true},
+		})
+		if err != nil {
+			return err
+		}
+
+		if !alreadySettled {
+			// Create a crypto hold record instead of immediately settling balance
+			holdID, err := uuid.NewV7()
+			if err != nil {
+				return fmt.Errorf("failed to generate hold id: %w", err)
+			}
+			releaseAt := time.Now().UTC().Add(14 * 24 * time.Hour) // 14-day hold
+
+			_, err = tx.Exec(ctx, `
+				INSERT INTO payment.crypto_holds (id, payment_intent_id, customer_id, amount_micro, currency, tx_hash, status, release_at)
+				VALUES ($1, $2, $3, $4, $5, $6, 'HELD', $7)
+			`, holdID, intent.ID, intent.CustomerID, amountMicro, intent.Currency, txHash, releaseAt)
+			if err != nil {
+				return fmt.Errorf("failed to create crypto hold: %w", err)
+			}
+			slog.Info("created crypto hold", "hold_id", holdID, "intent_id", uuid.UUID(intent.ID.Bytes), "release_at", releaseAt)
+		}
+
+		return updateCryptoWebhookStatus(ctx, txQueries, eventID, db.PaymentWebhookEventStatusPROCESSED, "")
 	})
 	if err == nil {
 		WebhookEventsTotal.WithLabelValues("processed").Inc()

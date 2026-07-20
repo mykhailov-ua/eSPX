@@ -40,7 +40,9 @@ if idem_exists then
 end
 
 local barriers = redis.call("MGET", KEYS[16], KEYS[17])
-if barriers[1] or barriers[2] then
+local redis_epoch = tonumber(barriers[1]) or 0
+local routing_epoch = tonumber(ARGV[28]) or 0
+if (redis_epoch > 0 and redis_epoch ~= routing_epoch) or barriers[2] then
     return 11
 end
 

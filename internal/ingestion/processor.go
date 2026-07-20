@@ -447,30 +447,11 @@ func (consumer *StreamConsumer) tryFlush(ctx context.Context, batch *[]*campaign
 
 		slog.Error("poison pill detected, decomposing batch", "error", err, "group", consumer.groupName, "worker", workerID)
 
-		failedIndices := make([]int, 0, len(*batch))
-		successfulMsgIDs := make([]string, 0, len(*batch))
-		singleBatch := make([]*campaignmodel.Event, 1)
+		successIdx, failedIndices := consumer.splitStoreBatch(ctx, *batch, *msgIDs, 0)
 
-		for i, e := range *batch {
-			if ctx.Err() != nil {
-				for j := i; j < len(*batch); j++ {
-					failedIndices = append(failedIndices, j)
-				}
-				break
-			}
-
-			singleBatch[0] = e
-			singleCtx, singleCancel := context.WithTimeout(ctx, consumer.writeTimeout)
-			if len(*msgIDs) > i {
-				singleCtx = context.WithValue(singleCtx, campaignmodel.DeduplicationTokenKey, (*msgIDs)[i])
-			}
-			if singleErr := consumer.store.StoreBatch(singleCtx, singleBatch); singleErr != nil {
-				singleCancel()
-				failedIndices = append(failedIndices, i)
-			} else {
-				singleCancel()
-				successfulMsgIDs = append(successfulMsgIDs, (*msgIDs)[i])
-			}
+		successfulMsgIDs := make([]string, 0, len(successIdx))
+		for _, i := range successIdx {
+			successfulMsgIDs = append(successfulMsgIDs, (*msgIDs)[i])
 		}
 
 		if len(successfulMsgIDs) > 0 {
@@ -826,6 +807,7 @@ func (consumer *StreamConsumer) flushBatch(ctx context.Context, batch []*campaig
 
 	if len(batch) > 0 && !batch[0].CreatedAt.IsZero() {
 		metrics.ProcessorStreamLagSeconds.Set(time.Since(batch[0].CreatedAt).Seconds())
+		SetProcessorStreamLagSec(int64(time.Since(batch[0].CreatedAt).Seconds()))
 	}
 
 	if consumer.logger != nil {

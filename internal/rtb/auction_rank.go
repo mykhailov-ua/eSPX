@@ -2,12 +2,23 @@ package rtb
 
 func (registry *Registry) catalogSlicesValid(reg *CampaignAuctionRegistry) bool {
 	count := reg.Count
-	return count <= len(reg.CampaignIDs) && count <= len(reg.Bids) &&
+	if !(count <= len(reg.CampaignIDs) && count <= len(reg.Bids) &&
 		count <= len(reg.CTRPPM) && count <= len(reg.Reserves) &&
 		count <= len(reg.DailyBudgets) && count <= len(reg.PacingOpen) &&
 		count <= len(reg.DeviceMasks) && count <= len(reg.CategoryMasks) &&
 		count <= len(reg.GeoHashes) && count <= len(reg.Weights) &&
-		count <= len(reg.BudgetIndices) && count <= len(reg.CustomerBudgetIndices)
+		count <= len(reg.BudgetIndices) && count <= len(reg.CustomerBudgetIndices)) {
+		return false
+	}
+	geoEnd := reg.GeoBucketSoA.len()
+	if geoEnd > 0 && !reg.GeoBucketSoA.slicesValid(geoEnd) {
+		return false
+	}
+	targetEnd := reg.TargetBucketSoA.len()
+	if targetEnd > 0 && !reg.TargetBucketSoA.slicesValid(targetEnd) {
+		return false
+	}
+	return true
 }
 
 func bidsAt(reg *CampaignAuctionRegistry, idx int) int64 {
@@ -17,20 +28,20 @@ func bidsAt(reg *CampaignAuctionRegistry, idx int) int64 {
 func (registry *Registry) candidateRange(
 	reg *CampaignAuctionRegistry,
 	req *BidRequest,
-) (bucket []uint32, start int, end int, ok bool) {
+) (soa *candidateBucketSoA, start int, end int, ok bool) {
 	if registry.targetingIndexEnabled.Load() {
 		if start, end, ok = reg.targetingRange(req.GeoHash, req.DeviceType, req.CategoryMask); ok {
-			return reg.TargetBucketIdx, start, end, true
+			return &reg.TargetBucketSoA, start, end, true
 		}
 	}
 	start, end, ok = reg.geoRange(req.GeoHash)
-	return reg.GeoBucketIdx, start, end, ok
+	return &reg.GeoBucketSoA, start, end, ok
 }
 
 func (registry *Registry) rankCandidates(
 	reg *CampaignAuctionRegistry,
 	req *BidRequest,
-	bucket []uint32,
+	soa *candidateBucketSoA,
 	bucketStart int,
 	bucketEnd int,
 ) (winnerIdx int, secondBid int64, scanned int, noBid NoBidReason) {
@@ -40,60 +51,89 @@ func (registry *Registry) rankCandidates(
 	var pacingBlocked bool
 	var dailyBlocked bool
 
-	for pos := bucketStart; pos < bucketEnd; pos++ {
+	if soa == nil || !soa.slicesValid(bucketEnd) {
+		return -1, -1, 0, NoBidCorruptCatalog
+	}
+	// BCE: one window check eliminates per-iteration bounds checks on bucket slices.
+	if bucketStart < 0 || bucketEnd < bucketStart || bucketEnd > soa.len() {
+		return -1, -1, 0, NoBidCorruptCatalog
+	}
+
+	catalogIdx := soa.CatalogIdx[bucketStart:bucketEnd]
+	bids := soa.Bids[bucketStart:bucketEnd]
+	ctrppm := soa.CTRPPM[bucketStart:bucketEnd]
+	reserves := soa.Reserves[bucketStart:bucketEnd]
+	dailyBudgets := soa.DailyBudgets[bucketStart:bucketEnd]
+	pacingOpen := soa.PacingOpen[bucketStart:bucketEnd]
+	deviceMasks := soa.DeviceMasks[bucketStart:bucketEnd]
+	categoryMasks := soa.CategoryMasks[bucketStart:bucketEnd]
+	weights := soa.Weights[bucketStart:bucketEnd]
+	budgetIndices := soa.BudgetIndices[bucketStart:bucketEnd]
+	customerBudgetIndices := soa.CustomerBudgetIndices[bucketStart:bucketEnd]
+
+	regCount := reg.Count
+	deviceType := req.DeviceType
+	categoryMask := req.CategoryMask
+	minBid := req.MinBid
+	store := registry.store
+	winnerPos := -1
+
+	for pos := 0; pos < len(catalogIdx); pos++ {
 		scanned++
-		i := int(bucket[pos])
-		if i < 0 || i >= reg.Count {
+		i := int(catalogIdx[pos])
+		if i < 0 || i >= regCount {
 			return -1, -1, scanned, NoBidCorruptCatalog
 		}
 
-		if reg.PacingOpen[i] == PacingClosed {
+		if pacingOpen[pos] == PacingClosed {
 			pacingBlocked = true
 			continue
 		}
-		if (reg.DeviceMasks[i] & req.DeviceType) == 0 {
+		if (deviceMasks[pos] & deviceType) == 0 {
 			continue
 		}
-		if (reg.CategoryMasks[i] & req.CategoryMask) == 0 {
-			continue
-		}
-
-		bid := reg.Bids[i]
-		reserve := reg.Reserves[i]
-		if bid < reserve || bid < req.MinBid {
+		if (categoryMasks[pos] & categoryMask) == 0 {
 			continue
 		}
 
-		budgetIdx := reg.BudgetIndices[i]
-		if !registry.store.budgetSlotExists(budgetIdx) {
+		bid := bids[pos]
+		reserve := reserves[pos]
+		if bid < reserve || bid < minBid {
+			continue
+		}
+
+		budgetIdx := budgetIndices[pos]
+		if !store.budgetSlotExists(budgetIdx) {
 			return -1, -1, scanned, NoBidCorruptCatalog
 		}
-		if registry.store.LoadBudget(budgetIdx) < bid {
+		if store.LoadBudget(budgetIdx) < bid {
 			continue
 		}
-		if reg.DailyBudgets[i] > 0 && registry.store.loadDailyHeadroom(budgetIdx, reg.DailyBudgets[i]) < bid {
+		if dailyBudgets[pos] > 0 && store.loadDailyHeadroom(budgetIdx, dailyBudgets[pos]) < bid {
 			dailyBlocked = true
 			continue
 		}
-		customerIdx := reg.CustomerBudgetIndices[i]
-		if customerIdx != invalidCustomerBudgetIdx && registry.store.LoadCustomerBudget(customerIdx) < bid {
+		customerIdx := customerBudgetIndices[pos]
+		if customerIdx != invalidCustomerBudgetIdx && store.LoadCustomerBudget(customerIdx) < bid {
 			continue
 		}
 
-		score := effectiveScore(bid, reg.CTRPPM[i])
+		score := effectiveScore(bid, ctrppm[pos])
 		if winnerIdx >= 0 && secondBid >= 0 && score < maxScore {
 			break
 		}
 		if score > maxScore {
 			if winnerIdx >= 0 {
-				secondBid = reg.Bids[winnerIdx]
+				secondBid = bids[winnerPos]
 			}
 			maxScore = score
 			winnerIdx = i
+			winnerPos = pos
 		} else if score == maxScore && winnerIdx >= 0 {
-			if reg.Weights[i] > reg.Weights[winnerIdx] {
-				secondBid = reg.Bids[winnerIdx]
+			if weights[pos] > weights[winnerPos] {
+				secondBid = bids[winnerPos]
 				winnerIdx = i
+				winnerPos = pos
 			}
 			if bid > secondBid {
 				secondBid = bid

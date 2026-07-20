@@ -7,7 +7,7 @@ import (
 	"log/slog"
 
 	"espx/internal/ingestion"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 	"espx/pkg/coldpath"
 
 	"github.com/google/uuid"
@@ -21,17 +21,19 @@ func (s *Service) AutoscaleBudgets(ctx context.Context, syncWorkers []*ingestion
 		return nil
 	}
 
-	opCtx, cancel := workerContext(ctx, workerBatchTimeout)
-	defer cancel()
+	return s.withPgLow(ctx, func(runCtx context.Context) error {
+		opCtx, cancel := workerContext(runCtx, workerBatchTimeout)
+		defer cancel()
 
-	for _, sw := range syncWorkers {
-		if sw != nil {
-			sw.SyncAll(opCtx)
+		for _, sw := range syncWorkers {
+			if sw != nil {
+				sw.SyncAll(opCtx)
+			}
 		}
-	}
 
-	return pgx.BeginFunc(opCtx, s.GetPool(), func(tx pgx.Tx) error {
-		return s.autoscaleBudgetsTx(opCtx, tx, nil)
+		return pgx.BeginFunc(opCtx, s.GetPool(), func(tx pgx.Tx) error {
+			return s.autoscaleBudgetsTx(opCtx, tx, nil)
+		})
 	})
 }
 

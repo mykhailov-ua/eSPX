@@ -15,7 +15,7 @@ Execution order follows complexity grading in [MILESTONE.md §2](./MILESTONE.md#
 | **P0** | Buyer demo & onboarding | [M9](./MILESTONE.md#m9--cli-installer--preflight-tier-s-exec-1), [M6-W](./MILESTONE.md#m6-w--buyer-reports--dashboards-tier-s-exec-2) | Cannot sell or deploy; no placement ROI UI |
 | **P1** | Arbitrage Ops pack (Pro tier) | [M15](./MILESTONE.md#m15--s2s-postback-dispatcher-tier-m-exec-3)–[M17](./MILESTONE.md#m17--margin-guard--placement-auto-pauser-tier-m-exec-5) | No parity with ClickFlare/Voluum/TheOptimizer |
 | **P2** | Production operability | [M6](./MILESTONE.md#m6--day-2-operations--analytics-pipeline-tier-m-exec-6) | Bad K8s routing; silent backlog growth; ops blind spots |
-| **P3** | Commercial packaging | [M3-T](./MILESTONE.md#m3-t--commercial-pu-packaging-tier-m-exec-7) | No JWT tier S/M/L, PU coefficients |
+| **P3** | Commercial packaging | [M3-T](./MILESTONE.md#m3-t--commercial-pu-packaging-tier-m-exec-7) | Shipped — JWT S/M/L, PU weights, module gates |
 | **P4** | Redis scale ceiling | [M4](./MILESTONE.md#m4--shard-orchestrator--elastic-triplets-tier-xl-exec-12) | p99 SLA breach under skew; no horizontal Redis scale |
 | **P5** | Geography, alternative payments | [M7](./MULTI_REGION.md), [M8](./CRYPTO_GATEWAY.md) | No enterprise multi-cell; crypto top-ups missing |
 | **P6** | Ledger depth, PII, CH lifecycle | M11–M14 | GDPR/CH cost; finance batch efficiency |
@@ -77,7 +77,7 @@ Execution order follows complexity grading in [MILESTONE.md §2](./MILESTONE.md#
 | :--- | :--- | :--- | :--- |
 | GAP-PROD-01 | **Buyer / finance dashboards** | Core licensing + billing JSON API shipped | W1–W3 in `adminapi` — [M6-W](./MILESTONE.md#m6-w--buyer-reports--dashboards-tier-s-exec-2) |
 | GAP-PROD-02 | **Reports registration** | `reports_*`, `dashboards_*`, `views_*` not in `register.go` | [M6-W](./MILESTONE.md#m6-w--buyer-reports--dashboards-tier-s-exec-2) |
-| GAP-PROD-03 | **Commercial packaging** | Plans in DB; no JWT tier S/M/L, PU coefficients | [M3-T](./MILESTONE.md#m3-t--commercial-pu-packaging-tier-m-exec-7), `PROPOSALS.md` |
+| GAP-PROD-03 | **Commercial packaging** | Shipped M3-T | [M3_T_TECHNICAL_REPORT.md](./M3_T_TECHNICAL_REPORT.md) |
 | GAP-PROD-06 | **S2S postback dispatcher** | Spec only (`IDEAS` §3.1) | [M15](./MILESTONE.md#m15--s2s-postback-dispatcher-tier-m-exec-3) |
 | GAP-PROD-07 | **Cost API sync** | Spec only (`IDEAS` §3.2) | [M16](./MILESTONE.md#m16--cost-sync--rsoc-revenue-tier-m-exec-4) |
 | GAP-PROD-08 | **Margin guard auto-pauser** | Pro tier in SUBSCRIPTIONS; not implemented | [M17](./MILESTONE.md#m17--margin-guard--placement-auto-pauser-tier-m-exec-5) |
@@ -93,7 +93,7 @@ Execution order follows complexity grading in [MILESTONE.md §2](./MILESTONE.md#
 
 | ID | Gap | Current state | Target / owner |
 | :--- | :--- | :--- | :--- |
-| GAP-GEO-01 | **Single region** | No `RegionOutboxRelay`, no per-region quota | [MULTI_REGION.md](./MULTI_REGION.md) — M7 |
+| GAP-GEO-01 | **Single region** | Shipped M7 — `RegionOutboxRelay`, per-region RPD, cell-isolated Redis | [MULTI_REGION.md](./MULTI_REGION.md) |
 | GAP-GEO-02 | **Postgres DR automation** | Runbook in [DATABASE.md](./DATABASE.md) §III | Operator-owned R1–R4; not productized |
 | GAP-PAY-01 | **Crypto gateway** | Design only | M8 `CryptoProvider` + webhooks |
 | GAP-PAY-02 | **Billing payment provider** | `PlaceholderProvider`; Stripe stays in `cmd/payment` | Intentional M2.8 split; real checkout paths via payment service |
@@ -107,7 +107,7 @@ Execution order follows complexity grading in [MILESTONE.md §2](./MILESTONE.md#
 | GAP-DATA-01 | **Raw PII in ClickHouse** | `ip_address` in CH schema | M14 hash pipeline + salt rotation |
 | GAP-DATA-02 | **IVT interval bots** | Ratio/cluster rules in `ivt-detector` | M11 `IVT-INTERVAL` (σ inter-arrival) |
 | GAP-DATA-03 | **Ledger batch consolidation** | SyncWorker per delta; pause on zero partial | M12 ≤1 PG txn per campaign per 10s |
-| GAP-DATA-04 | **CH compaction / emergency drop** | After M6 janitor baseline | M13 recompress + policy |
+| GAP-DATA-04 | **CH compaction / emergency drop** | M13 `CHPartitionJanitor` recompress + `CH_EMERGENCY_DROP_PERCENT` | Shipped (M13) |
 | GAP-CMP-01 | **Optional tarpit** | CMP-DEF-03 deferred | Edge-only slow path behind flag |
 
 ---
@@ -145,7 +145,7 @@ Full matrix: [MILESTONE.md M4 §4.4](./MILESTONE.md#44-chaos-matrix-required-pro
 | Orchestrator false migrate | **Missing** | SO-01: `orchestrator_no_false_migrate` |
 | Routing epoch + migrate race | **Partial** | LUA-08 / SO-02 |
 | `SCRIPT FLUSH` under load | Backlog | LUA-01 / Scenario I |
-| Chaos Kong (region) | Manual only | M7 game day |
+| Chaos Kong (region) | Runbook: `scripts/chaos-drills/m7/README.md` | M7 game day (manual) |
 | UDP loss 20% | Planned | UDP-02 `udp_loss_20pct` (compose) |
 | Redis single-thread COPY | Partial | REDIS-03 during slot migrate |
 | FD exhaustion at scale | Planned | FD-01 at K>3 clusters |

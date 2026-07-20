@@ -153,7 +153,7 @@ func TestChaos_Shard0Outage(t *testing.T) {
 	require.Equal(t, http.StatusAccepted, statusRecovered, "shard 0 track must recover after redis-0 restart")
 
 	for shard := 1; shard < numShards; shard++ {
-		budgetKey := "budget:campaign:" + campaignIDs[shard].String()
+		budgetKey := ingestion.BudgetCampaignKey(campaignIDs[shard])
 		remaining, err := shardInfra.Clients[shard].Get(ctx, budgetKey).Int64()
 		require.NoError(t, err)
 		assert.GreaterOrEqual(t, remaining, int64(0), "budget must stay non-negative on shard %d", shard)

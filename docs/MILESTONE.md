@@ -322,7 +322,7 @@ Detail: [SHIPPED.md](./SHIPPED.md) §M5, [EDGE.md](./EDGE.md) Part V.
 | `doctor [--json]` | Wrap `check_deps.sh` + topology probes |
 | `license install\|activate\|status` | M3 licensing integration |
 
-**Profiles:** `single_vps` | `compose_dev` | `k8s_k3s`. Flags: `edge_xdp` (needs M5 + PF-BTF), `multi_region` (blocked until M7), `telemetry_enabled: false`.
+**Profiles:** `single_vps` | `compose_dev` | `k8s_k3s`. Flags: `edge_xdp` (needs M5 + PF-BTF), `multi_region` (M7 Enterprise), `telemetry_enabled: false`.
 
 #### M9.2 Implementation patterns
 
@@ -694,12 +694,12 @@ go test ./internal/adminapi/... -run 'Freshness' -short
 
 #### M6.6 DoD checklist
 
-- [ ] HR-PUB, HR-BL, HR-KEYS
-- [ ] `/healthz` + `/readyz` on tracker, processor, management
-- [ ] `CHPartitionJanitor` + retention API
-- [ ] `chquery` + `freshness` on all CH reports
-- [ ] Processor `readyz` spool/lag gates
-- [ ] K8s manifest migration to split probes
+- [x] HR-PUB, HR-BL, HR-KEYS
+- [x] `/healthz` + `/readyz` on tracker, processor, management
+- [x] `CHPartitionJanitor` + retention API
+- [x] `chquery` + `freshness` on all CH reports
+- [x] Processor `readyz` spool/lag gates
+- [x] K8s manifest migration to split probes
 
 ---
 
@@ -737,10 +737,10 @@ go test ./internal/adminapi/... -run 'Freshness' -short
 
 #### M3-T.3 DoD checklist
 
-- [ ] JWT tier S/M/L in `internal/licensing`
-- [ ] `VolumeMeterWorker` + weighted meters
-- [ ] Module flags enforced on feature workers
-- [ ] Documented in `LICENSING.md` + `PROPOSALS.md`
+- [x] JWT tier S/M/L in `internal/licensing`
+- [x] `VolumeMeterWorker` + weighted meters
+- [x] Module flags enforced on feature workers
+- [x] Documented in `LICENSING.md` + `PROPOSALS.md`
 
 ---
 
@@ -830,10 +830,24 @@ bash scripts/ci/check_compliance.sh
 
 #### M13.2 Testing
 
+```bash
+go test ./internal/database/... -run 'Partition|OffPeak|Emergency|CHPartitionJanitor' -short
+go test ./internal/database/... -run 'CHPartitionJanitor' -timeout 10m  # integration CH
+go test ./internal/management/... -run 'CHEmergency' -short
+```
+
 | Test | Criterion |
 | :--- | :--- |
 | Recompress | Integration on test CH |
 | Emergency | Disk threshold triggers drop + notifier |
+
+#### M13.3 DoD checklist
+
+- [x] Off-peak `OPTIMIZE FINAL` on fragmented partitions (`system.parts`)
+- [x] ZSTD codec migration on raw `payload` columns
+- [x] `CH_EMERGENCY_DROP_PERCENT` policy + `OpsAlerter` broadcast
+- [x] `ad_ch_disk_used_percent` + janitor counters
+- [x] Processor wiring + graceful shutdown `Wait()`
 
 ---
 
@@ -1104,19 +1118,19 @@ TAIL: M10 → M14
 | M5 | Edge Compliance & eBPF | — | Shipped |
 | M6 | Day-2 Operations | M | Planned |
 | M6-W | Buyer Reports | S | **Next** |
-| M7 | Multi-Region | XL | Backlog |
+| M7 | Multi-Region | XL | Shipped |
 | M8 | Crypto Gateway | L | Backlog |
 | M9 | CLI Installer | S | **Next** |
 | M10 | Vendor Telemetry | S | Backlog |
 | M11 | Botnet Interval | M | Backlog |
 | M12 | Ledger Consolidation | L | Backlog |
-| M13 | CH Lifecycle Advanced | L | Backlog |
+| M13 | CH Lifecycle Advanced | L | Shipped |
 | M14 | PII Anonymization | L | Backlog |
 | M15 | S2S Postback | M | Shipped |
 | M16 | Cost Sync & RSOC | M | Planned |
 | M17 | Margin Guard | M | Planned |
 | M18 | OpenRTB & Smart Pacing | XL | Backlog |
-| M3-T | Commercial PU Packaging | M | Planned |
+| M3-T | Commercial PU Packaging | M | Shipped |
 
 ---
 

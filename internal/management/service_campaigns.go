@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"espx/internal/ingestion"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 	"espx/pkg/coldpath"
 
 	"github.com/google/uuid"
@@ -139,7 +139,7 @@ func (s *Service) ListCampaigns(ctx context.Context, customerID uuid.UUID, statu
 // GetCampaignDTO loads a single campaign for detail views and access checks.
 func (s *Service) GetCampaignDTO(ctx context.Context, id uuid.UUID) (CampaignDTO, error) {
 	q := db.New(s.GetPool())
-	c, err := q.GetCampaignFull(ctx, ingestion.ToUUID(id))
+	c, err := q.GetCampaign(ctx, ingestion.ToUUID(id))
 	if err != nil {
 		return CampaignDTO{}, mapNotFound(err, ErrCampaignNotFound)
 	}

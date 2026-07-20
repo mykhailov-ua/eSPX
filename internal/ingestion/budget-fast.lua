@@ -27,7 +27,9 @@ if idem then
     return 0
 end
 
-if fence or frozen then
+local redis_epoch = tonumber(fence) or 0
+local routing_epoch = tonumber(ARGV[13]) or 0
+if (redis_epoch > 0 and redis_epoch ~= routing_epoch) or frozen then
     return 11
 end
 

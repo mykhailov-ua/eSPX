@@ -45,7 +45,7 @@ func TestFraudScoringRule_Integration(t *testing.T) {
 	scorer, err := fraudscoring.NewLGBMScorer("../fraudscoring/testdata/model.txt")
 	require.NoError(t, err)
 
-	rule := NewFraudScoringRule(conn, nil, scorer, 100)
+	rule := NewFraudScoringRule(database.NewCHQuery(conn, database.CHQueryConfig{}), conn, nil, scorer, 100)
 	assert.Equal(t, "fraud_scoring_shadow", rule.Name())
 
 	// 4. Run the ML rule
@@ -102,7 +102,7 @@ func TestFraudScoringRule_FraudScoresHigherThanControl(t *testing.T) {
 	scorer, err := fraudscoring.NewLGBMScorer("../fraudscoring/testdata/model.txt")
 	require.NoError(t, err)
 
-	_, err = NewFraudScoringRule(conn, nil, scorer, 100).Find(ctx)
+	_, err = NewFraudScoringRule(database.NewCHQuery(conn, database.CHQueryConfig{}), conn, nil, scorer, 100).Find(ctx)
 	require.NoError(t, err)
 
 	var controlScore, fraudScore float64
@@ -174,7 +174,7 @@ func TestFraudScoringRule_WithCampaignThresholds(t *testing.T) {
 		scores: []float64{0.1, 0.4, 0.75, 0.95},
 	}
 
-	rule := NewFraudScoringRule(conn, pool, scorer, 100)
+	rule := NewFraudScoringRule(database.NewCHQuery(conn, database.CHQueryConfig{}), conn, pool, scorer, 100)
 
 	// 4. Find candidates
 	candidates, err := rule.Find(ctx)

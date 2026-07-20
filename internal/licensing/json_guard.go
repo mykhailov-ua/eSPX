@@ -14,10 +14,10 @@ const (
 )
 
 var (
-	ErrJSONTooLarge    = errors.New("json payload exceeds max size")
-	ErrJSONMalformed   = errors.New("json payload malformed")
-	ErrJSONDisallowed  = errors.New("json contains disallowed constructs")
-	ErrEmptyJSONBody   = errors.New("json body is empty")
+	ErrJSONTooLarge   = errors.New("json payload exceeds max size")
+	ErrJSONMalformed  = errors.New("json payload malformed")
+	ErrJSONDisallowed = errors.New("json contains disallowed constructs")
+	ErrEmptyJSONBody  = errors.New("json body is empty")
 )
 
 // DecodeJSONStrict reads up to maxBytes from r and unmarshals into dst with DisallowUnknownFields.

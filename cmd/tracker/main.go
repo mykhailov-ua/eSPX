@@ -13,8 +13,9 @@ import (
 
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/health"
 	"espx/internal/ingestion"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 	"espx/internal/metrics"
 	"espx/internal/rtb"
 	"espx/pkg/logger"
@@ -193,8 +194,10 @@ func main() {
 	slog.Info("redis lua scripts preloaded", "shards", len(rdbs))
 
 	creativeStore := ingestion.NewBrandCreativeStore(rdbs[0])
+	licenseFilter := ingestion.NewLicenseFilter(registry)
 	entitlementsFilter := ingestion.NewEntitlementsFilter(registry, sharder, rdbs)
-	filterEngine := ingestion.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, entitlementsFilter, breakerFilter, geoFilter, scheduleFilter, placementFilter, l3Filter, fraudFilter, deviceFilter, consentFilter, unifiedFilter)
+	entitlementsFilter.SetRegionCode(cfg.RegionCode)
+	filterEngine := ingestion.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, licenseFilter, entitlementsFilter, breakerFilter, geoFilter, scheduleFilter, placementFilter, l3Filter, fraudFilter, deviceFilter, consentFilter, unifiedFilter)
 	filterEngine.SetSettingsWatcher(settingsWatcher)
 
 	var rtbCatalog *ingestion.RtbCatalog
@@ -291,14 +294,19 @@ func main() {
 	}()
 
 	metricsMux := http.NewServeMux()
+	live := &health.Liveness{}
+	ready := &health.ReadinessProbe{}
+	ready.StartBackground(ctx, 2*time.Second, func(probeCtx context.Context) bool {
+		return gnetHandler.Ready()
+	})
+	health.Register(metricsMux, live, ready)
+	metricsMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		ready.ServeReadyz(w, r)
+	})
 	metricsMux.Handle("/metrics", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gnetHandler.FlushLatency()
 		promhttp.Handler().ServeHTTP(w, r)
 	}))
-	metricsMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("OK"))
-	})
 	metricsSrv := &http.Server{
 		Addr:              ":" + cfg.MetricsPort,
 		Handler:           metricsMux,

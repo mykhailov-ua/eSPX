@@ -38,6 +38,7 @@ func NewWebhookHandler(service *Service, cfg *config.Config) *WebhookHandler {
 // RegisterRoutes colocates webhook, health, and metrics on the sidecar mux for a single listen port.
 func (h *WebhookHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/webhooks/stripe", h.handleStripeWebhook)
+	mux.HandleFunc("/webhooks/crypto", h.handleCryptoWebhook)
 	mux.HandleFunc("/health", h.handleHealth)
 	mux.Handle("/metrics", promhttp.Handler())
 }
@@ -241,4 +242,76 @@ func verifyStripeSignature(payload []byte, sigHeader string, secret string, now 
 	expectedSignature := hex.EncodeToString(expectedMAC)
 
 	return subtle.ConstantTimeCompare([]byte(signature), []byte(expectedSignature)) == 1
+}
+
+// cryptoEvent is a normalized crypto webhook payload.
+type cryptoEvent struct {
+	ID            string `json:"id"`
+	Type          string `json:"type"`
+	TxHash        string `json:"tx_hash"`
+	AmountMicro   int64  `json:"amount_micro"`
+	Currency      string `json:"currency"`
+	Confirmations int    `json:"confirmations"`
+	ProviderRef   string `json:"provider_ref"`
+}
+
+// handleCryptoWebhook processes incoming crypto payment notifications.
+func (webhookHandler *WebhookHandler) handleCryptoWebhook(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	secret := string(webhookHandler.cfg.CryptoWebhookSecret)
+	if secret == "" {
+		slog.Error("crypto webhook secret not configured")
+		http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	body, err := coldpath.ReadLimitedBody(w, r, 64*1024)
+	if err != nil {
+		slog.Warn("failed to read crypto webhook body", "error", err)
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+
+	sigHeader := r.Header.Get("Crypto-Signature")
+	if !verifyStripeSignature(body, sigHeader, secret, webhookHandler.now()) {
+		slog.Warn("invalid crypto webhook signature")
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+
+	event, err := coldpath.DecodeBody[cryptoEvent](body)
+	if err != nil {
+		slog.Warn("failed to unmarshal crypto event", "error", err)
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+
+	if event.ID == "" || event.Type == "" {
+		slog.Warn("crypto event missing id or type")
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+
+	err = webhookHandler.service.ProcessCryptoWebhook(
+		r.Context(),
+		event.ID,
+		event.Type,
+		body,
+		event.ProviderRef,
+		event.AmountMicro,
+		event.TxHash,
+		event.Confirmations,
+	)
+	if err != nil {
+		slog.Error("failed to process crypto webhook", "event_id", event.ID, "error", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("OK"))
 }

@@ -35,7 +35,7 @@ sudo ./espx-install apply
 Feature flags:
 
 - `edge_xdp` — requires M5 edge XDP and PF-BTF
-- `multi_region` — blocked until M7
+- `multi_region` — Enterprise multi-cell topology (M7); requires JWT `multi_region` + `MULTI_REGION_ENABLED=1`
 - `telemetry_enabled` — defaults off in production profiles
 
 ## License
