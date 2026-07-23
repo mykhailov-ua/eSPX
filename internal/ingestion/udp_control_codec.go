@@ -43,14 +43,14 @@ type UDPHeader struct {
 	PayloadLen     uint16
 }
 
-// UDPConfigRequestPayload is tracker → management CONFIG_REQUEST body.
+// UDPConfigRequestPayload is tracker to management CONFIG_REQUEST body.
 type UDPConfigRequestPayload struct {
 	TrackerID uint32
 	LastEpoch int64
 	Hash      [16]byte
 }
 
-// UDPMigrationBarrierPayload is management → tracker MIGRATION_BARRIER body.
+// UDPMigrationBarrierPayload is management to tracker MIGRATION_BARRIER body.
 type UDPMigrationBarrierPayload struct {
 	MigrationGen int64
 	Draining     [128]byte // 1024-bit slot bitmap

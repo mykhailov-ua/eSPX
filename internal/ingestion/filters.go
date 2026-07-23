@@ -367,8 +367,9 @@ func (f *PlacementBlacklistFilter) Check(ctx context.Context, evt *campaignmodel
 	rdb := f.rdbs[0]
 
 	w := bufPool.Get().(*bufWrapper)
-	w.buf = w.buf[:0]
-	w.buf = append(w.buf, PlacementBlacklistKey(evt.CampaignID)...)
+	w.buf = appendCampaignHashTag(w.buf[:0], evt.CampaignID)
+	w.buf = append(w.buf, "blacklist:placement:"...)
+	w.buf = appendUUID(w.buf, evt.CampaignID)
 	key := unsafeString(w.buf)
 
 	isBlacklisted, err := rdb.HExists(ctx, key, evt.PlacementID).Result()

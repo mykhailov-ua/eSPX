@@ -3,7 +3,7 @@
 #include "textflag.h"
 
 // func crc32Castagnoli_asm(val1, val2 uint64) uint32
-TEXT ·crc32Castagnoli_asm(SB), NOSPLIT, $0-24
+TEXT ·crc32Castagnoli_asm(SB), NOSPLIT, $0-20
 	MOVQ val1+0(FP), AX
 	MOVQ val2+8(FP), CX
 	MOVL $0xFFFFFFFF, DX

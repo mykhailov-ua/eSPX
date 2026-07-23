@@ -12,178 +12,7 @@ var (
 
 // ParseTrackRequestJSON parses a TrackRequest via a schema-specific DFA with BCE.
 func ParseTrackRequestJSON(v *TrackRequest, data []byte) error {
-	v.Reset()
-	if len(data) == 0 {
-		return errMalformedJSON
-	}
-
-	// BCE hint: single bounds check for the entire slice
-	_ = data[len(data)-1]
-
-	n := len(data)
-	i := 0
-
-	// Skip leading whitespace
-	for i < n && (data[i] == ' ' || data[i] == '\t' || data[i] == '\n' || data[i] == '\r') {
-		i++
-	}
-
-	if i >= n || data[i] != '{' {
-		return errMalformedJSON
-	}
-	i++
-
-	for i < n {
-		// Skip whitespace
-		for i < n && (data[i] == ' ' || data[i] == '\t' || data[i] == '\n' || data[i] == '\r') {
-			i++
-		}
-		if i >= n {
-			return errMalformedJSON
-		}
-
-		if data[i] == '}' {
-			return nil
-		}
-
-		if data[i] != '"' {
-			return errMalformedJSON
-		}
-		i++
-
-		// Parse key
-		keyStart := i
-		for i < n && data[i] != '"' {
-			i++
-		}
-		if i >= n {
-			return errMalformedJSON
-		}
-		keyEnd := i
-		i++ // skip '"'
-
-		key := data[keyStart:keyEnd]
-
-		// Skip whitespace and expect ':'
-		for i < n && (data[i] == ' ' || data[i] == '\t' || data[i] == '\n' || data[i] == '\r') {
-			i++
-		}
-		if i >= n || data[i] != ':' {
-			return errMalformedJSON
-		}
-		i++ // skip ':'
-
-		// Skip whitespace before value
-		for i < n && (data[i] == ' ' || data[i] == '\t' || data[i] == '\n' || data[i] == '\r') {
-			i++
-		}
-		if i >= n {
-			return errMalformedJSON
-		}
-
-		// Fast key matching using length and characters (Perfect hashing / Switch-Trie)
-		isCampaignID := false
-		isUserID := false
-		isType := false
-		isClickID := false
-		isPayload := false
-		isPlacementID := false
-
-		switch len(key) {
-		case 4: // "type"
-			if key[0] == 't' && key[1] == 'y' && key[2] == 'p' && key[3] == 'e' {
-				isType = true
-			}
-		case 7: // "payload" or "user_id"
-			if key[0] == 'p' && key[1] == 'a' && key[2] == 'y' && key[3] == 'l' && key[4] == 'o' && key[5] == 'a' && key[6] == 'd' {
-				isPayload = true
-			} else if key[0] == 'u' && key[1] == 's' && key[2] == 'e' && key[3] == 'r' && key[4] == '_' && key[5] == 'i' && key[6] == 'd' {
-				isUserID = true
-			}
-		case 8: // "click_id"
-			if key[0] == 'c' && key[1] == 'l' && key[2] == 'i' && key[3] == 'c' && key[4] == 'k' && key[5] == '_' && key[6] == 'i' && key[7] == 'd' {
-				isClickID = true
-			}
-		case 11: // "campaign_id"
-			if key[0] == 'c' && key[1] == 'a' && key[2] == 'm' && key[3] == 'p' && key[4] == 'a' && key[5] == 'i' && key[6] == 'g' && key[7] == 'n' && key[8] == '_' && key[9] == 'i' && key[10] == 'd' {
-				isCampaignID = true
-			}
-		case 12: // "placement_id"
-			if key[0] == 'p' && key[1] == 'l' && key[2] == 'a' && key[3] == 'c' && key[4] == 'e' && key[5] == 'm' && key[6] == 'e' && key[7] == 'n' && key[8] == 't' && key[9] == '_' && key[10] == 'i' && key[11] == 'd' {
-				isPlacementID = true
-			}
-		}
-
-		// Parse value
-		if isCampaignID || isUserID || isType || isClickID || isPlacementID {
-			if data[i] != '"' {
-				return errMalformedJSON
-			}
-			i++
-			valStart := i
-			for i < n && data[i] != '"' {
-				if data[i] == '\\' {
-					i += 2
-				} else {
-					i++
-				}
-			}
-			if i >= n {
-				return errMalformedJSON
-			}
-			valEnd := i
-			i++ // skip '"'
-
-			valBytes := data[valStart:valEnd]
-			if isCampaignID {
-				if !ParseUUID(valBytes, &v.CampaignID) {
-					return errMalformedJSON
-				}
-			} else if isUserID {
-				v.UserID = unsafeString(valBytes)
-			} else if isType {
-				v.Type = unsafeString(valBytes)
-			} else if isClickID {
-				v.ClickID = unsafeString(valBytes)
-			} else if isPlacementID {
-				v.PlacementID = unsafeString(valBytes)
-			}
-		} else if isPayload {
-			valStart := i
-			valEnd, err := skipJSONValue(data, i)
-			if err != nil {
-				return err
-			}
-			v.Payload = data[valStart:valEnd]
-			i = valEnd
-		} else {
-			// Unknown key, skip its value
-			valEnd, err := skipJSONValue(data, i)
-			if err != nil {
-				return err
-			}
-			i = valEnd
-		}
-
-		// Skip whitespace and expect ',' or '}'
-		for i < n && (data[i] == ' ' || data[i] == '\t' || data[i] == '\n' || data[i] == '\r') {
-			i++
-		}
-		if i >= n {
-			return errMalformedJSON
-		}
-
-		if data[i] == ',' {
-			i++
-			continue
-		} else if data[i] == '}' {
-			return nil
-		} else {
-			return errMalformedJSON
-		}
-	}
-
-	return errMalformedJSON
+	return parseTrackRequestJSON(v, data)
 }
 
 func skipJSONValue(data []byte, start int) (int, error) {
@@ -259,13 +88,18 @@ func skipJSONValue(data []byte, start int) (int, error) {
 	}
 }
 
-func isDelimiter(b byte) bool {
-	return b == ',' || b == '}' || b == ']' || b == ' ' || b == '\t' || b == '\n' || b == '\r'
-}
-
+var jsonDelimiter [256]byte
 var hexLookup [256]byte
 
 func init() {
+	jsonDelimiter[','] = 1
+	jsonDelimiter['}'] = 1
+	jsonDelimiter[']'] = 1
+	jsonDelimiter[' '] = 1
+	jsonDelimiter['\t'] = 1
+	jsonDelimiter['\n'] = 1
+	jsonDelimiter['\r'] = 1
+
 	for i := range hexLookup {
 		hexLookup[i] = 0xff
 	}
@@ -278,6 +112,10 @@ func init() {
 	for i := byte('A'); i <= 'F'; i++ {
 		hexLookup[i] = i - 'A' + 10
 	}
+}
+
+func isDelimiter(b byte) bool {
+	return jsonDelimiter[b] != 0
 }
 
 // ParseUUID parses a 16-byte raw or 36-byte string UUID into dst without allocations.

@@ -7,9 +7,24 @@ import (
 	"time"
 )
 
-// Slot holds one queued task in the MPSC ring buffer.
+// finishOffloadCtx runs test hooks when no handler is bound or the job is a noop enqueue.
+func finishOffloadCtx(ctx *connContext) {
+	if ctx == nil {
+		return
+	}
+	if ctx.offloadOnEnter != nil {
+		ctx.offloadOnEnter()
+	}
+	if ctx.offloadBlock != nil {
+		<-ctx.offloadBlock
+	}
+	if ctx.offloadWG != nil {
+		ctx.offloadWG.Done()
+	}
+}
+
 type Slot struct {
-	task  func()
+	ctx   *connContext
 	ready atomic.Bool
 }
 
@@ -34,8 +49,8 @@ func NewMPSCQueue(size uint64) *MPSCQueue {
 	}
 }
 
-// Push enqueues a task from any producer goroutine; returns false when the ring is full.
-func (q *MPSCQueue) Push(fn func()) bool {
+// PushCtx enqueues an offload context from any producer goroutine; returns false when full.
+func (q *MPSCQueue) PushCtx(ctx *connContext) bool {
 	for {
 		w := atomic.LoadUint64(&q.write)
 		r := atomic.LoadUint64(&q.read)
@@ -44,14 +59,14 @@ func (q *MPSCQueue) Push(fn func()) bool {
 		}
 		if atomic.CompareAndSwapUint64(&q.write, w, w+1) {
 			slot := &q.ring[w&q.mask]
-			slot.task = fn
+			slot.ctx = ctx
 			slot.ready.Store(true)
 			return true
 		}
 	}
 }
 
-func (q *MPSCQueue) Pop() (func(), bool) {
+func (q *MPSCQueue) PopCtx() (*connContext, bool) {
 	r := atomic.LoadUint64(&q.read)
 	w := atomic.LoadUint64(&q.write)
 	if r == w {
@@ -61,11 +76,11 @@ func (q *MPSCQueue) Pop() (func(), bool) {
 	if !slot.ready.Load() {
 		return nil, false
 	}
-	fn := slot.task
-	slot.task = nil
+	ctx := slot.ctx
+	slot.ctx = nil
 	slot.ready.Store(false)
 	atomic.StoreUint64(&q.read, r+1)
-	return fn, true
+	return ctx, true
 }
 
 // Worker runs tasks on a dedicated OS thread for predictable gnet offload latency.
@@ -80,25 +95,34 @@ func (w *Worker) start() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
+	run := func(ctx *connContext) {
+		if h := w.pool.handler; h != nil {
+			h.runOffloadedRequest(w.id, ctx)
+		} else {
+			finishOffloadCtx(ctx)
+		}
+		w.pool.wg.Done()
+	}
+
 	for {
-		fn, ok := w.queue.Pop()
+		ctx, ok := w.queue.PopCtx()
 		if ok {
-			fn()
-			w.pool.wg.Done()
+			run(ctx)
 			continue
 		}
 
 		if atomic.LoadInt32(&w.pool.closed) == 1 {
-			if _, ok := w.queue.Pop(); !ok {
+			if ctx, ok = w.queue.PopCtx(); !ok {
 				break
 			}
+			run(ctx)
+			continue
 		}
 
 		spin := 0
 		for {
-			if fn, ok = w.queue.Pop(); ok {
-				fn()
-				w.pool.wg.Done()
+			if ctx, ok = w.queue.PopCtx(); ok {
+				run(ctx)
 				break
 			}
 			if atomic.LoadInt32(&w.pool.closed) == 1 {
@@ -119,6 +143,7 @@ func (w *Worker) start() {
 // PinnedWorkerPool offloads gnet React work to pinned threads to keep the event loop responsive.
 type PinnedWorkerPool struct {
 	workers []*Worker
+	handler *AdsPacketHandler
 	round   uint64
 	wg      sync.WaitGroup
 	closed  int32
@@ -148,27 +173,21 @@ func NewPinnedWorkerPool(size int, queueSize int) *PinnedWorkerPool {
 	return p
 }
 
-// bindWorkerTask captures workerID by value for MPSC queue closures.
-func bindWorkerTask(workerID int, fn func(int)) func() {
-	return func() { fn(workerID) }
-}
-
-// Submit schedules fn on the next worker; returns false when all queues are saturated.
-func (p *PinnedWorkerPool) Submit(fn func(workerID int)) bool {
+// SubmitOffload schedules ctx for pinned-thread processing; returns false when all queues are saturated.
+func (p *PinnedWorkerPool) SubmitOffload(ctx *connContext) bool {
 	if atomic.LoadInt32(&p.closed) == 1 {
 		return false
 	}
 	p.wg.Add(1)
 
 	idx := atomic.AddUint64(&p.round, 1) % uint64(len(p.workers))
-	if p.workers[idx].queue.Push(bindWorkerTask(p.workers[idx].id, fn)) {
+	if p.workers[idx].queue.PushCtx(ctx) {
 		return true
 	}
 
 	for i := 1; i < len(p.workers); i++ {
 		nextIdx := (idx + uint64(i)) % uint64(len(p.workers))
-		w := p.workers[nextIdx]
-		if w.queue.Push(bindWorkerTask(w.id, fn)) {
+		if p.workers[nextIdx].queue.PushCtx(ctx) {
 			return true
 		}
 	}

@@ -10,7 +10,7 @@ const (
 	maxIngressWorkers = 64
 )
 
-// IngressQuotaCell is a cache-line-isolated per-(shard, worker) ingress counter (§4).
+// IngressQuotaCell is a cache-line-isolated per-(shard, worker) ingress counter (section 4).
 type IngressQuotaCell struct {
 	maxAllowed uint64
 	_          [ingressCacheLine - 8]byte

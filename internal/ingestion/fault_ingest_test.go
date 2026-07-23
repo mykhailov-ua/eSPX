@@ -12,6 +12,7 @@ import (
 	"espx/internal/campaignmodel"
 	"espx/internal/config"
 	"espx/internal/metrics"
+
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	redis "github.com/redis/go-redis/v9"
@@ -261,14 +262,16 @@ func TestPinnedWorkerPool_queueFullReject(t *testing.T) {
 	}()
 
 	started := make(chan struct{})
-	require.True(t, pool.Submit(func(_ int) {
-		close(started)
-		<-unblock
-	}))
+	ctx1 := &connContext{
+		offloadOnEnter: func() { close(started) },
+		offloadBlock:   unblock,
+	}
+	require.True(t, pool.SubmitOffload(ctx1))
 	<-started
 
-	require.True(t, pool.Submit(func(_ int) { <-unblock }))
-	require.False(t, pool.Submit(func(_ int) {}))
+	ctx2 := &connContext{offloadBlock: unblock}
+	require.True(t, pool.SubmitOffload(ctx2))
+	require.False(t, pool.SubmitOffload(&connContext{}))
 }
 
 func TestAdsPacketHandler_workerPoolSaturated_rejectsAndCounts(t *testing.T) {
@@ -283,12 +286,14 @@ func TestAdsPacketHandler_workerPoolSaturated_rejectsAndCounts(t *testing.T) {
 	}()
 
 	started := make(chan struct{})
-	require.True(t, pool.Submit(func(_ int) {
-		close(started)
-		<-unblock
-	}))
+	ctx1 := &connContext{
+		offloadOnEnter: func() { close(started) },
+		offloadBlock:   unblock,
+	}
+	require.True(t, pool.SubmitOffload(ctx1))
 	<-started
-	require.True(t, pool.Submit(func(_ int) { <-unblock }))
+	ctx2 := &connContext{offloadBlock: unblock}
+	require.True(t, pool.SubmitOffload(ctx2))
 
 	h := NewAdsPacketHandler(cfg, &mockRegistry{}, nil, nil, nil, NewJumpHashSharder(1), "fraud", nil)
 	h.SetWorkerPool(pool)

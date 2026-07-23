@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 )
 
-// Consent purpose bit flags (16-bit mask, M6.2–M6.3).
+// Consent purpose bit flags (16-bit mask, M6.2-M6.3).
 const (
 	ConsentPurposeAdStorage     int16 = 1 << 0
 	ConsentPurposeAnalytics     int16 = 1 << 1

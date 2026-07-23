@@ -79,27 +79,6 @@ func fillEvalShaWire(dst []any, sha1 any, keyArgs [unifiedFilterKeyCount]any, sc
 	return dst
 }
 
-func fillEvalWire(dst []any, script any, keyArgs [unifiedFilterKeyCount]any, scriptArgs []any) []any {
-	need := 3 + unifiedFilterKeyCount + len(scriptArgs)
-	if cap(dst) < need {
-		dst = make([]any, need, need+4)
-	} else {
-		dst = dst[:need]
-	}
-	dst[0] = evalCmdAny
-	dst[1] = script
-	dst[2] = numKeys15Any
-	off := 3
-	for i := range keyArgs {
-		dst[off+i] = keyArgs[i]
-	}
-	off += unifiedFilterKeyCount
-	for i := range scriptArgs {
-		dst[off+i] = scriptArgs[i]
-	}
-	return dst
-}
-
 func evalShaPooled(ctx context.Context, c redis.UniversalClient, sha1 any, keyArgs [unifiedFilterKeyCount]any, scriptArgs []any) (int64, error) {
 	wirePtr := evalWirePool.Get().(*[]any)
 	wire := fillEvalShaWire(*wirePtr, sha1, keyArgs, scriptArgs)

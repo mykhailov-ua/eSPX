@@ -208,6 +208,22 @@ func BenchmarkTrackRequest_ParseJSONOpt(b *testing.B) {
 	}
 }
 
+func BenchmarkTrackRequest_ParseJSON_Legacy(b *testing.B) {
+	data := testTrackRequestJSON(b)
+	var req TrackRequest
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(data)))
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		req.Reset()
+		if err := parseTrackJSONLegacy(&req, data); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkTrackRequest_Unmarshal_Reflect(b *testing.B) {
 	data := testTrackRequestJSON(b)
 

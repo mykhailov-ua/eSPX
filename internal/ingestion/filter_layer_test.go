@@ -65,7 +65,7 @@ func TestApplyFraudScoreBoost(t *testing.T) {
 	assert.Equal(t, uint32(65), evt.FraudScore)
 
 	// Verify second apply doesn't double-boost (idempotency)
-	layer, err = applyFraudLayerDecision(evt, acc, nil, 20)
+	_, err = applyFraudLayerDecision(evt, acc, nil, 20)
 	assert.NoError(t, err)
 	assert.Equal(t, uint32(65), acc.score)
 }

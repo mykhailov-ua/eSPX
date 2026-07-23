@@ -13,7 +13,7 @@ import (
 	"espx/internal/campaignmodel"
 	"espx/internal/config"
 	"espx/internal/database"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -275,6 +275,8 @@ type adsIngestStackOpts struct {
 	redisMetrics    bool
 	maxWorkers      int
 	rateLimit       int
+	redisDelay      time.Duration // Latency Monkey: per-command delay on Redis hook (P0 chaos).
+	useStaticSlot   bool          // Production sharder instead of JumpHash (P0 chaos).
 }
 
 func startAdsIngestStackOpts(t *testing.T, infra *adsChaosInfra, stream string, opts adsIngestStackOpts) *adsIngestStack {
@@ -293,7 +295,17 @@ func startAdsIngestStackOpts(t *testing.T, infra *adsChaosInfra, stream string, 
 	}
 
 	registry := newChaosRegistry(t, infra.Queries)
-	sharder := NewJumpHashSharder(1)
+	var sharder Sharder
+	if opts.useStaticSlot {
+		sharder = NewStaticSlotSharder(1)
+	} else {
+		sharder = NewJumpHashSharder(1)
+	}
+	if opts.redisDelay > 0 {
+		if c, ok := infra.Redis.(*redis.Client); ok {
+			c.AddHook(&redisLatencyHook{delay: opts.redisDelay})
+		}
+	}
 	registry.SetBudgetWarmer(NewBudgetCacheWarmer([]redis.UniversalClient{infra.Redis}, sharder))
 	campaignID := seedChaosCampaign(t, infra, registry)
 
@@ -302,7 +314,7 @@ func startAdsIngestStackOpts(t *testing.T, infra *adsChaosInfra, stream string, 
 	rateLimit := opts.rateLimitOrDefault()
 	unifiedFilter := NewUnifiedFilter(
 		[]redis.UniversalClient{infra.Redis},
-		NewJumpHashSharder(1),
+		sharder,
 		registry,
 		campaignRepo,
 		rateLimit,

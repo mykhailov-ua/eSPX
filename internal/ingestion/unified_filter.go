@@ -14,6 +14,7 @@ import (
 
 	"espx/internal/campaignmodel"
 	"espx/internal/metrics"
+
 	"github.com/prometheus/client_golang/prometheus"
 	redis "github.com/redis/go-redis/v9"
 )
@@ -465,15 +466,6 @@ func (f *UnifiedFilter) StartSLASentinel(ctx context.Context, interval time.Dura
 	}()
 }
 
-// getRDB selects the Redis shard for a campaign so Lua keys stay colocated with budget state.
-func (f *UnifiedFilter) getRDB(campaignID uuid.UUID) redis.UniversalClient {
-	if len(f.rdbs) <= 1 {
-		return f.rdbs[0]
-	}
-	idx := f.sharder.GetShard(campaignID)
-	return f.rdbs[idx%len(f.rdbs)]
-}
-
 // checkGeoBidFloor rejects bids below configured country floors before Lua spend.
 func (f *UnifiedFilter) checkGeoBidFloor(evt *campaignmodel.Event) error {
 	country := evt.GeoCountry
@@ -589,13 +581,13 @@ func (f *UnifiedFilter) runUnifiedLua(
 	wrappers := &scratch.wrappers
 
 	wRL.buf = wRL.buf[:0]
-	wRL.buf = append(wRL.buf, campaignHashTag(evt.CampaignID)...)
+	wRL.buf = appendCampaignHashTag(wRL.buf, evt.CampaignID)
 	wRL.buf = append(wRL.buf, "rl:ip:"...)
 	wRL.buf = append(wRL.buf, evt.IP...)
 	rlKey := unsafeString(wRL.buf)
 
 	wDup.buf = wDup.buf[:0]
-	wDup.buf = append(wDup.buf, campaignHashTag(evt.CampaignID)...)
+	wDup.buf = appendCampaignHashTag(wDup.buf, evt.CampaignID)
 	wDup.buf = append(wDup.buf, "dup:"...)
 	wDup.buf = append(wDup.buf, evt.Type...)
 	wDup.buf = append(wDup.buf, ':')
@@ -605,7 +597,7 @@ func (f *UnifiedFilter) runUnifiedLua(
 	budgetSourceKey := campInfo.BudgetCampaignKey
 
 	wIdem.buf = wIdem.buf[:0]
-	wIdem.buf = append(wIdem.buf, campaignHashTag(evt.CampaignID)...)
+	wIdem.buf = appendCampaignHashTag(wIdem.buf, evt.CampaignID)
 	wIdem.buf = append(wIdem.buf, "idempotency:click:"...)
 	wIdem.buf = append(wIdem.buf, evt.ClickID...)
 	idempotencyKey := unsafeString(wIdem.buf)
@@ -636,7 +628,7 @@ func (f *UnifiedFilter) runUnifiedLua(
 	}
 
 	wImpTS.buf = wImpTS.buf[:0]
-	wImpTS.buf = append(wImpTS.buf, campaignHashTag(evt.CampaignID)...)
+	wImpTS.buf = appendCampaignHashTag(wImpTS.buf, evt.CampaignID)
 	wImpTS.buf = append(wImpTS.buf, "imp_ts:"...)
 	wImpTS.buf = append(wImpTS.buf, evt.UserID...)
 	wImpTS.buf = append(wImpTS.buf, ':')
@@ -644,13 +636,13 @@ func (f *UnifiedFilter) runUnifiedLua(
 	impTSKey := unsafeString(wImpTS.buf)
 
 	wQuota.buf = wQuota.buf[:0]
-	wQuota.buf = append(wQuota.buf, campaignHashTag(evt.CampaignID)...)
+	wQuota.buf = appendCampaignHashTag(wQuota.buf, evt.CampaignID)
 	wQuota.buf = append(wQuota.buf, "budget:quota:"...)
 	wQuota.buf = appendUUID(wQuota.buf, evt.CampaignID)
 	quotaKey := unsafeString(wQuota.buf)
 
 	wRefillLock.buf = wRefillLock.buf[:0]
-	wRefillLock.buf = append(wRefillLock.buf, campaignHashTag(evt.CampaignID)...)
+	wRefillLock.buf = appendCampaignHashTag(wRefillLock.buf, evt.CampaignID)
 	wRefillLock.buf = append(wRefillLock.buf, "budget:refill_lock:"...)
 	wRefillLock.buf = appendUUID(wRefillLock.buf, evt.CampaignID)
 	refillLockKey := unsafeString(wRefillLock.buf)

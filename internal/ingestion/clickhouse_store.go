@@ -266,6 +266,17 @@ func (chStore *ClickHouseStore) insertTable(ctx context.Context, table string, e
 				fraudGhostFlag(e),
 				e.CreatedAt,
 			)
+		} else if table == "clicks" {
+			err = batch.Append(
+				e.ClickID,
+				e.CampaignID,
+				e.PlacementID,
+				e.IP,
+				e.UA,
+				e.TLSHash,
+				unsafeString(e.Payload),
+				e.CreatedAt,
+			)
 		} else {
 			err = batch.Append(
 				e.ClickID,

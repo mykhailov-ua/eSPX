@@ -14,15 +14,17 @@ const (
 	keyPayload
 	keyClickID
 	keyCampaignID
+	keyPlacementID
 )
 
 // Packed little-endian constants for fixed JSON keys (no per-byte && chains).
 const (
-	u32Type     uint32 = 0x65707974         // "type"
-	u32Payl     uint32 = 0x6c796170         // "payl", first 4 of "payload"
-	u32User     uint32 = 0x72657375         // "user", first 4 of "user_id"
-	u64ClickID  uint64 = 0x64695f6b63696c63 // "click_id"
-	u64Campaign uint64 = 0x6e676961706d6163 // "campaign", first 8 of "campaign_id"
+	u32Type      uint32 = 0x65707974         // "type"
+	u32Payl      uint32 = 0x6c796170         // "payl", first 4 of "payload"
+	u32User      uint32 = 0x72657375         // "user", first 4 of "user_id"
+	u64ClickID   uint64 = 0x64695f6b63696c63 // "click_id"
+	u64Campaign  uint64 = 0x6e676961706d6163 // "campaign", first 8 of "campaign_id"
+	u64Placement uint64 = 0x6e65636d65636170 // "placemen", first 8 of "placement_id"
 )
 
 var jsonWhitespace [256]byte
@@ -75,12 +77,21 @@ func matchTrackKey(key []byte) keyID {
 		if loadU64(key) == u64Campaign && key[8] == '_' && key[9] == 'i' && key[10] == 'd' {
 			return keyCampaignID
 		}
+	case 12:
+		if loadU64(key) == u64Placement && key[8] == '_' && key[9] == 'i' && key[10] == 'd' {
+			return keyPlacementID
+		}
 	}
 	return keyUnknown
 }
 
-// ParseTrackRequestJSONOpt is a lower-branch variant of ParseTrackRequestJSON for benchmarking.
+// ParseTrackRequestJSONOpt is an alias kept for benchmark parity labels.
 func ParseTrackRequestJSONOpt(v *TrackRequest, data []byte) error {
+	return parseTrackRequestJSON(v, data)
+}
+
+// parseTrackRequestJSON is the production JSON DFA: length switch + packed key compares.
+func parseTrackRequestJSON(v *TrackRequest, data []byte) error {
 	v.Reset()
 	if len(data) == 0 {
 		return errMalformedJSON
@@ -109,6 +120,9 @@ func ParseTrackRequestJSONOpt(v *TrackRequest, data []byte) error {
 
 		keyStart := i
 		for i < n && data[i] != '"' {
+			if data[i] == '\\' {
+				return errMalformedJSON
+			}
 			i++
 		}
 		if i >= n {
@@ -130,7 +144,7 @@ func ParseTrackRequestJSONOpt(v *TrackRequest, data []byte) error {
 
 		kid := matchTrackKey(data[keyStart:keyEnd])
 		switch kid {
-		case keyType, keyUserID, keyClickID:
+		case keyType, keyUserID, keyClickID, keyPlacementID:
 			if data[i] != '"' {
 				return errMalformedJSON
 			}
@@ -156,6 +170,8 @@ func ParseTrackRequestJSONOpt(v *TrackRequest, data []byte) error {
 				v.UserID = unsafeString(valBytes)
 			case keyClickID:
 				v.ClickID = unsafeString(valBytes)
+			case keyPlacementID:
+				v.PlacementID = unsafeString(valBytes)
 			}
 		case keyCampaignID:
 			if data[i] != '"' {

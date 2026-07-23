@@ -6,7 +6,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// quotaRefillSample selects ~1% of campaigns for full-path quota refill probes (§9.3 Tier C).
+// quotaRefillSample selects ~1% of campaigns for full-path quota refill probes (section 9.3 Tier C).
 func quotaRefillSample(campaignID uuid.UUID) bool {
 	return campaignID[0]%100 == 0
 }

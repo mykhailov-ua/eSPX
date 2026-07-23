@@ -1,6 +1,7 @@
 package ingestion
 
 import (
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,10 +17,13 @@ func TestPinnedWorkerPool(t *testing.T) {
 
 	wg.Add(numTasks)
 	for i := 0; i < numTasks; i++ {
-		submitted := pool.Submit(func(_ int) {
-			atomic.AddInt64(&counter, 1)
-			wg.Done()
-		})
+		ctx := &connContext{
+			offloadWG: &wg,
+			offloadOnEnter: func() {
+				atomic.AddInt64(&counter, 1)
+			},
+		}
+		submitted := pool.SubmitOffload(ctx)
 		if !submitted {
 			wg.Done()
 			t.Errorf("failed to submit task %d", i)
@@ -30,6 +34,23 @@ func TestPinnedWorkerPool(t *testing.T) {
 
 	if atomic.LoadInt64(&counter) != int64(numTasks) {
 		t.Errorf("expected counter to be %d, got %d", numTasks, counter)
+	}
+}
+
+func TestPinnedWorkerPool_ZeroAlloc(t *testing.T) {
+	pool := NewPinnedWorkerPool(4, 1024)
+	defer pool.Shutdown()
+
+	ctxs := make([]connContext, 1000)
+	allocs := testing.AllocsPerRun(1, func() {
+		for i := range ctxs {
+			if !pool.SubmitOffload(&ctxs[i]) {
+				t.Fatal("submit failed")
+			}
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("SubmitOffload allocs = %v, want 0", allocs)
 	}
 }
 
@@ -50,9 +71,15 @@ func BenchmarkPinnedWorkerPool(b *testing.B) {
 			pool := NewPinnedWorkerPool(bm.workers, bm.queueSize)
 			defer pool.Shutdown()
 
+			const ring = 4096
+			ctxs := make([]connContext, ring)
+			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				pool.Submit(func(_ int) {})
+				ctx := &ctxs[i%ring]
+				for !pool.SubmitOffload(ctx) {
+					runtime.Gosched()
+				}
 			}
 		})
 	}
