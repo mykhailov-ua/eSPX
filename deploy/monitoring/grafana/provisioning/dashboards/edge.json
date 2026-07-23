@@ -238,7 +238,7 @@
           "refId": "B"
         }
       ],
-      "title": "Lua fast path p99 + ratio (M4)",
+      "title": "Lua fast path p99 + ratio (M2)",
       "type": "timeseries"
     }
   ],

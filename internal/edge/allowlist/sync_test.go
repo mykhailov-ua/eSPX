@@ -3,7 +3,6 @@ package allowlist
 import (
 	"context"
 	"os"
-	"sync"
 	"testing"
 
 	"espx/internal/edge/lpm"
@@ -85,8 +84,7 @@ func TestIsProtected(t *testing.T) {
 	defer os.Unsetenv("INSTALL_LAN_CIDR")
 
 	// Reset once for test
-	initOnce = sync.Once{}
-	protectedCIDRs = nil
+	ResetProtectedForTest()
 
 	assert.True(t, IsProtected("8.8.8.8"))
 	assert.True(t, IsProtected("1.1.1.1"))

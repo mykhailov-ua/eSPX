@@ -3,6 +3,7 @@ package blocklist
 
 import (
 	"fmt"
+	"sync"
 
 	"espx/internal/edge/allowlist"
 	"espx/internal/edge/lpm"
@@ -40,6 +41,7 @@ func LoadPinnedMap(path string) (*ebpf.Map, error) {
 
 // Store holds the last synced deny set and applies incremental map updates.
 type Store struct {
+	mu      sync.Mutex
 	hosts   map[uint32]struct{}
 	scratch map[uint32]struct{}
 }
@@ -54,11 +56,15 @@ func NewStore() *Store {
 
 // Len returns tracked deny entries.
 func (s *Store) Len() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return len(s.hosts)
 }
 
 // ApplyDiff merges manual, auto, and fraud Redis sets into the pinned BPF map.
 func (s *Store) ApplyDiff(m *ebpf.Map, manual, auto, fraud []string) (added, removed int, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if m == nil {
 		return 0, 0, fmt.Errorf("nil bpf map")
 	}

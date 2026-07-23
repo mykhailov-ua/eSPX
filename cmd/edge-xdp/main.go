@@ -42,6 +42,15 @@ func main() {
 	}
 	defer objs.Close()
 
+	if err := bpf.InitConfigFromEnv(objs.Config); err != nil {
+		slog.Error("init bpf config", "error", err)
+		os.Exit(1)
+	}
+	if err := wireProgArray(&objs); err != nil {
+		slog.Error("wire prog array", "error", err)
+		os.Exit(1)
+	}
+
 	if err := os.MkdirAll(*pinDir, 0o755); err != nil {
 		slog.Error("mkdir pin dir", "path", *pinDir, "error", err)
 		os.Exit(1)
@@ -58,7 +67,7 @@ func main() {
 	}
 	defer xdpLink.Close()
 
-	slog.Info("edge xdp attached", "iface", *iface, "mode", *mode, "pin_dir", *pinDir)
+	slog.Info("edge xdp attached", "iface", *iface, "mode", *mode, "pin_dir", *pinDir, "syn_cookie", bpf.SynCookieEnabled())
 
 	sig := lifecycle.WaitSignal()
 	slog.Info("received shutdown signal", "signal", sig.String(), "iface", *iface)

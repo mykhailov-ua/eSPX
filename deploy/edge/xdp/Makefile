@@ -2,7 +2,7 @@
 CLANG ?= clang
 ARCH := $(shell uname -m | sed 's/x86_64/x86/' | sed 's/aarch64/arm64/')
 BPF_CFLAGS := -O2 -g -Wall -Werror -target bpf -D__TARGET_ARCH_$(ARCH)
-BPF_INCLUDES := -I/usr/include -I/usr/local/include
+BPF_INCLUDES := -I/usr/include -I/usr/include/$(shell uname -m)-linux-gnu -I/usr/local/include
 
 OUT_DIR := bpf
 OBJ := $(OUT_DIR)/edge_filter.o
@@ -16,3 +16,6 @@ $(OBJ): bpf/edge_filter.c
 
 clean:
 	rm -f $(OBJ)
+
+disasm: $(OBJ)
+	llvm-objdump -d -S $(OBJ) > $(OUT_DIR)/edge_filter.disasm.txt

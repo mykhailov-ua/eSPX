@@ -4,7 +4,7 @@ Engineering guardrails for on-prem AdTech: **what eSPX may do** inside the custo
 
 **This document is not legal advice.** Operators need local counsel, DPIA, and contract terms.
 
-**Related:** [MILESTONE.md](docs/MILESTONE.md) (M5, M10–M14), [EDGE.md](docs/EDGE.md) Part V, [LICENSING.md](docs/LICENSING.md) §8, [CONCEPTS.md](docs/CONCEPTS.md) §8.
+**Related:** [ARCHITECTURE.md](docs/ARCHITECTURE.md), [GAPS.md](docs/GAPS.md), [EDGE.md](docs/EDGE.md) Part V, [LICENSING.md](docs/LICENSING.md) §8, [CONCEPTS.md](docs/CONCEPTS.md) §8.
 
 ---
 
@@ -163,7 +163,7 @@ Separate from **fraud passive telemetry** (§1.B) and **license heartbeat** (`ES
 
 Allowed: aggregated `MemStats`, gnet p50/p99, Redis Lua duration, CH batch/lag, XDP drop **ratios**. Forbidden: anything identifying end users or customer business.
 
-Full spec: [MILESTONE.md](docs/MILESTONE.md) Milestone 10.
+Full spec: [GAPS.md](docs/GAPS.md) GAP-ENG-06 (vendor telemetry).
 
 ---
 
@@ -173,5 +173,5 @@ Long-term CH storage uses **hashed** IP/UA (`ip_hash`, `ua_hash`) with **daily r
 
 IVT/bot rules (M11) must query `ip_hash` after cutover. Erasure bumps salt + CH mutation per `ErasureWorker`.
 
-Full spec: [MILESTONE.md](docs/MILESTONE.md) Milestone 14.
+Full spec: [GAPS.md](docs/GAPS.md) GAP-DATA-01 (PII in ClickHouse).
 

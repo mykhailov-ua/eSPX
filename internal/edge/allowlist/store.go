@@ -40,6 +40,12 @@ func initProtectedCIDRs() {
 	}
 }
 
+// ResetProtectedForTest clears cached protected CIDRs (tests only).
+func ResetProtectedForTest() {
+	initOnce = sync.Once{}
+	protectedCIDRs = nil
+}
+
 // IsProtected returns true if the IP is protected (customer LAN, resolvers, loopback).
 func IsProtected(ipStr string) bool {
 	initOnce.Do(initProtectedCIDRs)
@@ -67,6 +73,7 @@ func LoadPinnedMap(path string) (*ebpf.Map, error) {
 
 // Store holds the last synced allow snapshot and applies incremental map updates.
 type Store struct {
+	mu      sync.Mutex
 	entries map[lpm.StoreID]lpm.IPv4Key
 	scratch map[lpm.StoreID]lpm.IPv4Key
 }
@@ -81,11 +88,15 @@ func NewStore() *Store {
 
 // Len returns tracked allow prefixes.
 func (s *Store) Len() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return len(s.entries)
 }
 
 // ApplyDiff merges Redis allow members into the pinned BPF map.
 func (s *Store) ApplyDiff(m *ebpf.Map, members []string) (added, removed int, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if m == nil {
 		return 0, 0, fmt.Errorf("nil bpf map")
 	}

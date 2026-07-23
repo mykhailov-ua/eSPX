@@ -1,11 +1,11 @@
 # XDP loader + Redis blacklist sync (host network, privileged).
 # Build from repo root: docker build -f deploy/edge/xdp/Dockerfile .
-FROM golang:1.25-bookworm AS modules
+FROM golang:1.25.12-bookworm AS modules
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 
-FROM golang:1.25-bookworm AS builder
+FROM golang:1.25.12-bookworm AS builder
 COPY --from=modules /go/pkg/mod /go/pkg/mod
 WORKDIR /src
 COPY . .

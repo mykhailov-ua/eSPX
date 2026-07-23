@@ -9,14 +9,23 @@ import (
 )
 
 const (
-	redisKeyBlacklistManual = "blacklist:manual"
-	redisKeyBlacklistAuto   = "blacklist:auto"
-	redisKeyBlacklistFraud  = "blacklist:fraud"
+	redisKeyBlacklistManual  = "blacklist:manual"
+	redisKeyBlacklistAuto    = "blacklist:auto"
+	redisKeyBlacklistFraud   = "blacklist:fraud"
+	redisKeyBlacklistAutoTTL = "blacklist:auto:ttl"
 )
 
 // denySetReader loads Redis SET members for XDP deny sync.
 type denySetReader interface {
 	SMembers(ctx context.Context, key string) *redis.StringSliceCmd
+}
+
+// autoBanReader supports TTL-scoped autoban entries.
+type autoBanReader interface {
+	denySetReader
+	ZScore(ctx context.Context, key, member string) *redis.FloatCmd
+	SRem(ctx context.Context, key string, members ...interface{}) *redis.IntCmd
+	ZRem(ctx context.Context, key string, members ...interface{}) *redis.IntCmd
 }
 
 // SyncFromRedis mirrors blacklist:manual, blacklist:auto, and blacklist:fraud into the pinned BPF map.
@@ -25,9 +34,9 @@ func SyncFromRedis(ctx context.Context, rdb denySetReader, m *ebpf.Map, store *S
 	if err != nil {
 		return 0, 0, fmt.Errorf("smembers %s: %w", redisKeyBlacklistManual, err)
 	}
-	auto, err := rdb.SMembers(ctx, redisKeyBlacklistAuto).Result()
+	auto, err := loadAutoBans(ctx, rdb)
 	if err != nil {
-		return 0, 0, fmt.Errorf("smembers %s: %w", redisKeyBlacklistAuto, err)
+		return 0, 0, fmt.Errorf("active %s: %w", redisKeyBlacklistAuto, err)
 	}
 	fraud, err := rdb.SMembers(ctx, redisKeyBlacklistFraud).Result()
 	if err != nil {

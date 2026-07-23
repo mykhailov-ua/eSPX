@@ -14,12 +14,18 @@ import (
 
 func pinMaps(objs *bpf.EdgeObjects, pinDir string) error {
 	pins := map[string]*ebpf.Map{
-		"blocklist_v4":     objs.BlocklistV4,
-		"allow_v4":         objs.AllowV4,
-		"syn_ratelimit_v4": objs.SynRatelimitV4,
-		"ratelimit_v4":     objs.RatelimitV4,
-		"global_syn":       objs.GlobalSyn,
-		"stats":            objs.Stats,
+		"blocklist_v4":            objs.BlocklistV4,
+		"allow_v4":                objs.AllowV4,
+		"syn_ratelimit_v4":        objs.SynRatelimitV4,
+		"syn_subnet_ratelimit_v4": objs.SynSubnetRatelimitV4,
+		"ratelimit_v4":            objs.RatelimitV4,
+		"rst_ratelimit_v4":        objs.RstRatelimitV4,
+		"global_syn":              objs.GlobalSyn,
+		"stats":                   objs.Stats,
+		"config":                  objs.Config,
+		"violations":              objs.Violations,
+		"fingerprints":            objs.Fingerprints,
+		"prog_array":              objs.ProgArray,
 	}
 	for name, m := range pins {
 		if m == nil {

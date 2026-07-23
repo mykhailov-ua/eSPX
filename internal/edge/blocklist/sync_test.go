@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"espx/internal/edge/allowlist"
 	"espx/internal/edge/lpm"
 
 	"github.com/cilium/ebpf"
@@ -109,6 +110,7 @@ func TestApplyDiff_fraudRemoval(t *testing.T) {
 func TestApplyDiff_skipsProtected(t *testing.T) {
 	os.Setenv("INSTALL_LAN_CIDR", "192.168.1.0/24")
 	defer os.Unsetenv("INSTALL_LAN_CIDR")
+	allowlist.ResetProtectedForTest()
 
 	m := newLPMMap(t)
 	store := NewStore()

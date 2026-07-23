@@ -27,7 +27,7 @@ echo "CMP-FORB-01: OK"
 # 3. CMP-FORB-02: No hack back (reverse DDoS, flood origin)
 echo "Checking CMP-FORB-02: No outbound attack or hack-back helpers..."
 # Search for flood or attack patterns or reverse DDoS helpers
-if grep -rnEi "\bsyn_flood\b|\budp_flood\b|\bhack_back\b|\breverse_ddos\b" . --exclude-dir="scripts" --exclude-dir="node_modules" --exclude="GUIDE_COMPLIANCE.md" --exclude="MILESTONE.md" 2>/dev/null; then
+if grep -rnEi "\bsyn_flood\b|\budp_flood\b|\bhack_back\b|\breverse_ddos\b" . --exclude-dir="scripts" --exclude-dir="node_modules" --exclude="GUIDE_COMPLIANCE.md" --exclude="EBPF_IDEAS.md" --exclude="EBPF.md" --exclude-dir="docs" 2>/dev/null; then
     echo "COMPLIANCE FAILURE: Found potential hack-back or attack pattern!"
     exit 1
 fi
@@ -36,7 +36,7 @@ echo "CMP-FORB-02: OK"
 # 4. CMP-FORB-03: No port scan / nmap / active probe
 echo "Checking CMP-FORB-03: No port scanning or active probing..."
 # Search for nmap or portscan dependencies or calls
-if grep -rnEi "\bnmap\b|\bportscan\b|\bport_scan\b|\bactive_probe\b" . --exclude-dir="scripts" --exclude-dir="node_modules" --exclude="GUIDE_COMPLIANCE.md" --exclude="MILESTONE.md" 2>/dev/null; then
+if grep -rnEi "\bnmap\b|\bportscan\b|\bport_scan\b|\bactive_probe\b" . --exclude-dir="scripts" --exclude-dir="node_modules" --exclude="GUIDE_COMPLIANCE.md" --exclude="EBPF_IDEAS.md" --exclude="EBPF.md" --exclude-dir="docs" 2>/dev/null; then
     echo "COMPLIANCE FAILURE: Found potential port scan or active probe pattern!"
     exit 1
 fi
@@ -50,5 +50,13 @@ if grep -rnEi "dial.*visitor_ip|http.*Get.*visitor_ip|dial.*blocked_ip" ./intern
     exit 1
 fi
 echo "CMP-DEF-04: OK"
+
+# 6. M10-C3: fingerprint must not be sole L4 drop cause
+echo "Checking M10-C3: no fingerprint-only XDP_DROP..."
+if grep -E 'if.*tcp_hash.*XDP_DROP|fingerprint_block' deploy/edge/xdp/bpf/edge_filter.c 2>/dev/null; then
+    echo "COMPLIANCE FAILURE: fingerprint may gate XDP_DROP (M10-C3)"
+    exit 1
+fi
+echo "M10-C3: OK"
 
 echo "COMPLIANCE CHECK SUCCESSFUL: All defensive perimeter rules are met!"
