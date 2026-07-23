@@ -273,8 +273,8 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Simple heuristic: if nothing changed, 304 is fine.
-	// For safety, we can just issue a fresh signed JWT on every heartbeat.
+	// Heuristic: if nothing changed, 304 is fine.
+	// For safety, we can issue a fresh signed JWT on every heartbeat.
 	token, err := s.generateSignedToken(lic, depID, req.Fingerprint)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

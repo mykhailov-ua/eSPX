@@ -1,9 +1,11 @@
 package adminapi
 
 import (
+	"context"
 	"net/http"
 	"time"
 
+	"espx/internal/edge/xdpstats"
 	"espx/pkg/httpresponse"
 
 	"github.com/google/uuid"
@@ -13,6 +15,7 @@ import (
 type DashboardsHTTPHandlers struct {
 	ApplyRateLimit    func(http.HandlerFunc) http.HandlerFunc
 	RequirePermission func(string, http.HandlerFunc) http.HandlerFunc
+	XDPStatsReader    func(context.Context) (xdpstats.Snapshot, error)
 }
 
 // Register mounts dashboard routes on mux.
@@ -34,7 +37,7 @@ func (h *DashboardsHTTPHandlers) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/dashboards/accountant", limit(perm("customers:read", h.notImplemented)))
 	mux.HandleFunc("GET /api/v1/dashboards/cfo", limit(perm("customers:read", h.notImplemented)))
 	mux.HandleFunc("GET /api/v1/dashboards/fraud", limit(perm("audit:read", h.notImplemented)))
-	mux.HandleFunc("GET /api/v1/dashboards/operator", limit(perm("shards:read", h.notImplemented)))
+	mux.HandleFunc("GET /api/v1/dashboards/operator", limit(perm("shards:read", h.getOperatorDashboard)))
 	mux.HandleFunc("GET /api/v1/dashboards/campaign/{id}", limit(perm("campaigns:read", h.getCampaignDashboard)))
 }
 
@@ -73,6 +76,27 @@ func (h *DashboardsHTTPHandlers) getCampaignDashboard(w http.ResponseWriter, r *
 	httpresponse.JSON(w, http.StatusOK, resp)
 }
 
+func (h *DashboardsHTTPHandlers) getOperatorDashboard(w http.ResponseWriter, r *http.Request) {
+	resp := OperatorDashboardDTO{
+		Period: PeriodDTO{
+			From: time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339),
+			To:   time.Now().UTC().Format(time.RFC3339),
+		},
+	}
+	if h != nil && h.XDPStatsReader != nil {
+		if snap, err := h.XDPStatsReader(r.Context()); err == nil {
+			resp.XDP = XDPPanelDTO{
+				UpdatedAt:     snap.UpdatedAt.UTC().Format(time.RFC3339),
+				Pass:          snap.Pass,
+				PassAllowlist: snap.PassAllow,
+				Fingerprints:  snap.Fingerprints,
+				Drops:         snap.Drops,
+			}
+		}
+	}
+	httpresponse.JSON(w, http.StatusOK, resp)
+}
+
 func (h *DashboardsHTTPHandlers) notImplemented(w http.ResponseWriter, _ *http.Request) {
-	httpresponse.Error(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "dashboard scaffold; see MILESTONE.md M6")
+	httpresponse.Error(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "dashboard scaffold; see docs/GAPS.md GAP-PROD-01")
 }

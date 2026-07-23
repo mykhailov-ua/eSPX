@@ -1,6 +1,6 @@
 package adminapi
 
-// PeriodDTO bounds a reporting window (MANAGEMENT.md §7).
+// PeriodDTO bounds a reporting window (MANAGEMENT.md section 7).
 type PeriodDTO struct {
 	From     string `json:"from"`
 	To       string `json:"to"`
@@ -133,7 +133,17 @@ type FraudOverviewDTO struct {
 
 // OperatorDashboardDTO is GET /api/v1/dashboards/operator.
 type OperatorDashboardDTO struct {
-	Period PeriodDTO `json:"period"`
+	Period PeriodDTO   `json:"period"`
+	XDP    XDPPanelDTO `json:"xdp"`
+}
+
+// XDPPanelDTO surfaces per-CPU aggregated XDP counters for ops dashboards (M10-C4).
+type XDPPanelDTO struct {
+	UpdatedAt     string            `json:"updated_at,omitempty"`
+	Pass          uint64            `json:"pass"`
+	PassAllowlist uint64            `json:"pass_allowlist"`
+	Fingerprints  uint64            `json:"fingerprints"`
+	Drops         map[string]uint64 `json:"drops"`
 }
 
 // CampaignDashboardDTO is GET /api/v1/dashboards/campaign/{id}.

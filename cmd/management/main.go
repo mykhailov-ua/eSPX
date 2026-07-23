@@ -16,6 +16,7 @@ import (
 	"espx/internal/clickhouse/migrate"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/dedup"
 	"espx/internal/ingestion"
 	db "espx/internal/ingestion/sqlc"
 	"espx/internal/licensing"
@@ -179,9 +180,15 @@ func main() {
 	campaignRepo := ingestion.NewCampaignRepoWithDB(pool, queries)
 	campaignRepo.ConfigureAuditLedgerFlush(cfg.AuditLedgerFlushSampleMask)
 	customerRepo := ingestion.NewCustomerRepoWithDB(pool, queries)
+	dedupAdapter := dedup.NewAdapter(pool, cfg.RegionCode, dedup.LoadRoutingEpoch(ctx, pool))
 	var syncWorkers []*ingestion.SyncWorker
 	for _, rdb := range rdbs {
 		sw := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond, time.Duration(cfg.LedgerBatchFlushMs)*time.Millisecond, nil, 0)
+		sw.SetDedupAdapter(dedupAdapter)
+		sw.ConfigureBudgetContention(
+			ingestion.BudgetLockTTLSeconds(cfg.LedgerBatchFlushMs, cfg.BudgetSyncIntervalMs),
+			cfg.QuotaStrictThresholdMicro,
+		)
 		syncWorkers = append(syncWorkers, sw)
 		svc.StartBackgroundWorker(func() {
 			sw.Start(ctx)

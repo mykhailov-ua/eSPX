@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -88,8 +89,8 @@ func (p *GoogleAdsProvider) Fetch(ctx context.Context, cred Credential, date tim
 	lines := make([]CostLine, 0, len(parsed.Results))
 	for _, row := range parsed.Results {
 		var costMicro int64
-		fmt.Sscanf(row.Metrics.CostMicros, "%d", &costMicro)
-		if costMicro == 0 {
+		costMicro, err = strconv.ParseInt(row.Metrics.CostMicros, 10, 64)
+		if err != nil || costMicro == 0 {
 			continue
 		}
 		lines = append(lines, CostLine{

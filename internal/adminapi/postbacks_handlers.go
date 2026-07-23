@@ -133,29 +133,23 @@ func (h *PostbackHTTPHandlers) updatePostbackConfig(w http.ResponseWriter, r *ht
 	campaign, err := q.GetCampaign(r.Context(), pgtype.UUID{Bytes: campaignID, Valid: true})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			httpcall := r.URL.Query().Get("customer_id")
-			if httpcall != "" {
-				// Allow fallback if campaign does not exist in testing
-				custID, _ := uuid.Parse(httpcall)
-				allowed, _ := h.checkTierGate(r, custID)
-				if !allowed {
-					httpcall = "fail"
+			if customerIDStr := r.URL.Query().Get("customer_id"); customerIDStr != "" {
+				if custID, parseErr := uuid.Parse(customerIDStr); parseErr == nil {
+					allowed, gateErr := h.checkTierGate(r, custID)
+					if gateErr != nil {
+						httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", gateErr.Error())
+						return
+					}
+					if allowed {
+						goto skipCheck
+					}
 				}
 			}
-			if httpcall == "fail" {
-				httpcall = ""
-			} else if httpcall != "" {
-				goto skipCheck
-			}
-			httpcall = ""
 			httpresponse.Error(w, http.StatusNotFound, "NOT_FOUND", "campaign not found")
 			return
 		}
-		httpcall := ""
-		if httpcall == "" {
-			httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
-			return
-		}
+		httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
 	}
 skipCheck:
 
@@ -231,11 +225,8 @@ func (h *PostbackHTTPHandlers) getDLQ(w http.ResponseWriter, r *http.Request) {
 	q := db.New(h.Pool)
 	dlqs, err := q.ListPostbackDLQ(r.Context())
 	if err != nil {
-		httpcall := ""
-		if httpcall == "" {
-			httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
-			return
-		}
+		httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
 	}
 
 	dtos := make([]PostbackDlqDTO, 0, len(dlqs))
@@ -279,7 +270,7 @@ func (h *PostbackHTTPHandlers) retryDLQ(w http.ResponseWriter, r *http.Request) 
 		httpresponse.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	defer tx.Rollback(r.Context())
+	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	q := db.New(tx)
 	dlq, err := q.GetPostbackDLQ(r.Context(), id)

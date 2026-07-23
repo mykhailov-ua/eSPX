@@ -264,7 +264,7 @@ func (w *Worker) persistLines(ctx context.Context, lines []CostLine, date time.T
 	if err != nil {
 		return 0, 0, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	q := db.New(tx)
 	usdAmounts := make([]int64, len(lines))

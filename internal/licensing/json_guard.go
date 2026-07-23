@@ -51,7 +51,7 @@ func DecodeJSONStrict(r io.Reader, maxBytes int64, dst any) error {
 }
 
 func validateJSONSurface(body []byte) error {
-	// Reject obviously hostile constructs before full parse (depth bombs, duplicate keys via raw scan).
+	// Reject known hostile constructs before full parse (depth bombs, duplicate keys via raw scan).
 	if strings.Contains(string(body), "\x00") {
 		return fmt.Errorf("%w: null byte in payload", ErrJSONDisallowed)
 	}

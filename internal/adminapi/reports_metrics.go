@@ -1,6 +1,6 @@
 package adminapi
 
-// XFM metric keys for report aggregations (MANAGEMENT.md §6).
+// XFM metric keys for report aggregations (MANAGEMENT.md section 6).
 // Implementations map CH/PG columns to these names in SQL builders (M6 CHG waves).
 const (
 	MetricSpendMicro     = "spend_micro"

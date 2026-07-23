@@ -15,7 +15,7 @@ func (htmxHandler *HTMXHandler) handleCheckoutReturn(w http.ResponseWriter, r *h
 
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
-	title := "Payment"
+	var title string
 	body := `<p>Return to your dashboard to confirm balance updates.</p>`
 
 	switch status {

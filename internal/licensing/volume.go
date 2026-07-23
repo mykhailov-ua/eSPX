@@ -31,14 +31,14 @@ var BandIncludedEvents = map[VolumeBand]uint64{
 	VolumeBandLarge:  100_000_000_000,
 }
 
-// BasePU is κ_base per volume band.
+// BasePU is kappa_base per volume band.
 var BasePU = map[VolumeBand]int{
 	VolumeBandSmall:  100,
 	VolumeBandMedium: 250,
 	VolumeBandLarge:  500,
 }
 
-// ModulePU holds κ_module coefficients per band.
+// ModulePU holds kappa_module coefficients per band.
 type ModulePU struct {
 	OpenRTBEngine int
 	EbpfXDPEdge   int
@@ -67,7 +67,7 @@ func BillableWeight(cat BillableCategory) float64 {
 	}
 }
 
-// BillableWeightPermille returns the PU multiplier scaled by 1000 (1.0 → 1000, 0.1 → 100).
+// BillableWeightPermille returns the PU multiplier scaled by 1000 (1.0 maps to 1000, 0.1 maps to 100).
 func BillableWeightPermille(cat BillableCategory) int64 {
 	switch cat {
 	case BillableAccepted:
@@ -93,7 +93,7 @@ func ClassifyEventType(eventType string) BillableCategory {
 	}
 }
 
-// WeightedBillableUnits computes Σ(count[category] × weight[category]).
+// WeightedBillableUnits computes sum(count[category] x weight[category]).
 func WeightedBillableUnits(counts map[BillableCategory]uint64) float64 {
 	var total float64
 	for cat, n := range counts {

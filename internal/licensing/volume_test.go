@@ -33,7 +33,7 @@ func TestMonthlyPU(t *testing.T) {
 }
 
 func TestDetermineState_graceContinues(t *testing.T) {
-	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
 	claims := &LicenseClaims{
 		ValidFrom:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		ValidUntil: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),

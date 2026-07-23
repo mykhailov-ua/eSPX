@@ -104,7 +104,7 @@ func (w *PostbackWorker) ProcessBatch(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	q := db.New(tx)
 	events, err := q.GetPendingPostbackEventsForUpdate(ctx, 50)

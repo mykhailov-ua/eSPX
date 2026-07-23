@@ -13,6 +13,7 @@ import (
 	"espx/internal/clickhouse/migrate"
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/dedup"
 	"espx/internal/fraudscoring"
 	"espx/internal/health"
 	"espx/internal/ingestion"
@@ -172,6 +173,7 @@ func main() {
 	campaignRepo := ingestion.NewCampaignRepoWithDB(pool, queries)
 	campaignRepo.ConfigureAuditLedgerFlush(cfg.AuditLedgerFlushSampleMask)
 	customerRepo := ingestion.NewCustomerRepoWithDB(pool, queries)
+	dedupAdapter := dedup.NewAdapter(pool, cfg.RegionCode, dedup.LoadRoutingEpoch(ctx, pool))
 
 	var pgConsumers []*ingestion.StreamConsumer
 	var chConsumers []*ingestion.StreamConsumer
@@ -183,6 +185,11 @@ func main() {
 		shardID := fmt.Sprintf("shard_%d", i)
 
 		sw := ingestion.NewSyncWorker(rdb, campaignRepo, customerRepo, time.Duration(cfg.BudgetSyncIntervalMs)*time.Millisecond, time.Duration(cfg.LedgerBatchFlushMs)*time.Millisecond, procPgGate, 0)
+		sw.SetDedupAdapter(dedupAdapter)
+		sw.ConfigureBudgetContention(
+			ingestion.BudgetLockTTLSeconds(cfg.LedgerBatchFlushMs, cfg.BudgetSyncIntervalMs),
+			cfg.QuotaStrictThresholdMicro,
+		)
 		syncWorkers = append(syncWorkers, sw)
 		sw.Start(syncCtx)
 
@@ -285,6 +292,7 @@ func main() {
 			pgBrokerCfg.Partition = uint16(p)
 			pgBrokerCfg.Group = cfg.RedisGroupName + "_pg_broker"
 			pgBroker := ingestion.NewBrokerStreamConsumer(pgStore, pgBrokerCfg, writeTimeout, retryInit, retryMax, cfg.MaxRetries)
+			pgBroker.SetDedupAdapter(dedupAdapter)
 			pgBroker.SetLogger(appLogger)
 			brokerConsumers = append(brokerConsumers, pgBroker)
 			pgBroker.Start(consumerCtx)

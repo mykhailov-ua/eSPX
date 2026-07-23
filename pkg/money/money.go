@@ -158,7 +158,7 @@ func FormatDecimal(micro int64) string {
 }
 
 // APIValueFloat converts micro-units to float64 for external APIs that require JSON numbers.
-// Use only at egress boundaries — never for ledger math.
+// Use only at egress boundaries - never for ledger math.
 func APIValueFloat(micro int64) float64 {
 	return float64(micro) / float64(MicroUnit)
 }

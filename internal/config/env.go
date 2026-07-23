@@ -125,6 +125,7 @@ type Config struct {
 		RetentionDays               int
 		CancellationFeePercent      float64
 		ReconIntervalMs             int
+		ReconSnapshotIntervalMs     int
 		PacingIntervalMs            int
 		RateLimitRPS                float64
 		RateLimitBurst              int
@@ -222,9 +223,10 @@ type Config struct {
 	RtbReconcileSampleSize   int
 	RtbTargetingIndex        bool
 
-	QuotaMode               string
-	QuotaChunkSize          int64
-	QuotaRefillThresholdPct int
+	QuotaMode                 string
+	QuotaChunkSize            int64
+	QuotaStrictThresholdMicro int64
+	QuotaRefillThresholdPct   int
 
 	SlotMapReloadTopic      string
 	SlotMapPollIntervalMs   int
@@ -544,6 +546,7 @@ func Load() (*Config, error) {
 		cfg.QuotaMode = "off"
 	}
 	cfg.QuotaChunkSize = getEnvInt64("QUOTA_CHUNK_SIZE", 0)
+	cfg.QuotaStrictThresholdMicro = getEnvInt64("QUOTA_STRICT_THRESHOLD_MICRO", 5_000_000)
 	cfg.QuotaRefillThresholdPct = getEnvInt("QUOTA_REFILL_THRESHOLD_PCT", 20)
 
 	cfg.SlotMapReloadTopic = os.Getenv("SLOT_MAP_RELOAD_TOPIC")
@@ -553,7 +556,7 @@ func Load() (*Config, error) {
 	cfg.SlotMapPollIntervalMs = getEnvInt("SLOT_MAP_POLL_INTERVAL_MS", 10000)
 	cfg.SlotMigrationEnabled = getEnvBool("SLOT_MIGRATION_ENABLED", true)
 	cfg.SlotMigrationIntervalMs = getEnvInt("SLOT_MIGRATION_INTERVAL_MS", 30000)
-	cfg.MigrationFenceEnabled = getEnvBool("MIGRATION_FENCE_ENABLED", false)
+	cfg.MigrationFenceEnabled = getEnvBool("MIGRATION_FENCE_ENABLED", appEnv == "production")
 	cfg.LuaFastPathEnabled = getEnvBool("LUA_FAST_PATH_ENABLED", false)
 	cfg.UDPControlEnabled = getEnvBool("UDP_CONTROL_ENABLED", false)
 	cfg.UDPFailClosed = getEnvBool("UDP_FAIL_CLOSED", true)
@@ -682,6 +685,7 @@ func Load() (*Config, error) {
 	cfg.Management.RetentionDays = getEnvInt("MANAGEMENT_RETENTION_DAYS", 90)
 	cfg.Management.CancellationFeePercent = getEnvFloat("MANAGEMENT_CANCELLATION_FEE_PERCENT", 5.0)
 	cfg.Management.ReconIntervalMs = getEnvInt("RECON_WORKER_INTERVAL_MS", 3_600_000)
+	cfg.Management.ReconSnapshotIntervalMs = getEnvInt("RECON_SNAPSHOT_INTERVAL_MS", 0)
 	cfg.Management.PacingIntervalMs = getEnvInt("PACING_CONTROLLER_INTERVAL_MS", 300_000)
 	cfg.Management.RateLimitRPS = getEnvFloat("MANAGEMENT_RATE_LIMIT_RPS", 10)
 	cfg.Management.RateLimitBurst = getEnvInt("MANAGEMENT_RATE_LIMIT_BURST", 50)
