@@ -25,6 +25,12 @@ internal/*/pb/*_vtproto.pb.go
 # bpf2go (deploy/edge-xdp/bpf/*.c → internal/edge/bpf/)
 internal/edge/bpf/edge_bpf*.go
 internal/edge/bpf/*.o
+deploy/edge/xdp/bpf/*.o
+deploy/edge/xdp/bpf/*.disasm.txt
+
+# Dev TLS (generate via deploy/nginx/certs/generate-dev-certs.sh)
+deploy/nginx/certs/*.key
+deploy/nginx/certs/*.crt
 
 # IDE
 .idea/
