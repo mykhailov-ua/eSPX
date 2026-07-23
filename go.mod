@@ -1,6 +1,6 @@
 module espx
 
-go 1.25.7
+go 1.25.12
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.45.0
@@ -25,6 +25,8 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/clickhouse v0.43.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0
 	github.com/testcontainers/testcontainers-go/modules/redis v0.42.0
+	github.com/yalue/onnxruntime_go v1.31.0
+	github.com/zhongdai/go-lgbm v0.1.2
 	golang.org/x/crypto v0.51.0
 	golang.org/x/time v0.11.0
 	google.golang.org/grpc v1.67.0
@@ -49,8 +51,6 @@ require (
 	github.com/aws/smithy-go v1.27.3 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/prometheus/common v0.66.1 // indirect
-	github.com/yalue/onnxruntime_go v1.31.0 // indirect
-	github.com/zhongdai/go-lgbm v0.1.2 // indirect
 )
 
 require (
@@ -132,5 +132,5 @@ require (
 	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240903143218-8af14fe29dc1 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
+	gopkg.in/yaml.v3 v3.0.1
 )

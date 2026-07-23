@@ -231,6 +231,7 @@ services:
       - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./deploy/nginx/nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
       - ./deploy/nginx/lua:/etc/nginx/lua:ro
+      - ./deploy/nginx/certs:/etc/nginx/certs:ro
     depends_on:
       tracker-0:
         condition: service_healthy

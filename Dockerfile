@@ -1,6 +1,6 @@
 # Stage 1: Modules caching
 # Separate layer so go mod download is not re-run on source changes.
-FROM golang:alpine AS modules
+FROM golang:1.25.12-alpine AS modules
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -9,7 +9,7 @@ RUN go mod download
 # CGO_ENABLED=0: produce statically linked binaries compatible with the distroless image.
 # -tags timetzdata: embed IANA timezone database; required because distroless has no /usr/share/zoneinfo.
 # -ldflags="-s -w": strip debug symbols and DWARF tables to minimise image size.
-FROM golang:alpine AS builder
+FROM golang:1.25.12-alpine AS builder
 COPY --from=modules /go/pkg/mod /go/pkg/mod
 WORKDIR /src
 COPY . .

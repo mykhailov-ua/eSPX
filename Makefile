@@ -20,8 +20,8 @@ test-unit: gen fmt
 
 # Fast zero-alloc, fraud SLA, and RTB hot-path checks (no long benchmarks).
 test-alloc-gate: gen fmt
-	go test -short -count=1 -run 'ZeroAlloc|zeroAlloc_fraudScoring|FraudScoring_LatencySLA|ApplyRtbAuction_shadow_zeroAlloc|RecordRtbShadow' ./internal/ingestion/...
-	go test -run='^$$' -bench='BenchmarkAuction$$' -benchmem -count=1 ./internal/rtb/
+	go test -short -count=1 -run 'ZeroAlloc|zeroAlloc_fraudScoring|FraudScoring_LatencySLA|ApplyRtbAuction_shadow_zeroAlloc|RecordRtbShadow|HTTP1Parse' ./internal/ingestion/...
+	go test -run='^$$' -bench='Benchmark(HTTP1Parse$$|Auction$$)' -benchmem -count=1 ./internal/ingestion/... ./internal/rtb/
 
 test-int: gen fmt
 	go test -v ./tests/...
