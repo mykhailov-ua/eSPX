@@ -65,7 +65,7 @@ func (w *CreditScoringWorker) EvaluateAll(ctx context.Context) error {
 	return nil
 }
 
-// calculateOverdraft derives allowed overdraft from account age, top-ups, and PG–Redis recon lag (M5.8).
+// calculateOverdraft derives allowed overdraft from account age, top-ups, and PG-Redis recon lag (M5.8).
 func (w *CreditScoringWorker) calculateOverdraft(ageDays float64, topupSum int64, reconLagMicro int64) int64 {
 	if ageDays < w.svc.cfg.CreditScoringMinAgeDays {
 		return 0

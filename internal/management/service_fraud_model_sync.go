@@ -197,7 +197,7 @@ func (o *FraudModelSyncOrchestrator) rollbackShard(ctx context.Context, shardID 
 	err = pool.QueryRow(ctx, "SELECT id, artifact_hash FROM ml_model_versions WHERE status = 'ACTIVE' LIMIT 1").Scan(&prevVersionID, &prevHash)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			// No previous active version, just clear keys on Redis shard
+			// No previous active version; clear keys on Redis shard
 			rdb := o.svc.rdbs[shardID]
 			if rdb != nil {
 				rdb.Del(ctx, "ml:model:version", "ml:model:hash", "ml:model:applied_at")
@@ -251,7 +251,7 @@ func (o *FraudModelSyncOrchestrator) runCanaryCheck(ctx context.Context, shardID
 		}
 		totalRows++
 
-		// Simple heuristic: if clicks are extremely high compared to events, simulate high score
+		// Heuristic: if clicks are extremely high compared to events, simulate high score
 		if clicks > 10 && clicks*2 > events {
 			highScores++
 		}

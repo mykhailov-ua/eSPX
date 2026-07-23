@@ -40,6 +40,8 @@ func (w *OutboxWorker) handleOutboxEvent(opCtx, ctx context.Context, ev db.Outbo
 		return w.handleBudgetFreeze(ctx, ev.Payload)
 	case "QUOTA_REPAIR":
 		return w.ApplyQuotaRepair(ctx, ev.ID, ev.Payload)
+	case "RECONCILIATION_ADJUST":
+		return w.ApplyReconciliationAdjust(ctx, ev.ID, ev.Payload)
 	case "RESUME_CAMPAIGN":
 		return w.handleResumeCampaign(ctx, ev.Payload)
 	case "UPDATE_CAMPAIGN_SCHEDULE":

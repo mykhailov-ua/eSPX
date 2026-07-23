@@ -68,7 +68,7 @@ type forecastHourlySample struct {
 	impressions uint64
 }
 
-// ForecastCampaign estimates delivery for a planned campaign using ClickHouse hourly MVs (M5.1–M5.4).
+// ForecastCampaign estimates delivery for a planned campaign using ClickHouse hourly MVs (M5.1-M5.4).
 func (s *Service) ForecastCampaign(ctx context.Context, in CampaignForecastInput) (CampaignForecastDTO, error) {
 	if s.chQuery == nil {
 		return CampaignForecastDTO{}, ErrClickHouseNotConfigured

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,21 +29,22 @@ import (
 
 // Service coordinates management business logic, background workers, and hot-path propagation via outbox.
 type Service struct {
-	pool        *pgxpool.Pool
-	rdbs        []redis.UniversalClient
-	sharder     ingestion.Sharder
-	cfg         *config.Config
-	pgGate      *MgmtPgGate
-	alerter     *OpsAlerter
-	chWrite     driver.Conn
-	chQuery     *database.CHQuery
-	paymentPool *pgxpool.Pool
-	ctx         context.Context
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup
-	workerMu    sync.Mutex
-	closed      atomic.Bool
-	locCache    sync.Map
+	pool         *pgxpool.Pool
+	rdbs         []redis.UniversalClient
+	sharder      ingestion.Sharder
+	cfg          *config.Config
+	pgGate       *MgmtPgGate
+	alerter      *OpsAlerter
+	chWrite      driver.Conn
+	chQuery      *database.CHQuery
+	paymentPool  *pgxpool.Pool
+	ctx          context.Context
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
+	workerMu     sync.Mutex
+	closed       atomic.Bool
+	locCache     sync.Map
+	brokerDeltas BrokerPendingDeltaReader
 }
 
 // StartBackgroundWorker launches an auxiliary goroutine tracked for graceful shutdown.
@@ -87,6 +89,24 @@ func NewService(pool *pgxpool.Pool, rdbs []redis.UniversalClient, sharder ingest
 		}
 		if !cfg.MultiRegionGlobal() {
 			NewOutboxWorker(s).Start(ctx, 20*time.Millisecond)
+		}
+	})
+	s.startWorker(func() {
+		adapter := s.dedupAdapter()
+		if adapter == nil {
+			return
+		}
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if _, err := adapter.RejectStaleProposals(ctx); err != nil && ctx.Err() == nil {
+					slog.Warn("dedup proposal janitor failed", "error", err)
+				}
+			}
 		}
 	})
 	s.startWorker(func() {

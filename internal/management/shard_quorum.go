@@ -105,7 +105,7 @@ func (q *ShardQuorumTracker) touch(slot *time.Time, active bool, now time.Time) 
 	*slot = time.Time{}
 }
 
-// DeadShardConfirmed is true when ping fail, sentinel down, and ≥50% tracker breakers open for ≥quorum.
+// DeadShardConfirmed is true when ping fail, sentinel down, and >=50% tracker breakers open for >=quorum.
 func (q *ShardQuorumTracker) DeadShardConfirmed(shard int) bool {
 	if q == nil || shard < 0 || shard >= q.numShards {
 		return false
