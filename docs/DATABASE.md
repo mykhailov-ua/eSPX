@@ -4,7 +4,7 @@ The eSPX data layer is split by role: **PostgreSQL** is the system of record (fi
 
 This document is the operator and implementer contract for database work. Principles draw from *Designing Data-Intensive Applications* (Kleppmann — consistency boundaries, logs vs tables, batching, derived data) and *Distributed Systems* (Tanenbaum — mutual exclusion, deadlock avoidance, time bounds on locks).
 
-**Milestone & bottleneck plan:** [DATABASE_MILESTONE.md](./DATABASE_MILESTONE.md) — syscall/mmap physics, M-DB-PG/CH items, phased fixes.
+**Open database gaps:** [GAPS.md](./GAPS.md) §8. **Write-path remediation:** [REMEDIATION.md](./REMEDIATION.md).
 
 ---
 
@@ -32,10 +32,15 @@ The system uses a **claim → side effect → ack** pattern. On retry, the side 
 | :--- | :--- | :--- | :--- |
 | **Hot `/track`** | Redis | `idempotency:click:` + `click_id` | Prevent double debit on client retries |
 | **Hot `click_id`** | Tracker RAM | `NewFastUUID()` (ts + seq + nodeID) | Generate unique IDs without a global coordinator |
-| **Budget Sync** | Postgres | UUID v4 per batch (`budget:txid:*` in Redis) | Prevent double accounting in `UpdateSpend` |
+| **Budget Sync (D3 v2)** | Postgres | `dedup_claim_confirm` → `sync_idempotency(id = dedup_key)` | Deterministic SSID + payload hash; survives worker restart |
+| **Budget Sync (legacy)** | Postgres | UUID v4 per batch (`budget:txid:*` in Redis) | Superseded by D3 when `DedupAdapter` wired |
+| **Region relay (D3 v2)** | Postgres + Redis NX | Per-event SSID + `dedup/v2:{dedup_key}` | Claim-before-apply for outbox delivery |
 | **Stream → PG** | Postgres PK | `(click_id, created_date)` | Prevent duplicate rows on stream redelivery |
+| **Broker → PG (D3 v2)** | Postgres | Batch SSID from partition offsets + click_id hash | Broker redelivery without duplicate events |
+| **Stream → CH** | ClickHouse | `insert_deduplication_token` per batch | CH path keeps token dedup (no D3) |
 | **Admin API** | Postgres | `SHA256(customer_id + canonical_json(body))` | Idempotent administrative HTTP requests |
 | **Payments** | Postgres | Client `idempotency_key` | Prevent duplicate transactions |
+| **Quota / IVT** | Postgres | Prefix keys (`quota:`, IVT sync) | **Out of D3 scope** — separate idempotency namespaces |
 
 ## 3. Transactional Outbox (`SKIP LOCKED`)
 
@@ -49,6 +54,20 @@ Workers use `SELECT … FOR UPDATE SKIP LOCKED` inside a **single transaction** 
 - Claim and status transition must share one `BEGIN … COMMIT` boundary.
 - Use `SKIP LOCKED`, not blocking `FOR UPDATE`, for worker queues.
 - Poll interval must be configurable; default **20 ms** in management (`service.go`) is aggressive — consider **100–250 ms** when idle to cut WAL churn.
+
+### Reconciliation authority (M3)
+
+| Layer | Source of truth | Used for |
+| :--- | :--- | :--- |
+| Hot debit | Redis Lua (`budget:campaign` / `budget:quota`) | Real-time accept/reject |
+| In-flight settlement | Redis `budget:sync` + `budget:inflight` | Pending PG flush |
+| Local quanta (M8) | Worker RAM + broker `budget-deltas` | Amortized debit |
+| Financial ledger | Postgres `balance_ledger` + `campaigns.current_spend` | Billing, pause, admin |
+| Corrections | Outbox (`QUOTA_REPAIR`, `RECONCILIATION_ADJUST`) only | Never direct Redis `SET` under load |
+
+Per-campaign invariant (QUOTA_MODE off):  
+`budget_limit - current_spend_pg ≈ budget_remaining_redis + budget_sync_redis + budget_inflight_redis + broker_pending_deltas`  
+Tolerance ε = max(1 micro-unit, 0.01% of `budget_limit`). Grace window = `LEDGER_BATCH_FLUSH_MS + BUDGET_SYNC_INTERVAL_MS` while `inflight > 0`.
 
 ## 4. Partitioning
 

@@ -47,6 +47,31 @@ Cross-region data updates are asynchronous only. Transport guarantees **at-least
 4.  **Idempotency.** To prevent re-applying the same event, use `region_apply_idempotency` (on the regional side) or `SET NX` keys in Redis.
 5.  Event status changes to `DELIVERED` only after write confirmation on all local Redis shards.
 
+### D3 v2 Deterministic Dedup (M4)
+
+Regional handlers use a **two-factor dedup adapter** before any durable side-effect:
+
+1. **SSID (stable scope):** `region_id` + `source_id` + `source_epoch` + `seq_start`/`seq_end` — identical on retry for the same logical batch.
+2. **factor_u:** SHA-256 prefix of canonical payload bytes (sorted spend pairs, relay body, or broker click_ids).
+3. **factor_d:** random UUID v4 minted by Postgres `dedup_claim_confirm` at confirm time.
+
+**Claim → apply → ack workflow:**
+
+1. `dedup_claim_confirm(scope, factor_u)` in Postgres returns `confirmed` | `already_confirmed` | `hash_mismatch` | `rejected`.
+2. On `confirmed`, apply Redis/ledger side-effects; insert `sync_idempotency(id = dedup_key) ON CONFLICT DO NOTHING`.
+3. On `already_confirmed`, skip apply if `sync_idempotency` row exists; otherwise **resume apply** (crash recovery).
+4. Optional regional Redis guard: `SET NX dedup/v2:{dedup_key}` before apply (M4-06).
+
+| Worker | SSID source | factor_u payload |
+| :--- | :--- | :--- |
+| `SyncWorker` | `(shard, campaign_id, inflight_gen)` from `budget:txid:*` | sorted `(campaign_id, amount_micro)` |
+| `RegionOutboxRelay` | `outbox_event_id` per event | `relay\|event_id\|type\|payload` |
+| Broker PG consumer | `(partition, offset_start, offset_end)` + `source_epoch` | sorted `click_id` list |
+
+`source_epoch` comes from `control_plane_epochs` (broker topic generation / routing epoch) to survive offset resets (R4-07).
+
+**Out of scope for D3:** customer sync (`budget:txid:customer:*` keeps prefix keys), quota chunk reserve, IVT detector — documented in `DATABASE.md` §Idempotency.
+
 ---
 
 ## Global Identification (Global UUID)

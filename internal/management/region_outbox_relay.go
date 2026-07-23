@@ -8,8 +8,10 @@ import (
 	"time"
 
 	"espx/internal/database"
+	"espx/internal/dedup"
 	db "espx/internal/ingestion/sqlc"
 	"espx/internal/metrics"
+	"espx/pkg/dedupkey"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -188,21 +190,49 @@ func (r *RegionOutboxRelay) ProcessPendingWithCount(ctx context.Context, limit i
 }
 
 func (r *RegionOutboxRelay) applyDelivery(opCtx, ctx context.Context, row regionDeliveryRow) error {
-	var already bool
-	err := r.svc.GetPool().QueryRow(opCtx, `
-		SELECT EXISTS(
-			SELECT 1 FROM region_apply_idempotency
-			WHERE region_code = $1 AND outbox_event_id = $2
-		)`, r.regionCode, row.outboxEventID).Scan(&already)
-	if err != nil {
-		return err
-	}
-	if already {
-		_, err = r.svc.GetPool().Exec(opCtx, `
-			UPDATE outbox_region_delivery
-			SET status = 'DELIVERED', delivered_at = NOW(), processing_started_at = NULL
-			WHERE region_code = $1 AND outbox_event_id = $2`, r.regionCode, row.outboxEventID)
-		return err
+	adapter := r.svc.dedupAdapter()
+	var claim dedup.ClaimResult
+	if adapter != nil {
+		scope := adapter.RegionScope(dedupkey.RelaySourceID(r.regionCode), row.outboxEventID, row.outboxEventID)
+		factorU := dedupkey.FactorU(dedupkey.CanonicalRelayPayload(row.outboxEventID, row.eventType, row.payload))
+		var err error
+		claim, err = adapter.ClaimConfirm(opCtx, scope, factorU)
+		if err != nil {
+			return err
+		}
+		if guardErr := dedup.GuardOutcome(claim); guardErr != nil {
+			return guardErr
+		}
+		if claim.Outcome == dedup.OutcomeAlreadyConfirmed {
+			already, idemErr := r.regionAlreadyApplied(opCtx, row.outboxEventID)
+			if idemErr != nil {
+				return idemErr
+			}
+			if already {
+				return r.markDelivered(opCtx, row)
+			}
+		}
+		if r.svc != nil && len(r.svc.rdbs) > 0 && claim.DedupKey != "" {
+			redisKey := dedupkey.RedisKey(claim.DedupKey)
+			ok, nxErr := r.svc.rdbs[0].SetNX(opCtx, redisKey, "1", 48*time.Hour).Result()
+			if nxErr == nil && !ok && claim.Outcome == dedup.OutcomeConfirmed {
+				already, idemErr := r.regionAlreadyApplied(opCtx, row.outboxEventID)
+				if idemErr != nil {
+					return idemErr
+				}
+				if already {
+					return r.markDelivered(opCtx, row)
+				}
+			}
+		}
+	} else {
+		already, err := r.regionAlreadyApplied(opCtx, row.outboxEventID)
+		if err != nil {
+			return err
+		}
+		if already {
+			return r.markDelivered(opCtx, row)
+		}
 	}
 
 	ev := db.OutboxEvent{
@@ -214,7 +244,7 @@ func (r *RegionOutboxRelay) applyDelivery(opCtx, ctx context.Context, row region
 		return err
 	}
 
-	err = pgx.BeginFunc(opCtx, r.svc.GetPool(), func(tx pgx.Tx) error {
+	err := pgx.BeginFunc(opCtx, r.svc.GetPool(), func(tx pgx.Tx) error {
 		tag, err := tx.Exec(opCtx, `
 			INSERT INTO region_apply_idempotency (region_code, outbox_event_id)
 			VALUES ($1, $2)
@@ -243,4 +273,22 @@ func (r *RegionOutboxRelay) applyDelivery(opCtx, ctx context.Context, row region
 	}
 	metrics.RegionOutboxDeliveredTotal.Inc()
 	return nil
+}
+
+func (r *RegionOutboxRelay) regionAlreadyApplied(ctx context.Context, outboxEventID int64) (bool, error) {
+	var already bool
+	err := r.svc.GetPool().QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM region_apply_idempotency
+			WHERE region_code = $1 AND outbox_event_id = $2
+		)`, r.regionCode, outboxEventID).Scan(&already)
+	return already, err
+}
+
+func (r *RegionOutboxRelay) markDelivered(ctx context.Context, row regionDeliveryRow) error {
+	_, err := r.svc.GetPool().Exec(ctx, `
+		UPDATE outbox_region_delivery
+		SET status = 'DELIVERED', delivered_at = NOW(), processing_started_at = NULL
+		WHERE region_code = $1 AND outbox_event_id = $2`, r.regionCode, row.outboxEventID)
+	return err
 }

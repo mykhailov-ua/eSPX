@@ -10,7 +10,8 @@ import (
 
 	"espx/internal/campaignmodel"
 	"espx/internal/config"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -243,10 +244,10 @@ func NewCampaignRepoWithDB(dbtx db.DBTX, queries db.Querier) *CampaignRepo {
 
 // CampaignRepo loads campaigns and applies idempotent budget sync updates from Redis.
 type CampaignRepo struct {
-	queries                  db.Querier
-	auditLedgerFlushSeq      atomic.Uint64
-	auditLedgerFlushEnabled  bool
-	auditLedgerFlushMask     uint64
+	queries                 db.Querier
+	auditLedgerFlushSeq     atomic.Uint64
+	auditLedgerFlushEnabled bool
+	auditLedgerFlushMask    uint64
 }
 
 func NewCampaignRepo(queries db.Querier) *CampaignRepo {
@@ -336,7 +337,7 @@ func (r *CampaignRepo) UpdateSpendBatch(ctx context.Context, items []SpendFlushI
 
 	for i, item := range items {
 		err := r.applySpendFlush(ctx, exec, q, sharder, item, i)
-		if errors.Is(err, ErrInsufficientCustomerBalance) {
+		if errors.Is(err, ErrInsufficientCustomerBalance) || errors.Is(err, ErrCampaignSpendSkipped) {
 			outcomes[i].Err = err
 			continue
 		}
@@ -410,7 +411,11 @@ func (r *CampaignRepo) applySpendFlush(
 		return nil
 	}
 
-	budget, err := q.GetCampaignBudget(ctx, pgtype.UUID{Bytes: item.CampaignID, Valid: true})
+	budget, err := r.lockCampaignBudgetForFlush(ctx, exec, item)
+	if errors.Is(err, ErrCampaignSpendSkipped) {
+		_, _ = exec.Exec(ctx, "ROLLBACK TO SAVEPOINT "+savepoint)
+		return err
+	}
 	if err != nil {
 		return err
 	}
@@ -467,6 +472,26 @@ func (r *CampaignRepo) applySpendFlush(
 
 	_, err = exec.Exec(ctx, "RELEASE SAVEPOINT "+savepoint)
 	return err
+}
+
+func (r *CampaignRepo) lockCampaignBudgetForFlush(ctx context.Context, exec db.DBTX, item SpendFlushItem) (db.GetCampaignBudgetRow, error) {
+	var row db.GetCampaignBudgetRow
+	lockClause := "FOR UPDATE SKIP LOCKED"
+	if item.StrictFlush {
+		lockClause = "FOR UPDATE"
+	}
+	err := exec.QueryRow(ctx, `
+		SELECT c.id, c.customer_id, c.budget_limit, c.current_spend, c.status, cust.balance AS customer_balance
+		FROM campaigns c
+		JOIN customers cust ON c.customer_id = cust.id
+		WHERE c.id = $1
+		`+lockClause,
+		pgtype.UUID{Bytes: item.CampaignID, Valid: true},
+	).Scan(&row.ID, &row.CustomerID, &row.BudgetLimit, &row.CurrentSpend, &row.Status, &row.CustomerBalance)
+	if errors.Is(err, pgx.ErrNoRows) && !item.StrictFlush {
+		return row, ErrCampaignSpendSkipped
+	}
+	return row, err
 }
 
 // ListActive returns all active campaigns for reconciliation and admin paths.

@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"espx/internal/campaignmodel"
+	"espx/internal/dedup"
 	"espx/internal/metrics"
 	"espx/pkg/broker/client"
+	"espx/pkg/dedupkey"
 	"espx/pkg/logger"
 )
 
@@ -38,6 +40,7 @@ type BrokerStreamConsumer struct {
 	retryInit    time.Duration
 	retryMax     time.Duration
 	cb           *CircuitBreaker
+	dedup        *dedup.Adapter
 	logger       *logger.Logger
 	cli          *client.Client
 	auditLogSeq  atomic.Uint64
@@ -79,6 +82,13 @@ func NewBrokerStreamConsumer(
 		retryMax:     retryMax,
 		cb:           NewCircuitBreaker(maxRetries, retryMax*2),
 		cli:          client.NewClient(cfg.BrokerAddr, cfg.Timeout),
+	}
+}
+
+// SetDedupAdapter wires D3 v2 batch dedup for PG broker ingest (M4-15).
+func (b *BrokerStreamConsumer) SetDedupAdapter(adapter *dedup.Adapter) {
+	if b != nil {
+		b.dedup = adapter
 	}
 }
 
@@ -147,6 +157,7 @@ func (b *BrokerStreamConsumer) run(ctx context.Context) {
 	batch := make([]*campaignmodel.Event, 0, b.cfg.BatchSize)
 	lastFlush := time.Now()
 	var batchCommit uint64
+	var batchStartOffset uint64
 
 	for {
 		if ctx.Err() != nil {
@@ -181,13 +192,16 @@ func (b *BrokerStreamConsumer) run(ctx context.Context) {
 				continue
 			}
 			metrics.BrokerIngestMessagesTotal.WithLabelValues(b.cfg.Topic, b.cfg.Group, evt.Type).Inc()
+			if len(batch) == 0 {
+				batchStartOffset = iter.Offset
+			}
 			batch = append(batch, evt)
 			nextCommit = iter.Offset + 1
 			batchCommit = nextCommit
 			processed++
 
 			if len(batch) >= b.cfg.BatchSize || time.Since(lastFlush) >= b.cfg.FlushInt {
-				committed, flushErr := b.flushAndCommit(ctx, batch, nextCommit)
+				committed, flushErr := b.flushAndCommit(ctx, batch, batchStartOffset, nextCommit)
 				if flushErr != nil {
 					return
 				}
@@ -199,7 +213,7 @@ func (b *BrokerStreamConsumer) run(ctx context.Context) {
 		}
 
 		if nextCommit > 0 && len(batch) > 0 {
-			committed, flushErr := b.flushAndCommit(ctx, batch, nextCommit)
+			committed, flushErr := b.flushAndCommit(ctx, batch, batchStartOffset, nextCommit)
 			if flushErr != nil {
 				return
 			}
@@ -237,10 +251,11 @@ func (b *BrokerStreamConsumer) drain(ctx context.Context, nextCommit uint64, bat
 	if len(batch) == 0 || nextCommit == 0 {
 		return
 	}
-	_, _ = b.flushAndCommit(ctx, batch, nextCommit)
+	startOffset := nextCommit - uint64(len(batch))
+	_, _ = b.flushAndCommit(ctx, batch, startOffset, nextCommit)
 }
 
-func (b *BrokerStreamConsumer) flushAndCommit(ctx context.Context, batch []*campaignmodel.Event, nextCommit uint64) (uint64, error) {
+func (b *BrokerStreamConsumer) flushAndCommit(ctx context.Context, batch []*campaignmodel.Event, offsetStart, nextCommit uint64) (uint64, error) {
 	if len(batch) == 0 {
 		return nextCommit, nil
 	}
@@ -266,6 +281,40 @@ func (b *BrokerStreamConsumer) flushAndCommit(ctx context.Context, batch []*camp
 		}
 		b.cb.RecordSuccess(b.cfg.Group)
 	} else {
+		var claim dedup.ClaimResult
+		if b.dedup != nil {
+			clickIDs := make([]string, len(batch))
+			for i, evt := range batch {
+				clickIDs[i] = evt.ClickID
+			}
+			seqEnd := int64(nextCommit) - 1
+			if seqEnd < int64(offsetStart) {
+				seqEnd = int64(offsetStart)
+			}
+			scope := b.dedup.RegionScope(
+				dedupkey.BrokerSourceID(b.cfg.Topic, b.cfg.Partition, b.cfg.Group),
+				int64(offsetStart),
+				seqEnd,
+			)
+			factorU := dedupkey.FactorU(dedupkey.CanonicalBrokerPayload(clickIDs))
+			var claimErr error
+			claim, claimErr = b.dedup.ClaimConfirm(ctx, scope, factorU)
+			if claimErr != nil {
+				return 0, claimErr
+			}
+			if guardErr := dedup.GuardOutcome(claim); guardErr != nil {
+				return 0, guardErr
+			}
+			if claim.Outcome == dedup.OutcomeAlreadyConfirmed {
+				resume, resumeErr := b.dedup.NeedsResumeApply(ctx, claim.DedupKey)
+				if resumeErr != nil {
+					return 0, resumeErr
+				}
+				if !resume {
+					goto commitOffset
+				}
+			}
+		}
 		storeCtx, cancel := context.WithTimeout(ctx, b.writeTimeout)
 		err := b.storeWithRetry(storeCtx, batch)
 		cancel()
@@ -274,6 +323,9 @@ func (b *BrokerStreamConsumer) flushAndCommit(ctx context.Context, batch []*camp
 			slog.Error("broker consumer store batch failed", "group", b.cfg.Group, "error", err)
 			return 0, err
 		}
+		if claim.DedupKey != "" {
+			_ = b.dedup.RecordApply(ctx, claim.DedupKey)
+		}
 		b.cb.RecordSuccess(b.cfg.Group)
 		for _, evt := range batch {
 			b.writeAudit(evt)
@@ -281,6 +333,7 @@ func (b *BrokerStreamConsumer) flushAndCommit(ctx context.Context, batch []*camp
 		}
 	}
 
+commitOffset:
 	stored, err := b.cli.CommitOffset(b.cfg.Topic, b.cfg.Partition, b.cfg.Group, nextCommit)
 	if err != nil {
 		slog.Error("broker offset commit failed", "group", b.cfg.Group, "error", err)

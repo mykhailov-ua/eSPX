@@ -1,109 +1,177 @@
-# M4 — Shard Orchestrator & Elastic Triplets: Technical Report
+# M4 — Multi-Region Dedup Key Adapter (D3 v2) — Technical Report
 
-**Date:** 2026-07-20  
-**Milestone:** M4 (Exec #12)  
-**Status:** Shipped
+**Date:** 2026-07-23  
+**Scope:** M4-01..M4-15 (customer sync prefix boundary documented; quota/IVT remain prefix-keyed)  
+**Artifacts:** `pkg/dedupkey`, `internal/dedup`, `internal/ingestion/migrations/00049_dedup_key_proposals.sql`, `dedup_claim_confirm` PG function
 
 ---
 
 ## 1. Summary
 
-Milestone M4 delivers dynamic Redis scaling beyond the static N=4 StaticSlot sharding topology through a dedicated Shard Orchestrator and Elastic Triplets. It implements robust, zero-allocation hot-path routing, Lua fencing via `routing_epoch` to prevent split-brain during migration, and false-sharing-padded capacity scoring.
+M4 replaces non-deterministic `uuid.New()` sync idempotency with **D3 v2**: a stable scope (SSID) plus two-factor proof (`factor_u` payload hash, `factor_d` PG receipt). `dedup_claim_confirm` runs claim+confirm in one round-trip before ledger/Redis/outbox side-effects. Crash recovery replays via `already_confirmed` + missing `sync_idempotency` row.
+
+| ID | Status | Notes |
+| :--- | :--- | :--- |
+| M4-01 | Done | `pkg/dedupkey` — Scope, FormatCanonical, FactorU, golden vectors |
+| M4-02 | Done | `dedup_key_proposals` table + unique SSID constraint |
+| M4-03 | Done | `dedup_claim_confirm` + `dedup_format_key` — Go == PG golden vector test |
+| M4-04 | Done | `DedupAdapter` + `SyncWorker.SetDedupAdapter` |
+| M4-05 | Done | `RegionOutboxRelay` per-event SSID = `outbox_event_id` |
+| M4-06 | Done | Optional `SET NX dedup/v2:{dedup_key}`; catalog prefix |
+| M4-07 | Done | Pending TTL 24 h in PG function + `RejectStaleDedupProposals` |
+| M4-08 | Done | `ad_dedup_proposal_total`, `ad_dedup_mismatch_total`, `ad_dedup_confirm_latency_seconds` |
+| M4-09 | Done | `TestChaos_DedupCrashRecovery`, `TestChaos_DedupResumeApply` |
+| M4-10 | Done | `hash_mismatch` never overwrites confirmed; table-driven PG test |
+| M4-11 | Done | `source_epoch` from `control_plane_epochs` via `LoadRoutingEpoch` |
+| M4-13 | Done | DATABASE.md §Idempotency scope boundary (customer/quota/IVT) |
+| M4-14 | Done | Relay PG claim before `handleOutboxEvent` |
+| M4-15 | Done | Broker PG consumer batch SSID from partition offsets |
 
 ---
 
-## 2. Components Delivered
+## 2. Deduplication physics
 
-| ID | Component | Path | Notes |
-|:---|:---|:---|:---|
-| **M4.0** | **Standards envelope** | `internal/management/shard_orchestrator.go` | Implements ShardOrchestrator, padded EWMA counters, and migration flow. |
-| **M4.1** | **Database Schema** | `internal/ingestion/migrations/00046_campaign_shard_assignment.sql` | Added `campaign_shard_assignment` table for Primary A/B and Reserve R tracking. |
-| **M4.1** | **Queries & Mapping** | `internal/ingestion/queries/management.sql`, `budget.sql` | Added upsert/get queries and updated `GetCampaignFull` and `ListActiveCampaigns` to LEFT JOIN with assignments. |
-| **M4.2** | **Hot-path Triplet Routing** | `internal/ingestion/unified_filter.go`, `budget_fast.go` | Modulo 100 composite hash routing across Primary A/B (40/40) and Reserve R (20%). |
-| **M4.2** | **Lua Fencing** | `internal/ingestion/unified-filter.lua`, `budget-fast.lua` | Fences debits during copy: `if redis_epoch != routing_epoch then return fenced end`. |
-| **M4.3** | **Capacity Scoring** | `internal/management/shard_orchestrator.go` | EWMA capacity tracking ($C_{\text{ema}} \leftarrow \text{EWMA}(C_{\text{raw}}, 60\text{s})$), scale-out threshold (0.85), 300s overload limit, and 3600s cooldown. |
-| **M4.4** | **Chaos Tests** | `internal/management/shard_orchestrator_chaos_test.go` | Implements `TestChaos_SO_NoFalseMigrate` and `TestChaos_SO_CampaignRoutingMigration`. |
+Cross-region and async paths are **at-least-once**. Correctness requires idempotency keys that are **identical on retry** for the same logical unit of work.
+
+### 2.1 Problem with UUID v4 per prepare cycle
+
+`SyncWorker.prepareBudgetEntity` minted `uuid.New()` when `budget:txid:*` was empty. A worker restart mid-batch could produce a new `txID`, bypass `ON CONFLICT DO NOTHING` on `sync_idempotency`, and double-apply ledger rows.
+
+### 2.2 D3 v2 model
+
+```text
+  USERSPACE                          POSTGRES
+  ---------                          --------
+  Build Scope (SSID)                 dedup_key_proposals
+    region_id  ← REGION_CODE           UNIQUE(scope)
+    source_id  ← worker lane           status: pending|confirmed|rejected
+    source_epoch ← routing_epoch
+    seq_start/end ← inflight gen,
+                    outbox_event_id,
+                    broker offsets
+  factor_u ← SHA-256(canonical payload)
+       │
+       ▼
+  dedup_claim_confirm(scope, factor_u) ──► confirmed + factor_d (UUID v4)
+       │                                   already_confirmed
+       │                                   hash_mismatch → reject
+       ▼
+  Apply side-effect (ledger / Redis / outbox handler)
+       │
+       ▼
+  INSERT sync_idempotency(id = dedup_key) ON CONFLICT DO NOTHING
+```
+
+**Why two factors?**
+
+- **factor_u** binds the *content* of the batch. Same SSID + different amounts → `hash_mismatch` (R4-01).
+- **factor_d** is a *receipt* minted only after Postgres accepts the proposal. Userspace cannot forge a confirmed key without the DB row.
+
+**Crash windows:**
+
+| Crash point | Replay behavior |
+| :--- | :--- |
+| Before `dedup_claim_confirm` | Re-claim → `confirmed` |
+| After confirm, before apply | `already_confirmed` → `NeedsResumeApply` → resume apply |
+| After apply + `sync_idempotency`, before Redis commit | `already_confirmed` + idem exists → skip PG, `commitRollupRedis` |
+| After full ack | `already_confirmed` → no-op |
+
+### 2.3 Canonical key format
+
+```text
+v2|{region_id}|{source_id}|{source_epoch}|{seq_start}|{seq_end}|{factor_u}|{factor_d}
+```
+
+Go `FormatCanonical` and PG `dedup_format_key` produce identical strings (golden-vector tested).
 
 ---
 
-## 3. Capacity Scoring & Scaling Logic
+## 3. Integration points
 
-The Shard Orchestrator tracks Redis shard capacity using an Exponentially Weighted Moving Average (EWMA) with a smoothing factor $\alpha = 0.15$ (representing a ~60s window with a 10s interval):
+| Component | SSID | Claim timing |
+| :--- | :--- | :--- |
+| `SyncWorker` | `(shard, campaign, inflight_gen)` | Before `UpdateSpendBatch` |
+| `RegionOutboxRelay` | `outbox_event_id` | Before `handleOutboxEvent` + optional Redis NX |
+| `BrokerStreamConsumer` (PG) | `(partition, offset_start, offset_end)` | Before `StoreBatch` |
 
-$$C_{\text{ema}} \leftarrow \alpha \cdot C_{\text{raw}} + (1 - \alpha) \cdot C_{\text{ema}}$$
+**Forbidden:** `pkg/dedupkey` / `internal/dedup` are not imported from `/track` or `FilterEngine`.
 
-- **Overload Detection:** Triggered when $C_{\text{ema}} \ge 0.85$ for 300 seconds.
-- **Quorum Gate & Cooldown:** Cooldown period of 3600 seconds is enforced between consecutive scaling operations to prevent migration thrashing.
-- **False Sharing Prevention:** EWMA fields are padded with `_ [56]byte` to align to 64-byte cache line boundaries, preventing Level 1/Level 2 cache line invalidations across cores.
+**Out of scope (M4-13):** customer sync, quota chunk reserve, IVT — keep existing prefix `sync_idempotency` keys.
 
 ---
 
-## 4. Test Results
+## 4. Chaos test results
 
-### 4.1 Chaos Matrix Proofs
-
-```bash
-go test -v ./internal/management/... -run 'TestChaos_SO_'
-```
-
-```
-=== RUN   TestChaos_SO_NoFalseMigrate
-    shard_orchestrator_chaos_test.go:78: chaos_proof fault=orchestrator_no_false_migrate subsystem=shard_orchestrator max_ema=0.40 threshold=0.85 false_migrate=false
---- PASS: TestChaos_SO_NoFalseMigrate (3.26s)
-=== RUN   TestChaos_SO_CampaignRoutingMigration
-    shard_orchestrator_chaos_test.go:163: chaos_proof fault=campaign_routing_migration subsystem=shard_orchestrator source_shard=0 target_shard=1 migration_success=true keys_drained=true
---- PASS: TestChaos_SO_CampaignRoutingMigration (2.80s)
-PASS
-ok  	espx/internal/management	6.083s
-```
+**Harness:** testcontainers-go (`postgres:16-alpine`, `redis:7-alpine`), Go 1.25, Linux 6.17
 
 ```bash
-go test -v ./tests/chaos/... -run TestChaos_Shard0Outage
+go test ./pkg/dedupkey/... -count=1
+# ok   espx/pkg/dedupkey   0.003s
+
+go test ./internal/dedup/... -count=1
+# ok   espx/internal/dedup   0.027s
+
+go test ./internal/ingestion/... -run 'Dedup|Sync' -short -count=1
+go test ./internal/ingestion/... -run 'Chaos_Dedup' -count=1
+# ok   espx/internal/ingestion   6.124s
+
+go test ./internal/management/... -run 'RegionOutbox|Dedup' -short -count=1
+go test ./internal/management/... -run 'Chaos_Dedup' -count=1
+# ok   espx/internal/management   3.567s
 ```
 
-```
-=== RUN   TestChaos_Shard0Outage
-    shard_outage_chaos_test.go:162: chaos_proof fault=shard_0_outage status=recovered shards_123_ok=true outbox=processed
---- PASS: TestChaos_Shard0Outage (9.66s)
-PASS
-ok  	espx/tests/chaos	9.684s
-```
+| Test | Scenario | Result |
+| :--- | :--- | :--- |
+| `TestFormatCanonical_GoldenVector` | Same batch → same SSID + factor_u | PASS |
+| `TestDedupClaimConfirm_GoMatchesPGFormat` | Go canonical == PG `dedup_format_key` | PASS |
+| `TestDedupClaimConfirm_GoMatchesPGFormat` | Replay → `already_confirmed`; bad payload → `hash_mismatch` | PASS |
+| `TestChaos_DedupCrashRecovery` | Replay sync after successful flush | PASS — spend unchanged, 1 idem row |
+| `TestChaos_DedupResumeApply` | Confirm without idem → apply → replay no double spend | PASS |
+| `TestChaos_DedupMultiRegionDuplicate` | 3× relay delivery of same outbox event | PASS — budget 8M, 1 proposal row |
 
-### 4.2 Allocation Gate & Performance Benchmarks
-
-```bash
-make test-alloc-gate
-```
+### Chaos proof lines
 
 ```
-go test -short -count=1 -run 'ZeroAlloc|zeroAlloc_fraudScoring|FraudScoring_LatencySLA|ApplyRtbAuction_shadow_zeroAlloc|RecordRtbShadow' ./internal/ingestion/...
-ok  	espx/internal/ingestion	0.039s
-
-go test -run='^$' -bench='BenchmarkAuction$' -benchmem -count=1 ./internal/rtb/
-BenchmarkAuction-12    	84832290	        14.28 ns/op	       0 B/op	       0 allocs/op
-PASS
-ok  	espx/internal/rtb	1.697s
-```
-
-```bash
-go test -run='^$' -bench='StaticSlotSharder' -benchmem -count=1 ./internal/ingestion/...
-```
-
-```
-BenchmarkStaticSlotSharder_10-12      	209201756	         5.528 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStaticSlotSharder_1024-12    	218344586	         5.651 ns/op	       0 B/op	       0 allocs/op
-PASS
-ok  	espx/internal/ingestion	3.561s
+chaos_proof fault=dedup_crash_recovery subsystem=sync_worker spend_unchanged=true sync_idem_rows=1 baseline_ok=true
+chaos_proof fault=dedup_resume_apply subsystem=sync_worker spend_micro=125000 baseline_ok=true
+chaos_proof fault=dedup_multi_region_duplicate subsystem=region_outbox_relay deliveries=3 proposal_rows=1 baseline_ok=true
 ```
 
 ---
 
-## 5. Criterion Coverage
+## 5. Metrics
 
-| Test | Criterion | Result |
-|:---|:---|:---|
-| `TestChaos_SO_NoFalseMigrate` | Orchestrator does not migrate under healthy load | **PASS** |
-| `TestChaos_SO_CampaignRoutingMigration` | Orchestrator triggers Triplet migration under overload | **PASS** |
-| `TestChaos_Shard0Outage` | Ingestion continues on shards 1-3 when shard 0 is down | **PASS** |
-| `BenchmarkStaticSlotSharder` | `GetShard` still 0 allocs/op and ~5.6 ns/op after routing table change | **PASS** (0 allocs, 5.5 ns) |
-| `make test-alloc-gate` | Zero heap allocation hot path | **PASS** (0 allocs) |
+| Metric | Type | Labels | When |
+| :--- | :--- | :--- | :--- |
+| `ad_dedup_proposal_total` | Counter | `status` | Each `dedup_claim_confirm` outcome |
+| `ad_dedup_mismatch_total` | Counter | — | `hash_mismatch` |
+| `ad_dedup_confirm_latency_seconds` | Histogram | — | PG round-trip |
+
+**Alert:** `ad_dedup_mismatch_total` increase > 0 — investigate corruption or topic reuse (R4-02).
+
+---
+
+## 6. Verification commands
+
+```bash
+go test ./pkg/dedupkey/... -count=1
+go test ./internal/ingestion/... -run 'Dedup|Sync' -short
+go test ./internal/management/... -run 'RegionOutbox|Dedup' -short
+go test ./internal/ingestion/... ./internal/management/... -run 'Chaos_Dedup' -count=1
+```
+
+---
+
+## 7. Files changed
+
+| File | Change |
+| :--- | :--- |
+| `pkg/dedupkey/*.go` | D3 v2 scope, canonical format, payload hashing |
+| `internal/dedup/adapter.go` | PG claim/confirm adapter + metrics |
+| `internal/ingestion/migrations/00049_dedup_key_proposals.sql` | Table + `dedup_claim_confirm` |
+| `internal/ingestion/dedup_sync.go` | SyncWorker integration |
+| `internal/ingestion/sync_worker.go` | Dedup before batch flush |
+| `internal/management/region_outbox_relay.go` | Claim-before-apply + Redis NX |
+| `internal/ingestion/broker_consumer.go` | PG broker batch dedup |
+| `cmd/management/main.go`, `cmd/processor/main.go` | Wire `DedupAdapter` |
+| `docs/MULTI_REGION.md`, `docs/DATABASE.md` | Idempotency documentation |

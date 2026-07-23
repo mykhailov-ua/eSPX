@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"espx/internal/campaignmodel"
+	"espx/internal/dedup"
 	"espx/internal/metrics"
+
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -17,18 +19,22 @@ import (
 // Campaign spend is consolidated in-memory and flushed at ledgerFlushInterval (M12).
 // When pgGate is set (processor), spend TX shares the global PG budget with StreamConsumer (SEM-P2).
 type SyncWorker struct {
-	rdb                 redis.Cmdable
-	campaignRepo        campaignmodel.CampaignRepository
-	customerRepo        campaignmodel.CustomerRepository
-	interval            time.Duration
-	ledgerFlushInterval time.Duration
-	pgGate              *ProcessorPgGate
-	maxConcurrency      int
-	wg                  sync.WaitGroup
-	syncMu              sync.Mutex
-	rollupMu            sync.Mutex
-	campaignRollup      map[uuid.UUID]pendingRollup
-	lastLedgerFlush     time.Time
+	rdb                  redis.Cmdable
+	campaignRepo         campaignmodel.CampaignRepository
+	customerRepo         campaignmodel.CustomerRepository
+	interval             time.Duration
+	ledgerFlushInterval  time.Duration
+	pgGate               *ProcessorPgGate
+	maxConcurrency       int
+	lockTTLSec           int
+	strictThresholdMicro int64
+	dirtyScanCursor      uint64
+	dedup                *dedup.Adapter
+	wg                   sync.WaitGroup
+	syncMu               sync.Mutex
+	rollupMu             sync.Mutex
+	campaignRollup       map[uuid.UUID]pendingRollup
+	lastLedgerFlush      time.Time
 }
 
 // NewSyncWorker creates a periodic budget sync worker for campaigns and customers.
@@ -45,14 +51,29 @@ func NewSyncWorker(
 		maxConcurrency = maxConcurrencyDefault
 	}
 	return &SyncWorker{
-		rdb:                 rdb,
-		campaignRepo:        campaignRepo,
-		customerRepo:        customerRepo,
-		interval:            interval,
-		ledgerFlushInterval: ledgerFlushInterval,
-		pgGate:              pgGate,
-		maxConcurrency:      maxConcurrency,
-		campaignRollup:      make(map[uuid.UUID]pendingRollup, 64),
+		rdb:                  rdb,
+		campaignRepo:         campaignRepo,
+		customerRepo:         customerRepo,
+		interval:             interval,
+		ledgerFlushInterval:  ledgerFlushInterval,
+		pgGate:               pgGate,
+		maxConcurrency:       maxConcurrency,
+		lockTTLSec:           60,
+		strictThresholdMicro: 5_000_000,
+		campaignRollup:       make(map[uuid.UUID]pendingRollup, 64),
+	}
+}
+
+// ConfigureBudgetContention sets lock TTL and strict-band threshold for PG flush contention (M3-03).
+func (w *SyncWorker) ConfigureBudgetContention(lockTTLSec int, strictThresholdMicro int64) {
+	if w == nil {
+		return
+	}
+	if lockTTLSec > 0 {
+		w.lockTTLSec = lockTTLSec
+	}
+	if strictThresholdMicro > 0 {
+		w.strictThresholdMicro = strictThresholdMicro
 	}
 }
 
@@ -184,7 +205,6 @@ return remaining
 
 // collectCampaignRollup moves dirty campaign sync counters into inflight and stages them for batch PG flush.
 func (w *SyncWorker) collectCampaignRollup(ctx context.Context) {
-	var cursor uint64
 	sem := make(chan struct{}, w.maxConcurrency)
 	if w.pgGate != nil {
 		sem = nil
@@ -192,10 +212,11 @@ func (w *SyncWorker) collectCampaignRollup(ctx context.Context) {
 	var wg sync.WaitGroup
 
 	for {
-		keys, nextCursor, err := w.rdb.SScan(ctx, "budget:dirty_campaigns", cursor, "", 100).Result()
+		keys, nextCursor, err := w.rdb.SScan(ctx, "budget:dirty_campaigns", w.dirtyScanCursor, "", 100).Result()
 		if err != nil {
 			break
 		}
+		w.dirtyScanCursor = nextCursor
 
 		for _, idStr := range keys {
 			wg.Add(1)
@@ -214,13 +235,12 @@ func (w *SyncWorker) collectCampaignRollup(ctx context.Context) {
 		if nextCursor == 0 {
 			break
 		}
-		cursor = nextCursor
 	}
 	wg.Wait()
 }
 
 func (w *SyncWorker) stageCampaignRollup(ctx context.Context, idStr string) {
-	id, amountMicro, txID, keys, ok := w.prepareBudgetEntity(ctx, "campaign", idStr)
+	id, amountMicro, txID, keys, redisRemaining, ok := w.prepareBudgetEntity(ctx, "campaign", idStr)
 	if !ok || amountMicro <= 0 {
 		return
 	}
@@ -230,14 +250,15 @@ func (w *SyncWorker) stageCampaignRollup(ctx context.Context, idStr string) {
 		w.campaignRollup = make(map[uuid.UUID]pendingRollup, 64)
 	}
 	w.campaignRollup[id] = pendingRollup{
-		amountMicro: amountMicro,
-		txID:        txID,
-		idStr:       idStr,
-		syncKey:     keys.syncKey,
-		inFlightKey: keys.inFlightKey,
-		lockKey:     keys.lockKey,
-		txKey:       keys.txKey,
-		dirtySet:    keys.dirtySet,
+		amountMicro:         amountMicro,
+		txID:                txID,
+		idStr:               idStr,
+		syncKey:             keys.syncKey,
+		inFlightKey:         keys.inFlightKey,
+		lockKey:             keys.lockKey,
+		txKey:               keys.txKey,
+		dirtySet:            keys.dirtySet,
+		redisRemainingMicro: redisRemaining,
 	}
 	w.rollupMu.Unlock()
 }
@@ -265,7 +286,29 @@ func (w *SyncWorker) flushCampaignRollup(ctx context.Context) {
 			}
 		}
 
-		err := w.campaignRepo.UpdateSpend(ctx, id, entry.amountMicro, entry.txID)
+		item := SpendFlushItem{
+			CampaignID:          id,
+			AmountMicro:         entry.amountMicro,
+			TxID:                entry.txID,
+			RedisRemainingMicro: entry.redisRemainingMicro,
+		}
+		apply, dedupErr := w.resolveSpendDedup(ctx, &item, w.shardForCampaign(id))
+		if dedupErr != nil {
+			if w.pgGate != nil {
+				w.pgGate.Release()
+			}
+			w.handleCampaignFlushError(ctx, id, entry, dedupErr)
+			continue
+		}
+		if !apply {
+			if w.pgGate != nil {
+				w.pgGate.Release()
+			}
+			w.commitRollupRedis(ctx, entry)
+			continue
+		}
+
+		err := w.campaignRepo.UpdateSpend(ctx, id, item.AmountMicro, item.TxID)
 		if w.pgGate != nil {
 			w.pgGate.Release()
 		}
@@ -289,22 +332,37 @@ func (w *SyncWorker) flushCampaignRollupBatched(ctx context.Context, batch map[u
 			end = len(ids)
 		}
 		chunkIDs := ids[start:end]
-		items := make([]SpendFlushItem, len(chunkIDs))
-		entries := make([]pendingRollup, len(chunkIDs))
-		for i, id := range chunkIDs {
+		items := make([]SpendFlushItem, 0, len(chunkIDs))
+		entries := make([]pendingRollup, 0, len(chunkIDs))
+		for _, id := range chunkIDs {
 			entry := batch[id]
-			items[i] = SpendFlushItem{
-				CampaignID:  id,
-				AmountMicro: entry.amountMicro,
-				TxID:        entry.txID,
+			item := SpendFlushItem{
+				CampaignID:          id,
+				AmountMicro:         entry.amountMicro,
+				TxID:                entry.txID,
+				RedisRemainingMicro: entry.redisRemainingMicro,
+				StrictFlush:         entry.redisRemainingMicro > 0 && entry.redisRemainingMicro < w.strictThresholdMicro,
 			}
-			entries[i] = entry
+			apply, dedupErr := w.resolveSpendDedup(ctx, &item, w.shardForCampaign(id))
+			if dedupErr != nil {
+				w.retainCampaignRollup(id, entry)
+				continue
+			}
+			if !apply {
+				w.commitRollupRedis(ctx, entry)
+				continue
+			}
+			items = append(items, item)
+			entries = append(entries, entry)
+		}
+		if len(items) == 0 {
+			continue
 		}
 
 		if w.pgGate != nil {
 			if err := w.pgGate.Acquire(ctx); err != nil {
-				for i, id := range chunkIDs {
-					w.retainCampaignRollup(id, entries[i])
+				for i, item := range items {
+					w.retainCampaignRollup(item.CampaignID, entries[i])
 				}
 				continue
 			}
@@ -315,17 +373,17 @@ func (w *SyncWorker) flushCampaignRollupBatched(ctx context.Context, batch map[u
 			w.pgGate.Release()
 		}
 		if err != nil {
-			for i, id := range chunkIDs {
-				w.retainCampaignRollup(id, entries[i])
+			for i, item := range items {
+				w.retainCampaignRollup(item.CampaignID, entries[i])
 			}
 			continue
 		}
 
 		metrics.SyncLedgerBatchSize.Observe(float64(len(items)))
 
-		for i, id := range chunkIDs {
+		for i, item := range items {
 			if outcomes[i].Err != nil {
-				w.handleCampaignFlushError(ctx, id, entries[i], outcomes[i].Err)
+				w.handleCampaignFlushError(ctx, item.CampaignID, entries[i], outcomes[i].Err)
 				continue
 			}
 			w.commitRollupRedis(ctx, entries[i])
@@ -350,6 +408,9 @@ func (w *SyncWorker) handleCampaignFlushError(ctx context.Context, id uuid.UUID,
 		_ = w.campaignRepo.UpdateStatus(ctx, id, campaignmodel.CampaignStatusPaused)
 		metrics.LedgerBatchPauseTotal.Inc()
 	}
+	if errors.Is(err, ErrCampaignSpendSkipped) {
+		metrics.SyncLagSeconds.Set(time.Since(w.lastLedgerFlush).Seconds())
+	}
 	w.retainCampaignRollup(id, entry)
 }
 
@@ -367,10 +428,10 @@ type budgetEntityKeys struct {
 	dirtySet    string
 }
 
-func (w *SyncWorker) prepareBudgetEntity(ctx context.Context, prefix, idStr string) (uuid.UUID, int64, string, budgetEntityKeys, bool) {
+func (w *SyncWorker) prepareBudgetEntity(ctx context.Context, prefix, idStr string) (uuid.UUID, int64, string, budgetEntityKeys, int64, bool) {
 	id, err := uuid.Parse(idStr)
 	if err != nil {
-		return uuid.UUID{}, 0, "", budgetEntityKeys{}, false
+		return uuid.UUID{}, 0, "", budgetEntityKeys{}, 0, false
 	}
 
 	keys := budgetEntityKeys{
@@ -381,16 +442,21 @@ func (w *SyncWorker) prepareBudgetEntity(ctx context.Context, prefix, idStr stri
 		dirtySet:    "budget:dirty_" + prefix + "s",
 	}
 
+	lockTTL := w.lockTTLSec
+	if lockTTL <= 0 {
+		lockTTL = 60
+	}
+
 	newTxID := uuid.New().String()
 	res, err := w.rdb.Eval(ctx, prepareSyncScript,
-		[]string{keys.syncKey, keys.inFlightKey, keys.lockKey, keys.txKey}, 60, newTxID).Result()
+		[]string{keys.syncKey, keys.inFlightKey, keys.lockKey, keys.txKey}, lockTTL, newTxID).Result()
 	if err != nil {
-		return uuid.UUID{}, 0, "", budgetEntityKeys{}, false
+		return uuid.UUID{}, 0, "", budgetEntityKeys{}, 0, false
 	}
 
 	arr, ok := res.([]any)
 	if !ok || len(arr) < 2 {
-		return uuid.UUID{}, 0, "", budgetEntityKeys{}, false
+		return uuid.UUID{}, 0, "", budgetEntityKeys{}, 0, false
 	}
 
 	amountVal, ok1 := arr[0].(string)
@@ -399,23 +465,46 @@ func (w *SyncWorker) prepareBudgetEntity(ctx context.Context, prefix, idStr stri
 		if amountVal == "0" {
 			w.rdb.SRem(ctx, keys.dirtySet, idStr)
 		}
-		return uuid.UUID{}, 0, "", budgetEntityKeys{}, false
+		return uuid.UUID{}, 0, "", budgetEntityKeys{}, 0, false
 	}
 
 	amountMicro, err := strconv.ParseInt(amountVal, 10, 64)
 	if err != nil || amountMicro <= 0 {
-		return uuid.UUID{}, 0, "", budgetEntityKeys{}, false
+		return uuid.UUID{}, 0, "", budgetEntityKeys{}, 0, false
 	}
 
-	return id, amountMicro, txIDVal, keys, true
+	redisRemaining := int64(0)
+	if prefix == "campaign" {
+		remKey := BudgetCampaignKey(id)
+		if rem, err := w.rdb.Get(ctx, remKey).Int64(); err == nil {
+			redisRemaining = rem
+		}
+	}
+
+	ttl, err := w.rdb.TTL(ctx, keys.lockKey).Result()
+	if err == nil && ttl > 0 && ttl < 10*time.Second {
+		_ = w.rdb.Expire(ctx, keys.lockKey, time.Duration(lockTTL)*time.Second).Err()
+		metrics.SyncLockExpiredTotal.Inc()
+	}
+
+	return id, amountMicro, txIDVal, keys, redisRemaining, true
 }
 
 // maxConcurrencyDefault is the management-path parallel sync cap when no processor PG gate is set.
 const maxConcurrencyDefault = 32
 
+// BudgetLockTTLSeconds derives sync lock TTL from flush intervals (M3-14).
+func BudgetLockTTLSeconds(ledgerFlushMs, budgetSyncMs int) int {
+	sec := ledgerFlushMs/1000 + budgetSyncMs/1000 + 30
+	if sec < 60 {
+		return 60
+	}
+	return sec
+}
+
 // syncEntity applies one dirty budget entity through prepare, Postgres update, and commit.
 func (w *SyncWorker) syncEntity(ctx context.Context, prefix string, idStr string, updateFn func(context.Context, uuid.UUID, int64, string) error) {
-	id, amountMicro, txID, keys, ok := w.prepareBudgetEntity(ctx, prefix, idStr)
+	id, amountMicro, txID, keys, _, ok := w.prepareBudgetEntity(ctx, prefix, idStr)
 	if !ok || amountMicro <= 0 {
 		return
 	}
