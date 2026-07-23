@@ -6,6 +6,19 @@ The system edge layer has two tiers: network ingress (OpenResty :8180) and hot-p
 
 # Part I — Network Ingress (L4/L7)
 
+## 0. Multi-Protocol Topology (M5)
+
+Clients negotiate TLS ALPN (`h3` | `h2` | `http/1.1`) on **:443**. OpenResty terminates HTTP/2 and HTTP/3; upstream to gnet trackers is always **HTTP/1.1** (`proxy_http_version 1.1` + keepalive pool). Plain **:8180** remains for local dev without TLS.
+
+| Listener | Client protocol | Upstream to tracker |
+| :--- | :--- | :--- |
+| `:8180` | HTTP/1.1 | HTTP/1.1 |
+| `:443` | H2 / H3 / H1.1 (ALPN) | HTTP/1.1 |
+
+Fraud signals over H2/H3: edge sets `X-Original-Method`, `X-Original-Path`, and passive `X-TLS-Hash` (ClientHello MD5 class) before proxying. Metric: `espx_edge_ingress_protocol_{h1,h2,h3}_total`.
+
+Dev TLS certs: `deploy/nginx/certs/generate-dev-certs.sh`. HTTP/3 requires nginx ≥ 1.25 with `ngx_http_v3_module` (stock OpenResty alpine may lack QUIC — H2 on :443 still works).
+
 ## 1. Processing Pipeline (L7)
 
 `access-check.lua` implements two phases:
@@ -84,4 +97,4 @@ eSPX implements **§1 defensive** measures only (XDP self-defense, passive TLS/T
 - Passive fraud: headers + TLS hash → `DeviceFilter`; no browser spyware.
 - Blocks: operator RBAC + outbox + immutable allowlist + audit.
 
-Full matrix (Art. 361 UK, CFAA, GDPR, EU AI Act): [`GUIDE_COMPLIANCE.md`](../GUIDE_COMPLIANCE.md). Milestone: [MILESTONE.md](MILESTONE.md) M5.
+Full matrix (Art. 361 UK, CFAA, GDPR, EU AI Act): [`GUIDE_COMPLIANCE.md`](../GUIDE_COMPLIANCE.md). Platform context: [ARCHITECTURE.md](ARCHITECTURE.md).

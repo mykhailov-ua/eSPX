@@ -6,6 +6,10 @@ source "$(cd "$(dirname "$0")/../lib" && pwd)/paths.sh"
 cd "$ROOT"
 LUA_MOUNT="/etc/nginx/lua"
 
+run_chaos_tests() {
+	docker exec espx-nginx-1 /usr/local/openresty/luajit/bin/luajit "${LUA_MOUNT}/edge_parse_dfa_chaos_test.lua" "${LUA_MOUNT}"
+}
+
 run_tests() {
 	docker exec espx-nginx-1 /usr/local/openresty/luajit/bin/luajit -e "
 package.path = '${LUA_MOUNT}/?.lua;;'
@@ -23,6 +27,7 @@ cid, err = dfa.extract_campaign_id(over, #over)
 assert(err == dfa.ERR_OVERSIZE, 'campaign len')
 print('edge-parse-dfa: all tests passed')
 "
+	run_chaos_tests
 }
 
 if docker ps --format '{{.Names}}' | grep -q '^espx-nginx-1$'; then
@@ -34,4 +39,6 @@ package.path = '${LUA_MOUNT}/?.lua;;'
 local dfa = require('edge-parse-dfa')
 print('edge-parse-dfa: smoke ok')
 "
+	docker run --rm -v "$ROOT/deploy/nginx/lua:${LUA_MOUNT}:ro" openresty/openresty:alpine \
+		/usr/local/openresty/luajit/bin/luajit "${LUA_MOUNT}/edge_parse_dfa_chaos_test.lua" "${LUA_MOUNT}"
 fi

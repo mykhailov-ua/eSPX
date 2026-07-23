@@ -9,7 +9,6 @@ local edge_fraud_tier = require "edge-fraud-tier"
 local _M = {}
 
 local MAX_SCAN_BYTES = edge_parse_dfa.MAX_SCAN_BYTES
-local MAX_TRACKER_BODY = edge_parse_dfa.MAX_BODY_BYTES
 
 local function bench_file(name)
     local path = "/etc/nginx/lua/.edge_" .. name

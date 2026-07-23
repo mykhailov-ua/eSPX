@@ -6,7 +6,6 @@ local _M = {}
 local dict = ngx.shared.slot_map
 
 local MANAGEMENT_URL = os.getenv("MANAGEMENT_URL") or "http://127.0.0.1:8188"
-local SYNC_INTERVAL = tonumber(os.getenv("SLOT_MAP_SYNC_INTERVAL_SEC") or "") or 10
 
 -- CRC-32C (Castagnoli) table for UUID bytes — matches Go crc32Castagnoli.
 local crc32c_table = {
@@ -100,10 +99,10 @@ local function http_get_json(url)
         return nil, err
     end
     local req = "GET " .. path .. " HTTP/1.1\r\nHost: " .. host .. "\r\nConnection: close\r\nAccept: application/json\r\n\r\n"
-    ok, err = sock:send(req)
-    if not ok then
+    local sent, send_err = sock:send(req)
+    if not sent then
         sock:close()
-        return nil, err
+        return nil, send_err
     end
     local data, read_err = sock:receive("*a")
     sock:close()

@@ -49,6 +49,10 @@ function _M.record_chunked_reject()
     metrics:incr("chunked_reject_total", 1, 0)
 end
 
+function _M.record_ingress_protocol(proto)
+    metrics:incr("ingress_protocol:" .. proto .. "_total", 1, 0)
+end
+
 function _M.record_blacklist_stale()
     metrics:incr("blacklist_stale_total", 1, 0)
 end
@@ -73,6 +77,9 @@ function _M.render_prometheus()
     local body_stream = metrics:get("body_stream_total") or 0
     local body_peek = metrics:get("body_peek_total") or 0
     local chunked_reject = metrics:get("chunked_reject_total") or 0
+    local ingress_h1 = metrics:get("ingress_protocol:http/1.1_total") or 0
+    local ingress_h2 = metrics:get("ingress_protocol:h2_total") or 0
+    local ingress_h3 = metrics:get("ingress_protocol:h3_total") or 0
     local blacklist_stale = metrics:get("blacklist_stale_total") or 0
     local sync_ts = blacklist_cache:get("_bl_sync_ts") or 0
     local bl_count = blacklist_cache:get("_bl_count") or 0
@@ -142,6 +149,30 @@ function _M.render_prometheus()
         "counter",
         "Requests rejected because chunked encoding is not allowed on edge.",
         chunked_reject
+    )
+    say_metric(
+        "espx_edge_ingress_protocol_total",
+        "counter",
+        "Client ingress protocol at edge (label via separate series below).",
+        ingress_h1 + ingress_h2 + ingress_h3
+    )
+    say_metric(
+        "espx_edge_ingress_protocol_h1_total",
+        "counter",
+        "Requests terminated at edge over HTTP/1.1.",
+        ingress_h1
+    )
+    say_metric(
+        "espx_edge_ingress_protocol_h2_total",
+        "counter",
+        "Requests terminated at edge over HTTP/2.",
+        ingress_h2
+    )
+    say_metric(
+        "espx_edge_ingress_protocol_h3_total",
+        "counter",
+        "Requests terminated at edge over HTTP/3 (QUIC).",
+        ingress_h3
     )
     say_metric(
         "espx_edge_blacklist_stale_total",
