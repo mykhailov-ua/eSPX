@@ -125,6 +125,16 @@ groups:
           summary: "High number of financial discrepancies detected"
           description: "Automated reconciliation detected more than 5 campaign financial discrepancies in the last 5 minutes. Audit trails and ledger logs should be inspected for edge sync anomalies."
 
+      # Per-campaign snapshot drift exceeds $50 equivalent (50M micro-units).
+      - alert: ReconciliationDriftHigh
+        expr: max(ad_reconciliation_drift_micro) > 50000000
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Campaign budget drift exceeds $50"
+          description: "Snapshot reconciliation detected drift above 50M micro-units for at least one campaign over 1 hour."
+
       # Hot path fell through to Postgres for budget because Redis key was cold or evicted.
       - alert: BudgetCacheMissPG
         expr: rate(ad_budget_cache_miss_pg_total[5m]) > 0

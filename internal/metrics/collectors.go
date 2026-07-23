@@ -106,6 +106,18 @@ var (
 		Name: "ad_reconciliation_adjustment_errors_total",
 		Help: "Total number of errors during automated reconciliation corrections",
 	})
+	ReconDriftMicro = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ad_reconciliation_drift_micro",
+		Help: "Absolute micro-unit drift detected during budget snapshot reconciliation",
+	}, []string{"campaign_id"})
+	ReconCorrectionsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_reconciliation_corrections_total",
+		Help: "RECONCILIATION_ADJUST outbox events enqueued by recon workers",
+	})
+	ReconCorrectionsAppliedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_reconciliation_corrections_applied_total",
+		Help: "RECONCILIATION_ADJUST outbox events applied successfully",
+	})
 
 	// gnet hot-path metrics exist so capacity alerts catch connection saturation, parse failures, and worker pool overload before requests are dropped.
 	GnetPacketsReceived = promauto.NewCounter(prometheus.CounterOpts{
@@ -544,6 +556,19 @@ var (
 		Name: "ad_region_outbox_delivered_total",
 		Help: "Outbox events applied to a regional Redis cell by RegionOutboxRelay",
 	})
+	DedupProposalTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ad_dedup_proposal_total",
+		Help: "D3 v2 dedup_claim_confirm outcomes",
+	}, []string{"status"})
+	DedupMismatchTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_dedup_mismatch_total",
+		Help: "D3 v2 hash_mismatch rejections (same SSID, different factor_u)",
+	})
+	DedupConfirmLatency = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "ad_dedup_confirm_latency_seconds",
+		Help:    "dedup_claim_confirm round-trip latency",
+		Buckets: prometheus.ExponentialBuckets(0.001, 2, 14),
+	})
 	RegionOutboxDeliveryLag = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "ad_region_outbox_delivery_lag_seconds",
 		Help:    "Outbox created_at to regional DELIVERED latency",
@@ -670,6 +695,14 @@ var (
 		Help:    "Campaign count per consolidated ledger flush Postgres transaction",
 		Buckets: []float64{1, 2, 4, 8, 16, 32},
 	})
+	SyncLagSeconds = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "ad_sync_lag_seconds",
+		Help: "Seconds since campaign last PG spend update while inflight budget remains in Redis",
+	})
+	SyncLockExpiredTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "sync_lock_expired_total",
+		Help: "Budget sync lock TTL extensions or expirations detected during flush prepare",
+	})
 	OutboxPollIntervalMs = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "ad_outbox_poll_interval_ms",
 		Help:    "Outbox worker idle poll interval in milliseconds (coefficient backoff)",
@@ -708,5 +741,33 @@ var (
 	CHSingleRowInsertsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ad_ch_single_row_inserts_total",
 		Help: "ClickHouse store attempts narrowed to a single event during poison-pill binary split",
+	})
+
+	// Slot migration metrics (M1) — lag catch-up and cutover gates for hot-slot migrations.
+	SlotMigrationLagMessages = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ad_slot_migration_lag_messages",
+		Help: "Replication lag messages between dual-write source and target during slot migration",
+	}, []string{"slot", "version"})
+	SlotMigrationDualWriteTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ad_slot_migration_dual_write_total",
+		Help: "Dual-write operations during zero-downtime slot migration cutover",
+	}, []string{"slot", "result"})
+	SlotMigrationCutoverBlockedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ad_slot_migration_cutover_blocked_total",
+		Help: "Slot cutover attempts blocked (lag threshold, missing keys, invariant failure)",
+	}, []string{"reason"})
+
+	// XDP edge filter counters — summed per-CPU stats map scraped by edge-bpf-sync.
+	XDPPassTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ad_xdp_pass_total",
+		Help: "XDP packets passed to the kernel stack by reason",
+	}, []string{"reason"})
+	XDPDropTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ad_xdp_drop_total",
+		Help: "XDP packets dropped at L4 edge by reason",
+	}, []string{"reason"})
+	XDPFingerprintTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_xdp_fingerprint_total",
+		Help: "Passive SYN TCP fingerprints emitted to ringbuf (cold path, score only)",
 	})
 )

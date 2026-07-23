@@ -65,7 +65,7 @@ func (reconService *ReconService) ReconcileWindow(ctx context.Context, start, en
 	var totalDelta int64
 
 	for campID, ledgerSpent := range ledgerMap {
-		syncKey := "budget:sync:campaign:" + campID.String()
+		syncKey := ingestion.CampaignSyncKey(campID)
 		rdb := reconService.mgmt.getRDB(campID)
 		if rdb == nil {
 			slog.Error("no redis shard for campaign in recon", "campaign_id", campID)
@@ -121,33 +121,14 @@ func (reconService *ReconService) ReconcileWindow(ctx context.Context, start, en
 			continue
 		}
 
-		adjType := "RECONCILIATION_ADJUST"
-		_, err = reconService.mgmt.GetPool().Exec(opCtx, `
-			INSERT INTO balance_ledger (customer_id, campaign_id, amount, type, created_at)
-			VALUES ($1, $2, $3, $4, NOW())
-		`, customerID, ingestion.ToUUID(campID), -delta, adjType)
-		if err != nil {
-			slog.Error("failed to insert corrective ledger entry for recon", "campaign_id", campID, "delta", delta, "error", err)
+		shardID := int16(reconService.mgmt.sharder.GetShard(campID))
+		custUUID, _ := uuid.FromBytes(customerID.Bytes[:])
+		if err := reconService.enqueueReconciliationAdjust(opCtx, run.ID, campID, custUUID, shardID, -delta, delta, "hourly_window_recon"); err != nil {
+			slog.Error("failed to enqueue recon adjustment", "campaign_id", campID, "delta", delta, "error", err)
 			metrics.ReconAdjustmentErrors.Inc()
 			continue
 		}
-
-		if err := reconService.adjustRedisBudgetAtomically(opCtx, rdb, campID, delta); err != nil {
-			slog.Error("failed to adjust Redis budget atomically in recon", "campaign_id", campID, "delta", delta, "error", err)
-			metrics.ReconAdjustmentErrors.Inc()
-			continue
-		}
-
-		_, err = reconService.mgmt.GetPool().Exec(opCtx, `
-			UPDATE recon_discrepancies 
-			SET redis_adjusted = true 
-			WHERE run_id = $1 AND campaign_id = $2
-		`, run.ID, ingestion.ToUUID(campID))
-		if err != nil {
-			slog.Error("failed to mark recon discrepancy as adjusted in postgres", "run_id", run.ID, "campaign_id", campID, "error", err)
-			metrics.ReconAdjustmentErrors.Inc()
-		}
-
+		metrics.ReconCorrectionsTotal.Inc()
 		totalDelta += delta
 	}
 
@@ -246,7 +227,7 @@ func (reconService *ReconService) adjustRedisBudgetAtomically(ctx context.Contex
 		end
 		return newVal
 	`
-	_, err := rdb.Eval(ctx, script, []string{"budget:sync:campaign:" + campID.String()}, delta).Result()
+	_, err := rdb.Eval(ctx, script, []string{ingestion.CampaignSyncKey(campID)}, delta).Result()
 	return err
 }
 
@@ -257,6 +238,18 @@ func (reconService *ReconService) createRun(ctx context.Context, start, end time
 		INSERT INTO recon_runs (period_start, period_end, status) VALUES ($1, $2, 'PENDING') RETURNING id
 	`, start, end).Scan(&run.ID)
 	return run, err
+}
+
+func (reconService *ReconService) enqueueReconciliationAdjust(
+	ctx context.Context,
+	runID int64,
+	campID, customerID uuid.UUID,
+	shardID int16,
+	ledgerAmt, redisDelta int64,
+	reason string,
+) error {
+	worker := &ReconWorker{svc: reconService.mgmt}
+	return worker.enqueueReconciliationAdjust(ctx, runID, campID, customerID, shardID, ledgerAmt, redisDelta, reason)
 }
 
 // failRun marks a recon run as failed when the pipeline cannot complete the window.

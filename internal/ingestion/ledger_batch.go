@@ -16,11 +16,16 @@ const (
 	maxLedgerBatchSize      = 32
 )
 
+// ErrCampaignSpendSkipped is returned when a campaign row is locked by another flush worker.
+var ErrCampaignSpendSkipped = errors.New("campaign spend row locked")
+
 // SpendFlushItem is one campaign's consolidated Redis sync window awaiting PG commit.
 type SpendFlushItem struct {
-	CampaignID  uuid.UUID
-	AmountMicro int64
-	TxID        string
+	CampaignID          uuid.UUID
+	AmountMicro         int64
+	TxID                string
+	RedisRemainingMicro int64
+	StrictFlush         bool
 }
 
 // SpendFlushOutcome records per-campaign batch flush result.
@@ -36,14 +41,15 @@ type spendBatchFlusher interface {
 
 // pendingRollup holds one campaign's inflight Redis sync awaiting a consolidated PG flush (M12).
 type pendingRollup struct {
-	amountMicro int64
-	txID        string
-	idStr       string
-	syncKey     string
-	inFlightKey string
-	lockKey     string
-	txKey       string
-	dirtySet    string
+	amountMicro         int64
+	txID                string
+	idStr               string
+	syncKey             string
+	inFlightKey         string
+	lockKey             string
+	txKey               string
+	dirtySet            string
+	redisRemainingMicro int64
 }
 
 func ledgerBatchHash(txID string) string {

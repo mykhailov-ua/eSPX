@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 	"time"
+
+	"espx/internal/config"
 )
 
 // ReconWorker triggers periodic ledger-to-Redis reconciliation and quota reconciliation (Phase 1.5).
@@ -55,12 +57,22 @@ func (w *ReconWorker) Start(ctx context.Context) {
 	drainCheckTicker := time.NewTicker(time.Minute)
 	defer drainCheckTicker.Stop()
 
+	snapshotTicker := time.NewTicker(reconSnapshotInterval(w.svc.cfg))
+	defer snapshotTicker.Stop()
+
 	reconSvc := NewReconService(w.svc)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-snapshotTicker.C:
+			if err := w.svc.withPgLow(ctx, func(runCtx context.Context) error {
+				w.ReconcileBudgetSnapshot(runCtx)
+				return nil
+			}); err != nil && !errors.Is(err, ErrMgmtPgGateRejected) {
+				slog.Error("budget snapshot recon failed", "error", err)
+			}
 		case <-ticker.C:
 			end := time.Now().Truncate(time.Hour).Add(-2 * time.Hour)
 			start := end.Add(-time.Hour)
@@ -96,4 +108,18 @@ func (w *ReconWorker) ReconcileQuotas(ctx context.Context) {
 	} else {
 		w.MonitorQuotaDrift(ctx)
 	}
+}
+
+func reconSnapshotInterval(cfg *config.Config) time.Duration {
+	if cfg == nil {
+		return 30 * time.Second
+	}
+	if cfg.Management.ReconSnapshotIntervalMs > 0 {
+		return time.Duration(cfg.Management.ReconSnapshotIntervalMs) * time.Millisecond
+	}
+	ms := cfg.BudgetSyncIntervalMs
+	if ms <= 0 {
+		ms = 5000
+	}
+	return time.Duration(ms) * time.Millisecond
 }

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"espx/internal/database"
+	"espx/internal/ingestion"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -61,7 +62,7 @@ func (m *mockRedisForRecon) getVal(key string) int64 {
 func TestRecon_RaceConcurrentAdjustments(t *testing.T) {
 	rdb := newMockRedisForRecon()
 	campID := uuid.New()
-	key := "budget:sync:campaign:" + campID.String()
+	key := ingestion.CampaignSyncKey(campID)
 
 	rdb.data[key] = 10_000_000
 
@@ -102,7 +103,7 @@ func TestRecon_AdjustRealRedis(t *testing.T) {
 
 	ctx := context.Background()
 	campID := uuid.New()
-	key := "budget:sync:campaign:" + campID.String()
+	key := ingestion.CampaignSyncKey(campID)
 	recon := &ReconService{}
 
 	require.NoError(t, rdb.Set(ctx, key, 10_000_000, 0).Err())
@@ -137,7 +138,7 @@ func TestRecon_AdjustRealRedis(t *testing.T) {
 
 	t.Run("LargeNegativeDeltaClampsToZero", func(t *testing.T) {
 		smallID := uuid.New()
-		smallKey := "budget:sync:campaign:" + smallID.String()
+		smallKey := ingestion.CampaignSyncKey(smallID)
 		require.NoError(t, rdb.Set(ctx, smallKey, 1_000_000, 0).Err())
 
 		err := recon.adjustRedisBudgetAtomically(ctx, rdb, smallID, -100_000_000)
@@ -154,7 +155,7 @@ func TestRecon_EdgeCases(t *testing.T) {
 	t.Run("LargeNegativeDeltaIsClampedByLua", func(t *testing.T) {
 		rdb := newMockRedisForRecon()
 		campID := uuid.New()
-		key := "budget:sync:campaign:" + campID.String()
+		key := ingestion.CampaignSyncKey(campID)
 		rdb.data[key] = 1_000_000
 
 		err := func() error {
@@ -181,7 +182,7 @@ func TestRecon_LedgerTypeSecurity(t *testing.T) {
 func BenchmarkRecon_AtomicAdjustment(b *testing.B) {
 	rdb := newMockRedisForRecon()
 	campID := uuid.New()
-	key := "budget:sync:campaign:" + campID.String()
+	key := ingestion.CampaignSyncKey(campID)
 	rdb.data[key] = 50_000_000
 
 	b.ResetTimer()

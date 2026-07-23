@@ -52,7 +52,7 @@ type quotaRow struct {
 	updatedAt      time.Time
 }
 
-// RepairQuotaDrift scans PG↔Redis quota drift and crash gaps; enqueues QUOTA_REPAIR when enabled.
+// RepairQuotaDrift scans PG-Redis quota drift and crash gaps; enqueues QUOTA_REPAIR when enabled.
 func (w *ReconWorker) RepairQuotaDrift(ctx context.Context) {
 	if w == nil || w.svc == nil || w.svc.cfg == nil || !w.svc.cfg.QuotaAutoRepair {
 		return
@@ -270,10 +270,6 @@ func (w *ReconWorker) releaseDeadShardReservations(ctx context.Context) {
 		}
 		slog.Warn("released PG quota reservations for dead shard", "shard", shardIdx, "rows", tag.RowsAffected())
 	}
-}
-
-func (w *ReconWorker) quorumDuration() time.Duration {
-	return defaultDeadShardQuorum
 }
 
 // MonitorQuotaDrift logs drift beyond chunk_size (shadow metric path when auto-repair is off).

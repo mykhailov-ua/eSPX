@@ -51,7 +51,7 @@ func TestReconcileWindow_skipsAutoAdjustWhenDeltaExceedsChunk(t *testing.T) {
 		ingestion.ToUUID(customerID), ingestion.ToUUID(campaignID), -500_000, start.Add(10*time.Minute))
 	require.NoError(t, err)
 
-	syncKey := "budget:sync:campaign:" + campaignID.String()
+	syncKey := ingestion.CampaignSyncKey(campaignID)
 	require.NoError(t, rdb.Set(ctx, syncKey, 10_000_000, 0).Err())
 
 	require.NoError(t, recon.ReconcileWindow(ctx, start, end))
@@ -107,10 +107,13 @@ func TestReconcileWindow_autoAdjustsWithinChunk(t *testing.T) {
 		ingestion.ToUUID(customerID), ingestion.ToUUID(campaignID), -500_000, start.Add(10*time.Minute))
 	require.NoError(t, err)
 
-	syncKey := "budget:sync:campaign:" + campaignID.String()
+	syncKey := ingestion.CampaignSyncKey(campaignID)
 	require.NoError(t, rdb.Set(ctx, syncKey, 1_000_000, 0).Err())
 
 	require.NoError(t, recon.ReconcileWindow(ctx, start, end))
+
+	ob := NewOutboxWorker(svc)
+	require.NoError(t, ob.ProcessOutbox(ctx))
 
 	var adjusted bool
 	err = pool.QueryRow(ctx, `

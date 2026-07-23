@@ -33,8 +33,8 @@ func ReadBudgetInvariant(ctx context.Context, pool *pgxpool.Pool, rdb redis.Cmda
 		return snap, fmt.Errorf("read campaign spend from postgres: %w", err)
 	}
 
-	budgetKey := "budget:campaign:" + campaignID.String()
-	syncKey := "budget:sync:campaign:" + campaignID.String()
+	budgetKey := budgetCampaignKey(campaignID)
+	syncKey := campaignSyncKey(campaignID)
 
 	syncDelta, err := rdb.Get(ctx, syncKey).Int64()
 	if err == redis.Nil {
