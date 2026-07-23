@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"espx/internal/config"
+
 	"github.com/panjf2000/gnet/v2"
 	"github.com/stretchr/testify/assert"
 )
@@ -18,25 +19,25 @@ func TestAdsPacketHandler_Validation(t *testing.T) {
 	sharder := NewJumpHashSharder(1)
 	handler := NewAdsPacketHandler(cfg, registry, nil, nil, nil, sharder, "fraud-stream", nil)
 
-	t.Run("POST /unknown -> 404 Not Found", func(t *testing.T) {
+	t.Run("POST /unknown -> 400 Bad Request", func(t *testing.T) {
 		conn := NewGnetHarnessConn([]byte("POST /unknown HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 5\r\n\r\nhello"))
 		act := handler.OnTraffic(conn)
-		assert.Equal(t, gnet.None, act)
-		assert.True(t, bytes.Equal(conn.Written(), respNotFound), "expected response: %q, got: %q", string(respNotFound), string(conn.Written()))
+		assert.Equal(t, gnet.Close, act)
+		assert.True(t, bytes.Equal(conn.Written(), respBadRequestClose), "expected response: %q, got: %q", string(respBadRequestClose), string(conn.Written()))
 	})
 
-	t.Run("GET /track -> 405 Method Not Allowed", func(t *testing.T) {
+	t.Run("GET /track -> 400 Bad Request", func(t *testing.T) {
 		conn := NewGnetHarnessConn([]byte("GET /track HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n"))
 		act := handler.OnTraffic(conn)
-		assert.Equal(t, gnet.None, act)
-		assert.True(t, bytes.Equal(conn.Written(), respMethodNotAllowed))
+		assert.Equal(t, gnet.Close, act)
+		assert.True(t, bytes.Equal(conn.Written(), respBadRequestClose))
 	})
 
-	t.Run("DELETE /track -> 405 Method Not Allowed", func(t *testing.T) {
+	t.Run("DELETE /track -> 400 Bad Request", func(t *testing.T) {
 		conn := NewGnetHarnessConn([]byte("DELETE /track HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n"))
 		act := handler.OnTraffic(conn)
-		assert.Equal(t, gnet.None, act)
-		assert.True(t, bytes.Equal(conn.Written(), respMethodNotAllowed))
+		assert.Equal(t, gnet.Close, act)
+		assert.True(t, bytes.Equal(conn.Written(), respBadRequestClose))
 	})
 
 	t.Run("POST /track too large -> 413 Payload Too Large", func(t *testing.T) {
@@ -71,8 +72,8 @@ func TestAdsPacketHandler_Validation(t *testing.T) {
 		conn := NewGnetHarnessConn(BuildGnetGetHealth())
 		act := handler.OnTraffic(conn)
 		assert.Equal(t, gnet.None, act)
-		if !bytes.HasPrefix(conn.Written(), []byte("HTTP/1.1 503 Service Unavailable")) || !bytes.Contains(conn.Written(), []byte("DEGRADED")) {
-			t.Fatalf("expected 503 health with DEGRADED body, got: %q", string(conn.Written()))
+		if !bytes.HasPrefix(conn.Written(), []byte("HTTP/1.1 503 Service Unavailable")) || !bytes.Contains(conn.Written(), []byte("not ready")) {
+			t.Fatalf("expected 503 health with not ready body, got: %q", string(conn.Written()))
 		}
 	})
 }

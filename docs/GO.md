@@ -2,6 +2,8 @@
 
 Tracker traffic ingestion must strictly meet SLA targets: p95 < 50 ms, p99 < 80 ms. This document covers use of the `gnet` library, worker pools, zero-allocation policy, and compiler tuning.
 
+**Detailed checklist (BCE, branches, padding, DFA vs vtproto):** [GUIDE_HOT_PATH_ZERO_ALLOC.md](../GUIDE_HOT_PATH_ZERO_ALLOC.md)
+
 ---
 
 ## 1. gnet and PinnedWorkerPool
@@ -10,7 +12,7 @@ The standard `net/http` library creates one goroutine per request. At high RPS t
 
 ### gnet event loop
 *   Multiplexing via `epoll`. Fixed thread count (typically 2 per CPU core).
-*   HTTP 1.1 parsing via a DFA scanner directly from the socket buffer without heap allocations.
+*   HTTP/1.1 request-line and headers: table-driven FSM (`http1_fsm.go`, M5-B); incremental feed from gnet ring buffer.
 
 ### Worker pool (PinnedWorkerPool)
 After parsing, work is handed off to a worker. Worker pinning is based on campaign hash:
@@ -42,6 +44,8 @@ This keeps the system stable across NTP time jumps.
 
 ## 4. Compiler Analysis
 
+See [GUIDE_HOT_PATH_ZERO_ALLOC.md](../GUIDE_HOT_PATH_ZERO_ALLOC.md) §2–3 for BCE patterns, branch reduction, and verification commands.
+
 *   **BCE (Bounds-Check Elimination).** Use compiler hints to remove bounds checks in loops.
 *   **Escape Analysis.** Ensure hot-path variables stay on the stack and do not escape to the heap.
 *   **Inlining.** Keep functions simple so the compiler can inline them (reducing call overhead).
@@ -68,6 +72,8 @@ Forbid nested pointers on the hot path. Every `ptr.Field` that is also a pointer
 
 ## 6. Branch Prediction and Pipeline Density
 
+See [GUIDE_HOT_PATH_ZERO_ALLOC.md](../GUIDE_HOT_PATH_ZERO_ALLOC.md) §3–4 for packed key matching, lookup tables, and padding examples (`ingress_quota.go`, `fraud_stream_queue.go`).
+
 CPU execution pipelines stall when branch predictions fail (TAGE/BTB).
 
 ### Predictability
@@ -81,6 +87,8 @@ CPU execution pipelines stall when branch predictions fail (TAGE/BTB).
 ---
 
 ## 7. Atomic Operations and Synchronization
+
+See [GUIDE_HOT_PATH_ZERO_ALLOC.md](../GUIDE_HOT_PATH_ZERO_ALLOC.md) §4 for cache-line padding rules and atomic snapshot patterns.
 
 The `sync/atomic` package is essential for lock-free hot paths, but carries significant hardware-level risks.
 

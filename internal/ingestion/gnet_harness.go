@@ -15,10 +15,11 @@ var gnetHarnessRemoteAddr = &net.TCPAddr{IP: net.IPv4(1, 1, 1, 1), Port: 1234}
 // GnetHarnessConn is a minimal gnet.Conn stub for OnTraffic tests.
 type GnetHarnessConn struct {
 	gnet.Conn
-	inbound []byte
-	written []byte
-	ctx     any
-	addr    net.Addr
+	inbound   []byte
+	written   []byte
+	responses [][]byte
+	ctx       any
+	addr      net.Addr
 }
 
 // NewGnetHarnessConn returns a connection preloaded with raw HTTP request bytes.
@@ -35,11 +36,14 @@ func (c *GnetHarnessConn) SetContext(v any) { c.ctx = v }
 
 func (c *GnetHarnessConn) Write(b []byte) (int, error) {
 	c.written = append(c.written[:0], b...)
+	cp := make([]byte, len(b))
+	copy(cp, b)
+	c.responses = append(c.responses, cp)
 	return len(b), nil
 }
 
 func (c *GnetHarnessConn) AsyncWrite(buf []byte, callback gnet.AsyncCallback) error {
-	c.written = append(c.written[:0], buf...)
+	_, _ = c.Write(buf)
 	if callback != nil {
 		_ = callback(c, nil)
 	}
@@ -72,6 +76,18 @@ func (c *GnetHarnessConn) RemoteAddr() net.Addr {
 
 // Written returns the last response bytes written to the connection.
 func (c *GnetHarnessConn) Written() []byte { return c.written }
+
+// WriteCount returns how many HTTP responses were written (pipelining tests).
+func (c *GnetHarnessConn) WriteCount() int { return len(c.responses) }
+
+// AllResponses returns a copy of every response written to the connection.
+func (c *GnetHarnessConn) AllResponses() [][]byte {
+	out := make([][]byte, len(c.responses))
+	for i, r := range c.responses {
+		out[i] = append([]byte(nil), r...)
+	}
+	return out
+}
 
 // SetRemoteAddr overrides the peer address for proxy header tests.
 func (c *GnetHarnessConn) SetRemoteAddr(addr net.Addr) { c.addr = addr }

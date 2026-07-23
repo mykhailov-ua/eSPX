@@ -1,13 +1,14 @@
 package ingestion
 
 import (
-	"espx/internal/ingestion/pb"
-)
-
-import (
 	"bytes"
 	"context"
 	"errors"
+	"espx/internal/campaignmodel"
+	"espx/internal/config"
+	"espx/internal/ingestion/pb"
+	"espx/internal/metrics"
+	"espx/pkg/logger"
 	"io"
 	"log/slog"
 	"net"
@@ -19,10 +20,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"espx/internal/campaignmodel"
-	"espx/internal/config"
-	"espx/internal/metrics"
-	"espx/pkg/logger"
 	"github.com/google/uuid"
 	"github.com/panjf2000/gnet/v2"
 	"github.com/prometheus/client_golang/prometheus"
@@ -89,6 +86,16 @@ type connContext struct {
 	remoteIP string
 	shardID  int
 	workerID int
+
+	// Worker-pool offload (set on gnet event loop, consumed on pinned worker).
+	offloadConn   gnet.Conn
+	offloadReqBuf *[]byte
+	offloadReqLen int
+
+	// Test-only hooks (never set on production /track path).
+	offloadOnEnter func()
+	offloadBlock   <-chan struct{}
+	offloadWG      *sync.WaitGroup
 }
 
 // init materializes HTTP status label strings once so gnet track metrics avoid per-request strconv.
@@ -552,6 +559,9 @@ func (h *AdsPacketHandler) SetLogger(l *logger.Logger) {
 // SetWorkerPool enables pinned-thread offload for React work.
 func (h *AdsPacketHandler) SetWorkerPool(wp *PinnedWorkerPool) {
 	h.workerPool = wp
+	if wp != nil {
+		wp.handler = h
+	}
 }
 
 // write sends a response and returns connContext to the pool when using a worker pool.
@@ -937,6 +947,7 @@ func (h *AdsPacketHandler) OnTraffic(c gnet.Conn) (action gnet.Action) {
 			reqBytes := *reqBufPtr
 			if cap(reqBytes) < reqLen {
 				reqBytes = make([]byte, reqLen)
+				*reqBufPtr = reqBytes
 			} else {
 				reqBytes = reqBytes[:reqLen]
 			}
@@ -951,18 +962,14 @@ func (h *AdsPacketHandler) OnTraffic(c gnet.Conn) (action gnet.Action) {
 			if h.logger != nil {
 				ctx.shardID = int(h.loggerShardCounter.Add(1) % uint64(len(h.logger.Shards())))
 			}
+			ctx.offloadConn = c
+			ctx.offloadReqBuf = reqBufPtr
+			ctx.offloadReqLen = reqLen
+			ctx.offloadOnEnter = nil
+			ctx.offloadBlock = nil
+			ctx.offloadWG = nil
 
-			submitted := h.workerPool.Submit(func(workerID int) {
-				defer requestBufferPool.Put(reqBufPtr)
-				ctx.workerID = workerID
-				c.SetContext(ctx)
-				_, reqParsed, err := h.parseHTTP(reqBytes)
-				if err != nil {
-					h.write(c, respBadRequestClose, ctx)
-					return
-				}
-				_ = h.React(reqParsed, c)
-			})
+			submitted := h.workerPool.SubmitOffload(ctx)
 			if !submitted {
 				requestBufferPool.Put(reqBufPtr)
 				h.contextPool.Put(ctx)
@@ -981,6 +988,33 @@ func (h *AdsPacketHandler) OnTraffic(c gnet.Conn) (action gnet.Action) {
 		}
 	}
 	return gnet.None
+}
+
+// runOffloadedRequest parses and handles one copied request on a pinned worker thread.
+// Fixed dispatch target for PinnedWorkerPool — no per-submit closures on the hot path.
+func (h *AdsPacketHandler) runOffloadedRequest(workerID int, ctx *connContext) {
+	if ctx == nil {
+		return
+	}
+	if ctx.offloadReqBuf == nil {
+		finishOffloadCtx(ctx)
+		return
+	}
+	defer requestBufferPool.Put(ctx.offloadReqBuf)
+
+	ctx.workerID = workerID
+	c := ctx.offloadConn
+	if c == nil {
+		return
+	}
+	c.SetContext(ctx)
+	reqBytes := (*ctx.offloadReqBuf)[:ctx.offloadReqLen:ctx.offloadReqLen]
+	_, reqParsed, err := h.parseHTTP(reqBytes)
+	if err != nil {
+		h.write(c, respBadRequestClose, ctx)
+		return
+	}
+	_ = h.React(reqParsed, c)
 }
 
 // parsedHTTPRequest holds zero-copy views into the gnet inbound buffer for one request.
@@ -1008,86 +1042,11 @@ var (
 
 // parseHTTP extracts one HTTP request from the gnet inbound buffer without copying the body.
 func (h *AdsPacketHandler) parseHTTP(data []byte) (int, parsedHTTPRequest, error) {
-	var req parsedHTTPRequest
-
-	lineEnd := bytes.Index(data, []byte("\r\n"))
-	if lineEnd < 0 {
-		return 0, req, errIncompleteRequest
+	maxBody := int64(1 << 20)
+	if h != nil && h.cfg != nil {
+		maxBody = h.cfg.MaxRequestBodySize
 	}
-	reqLine := data[:lineEnd]
-
-	space1 := bytes.IndexByte(reqLine, ' ')
-	if space1 < 0 {
-		return 0, req, errInvalidRequest
-	}
-	req.Method = reqLine[:space1]
-
-	rest := reqLine[space1+1:]
-	space2 := bytes.IndexByte(rest, ' ')
-	if space2 < 0 {
-		return 0, req, errInvalidRequest
-	}
-	req.Path = rest[:space2]
-
-	idx := lineEnd + 2
-	for {
-		if idx >= len(data) {
-			return 0, req, errIncompleteRequest
-		}
-		if idx+2 <= len(data) && data[idx] == '\r' && data[idx+1] == '\n' {
-			idx += 2
-			break
-		}
-
-		lineEnd = bytes.Index(data[idx:], []byte("\r\n"))
-		if lineEnd < 0 {
-			return 0, req, errIncompleteRequest
-		}
-		headerLine := data[idx : idx+lineEnd]
-		idx += lineEnd + 2
-
-		colonIdx := bytes.IndexByte(headerLine, ':')
-		if colonIdx < 0 {
-			continue
-		}
-
-		key := trimSpaceBytes(headerLine[:colonIdx])
-		val := trimSpaceBytes(headerLine[colonIdx+1:])
-
-		if equalFoldBytes(key, []byte("content-length")) {
-			req.ContentLength = parseDecimal(val)
-			req.HasContentLength = true
-		} else if equalFoldBytes(key, []byte("content-type")) {
-			req.ContentType = val
-		} else if equalFoldBytes(key, []byte("x-forwarded-for")) {
-			req.ClientIP = val
-		} else if equalFoldBytes(key, []byte("x-real-ip")) {
-			if len(req.ClientIP) == 0 {
-				req.ClientIP = val
-			}
-		} else if equalFoldBytes(key, []byte("user-agent")) {
-			req.UserAgent = val
-		} else if equalFoldBytes(key, []byte("accept")) {
-			req.Accept = val
-		} else if equalFoldBytes(key, []byte("x-tls-hash")) {
-			req.TLSHash = val
-		} else if equalFoldBytes(key, []byte("sec-ch-ua")) {
-			req.SecCHUA = val
-		} else if equalFoldBytes(key, []byte("accept-language")) {
-			req.AcceptLang = val
-		}
-	}
-
-	if req.HasContentLength && int64(req.ContentLength) > h.cfg.MaxRequestBodySize {
-		return 0, req, errPayloadTooLarge
-	}
-
-	totalLen := idx + req.ContentLength
-	if len(data) < totalLen {
-		return 0, req, errIncompleteRequest
-	}
-	req.Body = data[idx : idx+req.ContentLength]
-	return totalLen, req, nil
+	return parseHTTP1(data, maxBody)
 }
 
 // React handles a parsed /track POST after filtering and audit logging.
