@@ -91,6 +91,28 @@ func TestProfileValidation(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "ingress_schema defaults to openrtb_3",
+			profile: InstallProfile{
+				Type:      ProfileSingleVPS,
+				Interface: "eth0",
+			},
+		},
+		{
+			name: "ingress_schema espx_native",
+			profile: InstallProfile{
+				Type:          ProfileComposeDev,
+				IngressSchema: IngressSchemaESPXNative,
+			},
+		},
+		{
+			name: "ingress_schema invalid",
+			profile: InstallProfile{
+				Type:          ProfileComposeDev,
+				IngressSchema: "custom_json",
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -110,6 +132,11 @@ func TestProfileValidation(t *testing.T) {
 			err := profile.Validate()
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && tt.name == "ingress_schema defaults to openrtb_3" {
+				if profile.IngressSchema != IngressSchemaOpenRTB3 {
+					t.Fatalf("expected default ingress_schema openrtb_3, got %s", profile.IngressSchema)
+				}
 			}
 		})
 	}

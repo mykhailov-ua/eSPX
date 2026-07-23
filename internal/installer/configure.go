@@ -11,6 +11,7 @@ import (
 func RunConfigure(interactive bool) error {
 	profile := &InstallProfile{
 		Type:             ProfileComposeDev,
+		IngressSchema:    IngressSchemaOpenRTB3,
 		TelemetryEnabled: true,
 	}
 
@@ -20,19 +21,28 @@ func RunConfigure(interactive bool) error {
 
 		fmt.Print("Choose profile (single_vps, compose_dev, k8s_k3s) [compose_dev]: ")
 		var pStr string
-		fmt.Scanln(&pStr)
+		_, _ = fmt.Scanln(&pStr)
 		if pStr != "" {
 			profile.Type = Profile(pStr)
 		}
 
 		fmt.Print("Enable Edge XDP? (y/N): ")
 		var xdp string
-		fmt.Scanln(&xdp)
+		_, _ = fmt.Scanln(&xdp)
 		profile.EdgeXDP = strings.ToLower(xdp) == "y"
+
+		fmt.Print("Use legacy eSPX track schema (JSON/protobuf)? (y/N) [N = OpenRTB 3.0 default]: ")
+		var legacy string
+		_, _ = fmt.Scanln(&legacy)
+		if strings.ToLower(legacy) == "y" {
+			profile.IngressSchema = IngressSchemaESPXNative
+		} else {
+			profile.IngressSchema = IngressSchemaOpenRTB3
+		}
 
 		fmt.Print("Network interface [eth0]: ")
 		var iface string
-		fmt.Scanln(&iface)
+		_, _ = fmt.Scanln(&iface)
 		if iface == "" {
 			profile.Interface = "eth0"
 		} else {

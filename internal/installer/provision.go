@@ -33,7 +33,7 @@ func RunProvision(yes bool) error {
 		fmt.Printf("The following packages will be installed: %v\n", packages)
 		fmt.Print("Proceed? [y/N]: ")
 		var response string
-		fmt.Scanln(&response)
+		_, _ = fmt.Scanln(&response)
 		if strings.ToLower(response) != "y" {
 			return fmt.Errorf("provisioning aborted by user")
 		}
