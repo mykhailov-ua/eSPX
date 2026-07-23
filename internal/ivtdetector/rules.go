@@ -10,6 +10,7 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 type highCTRRule struct {
@@ -205,13 +206,16 @@ func hasIPPrefix(ip, prefix string) bool {
 }
 
 // NewAnalyzerRegistry wires default detection rules for production.
-func NewAnalyzerRegistry(q *database.CHQuery, writeConn driver.Conn, pool *pgxpool.Pool, cfg AnalyzerConfig, asn ASNClassifier, scorer fraudscoring.Scorer, fraudScoringBatchSize int) *RuleRegistry {
+func NewAnalyzerRegistry(q *database.CHQuery, writeConn driver.Conn, pool *pgxpool.Pool, cfg AnalyzerConfig, asn ASNClassifier, scorer fraudscoring.Scorer, fraudScoringBatchSize int, rdb redis.Cmdable) *RuleRegistry {
 	analyzer := NewAnalyzer(q, cfg)
 	reg := NewRuleRegistry()
 	reg.Register(&highCTRRule{analyzer: analyzer})
 	reg.Register(&fingerprintRule{analyzer: analyzer})
 	reg.Register(&campaignCTRSpikeRule{q: q, cfg: cfg})
 	reg.Register(&intervalBotnetRule{q: q, cfg: cfg})
+	if rdb != nil {
+		reg.Register(&tcpEdgeCorrelationRule{q: q, rdb: rdb, cfg: cfg})
+	}
 	if asn != nil {
 		reg.Register(&datacenterASNRule{q: q, cfg: cfg, asn: asn})
 	}

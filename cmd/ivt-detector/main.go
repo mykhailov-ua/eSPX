@@ -10,12 +10,14 @@ import (
 
 	"espx/internal/config"
 	"espx/internal/database"
+	"espx/internal/edge"
 	"espx/internal/fraudscoring"
 	"espx/internal/ivtdetector"
 	"espx/internal/licensing"
 	"espx/pkg/lifecycle"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -126,7 +128,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	registry := ivtdetector.NewAnalyzerRegistry(chQuery, chWrite, pool, analyzerCfg, asn, scorer, cfg.FraudScoring.BatchSize)
+	registry := ivtdetector.NewAnalyzerRegistry(chQuery, chWrite, pool, analyzerCfg, asn, scorer, cfg.FraudScoring.BatchSize, newRedisShard0(cfg))
 
 	detector := ivtdetector.NewDetector(
 		registry,
@@ -147,4 +149,15 @@ func main() {
 	}
 
 	slog.Info("ivt detector shutdown complete")
+}
+
+func newRedisShard0(cfg *config.Config) redis.Cmdable {
+	addr := edge.FirstRedisAddr()
+	if addr == "" {
+		return nil
+	}
+	return redis.NewClient(&redis.Options{
+		Addr:     addr,
+		Password: string(cfg.RedisPassword),
+	})
 }

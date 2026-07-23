@@ -19,6 +19,7 @@ USE ad_event_processor;
 CREATE TABLE IF NOT EXISTS impressions (
     click_id String,
     campaign_id UUID,
+    placement_id String DEFAULT '',
     ip_address String,
     user_agent String,
     payload String,
@@ -32,8 +33,10 @@ TTL toDateTime(created_at) + INTERVAL 180 DAY;
 CREATE TABLE IF NOT EXISTS clicks (
     click_id String,
     campaign_id UUID,
+    placement_id String DEFAULT '',
     ip_address String,
     user_agent String,
+    tls_hash String DEFAULT '',
     payload String,
     created_at DateTime64(3, 'UTC')
 ) ENGINE = ReplacingMergeTree(created_at)
@@ -45,6 +48,7 @@ TTL toDateTime(created_at) + INTERVAL 180 DAY;
 CREATE TABLE IF NOT EXISTS conversions (
     click_id String,
     campaign_id UUID,
+    placement_id String DEFAULT '',
     ip_address String,
     user_agent String,
     payload String,

@@ -58,7 +58,7 @@ func NewAnalyzer(q *database.CHQuery, cfg AnalyzerConfig) *Analyzer {
 
 // FindSuspiciousIPs returns deduplicated candidates from all enabled detection rules.
 func (analyzer *Analyzer) FindSuspiciousIPs(ctx context.Context) ([]SuspiciousIP, error) {
-	reg := NewAnalyzerRegistry(analyzer.q, nil, nil, analyzer.cfg, nil, nil, 0)
+	reg := NewAnalyzerRegistry(analyzer.q, nil, nil, analyzer.cfg, nil, nil, 0, nil)
 	return reg.FindSuspiciousIPs(ctx)
 }
 
