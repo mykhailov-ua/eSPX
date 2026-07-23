@@ -28,8 +28,8 @@ func (mgmtTestRegistry) GetCustomerID(uuid.UUID) (uuid.UUID, bool) { return uuid
 func (mgmtTestRegistry) GetCampaign(id uuid.UUID) (*campaignmodel.Campaign, bool) {
 	cp := &campaignmodel.Campaign{ID: id, CustomerID: uuid.New(), Location: time.UTC}
 	cp.IDStr = id.String()
-	cp.BudgetCampaignKey = "budget:campaign:" + cp.IDStr
-	cp.CampaignSyncKey = "budget:sync:campaign:" + cp.IDStr
+	cp.BudgetCampaignKey = ingestion.BudgetCampaignKey(id)
+	cp.CampaignSyncKey = ingestion.CampaignSyncKey(id)
 	cp.CustomerSyncKey = "budget:sync:customer:" + cp.CustomerID.String()
 	return cp, true
 }
@@ -131,7 +131,7 @@ func TestChaos_SlotMigrationFence(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, ingestion.BumpMigrationFences(ctx, pool, rdb, []uuid.UUID{campID}))
-	require.NoError(t, rdb.Set(ctx, "budget:campaign:"+campID.String(), 10_000_000, 0).Err())
+	require.NoError(t, rdb.Set(ctx, ingestion.BudgetCampaignKey(campID), 10_000_000, 0).Err())
 
 	f := newMgmtUnifiedFilter(rdb)
 	require.NoError(t, f.PreloadScripts(ctx))

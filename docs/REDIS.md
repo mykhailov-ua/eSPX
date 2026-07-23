@@ -2,7 +2,7 @@
 
 The eSPX operational data layer consists of 4 isolated Redis Master nodes (production today). Client-side sharding by `campaign_id` is used. Atomic financial validation runs through embedded Lua scripts (`EVALSHA`).
 
-**Roadmap:** Milestone 4 (exec #12) replaces fixed StaticSlot with a [Shard Orchestrator](./MILESTONE.md#m4--shard-orchestrator--elastic-triplets-tier-xl-exec-12) and **N×(2 primary + 1 reserve)** clusters. Until M4 ships, the sections below describe the **current** production model (documented in [SHIPPED.md](./SHIPPED.md)).
+**Future:** Elastic shard orchestrator with **N×(2 primary + 1 reserve)** clusters — see [GAPS.md](./GAPS.md) §Sharding. The sections below describe the **current** production model ([ARCHITECTURE.md](./ARCHITECTURE.md)).
 
 ---
 
@@ -30,10 +30,14 @@ Data copied to all shards via `outbox`:
 
 ### Local Keys (Shard-Local)
 Data stored strictly on one shard:
-*   Campaign budgets (`budget:campaign:{id}`), quotas.
-*   Deduplication data (`dup:*`, `idempotency:*`).
+*   Campaign budgets (`{uuid}budget:campaign:{uuid}`), quotas (`{uuid}budget:quota:{uuid}`).
+*   Deduplication data (`{uuid}dup:*`, `{uuid}idempotency:*`), rate limits (`{uuid}rl:ip:*`), impression timestamps (`{uuid}imp_ts:*`).
 *   Event streams (`ad:events:stream`).
-*   Migration barriers (`budget:migration_fence`).
+*   Migration barriers (`budget:migration_fence:{uuid}`) — source shard only during COPY.
+
+### CampaignRedisKeyCatalog (M1)
+
+`internal/ingestion/redis_key_catalog.go` is the single source for slot-migration COPY/DRAIN key lists. Hash-tagged keys colocate per campaign (HR-KEYS). The migrator, PG re-warm cutover, and `docs/DEVELOPMENT.md` rollback playbook all reference this catalog.
 
 ---
 

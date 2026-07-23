@@ -7,7 +7,7 @@ import (
 	"espx/internal/config"
 	"espx/internal/database"
 	"espx/internal/ingestion"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -54,7 +54,7 @@ func TestSlotMigration_CopyAndActivate(t *testing.T) {
 		ingestion.ToUUID(campID), ingestion.ToUUID(customerID))
 	require.NoError(t, err)
 
-	key := "budget:campaign:" + campID.String()
+	key := ingestion.BudgetCampaignKey(campID)
 	require.NoError(t, rdb0.Set(ctx, key, "900000", 0).Err())
 
 	newVersion, err := mapRepo.CreateNextVersion(ctx, active, nil)

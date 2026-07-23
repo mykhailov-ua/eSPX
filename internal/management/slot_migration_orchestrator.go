@@ -24,6 +24,8 @@ func NewSlotMigrationOrchestrator(svc *Service, interval time.Duration) *SlotMig
 
 // Start runs copy and drain ticks until ctx is cancelled.
 func (o *SlotMigrationOrchestrator) Start(ctx context.Context) {
+	o.bumpPendingMigrationFences(ctx)
+
 	ticker := time.NewTicker(o.interval)
 	defer ticker.Stop()
 
@@ -79,4 +81,10 @@ func (o *SlotMigrationOrchestrator) tick(ctx context.Context) {
 		}
 	}
 	o.svc.CheckStuckDrainJobs(ctx)
+}
+
+func (o *SlotMigrationOrchestrator) bumpPendingMigrationFences(ctx context.Context) {
+	if err := o.svc.BumpFencesForPendingMigrations(ctx); err != nil {
+		slog.Warn("slot migration: bump pending fences on start failed", "error", err)
+	}
 }

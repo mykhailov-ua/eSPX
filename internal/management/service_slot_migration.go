@@ -7,7 +7,8 @@ import (
 	"log/slog"
 
 	"espx/internal/ingestion"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
+	"espx/internal/metrics"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,6 +19,8 @@ var (
 	ErrSlotMigrationNotReady = errors.New("slot migration copy not complete for all MIGRATING slots")
 	// ErrSlotMigrationNoDraft is returned when no draft version with MIGRATING slots exists.
 	ErrSlotMigrationNoDraft = errors.New("no draft slot map version with MIGRATING slots")
+	// ErrSlotMigrationKeysMissing is returned when required keys are absent on the target shard after PG re-warm.
+	ErrSlotMigrationKeysMissing = errors.New("slot migration target shard missing required keys")
 )
 
 // SlotMigrationDTO is the admin view of one slot migration job.
@@ -146,6 +149,29 @@ func (s *Service) CopySlotMigrationData(ctx context.Context, version int32, slot
 			}
 		}
 	}
+
+	catalog := ingestion.DefaultCampaignRedisKeyCatalog
+	for _, id := range slotCampaigns {
+		for _, key := range catalog.ActivationRequiredKeys(id) {
+			srcExists, err := src.Exists(ctx, key).Result()
+			if err != nil {
+				return fmt.Errorf("post-copy exists src %q: %w", key, err)
+			}
+			if srcExists == 0 {
+				continue
+			}
+			dstExists, err := dst.Exists(ctx, key).Result()
+			if err != nil {
+				return fmt.Errorf("post-copy exists dst %q: %w", key, err)
+			}
+			if dstExists == 0 {
+				_ = migRepo.UpdateProgress(ctx, version, slot, total, copied,
+					db.RedisSlotMigrationStateFailed, "missing key on target: "+key)
+				return fmt.Errorf("post-copy verify: %q missing on target shard", key)
+			}
+		}
+	}
+
 	return migRepo.UpdateProgress(ctx, version, slot, total, copied,
 		db.RedisSlotMigrationStateCopied, "")
 }
@@ -178,6 +204,12 @@ func (s *Service) ActivateSlotMapVersionWithMigration(ctx context.Context, admin
 	if err != nil {
 		return err
 	}
+	campaignIDs, err := s.listActiveCampaignUUIDs(ctx)
+	if err != nil {
+		return err
+	}
+	catalog := ingestion.DefaultCampaignRedisKeyCatalog
+
 	if len(migrating) > 0 {
 		if err := s.EnsureSlotMigrationJobs(ctx, version); err != nil {
 			return err
@@ -189,6 +221,18 @@ func (s *Service) ActivateSlotMapVersionWithMigration(ctx context.Context, admin
 			}
 			if job.State != db.RedisSlotMigrationStateCopied {
 				return ErrSlotMigrationNotReady
+			}
+			if job.TargetShard < 0 || int(job.TargetShard) >= len(s.rdbs) {
+				return fmt.Errorf("invalid target shard %d for slot %d", job.TargetShard, row.Slot)
+			}
+			slotCampaigns := ingestion.FilterCampaignIDsBySlot(campaignIDs, row.Slot)
+			dst := s.rdbs[job.TargetShard]
+			if err := ingestion.RewarmCampaignBudgetKeys(ctx, s.GetPool(), dst, slotCampaigns); err != nil {
+				return fmt.Errorf("pg re-warm slot %d: %w", row.Slot, err)
+			}
+			if err := catalog.VerifySlotCampaignKeysExist(ctx, dst, slotCampaigns); err != nil {
+				metrics.SlotMigrationCutoverBlockedTotal.WithLabelValues("missing_keys").Inc()
+				return fmt.Errorf("%w: %v", ErrSlotMigrationKeysMissing, err)
 			}
 		}
 	}
@@ -343,6 +387,45 @@ func (s *Service) RollbackSlotMapVersion(ctx context.Context, adminID uuid.UUID,
 		return err
 	}
 	s.afterSlotMapActivated(ctx, previousVersion)
+	return nil
+}
+
+// BumpFencesForPendingMigrations bumps migration_gen and Redis fence keys for campaigns in active copy jobs.
+func (s *Service) BumpFencesForPendingMigrations(ctx context.Context) error {
+	if s.cfg == nil || !s.cfg.MigrationFenceEnabled || len(s.rdbs) == 0 {
+		return nil
+	}
+	migRepo := ingestion.NewSlotMigrationRepo(s.GetPool())
+	draft, err := migRepo.GetMaxDraftVersionWithMigrating(ctx)
+	if err != nil || draft <= 0 {
+		return err
+	}
+	jobs, err := migRepo.ListByVersion(ctx, draft)
+	if err != nil {
+		return err
+	}
+	campaignIDs, err := s.listActiveCampaignUUIDs(ctx)
+	if err != nil {
+		return err
+	}
+	for _, job := range jobs {
+		if job.State == db.RedisSlotMigrationStateCopied ||
+			job.State == db.RedisSlotMigrationStateDraining ||
+			job.State == db.RedisSlotMigrationStateDone {
+			continue
+		}
+		if job.SourceShard < 0 || int(job.SourceShard) >= len(s.rdbs) {
+			continue
+		}
+		slotCampaigns := ingestion.FilterCampaignIDsBySlot(campaignIDs, job.Slot)
+		if len(slotCampaigns) == 0 {
+			continue
+		}
+		src := s.rdbs[job.SourceShard]
+		if err := ingestion.BumpMigrationFences(ctx, s.GetPool(), src, slotCampaigns); err != nil {
+			return fmt.Errorf("bump fences slot %d: %w", job.Slot, err)
+		}
+	}
 	return nil
 }
 

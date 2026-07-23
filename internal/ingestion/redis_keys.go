@@ -4,9 +4,17 @@ import (
 	"github.com/google/uuid"
 )
 
+// appendCampaignHashTag writes {uuid} into dst without per-call string concatenation.
+func appendCampaignHashTag(dst []byte, id uuid.UUID) []byte {
+	dst = append(dst, '{')
+	dst = appendUUID(dst, id)
+	return append(dst, '}')
+}
+
 // campaignHashTag returns the Redis cluster hash tag for slot colocation (HR-KEYS).
 func campaignHashTag(id uuid.UUID) string {
-	return "{" + id.String() + "}"
+	var buf [38]byte
+	return string(appendCampaignHashTag(buf[:0], id))
 }
 
 func budgetCampaignKey(id uuid.UUID) string {
@@ -17,6 +25,11 @@ func budgetCampaignKey(id uuid.UUID) string {
 // BudgetCampaignKey returns the Redis key for campaign budget.
 func BudgetCampaignKey(id uuid.UUID) string {
 	return budgetCampaignKey(id)
+}
+
+// CampaignSyncKey returns the Redis sync delta key for a campaign.
+func CampaignSyncKey(id uuid.UUID) string {
+	return campaignSyncKey(id)
 }
 
 func campaignSyncKey(id uuid.UUID) string {

@@ -157,7 +157,7 @@ func (o *ShardOrchestrator) migrateLoad(ctx context.Context, sourceShard int16) 
 
 	for _, id := range campaigns {
 		if int16(sharder.GetShard(id)) == sourceShard {
-			// In a real system, we would query metrics. Here we use a mock/random load or simple EWMA
+			// In a real system, we would query metrics. Here we use a mock/random load or EWMA
 			load := 0.5 // default
 			ema, ok := o.campaignEma[id]
 			if !ok {

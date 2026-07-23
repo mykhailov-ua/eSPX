@@ -9,10 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"espx/internal/campaignmodel"
 	"espx/internal/config"
 	"espx/internal/database"
 	"espx/internal/ingestion"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -121,7 +122,7 @@ func seedCampaignForSlot(t *testing.T, svc *Service, pool *pgxpool.Pool, ctx con
 		VALUES ($1, 'chaos-slot', 1000000, 222223, 'ACTIVE', $2, 'ASAP', 'UTC', 86400)`,
 		ingestion.ToUUID(campID), ingestion.ToUUID(customerID))
 	require.NoError(t, err)
-	key := "budget:campaign:" + campID.String()
+	key := ingestion.BudgetCampaignKey(campID)
 	require.NoError(t, rdb.Set(ctx, key, "777777", 0).Err())
 	return campID, slot
 }
@@ -237,7 +238,7 @@ func TestChaos_SlotMigrationCopySlowEventuallySucceeds(t *testing.T) {
 	require.Len(t, migrations, 1)
 	assert.Equal(t, "copied", migrations[0].State)
 
-	key := "budget:campaign:" + campID.String()
+	key := ingestion.BudgetCampaignKey(campID)
 	val, err := rdbs[1].Get(ctx, key).Result()
 	require.NoError(t, err)
 	assert.Equal(t, "777777", val)
@@ -287,7 +288,7 @@ func TestChaos_SlotMigrationConcurrentCopySameSlot(t *testing.T) {
 	require.Len(t, migrations, 1)
 	assert.Equal(t, "copied", migrations[0].State)
 
-	key := "budget:campaign:" + campID.String()
+	key := ingestion.BudgetCampaignKey(campID)
 	val, err := rdbs[3].Get(ctx, key).Result()
 	require.NoError(t, err)
 	assert.Equal(t, "777777", val)
@@ -499,7 +500,7 @@ func TestChaos_SlotMigrationCopyIdempotentRetry(t *testing.T) {
 	require.Len(t, migrations, 1)
 	assert.Equal(t, "copied", migrations[0].State)
 
-	key := "budget:campaign:" + campID.String()
+	key := ingestion.BudgetCampaignKey(campID)
 	val, err := rdbs[1].Get(ctx, key).Result()
 	require.NoError(t, err)
 	assert.Equal(t, "777777", val)
@@ -551,5 +552,129 @@ func TestChaos_SlotMigrationRollbackAfterActivate(t *testing.T) {
 		"from_version": fmt.Sprintf("%d", v),
 		"to_version":   fmt.Sprintf("%d", prevActive),
 		"baseline_ok":  "true",
+	})
+}
+
+// TestChaos_LUA10_DebitFencedDuringSlotCopy proves debits are rejected (code 11) while COPY fences the source shard.
+func TestChaos_LUA10_DebitFencedDuringSlotCopy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("chaos integration test")
+	}
+
+	ctx := context.Background()
+	pool, cleanupDB := database.SetupTestDB(t)
+	defer cleanupDB()
+	rdb, cleanupRedis := database.SetupTestRedis(t)
+	defer cleanupRedis()
+
+	cfg := &config.Config{MigrationFenceEnabled: true}
+	svc := newBareService(t, pool, []redis.UniversalClient{rdb, rdb}, cfg)
+
+	const slot int16 = 5
+	campID, _ := seedCampaignForSlot(t, svc, pool, ctx, slot, rdb)
+	require.NoError(t, ingestion.BumpMigrationFences(ctx, pool, rdb, []uuid.UUID{campID}))
+
+	f := newMgmtUnifiedFilter(rdb)
+	require.NoError(t, f.PreloadScripts(ctx))
+
+	evt := &campaignmodel.Event{
+		Type:       "click",
+		CampaignID: campID,
+		ClickID:    uuid.NewString(),
+		IP:         "203.0.113.70",
+		UserID:     "lua10-fence",
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	err := f.Check(checkCtx, evt)
+	require.ErrorIs(t, err, ingestion.ErrMigrationFenced)
+
+	key := ingestion.BudgetCampaignKey(campID)
+	remaining, err := rdb.Get(ctx, key).Int64()
+	require.NoError(t, err)
+	require.Equal(t, int64(777777), remaining)
+
+	logChaosProof(t, "lua10_migration_fence_copy", map[string]string{
+		"subsystem":        "ads_lua",
+		"fault":            "debit_during_copy",
+		"fenced":           "true",
+		"budget_unchanged": "true",
+		"code":             "11",
+	})
+}
+
+// TestChaos_SO02_SlotMigrationPGRewarmCutover validates PG re-warm cutover preserves budget invariant (M1-04).
+func TestChaos_SO02_SlotMigrationPGRewarmCutover(t *testing.T) {
+	if testing.Short() {
+		t.Skip("chaos integration test")
+	}
+
+	rdb, cleanup := database.SetupTestRedis(t)
+	defer cleanup()
+	rdbs := buildFourRedisShards(rdb, nil)
+	cfg := &config.Config{SlotMigrationEnabled: false, MigrationFenceEnabled: true}
+	svc, pool, ctx := setupSlotMigrationChaos(t, rdbs)
+	svc.cfg = cfg
+
+	const slot int16 = 8
+	campID, _ := seedCampaignForSlot(t, svc, pool, ctx, slot, rdbs[0])
+	mapRepo := ingestion.NewSlotMapRepo(pool)
+	v := prepareMigratingVersion(t, ctx, mapRepo, slot, 2)
+
+	require.NoError(t, svc.CopyAllMigratingSlots(ctx, v))
+	require.NoError(t, svc.ActivateSlotMapVersion(ctx, uuid.Nil, v))
+
+	ingestion.AssertBudgetInvariant(t, ctx, pool, rdbs[2], campID)
+	require.NoError(t, svc.VerifySlotMigrationR5(ctx))
+
+	key := ingestion.BudgetCampaignKey(campID)
+	val, err := rdbs[2].Get(ctx, key).Int64()
+	require.NoError(t, err)
+	require.Equal(t, int64(777777), val)
+
+	logChaosProof(t, "so02_slot_migration_pg_rewarm", map[string]string{
+		"subsystem":   "slot_migration",
+		"fault":       "hot_slot_cutover",
+		"r5_ok":       "true",
+		"pg_rewarm":   "true",
+		"campaign_id": campID.String(),
+	})
+}
+
+// TestChaos_SlotMigrationPGRewarmColdStart seeds budget on target from Postgres when source had no Redis keys.
+func TestChaos_SlotMigrationPGRewarmColdStart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("chaos integration test")
+	}
+
+	rdb, cleanup := database.SetupTestRedis(t)
+	defer cleanup()
+	rdbs := buildFourRedisShards(rdb, nil)
+	svc, pool, ctx := setupSlotMigrationChaos(t, rdbs)
+
+	const slot int16 = 11
+	campID := campaignIDForSlot(t, slot)
+	customerID := uuid.New()
+	require.NoError(t, svc.CreateCustomer(ctx, customerID, "NoRedis", 1_000_000, "USD"))
+	_, err := pool.Exec(ctx, `
+		INSERT INTO campaigns (id, name, budget_limit, current_spend, status, customer_id, pacing_mode, timezone, freq_window)
+		VALUES ($1, 'no-redis', 500000, 100000, 'ACTIVE', $2, 'ASAP', 'UTC', 86400)`,
+		ingestion.ToUUID(campID), ingestion.ToUUID(customerID))
+	require.NoError(t, err)
+
+	mapRepo := ingestion.NewSlotMapRepo(pool)
+	v := prepareMigratingVersion(t, ctx, mapRepo, slot, 1)
+	require.NoError(t, svc.CopyAllMigratingSlots(ctx, v))
+	require.NoError(t, svc.ActivateSlotMapVersion(ctx, uuid.Nil, v))
+
+	key := ingestion.BudgetCampaignKey(campID)
+	val, err := rdbs[1].Get(ctx, key).Int64()
+	require.NoError(t, err)
+	require.Equal(t, int64(400000), val)
+
+	logChaosProof(t, "slot_migration_pg_rewarm_cold_start", map[string]string{
+		"subsystem":  "slot_migration",
+		"pg_rewarm":  "true",
+		"cold_start": "true",
 	})
 }

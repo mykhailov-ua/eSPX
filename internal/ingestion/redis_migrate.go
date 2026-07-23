@@ -9,7 +9,16 @@ import (
 )
 
 // CampaignKeyMigrator copies campaign-scoped Redis keys between shards (cold path only).
-type CampaignKeyMigrator struct{}
+type CampaignKeyMigrator struct {
+	Catalog *CampaignRedisKeyCatalog
+}
+
+func (m *CampaignKeyMigrator) catalog() *CampaignRedisKeyCatalog {
+	if m != nil && m.Catalog != nil {
+		return m.Catalog
+	}
+	return DefaultCampaignRedisKeyCatalog
+}
 
 // MigrateCampaignKeys idempotently copies budget, quota, fcap, and sync keys from src to dst.
 // Returns the number of keys migrated (skipped missing keys are not counted).
@@ -18,21 +27,9 @@ func (m *CampaignKeyMigrator) MigrateCampaignKeys(
 	src, dst redis.Cmdable,
 	campaignID uuid.UUID,
 ) (int, error) {
-	idStr := campaignID.String()
-	fixed := []string{
-		"budget:campaign:" + idStr,
-		"budget:quota:" + idStr,
-		"budget:refill_lock:" + idStr,
-		"budget:migration_fence:" + idStr,
-		"budget:frozen:" + idStr,
-		"budget:sync:campaign:" + idStr,
-		"budget:inflight:campaign:" + idStr,
-		"budget:lock:campaign:" + idStr,
-		"budget:txid:campaign:" + idStr,
-		"campaign:settings:" + idStr,
-	}
+	cat := m.catalog()
 	migrated := 0
-	for _, key := range fixed {
+	for _, key := range cat.FixedKeys(campaignID) {
 		ok, err := migrateKey(ctx, src, dst, key)
 		if err != nil {
 			return migrated, err
@@ -42,11 +39,7 @@ func (m *CampaignKeyMigrator) MigrateCampaignKeys(
 		}
 	}
 
-	prefixes := []string{
-		"budget:daily_spent:campaign:" + idStr + ":",
-		"fcap:c:" + idStr + ":u:",
-	}
-	for _, prefix := range prefixes {
+	for _, prefix := range cat.PrefixPatterns(campaignID) {
 		n, err := migrateKeysByPrefix(ctx, src, dst, prefix)
 		if err != nil {
 			return migrated, err
@@ -62,21 +55,10 @@ func (m *CampaignKeyMigrator) DrainCampaignKeys(
 	src redis.Cmdable,
 	campaignID uuid.UUID,
 ) (int, error) {
-	idStr := campaignID.String()
-	fixed := []string{
-		"budget:campaign:" + idStr,
-		"budget:quota:" + idStr,
-		"budget:refill_lock:" + idStr,
-		"budget:migration_fence:" + idStr,
-		"budget:frozen:" + idStr,
-		"budget:sync:campaign:" + idStr,
-		"budget:inflight:campaign:" + idStr,
-		"budget:lock:campaign:" + idStr,
-		"budget:txid:campaign:" + idStr,
-		"campaign:settings:" + idStr,
-	}
+	cat := m.catalog()
 	deleted := 0
-	for _, key := range fixed {
+	keys := append(cat.FixedKeys(campaignID), cat.SourceOnlyKeys(campaignID)...)
+	for _, key := range keys {
 		n, err := src.Del(ctx, key).Result()
 		if err != nil {
 			return deleted, err
@@ -86,11 +68,7 @@ func (m *CampaignKeyMigrator) DrainCampaignKeys(
 		}
 	}
 
-	prefixes := []string{
-		"budget:daily_spent:campaign:" + idStr + ":",
-		"fcap:c:" + idStr + ":u:",
-	}
-	for _, prefix := range prefixes {
+	for _, prefix := range cat.PrefixPatterns(campaignID) {
 		n, err := deleteKeysByPrefix(ctx, src, prefix)
 		if err != nil {
 			return deleted, err
