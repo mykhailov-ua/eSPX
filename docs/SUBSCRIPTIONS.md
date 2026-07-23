@@ -230,4 +230,4 @@ DTO: `SubscriptionDTO` with `effective_limits` after license merge — MANAGEMEN
 - [LICENSING.md](./LICENSING.md) — product license, non-blocking license server
 - [MANAGEMENT.md](./MANAGEMENT.md) — admin complex, §18–21 (daily RPD quotas)
 - [MULTI_REGION.md](./MULTI_REGION.md) — `multi_region` feature
-- [MILESTONE.md](./MILESTONE.md) — Milestone 6
+- [ARCHITECTURE.md](./ARCHITECTURE.md) — Platform overview

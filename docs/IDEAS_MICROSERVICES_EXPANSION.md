@@ -540,7 +540,7 @@ To gain a comprehensive technical understanding of the eSPX platform architectur
 - **Low-Level System Mechanics**: [CONCEPTS.md](./CONCEPTS.md) — Detailed analysis of OS syscalls (`epoll`, `mmap`), memory hierarchy latency, cache line false sharing padding (`_ [56]byte`), and storage engine comparisons.
 - **Go Hot-Path Execution Guidelines**: [GO.md](./GO.md) — Zero-allocation memory rules (`0 allocs/op`), compiler Bounds Check Elimination (BCE), and thread pinning (`runtime.LockOSThread()`).
 - **Commercial & Engine Proposals**: [PROPOSALS.md](./PROPOSALS.md) — Hybrid volume licensing models, zero-latency edge lander localization, and line-rate eBPF/XDP filtering.
-- **Delivery Roadmap & Milestone Specs**: [MILESTONE.md](./MILESTONE.md) — Engineering milestones M1–M14, dynamic Shard Orchestrator topology, and Milestone 4 Chaos Matrix scenarios.
+- **Open work & scale roadmap**: [GAPS.md](./GAPS.md) — Shard orchestrator, chaos backlog, RTB gaps
 - **Data Persistence & Database Internals**: [DATABASE.md](./DATABASE.md) — PostgreSQL B+-tree schemas, idempotency catalogs, and ClickHouse LSM-tree batch insertion mechanics.
 - **Management Control Plane & REST API**: [MANAGEMENT.md](./MANAGEMENT.md) — Cold-path control plane specifications, background workers, and admin HTTP REST API endpoints.
 - **Chaos Engineering & Reliability Guide**: [GUIDE_CHAOS_RELIABILITY.md](../GUIDE_CHAOS_RELIABILITY.md) — Rules R1–R10 for chaos testing, fault injection mechanisms, steady-state metrics, and proof verification.

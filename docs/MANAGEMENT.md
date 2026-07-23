@@ -2,7 +2,7 @@
 
 Unified reference document for cold-path operations (management service, billing, admin API, analytics reporting, role-based DTO layouts, operational backlog, multi-region architecture). Hot-path execution (`/track`, packet filtering, Redis Lua) is excluded. External administration UI is served via a JSON REST API client; legacy HTMX endpoints remain supported; OpenAPI generation is out of scope.
 
-**See also:** [DATABASE.md](./DATABASE.md), [MULTI_REGION.md](./MULTI_REGION.md), [SUBSCRIPTIONS.md](./SUBSCRIPTIONS.md), [LICENSING.md](./LICENSING.md), [MILESTONE.md](./MILESTONE.md) (M2.8, M3, M6), `GUIDE_STYLE_CODE.md`.
+**See also:** [DATABASE.md](./DATABASE.md), [MULTI_REGION.md](./MULTI_REGION.md), [SUBSCRIPTIONS.md](./SUBSCRIPTIONS.md), [LICENSING.md](./LICENSING.md), [ARCHITECTURE.md](./ARCHITECTURE.md), `GUIDE_STYLE_CODE.md`.
 
 ---
 

@@ -1,111 +1,266 @@
 # eSPX Architecture
 
-This document describes subsystem topology, data flows, and operational contracts of the platform.
+Subsystem topology, data flows, operational contracts, and platform capabilities. For local setup and CI, see [DEVELOPMENT.md](./DEVELOPMENT.md). For open work, see [GAPS.md](./GAPS.md).
 
 ## Documentation Navigation
 
 | Document | Description |
 | :--- | :--- |
-| [CONCEPTS.md](./CONCEPTS.md) | Fundamental concepts: syscalls, memory, network, DOD, and mathematical models |
-| [EDGE.md](./EDGE.md) | Network ingress (L4/L7), filtering, and quotas |
-| [DATABASE.md](./DATABASE.md) | PostgreSQL and ClickHouse: reliability and idempotency |
-| [GO.md](./GO.md) | Go runtime, zero allocations, and compiler optimization |
-| [REDIS.md](./REDIS.md) | Shard topology, Lua scripts, and risks |
-| [SHIPPED.md](./SHIPPED.md) | Delivered capabilities (M1–M3 core, M2, M5) |
-| [PROPOSALS.md](./PROPOSALS.md) | System proposals: volume licensing, edge localization, eBPF filter |
-| [MILESTONE.md](./MILESTONE.md) | Milestone index, roadmap, and delivery criteria |
+| [CONCEPTS.md](./CONCEPTS.md) | Syscalls, memory, network, DOD, mathematical models |
+| [GO.md](./GO.md) | Go hot path: gnet, zero-alloc, BCE, atomics, branch prediction |
+| [RTB.md](./RTB.md) | In-process RTB auction, rollout modes, roadmap |
+| [EDGE.md](./EDGE.md) | Ingress (L4/L7), UDP control, eBPF compliance |
+| [REDIS.md](./REDIS.md) | Shard topology, Lua scripts, slot migration |
+| [DATABASE.md](./DATABASE.md) | PostgreSQL, ClickHouse, durability, idempotency |
+| [MANAGEMENT.md](./MANAGEMENT.md) | Admin API, outbox, pacing, settlement gRPC |
+| [ADMINISTRATIVE.md](./ADMINISTRATIVE.md) | `adminapi` JSON surface, billing exports |
+| [LICENSING.md](./LICENSING.md) | JWT volume bands, module flags, license server |
+| [SUBSCRIPTIONS.md](./SUBSCRIPTIONS.md) | Plans, entitlements, RPD gates |
+| [MULTI_REGION.md](./MULTI_REGION.md) | Regional cells, outbox relay |
+| [REMEDIATION.md](./REMEDIATION.md) | Write-path remediation, semaphores, spool |
+| [GAPS.md](./GAPS.md) | Known gaps and forward priorities |
+| [PROPOSALS.md](./PROPOSALS.md) | Optional architectural proposals |
+
+---
+
+## Platform Overview
+
+eSPX is an event-stream pacing platform for ad networks and arbitrage operators. The hot path accepts `/track` events, applies filters and atomic budget rules, and enqueues settlement. Money is authoritative in PostgreSQL; Redis holds fast edge state; ClickHouse holds telemetry.
+
+**Design split:**
+
+| Path | Latency budget | Packages | Persistence |
+| :--- | :--- | :--- | :--- |
+| **Hot** | `/track` p99 < 80 ms | `internal/ingestion`, `internal/rtb` | Redis Lua + streams |
+| **Cold** | Seconds–minutes | `management`, `adminapi`, workers | Postgres outbox → Redis |
+| **Edge** | Line-rate drop | `internal/edge`, `cmd/edge-*` | BPF maps, blocklists |
+
+---
+
+## Services and Binaries
+
+| Binary | Port(s) | Role |
+| :--- | :--- | :--- |
+| `tracker` | 8181–8184 | gnet ingest, `FilterEngine`, optional in-process RTB, tiered Lua |
+| `processor` | 8186 | Per-shard Redis streams → PG/CH; `SyncWorker`; CH mmap spool; CH janitor |
+| `management` | 8188, 51053 | Admin HTTP/HTMX, settlement gRPC, outbox, recon, quota, UDP control :8190 |
+| `auth` | 51051 | gRPC: Argon2id, PASETO, sessions, API keys |
+| `payment` | 51052, 8187 | Payment intents gRPC, Stripe webhooks, settlement outbox |
+| `billing` | 51054 | Invoice generation from `balance_ledger` |
+| `notifier` | 8085 | Telegram, Slack, SMTP, SMS |
+| `license-server` | vendor | Issue/renew/revoke license JWT (vendor DC) |
+| `ivt-detector` | — | CH batch → fraud blacklist via management outbox |
+| `fraud-scorer` | — | ML scoring → management outbox (optional compose profile) |
+| `postback-sender` | — | S2S postback dispatch worker |
+| `cost-sync` | — | External cost API sync (arbitrage ops) |
+| `margin-guard` | — | Placement margin monitor → auto-pause via outbox |
+| `edge-xdp`, `edge-bpf-sync` | — | Defensive XDP + BPF map sync from Redis |
+| `installer` | — | `espx-install` CLI preflight and bootstrap |
+| `broker`, `log-shipper`, `log-compactor`, `log-evacuator` | — | Optional mmap log pipeline |
+| `admin`, `dlq` | — | Operator CLIs |
+
+**Library deployables (no separate `cmd/`):** `internal/adminapi` (`/api/v1` JSON), `internal/licensing`, `internal/billing`, `internal/rtb`, `internal/edge/{allowlist,blocklist}`.
+
+---
 
 ## Topology
 
-The system consists of five layers. Application services use host networking (`host networking`); state stores run on an isolated network (`bridge network`) with published ports.
+Five layers. Application services use **host networking** in production k8s hot path; databases typically run on bridge/compose network with published ports.
 
-1.  **Ingress (Nginx :8180).** Request proxying: `/admin/*` → management service, `/track/*` → trackers. Nginx OpenResty performs: per-campaign rate limiting, edge blacklist checks, Redis shard selection (CRC32).
-2.  **Ingestion (Tracker x4, :8181-8184).** Traffic intake. Uses `gnet`, core-pinned worker pool (`PinnedWorkerPool`), and shared processing core `processTrack()`.
-3.  **Edge State (Redis x4, :6479-6482).** Sharded state store. Includes replicas and Sentinel (x3). Sharding is per client. Operation atomicity is provided by Lua scripts.
-4.  **Application.**
-    *   **Processor (:8186):** Event stream processing.
-    *   **Management (:8188):** Admin API, settlement gRPC server (:51053), UDP control publisher (:8190).
-    *   **Auth (:51051), Payment (:51052, :8187), Billing (:51054), Notifier (:8085):** gRPC services.
-    *   **IVT Detector / Fraud Scorer:** Fraud detectors (cold path).
-5.  **Persistence.** PostgreSQL 16 and ClickHouse 24 for financial data, accounts, billing, and telemetry storage.
+```text
+┌─────────────┐     ┌──────────────┐     ┌─────────────────┐
+│ Nginx :8180 │────▶│ Tracker x4   │────▶│ Redis x4 shards │
+│ edge Lua    │     │ gnet + RTB   │     │ Lua + streams   │
+└─────────────┘     └──────┬───────┘     └────────┬────────┘
+                           │                      │
+                    ┌──────▼───────┐       ┌──────▼────────┐
+                    │  Processor   │       │  Management   │
+                    │  PG + CH     │◀──────│  outbox/gRPC  │
+                    └──────┬───────┘       └───────────────┘
+                           │
+              ┌────────────┴────────────┐
+              │ PostgreSQL  │ ClickHouse │
+              └─────────────────────────┘
+```
+
+1. **Ingress (Nginx :8180).** `/admin/*` → management; `/track/*` → trackers. OpenResty: rate limits, edge blacklist, Redis shard hint (CRC32).
+2. **Ingestion (Tracker).** `PinnedWorkerPool` by campaign hash; shared `processTrack()`.
+3. **Edge state (Redis x4).** Standalone masters + Sentinel. Client-side `StaticSlotSharder` (not Redis Cluster).
+4. **Application.** Processor, management, gRPC services, cold-path workers.
+5. **Persistence.** PostgreSQL 16 (ledger, config, outbox); ClickHouse 24 (telemetry, ML features).
 
 ---
 
-## Control Plane
+## Data Plane: Request Path
 
-*   **Management (`cmd/management`).** Central management node. Functions: REST API, settlement gRPC, `outbox` queue management, job scheduler, budget reconciliation (`ReconWorker`), quota management (`QuotaManager`).
-*   **Auth (`cmd/auth`).** Authentication: gRPC server (registration, login, PASETO tokens). Uses Redis shard 0 for lockouts and token revocation.
-*   **Payment (`cmd/payment`).** Payments: gRPC server, Stripe webhook handling, `outbox` queue for transaction confirmation. Uses a separate `payment` schema in Postgres.
-*   **Billing (`cmd/billing`).** Billing: invoice generation based on `balance_ledger` data.
-*   **Notifier (`cmd/notifier`).** Notifications: gRPC queue, delivery via Telegram, Slack, SMTP, SMS.
-*   **IVT Detector / Fraud Scorer.** Anti-fraud modules. Batch-scan ClickHouse and update Redis blacklists via `outbox`.
+```text
+Ingress → Tracker.parse → ensureIngestGeo
+       → [RTB if enabled] → FilterEngine.Check → Lua unified-filter (if not skipped)
+       → stream XADD → HTTP response
+```
 
----
+### Filter order (`FilterEngine.Check`)
 
-## Data Plane
+1. Emergency breaker  
+2. Fraud / geo (MaxMind, fail-open where configured)  
+3. Schedule, placement, L3, device, consent  
+4. ML fraud boost (snapshot, 0 allocs)  
+5. `UnifiedFilter` → Redis `EVALSHA` (budget, fcap, TTC, dedup, rate)
 
-1.  **Ingress.** L4/L7 filtering.
-2.  **Tracker.** Packet parsing (`gnet`), filter application (geo, schedule, fraud). Single Lua script execution (`EVALSHA`) for budget deduction.
-3.  **Redis.** Atomic deduction, frequency cap (fcap), time-between-clicks check (TTC). Event write to `ad:events:stream`.
-4.  **Streams.** Per-shard event streams forwarded to Processor.
-5.  **Postgres.** Ledger, budget storage, and queues.
-6.  **ClickHouse.** Analytics telemetry store.
+### RTB integration
 
-**Request path:** Ingress (blacklists) → Tracker (UDP limits, geo, ML boosts) → Lua (budget deduction, fcap, TTC) → Stream (event write). Financial operations are atomic in Redis; Postgres sync is async.
+When `RTB_MODE` is not `off`, an in-process auction runs **before** `FilterEngine` (see [RTB.md](./RTB.md)):
+
+| Mode | Behavior |
+| :--- | :--- |
+| `shadow` | `RunAuctionEval`; metrics only; client `campaign_id` kept |
+| `live` | `RunAuction`; winner replaces `campaign_id`; optional RTB budget authority |
+
+Budget authority `redis` (default) keeps Lua as spend owner; `rtb` skips Lua budget debit and uses in-process `BudgetStore` with reconcile sampling.
+
+### Redis Lua
+
+| Script | Use |
+| :--- | :--- |
+| `budget-fast.lua` | Impressions: debit + stream |
+| `unified-filter.lua` | Clicks: full validation + debit + stream |
+
+Single `EVALSHA` per event when possible. p99 target < 10 ms per shard.
+
+### Sharding (current production)
+
+```text
+slot  = crc32_castagnoli(campaign_id) & 1023
+shard = slot_table[slot]   // StaticSlotSharder, default 4 masters
+```
+
+Shard 0 convention: pub/sub `campaigns:update`, auth lockout, brand creatives. Global keys replicated via outbox to all shards.
+
+**Future:** elastic shard orchestrator (see [GAPS.md](./GAPS.md) §Sharding).
 
 ---
 
 ## Settlement Pipeline
 
-### Stream Processing (Processor)
-Each shard has three consumer groups on stream `ad:events:stream`:
-*   **PG Group:** Write to Postgres `events` partitions, update `campaign_stats`, check `sync_idempotency`.
-*   **CH Group:** Batch insert into ClickHouse.
-*   **Fraud Group:** Forward data to fraud stream and write to ClickHouse.
+### Stream processing (`cmd/processor`)
 
-### Budget Sync (SyncWorker)
-Background `SyncWorker` per shard:
-1.  Lua: move data from `budget:sync` to `inflight` status under lock.
-2.  Postgres: update spent amounts via `UpdateSpend`.
-3.  Lua: commit — subtract confirmed amount from Redis.
+Per-shard consumer groups on `ad:events:stream`:
 
-This enables sub-millisecond deductions in Redis while isolating Postgres latency to the background.
+| Group | Role |
+| :--- | :--- |
+| PG | `events` partitions, `campaign_stats`, `sync_idempotency` |
+| CH | Batch insert; mmap spool on CH outage |
+| Fraud | Forward to fraud stream + CH |
 
----
+`XAck` only after durable write (PG commit or CH spool `fsync`). Write gates: `ProcessorPgGate`, `ProcessorChGate`.
 
-## Configuration Management
+### Budget sync (`SyncWorker`)
 
-### Transactional Outbox
-To synchronize changes between Postgres and Redis, the Outbox pattern is used:
-1.  Database change and insert into `outbox_events` happen in one Postgres transaction.
-2.  `OutboxWorker` polls the table (every 20 ms), runs `SELECT FOR UPDATE SKIP LOCKED`, sends commands to Redis pipelines on all shards, and marks events as processed.
+1. Lua: move `budget:sync` → `inflight` under lock  
+2. Postgres: `UpdateSpend` (ledger batch, coefficient N=32)  
+3. Lua: commit — subtract confirmed amount from Redis  
 
-### Pacing and Schedule
-*   **PacingControllerWorker.** Reconciles actual spend against profile (even/fast) in micro-units and updates Redis keys via outbox.
-*   **Schedule Worker.** Manages campaign statuses (pause/start) by schedule.
+Sub-millisecond debits in Redis; Postgres latency isolated to background.
+
+### Transactional outbox
+
+Postgres change + `outbox_events` in one transaction → `OutboxWorker` polls (`SKIP LOCKED`, adaptive interval) → Redis pipeline on all shards.
 
 ---
 
-## Fraud Scoring
+## Control Plane (`cmd/management`)
 
-Batch scoring and async sanction application. Direct ML computation on the hot path (Tracker) is forbidden; trackers only read precomputed keys from Redis.
+| Concern | Mechanism |
+| :--- | :--- |
+| Campaign registry | Postgres + pub/sub reload |
+| Pacing | `PacingControllerWorker` → Redis via outbox |
+| Schedule | Campaign status by time window |
+| Quota | `QuotaManager` — PG chunks → `budget:quota` |
+| Slot migration | Orchestrator + `migration_fence` |
+| Reconciliation | `ReconWorker` — PG vs Redis budget drift |
+| RTB deals | `/admin/rtb/deals`, floor optimizer, catalog pubsub |
+| UDP ingress | `:8190` epoch broadcast to trackers |
+| Settlement gRPC | Payment credits, fraud threats, ML boosts |
 
-**Data flows:**
-1.  **Hot path:** Tracker writes telemetry to Redis fraud stream.
-2.  **Warm path:** Processor moves data from Redis to ClickHouse (`ml_features_1m`).
-3.  **Cold path:** `ivt-detector` and `fraud-scorer` read features from ClickHouse, run scoring (LightGBM/Isolation Forest), and send commands to management `outbox`.
-4.  **Control plane:** Commands from `outbox` are applied across all Redis shards.
+---
+
+## Fraud and IVT
+
+ML scoring stays off the tracker hot path. Trackers read precomputed Redis keys only.
+
+```text
+Tracker → fraud stream (lossy)
+Processor → ClickHouse ml_features_1m
+ivt-detector / fraud-scorer → management outbox → all Redis shards
+```
+
+`fraud-scorer` must not be imported from `internal/ingestion`.
 
 ---
 
 ## Billing and Payments
 
-*   **Money Truth.** The sole source of truth for funds is `balance_ledger` in Postgres.
-*   **Payment Service.** Isolated service for payment gateways. Uses dedicated `db-payment` database for PCI compliance.
-*   **Billing Service.** Invoice generation based on `balance_ledger` aggregates. Works with tax profiles and basis-point calculations.
+| Store | Role |
+| :--- | :--- |
+| `balance_ledger` (Postgres) | Sole money truth |
+| `cmd/payment` | Stripe, webhooks, PCI-isolated schema |
+| `cmd/billing` | Invoices from ledger aggregates |
+
+Payment → management settlement gRPC for customer credit.
 
 ---
 
-## Log Broker (Optional)
+## Licensing and Commercial
 
-`cmd/broker` service based on `mmap` segments. Used as a lightweight commit log for resilience when regional data is lost. Not a Kafka replacement; intended for local log segment storage with subsequent evacuation to S3.
+Hybrid volume licensing (JWT bands S/M/L, module flags, weighted billable events). Hot path: `LicenseFilter` + `EntitlementsFilter` read atomic snapshots. Cold path: `VolumeMeterWorker` rolls up ClickHouse → `usage_meters`.
+
+| Module flag | Effect |
+| :--- | :--- |
+| `openrtb_engine` / `rtb_live` | Reject `bid`/`rtb` events when off |
+| `ml_fraud_boost` | Processor fraud micro-batcher |
+| `ivt_ml_detector` | `ivt-detector` startup gate |
+| `ebpf_xdp_edge` | Edge BPF sync |
+
+Detail: [LICENSING.md](./LICENSING.md), [SUBSCRIPTIONS.md](./SUBSCRIPTIONS.md).
+
+---
+
+## Edge and Compliance
+
+Defensive XDP filter, allowlist gate, blocklist sync, audit to Postgres. Regulatory scope: [EDGE.md](./EDGE.md) Part V, `GUIDE_COMPLIANCE.md`.
+
+---
+
+## Observability and SLAs
+
+| Metric / area | Target |
+| :--- | :--- |
+| `ad_http_request_duration_seconds` (tracker) | p95 < 50 ms, p99 < 80 ms, ceiling 100 ms |
+| Redis unified-filter Lua | p99 < 10 ms / shard |
+| Geo filter (sampled) | p99 < 10 µs |
+| `RunAuction` | p99 < 15 µs; candidates scanned p99 < 500 |
+| Fraud boost snapshot | ~90 ns, 0 allocs/op |
+| Budget invariant | `current_spend ≤ budget_limit` (±1 micro-unit) |
+
+Grafana dashboards under `deploy/monitoring/grafana/`. RTB cutover: `rtb.json`.
+
+---
+
+## Engineering Constraints
+
+Hot-path rules override style guides when they conflict:
+
+- 0 heap allocations per request on parse, filter, auction  
+- No `defer`, closures, `interface{}`, `sync.Map`, or string `+` in hot loops  
+- Monotonic deadlines (`FilterDeadlineMono`); no wall clock in filter loops  
+- Pre-bound Prometheus labels on hot path  
+
+CI: `make test-alloc-gate`, `scripts/perf-gate/`, `scripts/chaos-drills/test_chaos.sh` when write paths change.
+
+Full reference: [GO.md](./GO.md), `.cursorrules`.
+
+---
+
+## Optional Log Broker
+
+`cmd/broker` — mmap segment log for regional resilience; not a Kafka replacement. Used with log shipper/compactor/evacuator for S3 evacuation.

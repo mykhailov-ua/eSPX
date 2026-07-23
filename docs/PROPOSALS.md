@@ -1,6 +1,6 @@
 # eSPX — Architectural & Commercial Proposals
 
-Unified reference document for all proposed system capabilities, feature evolutions, and commercial licensing models. Proposals documented herein represent optional architectural enhancements and do not alter core system invariants until formally accepted into milestone deliverables.
+Unified reference document for all proposed system capabilities, feature evolutions, and commercial licensing models. Proposals documented herein represent optional architectural enhancements and do not alter core system invariants until formally accepted.
 
 ---
 
@@ -15,7 +15,9 @@ This document consolidates proposals for the eSPX platform:
 
 ---
 
-## 2. Proposal 1 — Hybrid Volume Licensing (ESPX-LP-2026-V1) `Shipped (M3-T)`
+## 2. Proposal 1 — Hybrid Volume Licensing (ESPX-LP-2026-V1) `Shipped`
+
+See [LICENSING.md](./LICENSING.md) and [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ### 2.1 Overview & Architecture
 

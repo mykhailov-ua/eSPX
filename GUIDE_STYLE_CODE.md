@@ -2,7 +2,7 @@
 
 **Status:** Mandatory  
 **Target Audience:** All Go developers  
-**Related Documents:** `.cursorrules` (hot-path performance rules take precedence over this guide in case of conflict)
+**Related Documents:** `.cursorrules` (hot-path performance rules take precedence over this guide in case of conflict), [GUIDE_HOT_PATH_ZERO_ALLOC.md](./GUIDE_HOT_PATH_ZERO_ALLOC.md), [docs/GO.md](./docs/GO.md)
 
 ## Goal
 

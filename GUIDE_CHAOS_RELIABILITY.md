@@ -433,9 +433,9 @@ Testing Rules:
 2. Verify: Ingestion path remains stable; schedule logic handles time step.
 3. Proof: `chaos_proof fault=clock_step_backward schedule_stable=true`.
 
-### M4 Extended Matrix (UDP, Redis Engine, Lua, FD, CPU)
+### M2 Extended Matrix (UDP, Redis Engine, Lua, FD, CPU)
 
-**Full catalog:** [MILESTONE.md](docs/MILESTONE.md#24-milestone-4-chaos-matrix) — **90+ scenarios** for M4 elastic triplets:
+**Full catalog:** [GAPS.md](docs/GAPS.md) §9 — chaos backlog including elastic shard orchestrator scenarios:
 
 | Domain | IDs | Focus |
 | :--- | :--- | :--- |

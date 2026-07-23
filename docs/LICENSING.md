@@ -219,7 +219,7 @@ Hot path uses `Effective()` per campaign's customer.
 - [SUBSCRIPTIONS.md](./SUBSCRIPTIONS.md) — Basic / Pro / Enterprise tenants
 - [MANAGEMENT.md](./MANAGEMENT.md) — §18–21
 - [PROPOSALS.md](./PROPOSALS.md) — ESPX-LP-2026-V1 hybrid volume licensing (shipped M3-T)
-- [MILESTONE.md](./MILESTONE.md) — M3-T Commercial PU Packaging
+- [ARCHITECTURE.md](./ARCHITECTURE.md) — Platform overview and licensing integration
 
 ---
 
