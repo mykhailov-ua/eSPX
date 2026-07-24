@@ -706,6 +706,10 @@ func (consumer *StreamConsumer) parseMessage(id string, values map[string]interf
 			}
 			event.FraudScore = pbEvt.FraudScore
 			event.GhostEvent = pbEvt.GhostEvent
+			if len(pbEvt.UserId) > 0 {
+				event.StringBuffer = append(event.StringBuffer, pbEvt.UserId...)
+				event.UserID = unsafeString(event.StringBuffer[len(event.StringBuffer)-len(pbEvt.UserId):])
+			}
 			if pbEvt.CreatedAtUnix > 0 {
 				event.CreatedAt = time.Unix(pbEvt.CreatedAtUnix, 0)
 			}
@@ -714,45 +718,20 @@ func (consumer *StreamConsumer) parseMessage(id string, values map[string]interf
 		}
 		DeepResetAdStreamEvent(pbEvt)
 		streamEventPool.Put(pbEvt)
-	} else {
-		if v, ok := values["click_id"].(string); ok {
-			event.ClickID = v
-		}
-		if v, ok := values["campaign_id"].(string); ok {
-			event.CampaignID, _ = uuid.Parse(v)
-		}
-		if v, ok := values["user_id"].(string); ok {
-			event.UserID = v
-		}
-		if v, ok := values["type"].(string); ok {
-			event.Type = v
-		}
-		if v, ok := values["payload"].(string); ok {
-			event.Payload = append(event.Payload[:0], v...)
-		}
-		if v, ok := values["ip"].(string); ok {
+	} else if v, ok := values["type"].(string); ok && v == fraudAggregateEventType {
+		// fraud_aggregate keeps a flat schema (not AdStreamEvent).
+		event.Type = fraudAggregateEventType
+		if v, ok := values["subnet"].(string); ok {
 			event.IP = v
-		}
-		if v, ok := values["ua"].(string); ok {
-			event.UA = v
 		}
 		if v, ok := values["fraud_reason"].(string); ok {
 			event.FraudReason = v
 		}
-		if v, ok := values["fraud_score"].(string); ok {
-			if n, err := strconv.ParseUint(v, 10, 32); err == nil {
-				event.FraudScore = uint32(n)
-			}
+		if v, ok := values["count"].(string); ok {
+			event.ClickID = v
 		}
-		if v, ok := values["ghost_event"].(string); ok {
-			event.GhostEvent = v == "1" || v == "true"
-		}
-		if v, ok := values["created_at"].(string); ok {
-			if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
-				event.CreatedAt = t.UTC()
-			} else if t, err := time.Parse(time.RFC3339, v); err == nil {
-				event.CreatedAt = t.UTC()
-			}
+		if v, ok := values["window_ms"].(string); ok {
+			event.UserID = v
 		}
 	}
 

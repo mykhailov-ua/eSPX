@@ -42,8 +42,9 @@ func TestEvalShaPooled_MockRedis(t *testing.T) {
 	}
 	args := make([]any, 27)
 	ctx := context.Background()
+	f := &UnifiedFilter{}
 
-	n, err := evalShaPooled(ctx, rdb, "abc123", keyArgs, args)
+	n, err := f.evalShaPooled(ctx, rdb, 0, nil, "abc123", keyArgs, args)
 	if err != nil {
 		t.Fatal(err)
 	}

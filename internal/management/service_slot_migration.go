@@ -21,6 +21,8 @@ var (
 	ErrSlotMigrationNoDraft = errors.New("no draft slot map version with MIGRATING slots")
 	// ErrSlotMigrationKeysMissing is returned when required keys are absent on the target shard after PG re-warm.
 	ErrSlotMigrationKeysMissing = errors.New("slot migration target shard missing required keys")
+	// ErrSlotMigrationLagNotCaughtUp is returned when dual-write replication lag exceeds epsilon at cutover.
+	ErrSlotMigrationLagNotCaughtUp = errors.New("slot migration dual-write lag above epsilon")
 )
 
 // SlotMigrationDTO is the admin view of one slot migration job.
@@ -101,6 +103,7 @@ func (s *Service) CopySlotMigrationData(ctx context.Context, version int32, slot
 		return err
 	}
 	if job.State == db.RedisSlotMigrationStateCopied ||
+		job.State == db.RedisSlotMigrationStateDualWriting ||
 		job.State == db.RedisSlotMigrationStateDraining ||
 		job.State == db.RedisSlotMigrationStateDone {
 		return nil
@@ -125,7 +128,7 @@ func (s *Service) CopySlotMigrationData(ctx context.Context, version int32, slot
 	src := s.rdbs[job.SourceShard]
 	dst := s.rdbs[job.TargetShard]
 
-	if s.cfg != nil && s.cfg.MigrationFenceEnabled && len(slotCampaigns) > 0 {
+	if s.cfg != nil && s.cfg.MigrationFenceEnabled && !s.slotMigrationDualWriteEnabled() && len(slotCampaigns) > 0 {
 		if err := ingestion.BumpMigrationFences(ctx, s.GetPool(), src, slotCampaigns); err != nil {
 			_ = migRepo.UpdateProgress(ctx, version, slot, total, job.CampaignsCopied,
 				db.RedisSlotMigrationStateFailed, err.Error())
@@ -172,8 +175,18 @@ func (s *Service) CopySlotMigrationData(ctx context.Context, version int32, slot
 		}
 	}
 
+	finalState := db.RedisSlotMigrationStateCopied
+	if s.slotMigrationDualWriteEnabled() {
+		if err := ingestion.EnableSlotMigrationDualWrite(ctx, src, version, slot, job.TargetShard); err != nil {
+			_ = migRepo.UpdateProgress(ctx, version, slot, total, copied,
+				db.RedisSlotMigrationStateFailed, err.Error())
+			return fmt.Errorf("enable dual-write slot %d: %w", slot, err)
+		}
+		finalState = db.RedisSlotMigrationStateDualWriting
+	}
+
 	return migRepo.UpdateProgress(ctx, version, slot, total, copied,
-		db.RedisSlotMigrationStateCopied, "")
+		finalState, "")
 }
 
 // CopyAllMigratingSlots copies data for every pending/copying slot in a draft version.
@@ -219,6 +232,17 @@ func (s *Service) ActivateSlotMapVersionWithMigration(ctx context.Context, admin
 			if err != nil {
 				return err
 			}
+			skipRewarm := false
+			if job.State == db.RedisSlotMigrationStateDualWriting {
+				if err := s.finalizeDualWriteSlot(ctx, version, job, campaignIDs); err != nil {
+					return err
+				}
+				skipRewarm = true
+				job, err = migRepo.Get(ctx, version, row.Slot)
+				if err != nil {
+					return err
+				}
+			}
 			if job.State != db.RedisSlotMigrationStateCopied {
 				return ErrSlotMigrationNotReady
 			}
@@ -227,8 +251,10 @@ func (s *Service) ActivateSlotMapVersionWithMigration(ctx context.Context, admin
 			}
 			slotCampaigns := ingestion.FilterCampaignIDsBySlot(campaignIDs, row.Slot)
 			dst := s.rdbs[job.TargetShard]
-			if err := ingestion.RewarmCampaignBudgetKeys(ctx, s.GetPool(), dst, slotCampaigns); err != nil {
-				return fmt.Errorf("pg re-warm slot %d: %w", row.Slot, err)
+			if !skipRewarm {
+				if err := ingestion.RewarmCampaignBudgetKeys(ctx, s.GetPool(), dst, slotCampaigns); err != nil {
+					return fmt.Errorf("pg re-warm slot %d: %w", row.Slot, err)
+				}
 			}
 			if err := catalog.VerifySlotCampaignKeysExist(ctx, dst, slotCampaigns); err != nil {
 				metrics.SlotMigrationCutoverBlockedTotal.WithLabelValues("missing_keys").Inc()
@@ -390,6 +416,128 @@ func (s *Service) RollbackSlotMapVersion(ctx context.Context, adminID uuid.UUID,
 	return nil
 }
 
+// CatchUpDualWriteSlots drains replication streams for slots in dual_writing state.
+func (s *Service) CatchUpDualWriteSlots(ctx context.Context, draftVersion int32) error {
+	if !s.slotMigrationDualWriteEnabled() || len(s.rdbs) == 0 {
+		return nil
+	}
+	migRepo := ingestion.NewSlotMigrationRepo(s.GetPool())
+	jobs, err := migRepo.ListByVersion(ctx, draftVersion)
+	if err != nil {
+		return err
+	}
+	for _, job := range jobs {
+		if job.State != db.RedisSlotMigrationStateDualWriting {
+			continue
+		}
+		if job.SourceShard < 0 || int(job.SourceShard) >= len(s.rdbs) ||
+			job.TargetShard < 0 || int(job.TargetShard) >= len(s.rdbs) {
+			continue
+		}
+		src := s.rdbs[job.SourceShard]
+		dst := s.rdbs[job.TargetShard]
+		_, lag, err := ingestion.CatchUpSlotMigrationDeltas(ctx, src, dst, job.Version, job.Slot)
+		if err != nil {
+			return fmt.Errorf("catch-up slot %d: %w", job.Slot, err)
+		}
+		cfg := s.dualWriteConfig()
+		if lag > cfg.LagThreshold {
+			slotCampaigns, listErr := s.listActiveCampaignUUIDs(ctx)
+			if listErr != nil {
+				return listErr
+			}
+			slotCampaigns = ingestion.FilterCampaignIDsBySlot(slotCampaigns, job.Slot)
+			if s.cfg != nil && s.cfg.MigrationFenceEnabled && len(slotCampaigns) > 0 {
+				if fenceErr := ingestion.BumpMigrationFences(ctx, s.GetPool(), src, slotCampaigns); fenceErr != nil {
+					return fmt.Errorf("dual-write fence fallback slot %d: %w", job.Slot, fenceErr)
+				}
+			}
+			_ = ingestion.DisableSlotMigrationDualWrite(ctx, src)
+			metrics.SlotMigrationCutoverBlockedTotal.WithLabelValues("lag_threshold").Inc()
+			slog.Warn("slot migration dual-write lag exceeded threshold; fence fallback",
+				"version", job.Version, "slot", job.Slot, "lag", lag, "threshold", cfg.LagThreshold)
+		}
+	}
+	return nil
+}
+
+func (s *Service) finalizeDualWriteSlot(
+	ctx context.Context,
+	version int32,
+	job db.RedisSlotMigration,
+	campaignIDs []uuid.UUID,
+) error {
+	if job.SourceShard < 0 || int(job.SourceShard) >= len(s.rdbs) ||
+		job.TargetShard < 0 || int(job.TargetShard) >= len(s.rdbs) {
+		return fmt.Errorf("invalid shard indices source=%d target=%d", job.SourceShard, job.TargetShard)
+	}
+	src := s.rdbs[job.SourceShard]
+	dst := s.rdbs[job.TargetShard]
+	cfg := s.dualWriteConfig()
+
+	lag, err := ingestion.SlotMigrationReplicationLag(ctx, src)
+	if err != nil {
+		return err
+	}
+	if lag > cfg.LagThreshold {
+		slotCampaigns := ingestion.FilterCampaignIDsBySlot(campaignIDs, job.Slot)
+		if s.cfg != nil && s.cfg.MigrationFenceEnabled && len(slotCampaigns) > 0 {
+			if fenceErr := ingestion.BumpMigrationFences(ctx, s.GetPool(), src, slotCampaigns); fenceErr != nil {
+				return fmt.Errorf("dual-write fence fallback slot %d: %w", job.Slot, fenceErr)
+			}
+		}
+		_ = ingestion.DisableSlotMigrationDualWrite(ctx, src)
+		metrics.SlotMigrationCutoverBlockedTotal.WithLabelValues("lag_threshold").Inc()
+		return fmt.Errorf("dual-write lag %d exceeds threshold %d for slot %d", lag, cfg.LagThreshold, job.Slot)
+	}
+	if lag > cfg.LagEpsilon {
+		metrics.SlotMigrationCutoverBlockedTotal.WithLabelValues("lag_epsilon").Inc()
+		return fmt.Errorf("%w: slot %d lag %d epsilon %d", ErrSlotMigrationLagNotCaughtUp, job.Slot, lag, cfg.LagEpsilon)
+	}
+
+	_, lag, err = ingestion.CatchUpSlotMigrationDeltas(ctx, src, dst, version, job.Slot)
+	if err != nil {
+		return err
+	}
+	if lag > cfg.LagEpsilon {
+		metrics.SlotMigrationCutoverBlockedTotal.WithLabelValues("lag_epsilon").Inc()
+		return fmt.Errorf("%w: slot %d lag %d epsilon %d", ErrSlotMigrationLagNotCaughtUp, job.Slot, lag, cfg.LagEpsilon)
+	}
+	slotCampaigns := ingestion.FilterCampaignIDsBySlot(campaignIDs, job.Slot)
+	if len(slotCampaigns) > 0 {
+		if err := ingestion.VerifyBudgetInvariant(ctx, s.GetPool(), dst, slotCampaigns[0]); err != nil {
+			metrics.SlotMigrationCutoverBlockedTotal.WithLabelValues("invariant").Inc()
+			return err
+		}
+	}
+	migRepo := ingestion.NewSlotMigrationRepo(s.GetPool())
+	if err := migRepo.UpdateState(ctx, version, job.Slot, db.RedisSlotMigrationStateCopied, ""); err != nil {
+		return err
+	}
+	return ingestion.DisableSlotMigrationDualWrite(ctx, src)
+}
+
+func (s *Service) slotMigrationDualWriteEnabled() bool {
+	return s.cfg != nil && s.cfg.SlotMigrationDualWriteEnabled
+}
+
+func (s *Service) dualWriteConfig() ingestion.SlotMigrationDualWriteConfig {
+	cfg := ingestion.SlotMigrationDualWriteConfig{
+		Enabled:      s.slotMigrationDualWriteEnabled(),
+		LagEpsilon:   0,
+		LagThreshold: 1000,
+	}
+	if s.cfg == nil {
+		return cfg
+	}
+	cfg.LagEpsilon = s.cfg.SlotMigrationLagEpsilon
+	cfg.LagThreshold = s.cfg.SlotMigrationLagThreshold
+	if cfg.LagThreshold <= 0 {
+		cfg.LagThreshold = 1000
+	}
+	return cfg
+}
+
 // BumpFencesForPendingMigrations bumps migration_gen and Redis fence keys for campaigns in active copy jobs.
 func (s *Service) BumpFencesForPendingMigrations(ctx context.Context) error {
 	if s.cfg == nil || !s.cfg.MigrationFenceEnabled || len(s.rdbs) == 0 {
@@ -410,6 +558,7 @@ func (s *Service) BumpFencesForPendingMigrations(ctx context.Context) error {
 	}
 	for _, job := range jobs {
 		if job.State == db.RedisSlotMigrationStateCopied ||
+			job.State == db.RedisSlotMigrationStateDualWriting ||
 			job.State == db.RedisSlotMigrationStateDraining ||
 			job.State == db.RedisSlotMigrationStateDone {
 			continue

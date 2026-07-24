@@ -5,6 +5,7 @@ import (
 	_ "unsafe"
 
 	"espx/internal/metrics"
+
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -30,6 +31,10 @@ type preboundAuctionMetrics struct {
 	noBidSpendFailed    prometheus.Counter
 	noBidPacingClosed   prometheus.Counter
 	noBidDailyCap       prometheus.Counter
+	noBidScanLimit      prometheus.Counter
+	noBidPrebidIVT      prometheus.Counter
+	noBidSchainInvalid  prometheus.Counter
+	noBidBreakerOpen    prometheus.Counter
 }
 
 var (
@@ -74,6 +79,18 @@ func bindAuctionMetrics() {
 		noBidDailyCap: metrics.RtbAuctionNoBidTotal.WithLabelValues(
 			NoBidDailyCapExceeded.String(),
 		),
+		noBidScanLimit: metrics.RtbAuctionNoBidTotal.WithLabelValues(
+			NoBidScanLimit.String(),
+		),
+		noBidPrebidIVT: metrics.RtbAuctionNoBidTotal.WithLabelValues(
+			NoBidPrebidIVT.String(),
+		),
+		noBidSchainInvalid: metrics.RtbAuctionNoBidTotal.WithLabelValues(
+			NoBidSchainInvalid.String(),
+		),
+		noBidBreakerOpen: metrics.RtbAuctionNoBidTotal.WithLabelValues(
+			NoBidBreakerOpen.String(),
+		),
 	}
 }
 
@@ -111,6 +128,15 @@ func recordAuctionNoBid(reason NoBidReason, scanned int) {
 		auctionMetrics.noBidPacingClosed.Inc()
 	case NoBidDailyCapExceeded:
 		auctionMetrics.noBidDailyCap.Inc()
+	case NoBidScanLimit:
+		auctionMetrics.noBidScanLimit.Inc()
+		metrics.RtbAuctionScanLimitTotal.Inc()
+	case NoBidPrebidIVT:
+		auctionMetrics.noBidPrebidIVT.Inc()
+	case NoBidSchainInvalid:
+		auctionMetrics.noBidSchainInvalid.Inc()
+	case NoBidBreakerOpen:
+		auctionMetrics.noBidBreakerOpen.Inc()
 	}
 	if scanned > 0 {
 		auctionMetrics.candidatesScanned.Observe(float64(scanned))

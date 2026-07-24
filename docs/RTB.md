@@ -1,30 +1,12 @@
-# RTB Module: Architecture, Hot-Path Engineering, and Roadmap
+# RTB
 
-In-process Real-Time Bidding (RTB) on the tracker `/track` path.
-
-**Related:** [GO.md](./GO.md) (compiler/runtime policy), [ARCHITECTURE.md](./ARCHITECTURE.md) (platform context), [REDIS.md](./REDIS.md) (Lua budget authority).
-
-### SLA (from `.cursorrules` / M18)
+In-process auction on `/track` before `FilterEngine.Check`. Hot-path rules: [GO.md](./GO.md). Budget authority: [DATA.md](./DATA.md) Part I. Open work: [BACKLOG.md](./BACKLOG.md) §1.
 
 | Metric | Target |
-|--------|--------|
+| :--- | :--- |
 | `RunAuction` p99 | < 15 µs |
 | Candidates scanned p99 | < 500 |
-| Heap allocations | **0** per auction |
-
-This document covers shipped capabilities, low-level performance techniques (per [GO.md](./GO.md)), and the improvement roadmap with implementation notes.
-
-### Contents
-
-1. [Architecture Overview](#1-architecture-overview)
-2. [Shipped Features](#2-shipped-features-2026-07)
-3. [Environment Knobs](#3-environment-knobs)
-4. [Low-Level Hot-Path Engineering](#4-low-level-hot-path-engineering)
-5. [Rollout and Budget Authority](#5-rollout-and-budget-authority)
-6. [Roadmap](#6-roadmap)
-7. [Implementation Checklist](#7-implementation-checklist-hot-path-changes)
-8. [File Reference](#8-file-reference)
-9. [Suggested Sequencing](#9-suggested-sequencing)
+| Heap allocations | 0 per auction |
 
 ---
 
@@ -123,17 +105,46 @@ Grafana dashboard: `deploy/monitoring/grafana/.../rtb.json`.
 
 JWT entitlements `openrtb_engine` / `rtb_live` gate RTB. When off, `filter_entitlements.go` rejects `bid`/`rtb` events.
 
-### 2.6 Known gaps (shipped schema, incomplete hot path)
+### 2.6 Shipped exchange surface (M7 P0, 2026-07)
 
 | Area | Status |
 |------|--------|
-| `rtb_deals.geo_mask`, `cat_mask`, `seats`, `pacing` | Stored but **not enforced** in `rankCandidates` |
-| `ReserveMicro` in catalog sync | Exists but **always 0** in `SyncRtbCatalog` |
-| `rtb_deal_outcomes` in ClickHouse | Read by floor optimizer; **no hot/cold writer** |
-| OpenRTB 2.6 hot parse | Cold-path validation only |
-| Standalone `/openrtb/bid` | Not implemented |
-| `HybridBalancer.SelectAndShard` | Built but **not called** on hot path (catalog weights only) |
-| Multi-country targeting | `firstTargetCountryGeo` — first sorted country only |
+| PMP (`geo_mask`, `cat_mask`, pacing, seats) | Enforced in `rankCandidates` / `dealRequestValid` |
+| `ReserveMicro` | Wired from `campaigns.reserve_micro` in `SyncRtbCatalog` |
+| `rtb_deal_outcomes` writer | Lossy ring → ClickHouse batch (`rtb_deal_outcomes_writer.go`) |
+| OpenRTB 2.6 hot parse | `openrtb26_parse.go` — 0 allocs/op |
+| `POST /openrtb/bid` | gnet handler + stack-buffer response |
+| `RTB_TARGETING_INDEX` | Default **true** in `env.go` |
+| Admin live gate | `GET /admin/rtb/live-gate`, `POST /admin/rtb/mode` (409 when unsafe) |
+| `tmax` | `DeadlineMonoFromTmax`; scan timeout every 32 candidates → `NoBidTimeout` |
+
+Detail: [CAPABILITIES.md](./CAPABILITIES.md) §M7 P0 and §M7 P1.
+
+### 2.8 Shipped yield, trust, and consistency (M7 P1, 2026-07)
+
+| Area | Status |
+|------|--------|
+| Multi-country fan-out | One catalog row per `target_countries` entry (`rtb_geo_fanout.go`) |
+| Hybrid ranking weights | `HybridBalancer.WeightFor` → catalog `Weight` |
+| ML fraud boost | `BoostPPM` in SoA; `effectiveScoreWithBoost` |
+| Pre-auction prefilter | Emergency breaker + empty geo shard (`rtb_prefilter.go`) |
+| Scan budget | `rankMaxScanCandidates=500` → `NoBidScanLimit` + `ad_rtb_auction_scan_limit_total` |
+| Clearing price | `evt.ClearingPriceMicro` on live wins |
+| Bid shading | `POST /admin/rtb/bid-shade` (`SimulateRtbBidShade`) |
+| Pre-bid IVT | `RTB_PREBID_IVT=1` → datacenter/proxy gate before auction |
+| `schain` validation | Hot parse + `SupplyChainAllowlistSnapshot` from sellers |
+| Supply audit | `SupplyAuditWorker` (6 h) — ads.txt / sellers.json consistency |
+| Bidirectional budget | `RtbBudgetMirrorWriter` — Redis `DECRBY` after `CheckAndSpendAll` when `authority=rtb` |
+
+**Admin:** `POST /admin/rtb/bid-shade` · **Metrics:** `ad_rtb_auction_no_bid_total{reason=prebid_ivt|schain_invalid|breaker_open|scan_limit}`.
+
+### 2.9 Remaining gaps
+
+| Area | Status |
+|------|--------|
+| `HybridBalancer.SelectAndShard` | Built but not called on hot path (M9-07) |
+| RTB P2 backlog (R21–R31) | [BACKLOG.md](./BACKLOG.md) §1 (GAP-RTB-10..13) |
+| RTB live production enable | Admin gate + GAP-RTB-10..12 (M9 Lua prerequisite closed) |
 
 ---
 
@@ -144,13 +155,14 @@ JWT entitlements `openrtb_engine` / `rtb_live` gate RTB. When off, `filter_entit
 | `RTB_MODE` | `off` | `shadow` = eval + metrics; `live` replaces `campaign_id` with winner |
 | `RTB_BUDGET_AUTHORITY` | `redis` | `rtb` spends in `CheckAndSpend`; Lua skips budget debit |
 | `RTB_CLEARING_MODE` | second-price | Set `first` for first-price clearing |
-| `RTB_TARGETING_INDEX` | `false` | Geo + device + category inverted index |
+| `RTB_TARGETING_INDEX` | `true` | Geo + device + category inverted index |
 | `RTB_SNAPSHOT_PATH` | — | Budget/catalog snapshot file path |
 | `RTB_CATALOG_RELOAD_CHANNEL` | `rtb:catalog:reload` | Pubsub channel for deal/catalog reload |
 | `RTB_RECONCILE_INTERVAL_MS` | `30000` | Budget divergence sampler interval |
 | `RTB_BUDGET_DIVERGENCE_THRESHOLD_MICRO` | `1000` | Reconcile alert threshold |
 | `RTB_RECONCILE_SAMPLE_SIZE` | `32` | Campaigns sampled per reconcile tick |
 | `RTB_HYBRID_MAX_RPS_PER_NODE` | `5000` | Hybrid balancer metadata |
+| `RTB_PREBID_IVT` | `false` | Pre-bid datacenter/proxy gate before auction (R17) |
 | `BID_FLOOR_*`, `DEAL_FLOOR_REFRESH_INTERVAL_MS` | — | See `env.go` for floor optimizer and Redis cache refresh |
 
 System setting `rtb_budget_authority` in `system_settings` can override authority via `RtbAuthorityController`.
@@ -402,7 +414,7 @@ Phases ordered by market requirements (OpenRTB 2.6, floor loop, supply chain, ex
 | **R27** | Admin simulate auction: `POST /admin/rtb/simulate` → `RunAuctionEval` |
 | **R28** | A/B cohort rollout. Hash `user_id` → shadow/live bucket; metric label `cohort` |
 | **R29** | ARTF local enrichment hooks. Function pointers on cold reload only — no `interface{}` in loop |
-| **R30** | Multi-node budget consistency. See [MULTI_REGION.md](./MULTI_REGION.md) |
+| **R30** | Multi-node budget consistency. See [DATA.md](./DATA.md) Part VII |
 | **R31** | Wire or remove `HybridBalancer.SelectAndShard` |
 
 ---

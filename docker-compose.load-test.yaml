@@ -11,7 +11,7 @@ services:
     environment:
       - GOMAXPROCS=2
       - GOMEMLIMIT=350MiB
-      - GOGC=50
+      - GOGC=300
     deploy:
       resources:
         limits:
@@ -22,7 +22,7 @@ services:
     environment:
       - GOMAXPROCS=2
       - GOMEMLIMIT=350MiB
-      - GOGC=50
+      - GOGC=300
     deploy:
       resources:
         limits:

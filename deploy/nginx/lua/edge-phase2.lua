@@ -37,6 +37,7 @@ local function config_string(name, env_key, default)
 end
 
 local EDGE_MAX_BODY = tonumber(config_string("max_body_bytes", "EDGE_MAX_BODY_BYTES", tostring(MAX_SCAN_BYTES)))
+local INGRESS_SCHEMA = config_string("ingress_schema", "TRACKER_INGRESS_SCHEMA", "openrtb_3")
 
 local function content_length()
     local headers = ngx.req.get_headers()
@@ -147,9 +148,12 @@ function _M.run_full()
     local cl = require_content_length()
     local body, _ = read_bounded_body(cl)
     local fraud_score = fraud_score_from_headers()
-    local campaign_id, perr = edge_parse_dfa.extract_campaign_id(body, cl)
+    local campaign_id, perr = edge_parse_dfa.extract_campaign_id(body, cl, INGRESS_SCHEMA)
     if perr == edge_parse_dfa.ERR_OVERSIZE then
         reject_oversize()
+    end
+    if campaign_id and campaign_id ~= "" then
+        ngx.ctx.campaign_id = campaign_id
     end
     apply_campaign_rl(campaign_id, fraud_score)
     edge_metrics.record_phase2_pass()
@@ -160,7 +164,11 @@ function _M.run_stream()
     local cl = require_content_length()
     check_edge_limits(cl)
     local fraud_score = fraud_score_from_headers()
-    apply_campaign_rl(campaign_id_from_headers(), fraud_score)
+    local hdr_cid = campaign_id_from_headers()
+    if hdr_cid and hdr_cid ~= "" then
+        ngx.ctx.campaign_id = hdr_cid
+    end
+    apply_campaign_rl(hdr_cid, fraud_score)
     edge_metrics.record_body_stream()
     edge_metrics.record_phase2_pass()
 end
@@ -184,13 +192,20 @@ function _M.run_peek()
 
     local fraud_score = fraud_score_from_headers()
     if chunk and #chunk > 0 then
-        local campaign_id, perr = edge_parse_dfa.extract_campaign_id(chunk, cl)
+        local campaign_id, perr = edge_parse_dfa.extract_campaign_id(chunk, cl, INGRESS_SCHEMA)
         if perr == edge_parse_dfa.ERR_OVERSIZE then
             reject_oversize()
         end
+        if campaign_id and campaign_id ~= "" then
+            ngx.ctx.campaign_id = campaign_id
+        end
         apply_campaign_rl(campaign_id, fraud_score)
     else
-        apply_campaign_rl(campaign_id_from_headers(), fraud_score)
+        local hdr_cid = campaign_id_from_headers()
+        if hdr_cid and hdr_cid ~= "" then
+            ngx.ctx.campaign_id = hdr_cid
+        end
+        apply_campaign_rl(hdr_cid, fraud_score)
     end
 
     edge_metrics.record_phase2_pass()

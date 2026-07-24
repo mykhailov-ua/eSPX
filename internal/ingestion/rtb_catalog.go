@@ -5,6 +5,7 @@ import (
 
 	"espx/internal/campaignmodel"
 	"espx/internal/rtb"
+
 	"github.com/google/uuid"
 )
 
@@ -15,6 +16,11 @@ type RtbCatalog struct {
 	dealFloors *DealFloorCache
 	authority  BudgetAuthority
 	winnerUUID atomic.Pointer[map[rtb.CampaignID]uuid.UUID]
+
+	prebidIVT       atomic.Bool
+	schainAllow     atomic.Pointer[SupplyChainAllowlistSnapshot]
+	settingsWatcher *SettingsWatcher
+	ingestGeo       GeoProvider
 }
 
 func NewRtbCatalog(store *rtb.BudgetStore, authority BudgetAuthority) *RtbCatalog {
@@ -36,6 +42,29 @@ func (catalog *RtbCatalog) Authority() BudgetAuthority {
 // SetAuthority updates live budget ownership without rebuilding the catalog.
 func (catalog *RtbCatalog) SetAuthority(authority BudgetAuthority) {
 	catalog.authority = authority
+}
+
+// SetPrebidIVT enables the pre-bid IVT gate before RunAuction (R17).
+func (catalog *RtbCatalog) SetPrebidIVT(enabled bool) {
+	catalog.prebidIVT.Store(enabled)
+}
+
+// SetSupplyChainAllowlist installs the hot-path schain allowlist snapshot (R18).
+func (catalog *RtbCatalog) SetSupplyChainAllowlist(snap *SupplyChainAllowlistSnapshot) {
+	if snap == nil {
+		catalog.schainAllow.Store(nil)
+		return
+	}
+	catalog.schainAllow.Store(snap)
+}
+
+// ConfigureRtbGates wires prefilter dependencies for live auction paths.
+func (catalog *RtbCatalog) ConfigureRtbGates(watcher *SettingsWatcher, geo GeoProvider) {
+	if catalog == nil {
+		return
+	}
+	catalog.settingsWatcher = watcher
+	catalog.ingestGeo = geo
 }
 
 // SetDealFloors attaches the read-only Redis-backed optimized floor cache.
@@ -129,9 +158,68 @@ func (catalog *RtbCatalog) AllDeals() []rtb.DealData {
 // RunAuction runs an in-process auction for one ingest event.
 // BudgetAuthorityShadow evaluates winners without debiting rtb or Redis budgets.
 func (catalog *RtbCatalog) RunAuction(evt *campaignmodel.Event, targeting RtbTargetingInput) (rtb.AuctionResult, rtb.NoBidReason) {
+	if catalog.authority != BudgetAuthorityShadow {
+		if reason := rtbPrefilterReject(catalog.settingsWatcher, catalog, targeting); reason != rtb.NoBidNone {
+			return rtb.AuctionResult{}, reason
+		}
+		if catalog.prebidIVT.Load() {
+			if reason := rtbPrebidIVTReject(true, catalog.ingestGeo, evt); reason != rtb.NoBidNone {
+				return rtb.AuctionResult{}, reason
+			}
+		}
+		if targeting.SchainCount > 0 {
+			allow := catalog.schainAllow.Load()
+			if allow != nil && !ValidateSchainNodes(targeting.Schain, allow) {
+				return rtb.AuctionResult{}, rtb.NoBidSchainInvalid
+			}
+		}
+	}
+	targeting = catalog.enrichTargetingDeal(targeting)
 	req := BidRequestFromEvent(evt, targeting)
 	if catalog.authority == BudgetAuthorityShadow {
 		return catalog.registry.RunAuctionEval(&req)
 	}
-	return catalog.registry.RunAuction(&req)
+	res, reason := catalog.registry.RunAuction(&req)
+	if reason.OK() && evt != nil {
+		evt.ClearingPriceMicro = res.Price
+	}
+	return res, reason
+}
+
+func (catalog *RtbCatalog) enrichTargetingDeal(targeting RtbTargetingInput) RtbTargetingInput {
+	if catalog == nil || catalog.dealIndex == nil {
+		return targeting
+	}
+	var deal rtb.DealData
+	var ok bool
+	if targeting.DealIDLen > 0 {
+		deal, ok = catalog.dealIndex.LookupBytes(targeting.DealIDBuf[:targeting.DealIDLen])
+	} else if targeting.DealID != "" {
+		deal, ok = catalog.LookupDeal(targeting.DealID)
+	}
+	if !ok {
+		return targeting
+	}
+	if deal.PacingOpen == rtb.PacingClosed {
+		targeting.DealBlock = rtb.NoBidPacingClosed
+		return targeting
+	}
+	geoBit := rtb.GeoBitFromHash(targeting.GeoHash)
+	if (deal.GeoMask&geoBit) == 0 || (deal.CatMask&targeting.CategoryMask) == 0 {
+		targeting.DealBlock = rtb.NoBidDealMismatch
+		return targeting
+	}
+	if deal.Seats > 0 && int32(targeting.SeatCount) < deal.Seats {
+		targeting.DealBlock = rtb.NoBidDealMismatch
+		return targeting
+	}
+	return targeting
+}
+
+// LookupDealBytes resolves a PMP deal by fixed buffer without heap allocation.
+func (catalog *RtbCatalog) LookupDealBytes(dealID []byte) (rtb.DealData, bool) {
+	if catalog == nil || catalog.dealIndex == nil {
+		return rtb.DealData{}, false
+	}
+	return catalog.dealIndex.LookupBytes(dealID)
 }

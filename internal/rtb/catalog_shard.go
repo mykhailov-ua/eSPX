@@ -19,6 +19,7 @@ type CampaignAuctionRegistry struct {
 	CategoryMasks         []uint64
 	GeoHashes             []uint32
 	Weights               []uint32
+	BoostPPM              []uint32
 	BudgetIndices         []uint32
 	CustomerBudgetIndices []uint32
 
@@ -47,6 +48,7 @@ type CampaignData struct {
 	CategoryMask   uint64
 	GeoHashVal     uint32
 	Weight         uint32
+	BoostPPM       uint32
 	Budget         int64
 }
 

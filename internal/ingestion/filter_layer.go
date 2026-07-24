@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"espx/internal/campaignmodel"
+
 	redis "github.com/redis/go-redis/v9"
 )
 
@@ -76,15 +77,15 @@ func applyFraudLayerDecision(evt *campaignmodel.Event, acc *fraudAccumulator, ca
 
 // FraudBlacklistFilter flags cold-path L3 quarantine hits replicated to blacklist:fraud.
 type FraudBlacklistFilter struct {
-	rdb redis.UniversalClient
+	rdbs []redis.UniversalClient
 }
 
-// NewFraudBlacklistFilter checks shard-0 blacklist:fraud populated by management outbox replication.
-func NewFraudBlacklistFilter(rdb redis.UniversalClient) *FraudBlacklistFilter {
-	if rdb == nil {
+// NewFraudBlacklistFilter checks blacklist:fraud on a healthy local shard copy (M14-01 fan-out).
+func NewFraudBlacklistFilter(rdbs []redis.UniversalClient) *FraudBlacklistFilter {
+	if len(rdbs) == 0 {
 		return nil
 	}
-	return &FraudBlacklistFilter{rdb: rdb}
+	return &FraudBlacklistFilter{rdbs: rdbs}
 }
 
 // Check records an L3 signal when the client IP is on the replicated fraud blocklist.
@@ -92,7 +93,11 @@ func (f *FraudBlacklistFilter) Check(ctx context.Context, evt *campaignmodel.Eve
 	if f == nil || evt == nil || evt.IP == "" {
 		return nil
 	}
-	onList, err := f.rdb.SIsMember(ctx, fraudBlacklistKey, evt.IP).Result()
+	rdb := pickLocalGlobalShard(f.rdbs)
+	if rdb == nil {
+		return nil
+	}
+	onList, err := rdb.SIsMember(ctx, fraudBlacklistKey, evt.IP).Result()
 	if err != nil {
 		return nil
 	}
@@ -100,4 +105,17 @@ func (f *FraudBlacklistFilter) Check(ctx context.Context, evt *campaignmodel.Eve
 		addFraudSignal(evt, FraudReasonL3Blocklist)
 	}
 	return nil
+}
+
+// pickLocalGlobalShard prefers shards 1..N for global key reads so shard-0 outages do not fail-open wrongly.
+func pickLocalGlobalShard(rdbs []redis.UniversalClient) redis.UniversalClient {
+	if len(rdbs) == 0 {
+		return nil
+	}
+	for i := 1; i < len(rdbs); i++ {
+		if rdbs[i] != nil {
+			return rdbs[i]
+		}
+	}
+	return rdbs[0]
 }

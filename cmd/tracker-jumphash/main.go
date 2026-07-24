@@ -101,7 +101,7 @@ func main() {
 	geoFilter := ingestion.NewGeoFilter(geoProvider, registry)
 	scheduleFilter := ingestion.NewScheduleFilter(registry)
 	fraudFilter := ingestion.NewFraudFilter(geoProvider)
-	l3Filter := ingestion.NewFraudBlacklistFilter(rdbs[0])
+	l3Filter := ingestion.NewFraudBlacklistFilter(rdbs)
 
 	settingsWatcher := ingestion.NewSettingsWatcher(rdbs, cfg)
 	deviceFilter := ingestion.NewDeviceFilter(settingsWatcher)

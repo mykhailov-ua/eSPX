@@ -92,7 +92,7 @@ func ParseTrackRequestJSONOpt(v *TrackRequest, data []byte) error {
 
 // parseTrackRequestJSON is the production JSON DFA: length switch + packed key compares.
 func parseTrackRequestJSON(v *TrackRequest, data []byte) error {
-	v.Reset()
+	v.resetForParse()
 	if len(data) == 0 {
 		return errMalformedJSON
 	}

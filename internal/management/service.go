@@ -45,6 +45,7 @@ type Service struct {
 	closed       atomic.Bool
 	locCache     sync.Map
 	brokerDeltas BrokerPendingDeltaReader
+	tcpControl   *TCPControlServer
 }
 
 // StartBackgroundWorker launches an auxiliary goroutine tracked for graceful shutdown.
@@ -119,6 +120,9 @@ func NewService(pool *pgxpool.Pool, rdbs []redis.UniversalClient, sharder ingest
 		NewScheduleWorker(s).Start(ctx)
 	})
 	s.startWorker(func() {
+		NewSupplyAuditWorker(s).Start(ctx)
+	})
+	s.startWorker(func() {
 		NewTLSImpersonationWorker(s).Start(ctx, 1*time.Hour)
 	})
 	s.startWorker(func() {
@@ -146,6 +150,11 @@ func (s *Service) StartBlacklistJanitor(interval time.Duration) {
 	s.startWorker(func() {
 		NewBlacklistJanitor(s, interval).Start(s.ctx)
 	})
+}
+
+// SetBrokerDeltas wires unflushed local-quanta broker deltas for budget snapshot recon (M8-04).
+func (s *Service) SetBrokerDeltas(reader BrokerPendingDeltaReader) {
+	s.brokerDeltas = reader
 }
 
 // GetPool exposes the Postgres pool for tests and auxiliary workers.
@@ -671,12 +680,41 @@ func (s *Service) getPubSubRDB() redis.UniversalClient {
 }
 
 // publishCampaignUpdate notifies trackers via pub/sub on shard 0 regardless of campaign key placement.
+// When CAMPAIGN_UPDATE_BROKER_FALLBACK is enabled, also publishes to the broker topic (M14-03).
 func (s *Service) publishCampaignUpdate(ctx context.Context, campaignID string) error {
 	rdb := s.getPubSubRDB()
-	if rdb == nil {
-		return fmt.Errorf("no redis pubsub client available")
+	var pubErr error
+	if rdb != nil {
+		pubErr = rdb.Publish(ctx, s.campaignUpdateChannel(), campaignID).Err()
+	} else {
+		pubErr = fmt.Errorf("no redis pubsub client available")
 	}
-	return rdb.Publish(ctx, s.campaignUpdateChannel(), campaignID).Err()
+
+	if s.cfg != nil && s.cfg.CampaignUpdateBrokerFallback && s.cfg.Broker.URL != "" {
+		topic := s.cfg.CampaignUpdateBrokerTopic
+		if topic == "" {
+			topic = ingestion.DefaultCampaignUpdateBrokerTopic
+		}
+		timeout := time.Duration(s.cfg.Broker.TimeoutMs) * time.Millisecond
+		if err := ingestion.PublishCampaignUpdateBroker(
+			s.cfg.Broker.URL,
+			s.cfg.Broker.RedisURL,
+			topic,
+			timeout,
+			campaignID,
+		); err != nil {
+			slog.Warn("campaign update broker fallback publish failed", "error", err, "campaign_id", campaignID)
+			if pubErr != nil {
+				return fmt.Errorf("redis pubsub: %w; broker: %v", pubErr, err)
+			}
+		} else if pubErr != nil {
+			// Broker succeeded while Redis pub/sub failed — still notify via fallback.
+			slog.Warn("campaign update redis pubsub failed; broker fallback ok", "error", pubErr, "campaign_id", campaignID)
+			return nil
+		}
+	}
+
+	return pubErr
 }
 
 // getRDB selects the Redis shard that owns a campaign's budget and settings keys.
@@ -853,4 +891,36 @@ func (s *Service) UpdateOverdraft(ctx context.Context, id uuid.UUID, newOverdraf
 		}, nil)
 		return nil
 	})
+}
+
+// SetTCPControlServer wires the M2 TCP routing cutover publisher.
+func (s *Service) SetTCPControlServer(tcp *TCPControlServer) {
+	s.tcpControl = tcp
+}
+
+func (s *Service) publishRoutingCutover(ctx context.Context, routingEpoch int64, slotVersion int32) {
+	if ss, ok := s.sharder.(*ingestion.StaticSlotSharder); ok {
+		prev := ss.Snapshot()
+		ss.SwapSnapshot(slotVersion, &prev.Table, routingEpoch)
+	}
+	if s.tcpControl != nil {
+		s.tcpControl.PublishSnapshot(ctx, routingEpoch, slotVersion)
+	}
+	if s.cfg != nil && s.cfg.Broker.URL != "" {
+		timeout := time.Duration(s.cfg.Broker.TimeoutMs) * time.Millisecond
+		if timeout <= 0 {
+			timeout = 3 * time.Second
+		}
+		if err := ingestion.PublishSlotMapReload(
+			s.cfg.Broker.URL,
+			s.cfg.Broker.RedisURL,
+			s.cfg.SlotMapReloadTopic,
+			timeout,
+			slotVersion,
+			routingEpoch,
+		); err != nil {
+			slog.Warn("elastic routing broker publish failed", "error", err)
+		}
+	}
+	metrics.ElasticRoutingCutoverTotal.Inc()
 }

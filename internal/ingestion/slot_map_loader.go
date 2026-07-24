@@ -28,11 +28,12 @@ func LoadActiveSlotMap(
 	}
 
 	repo := NewSlotMapRepo(pool)
-	version, err := repo.GetActiveVersion(ctx)
+	meta, err := repo.GetSlotMapMeta(ctx)
 	if err != nil {
 		sharder.SwapSnapshot(0, buildSlotTable(fallbackBuckets), 0)
 		return 0, fmt.Errorf("slot map meta: %w", err)
 	}
+	version := meta.ActiveVersion
 
 	rows, err := repo.ListVersion(ctx, version)
 	if err != nil {
@@ -50,8 +51,8 @@ func LoadActiveSlotMap(
 	for i, v := range table {
 		st[i] = uint8(v)
 	}
-	sharder.SwapSnapshot(version, &st, 0)
-	slog.Info("loaded active slot map from postgres", "version", version, "buckets", fallbackBuckets)
+	sharder.SwapSnapshot(version, &st, meta.RoutingEpoch)
+	slog.Info("loaded active slot map from postgres", "version", version, "routing_epoch", meta.RoutingEpoch, "buckets", fallbackBuckets)
 	return version, nil
 }
 

@@ -258,19 +258,12 @@ func (w *OutboxWorker) applyBlacklistPayload(ctx context.Context, p BlacklistPay
 	}
 	reason := normalizeBlacklistReason(p.Reason)
 	key := "blacklist:" + reason
-	for _, rdb := range w.svc.rdbs {
-		var err error
-		switch p.Action {
-		case "add":
-			err = rdb.SAdd(ctx, key, p.IP).Err()
-		case "remove":
-			err = rdb.SRem(ctx, key, p.IP).Err()
-		default:
-			err = fmt.Errorf("unknown blacklist action: %s", p.Action)
-		}
-		if err != nil {
-			return fmt.Errorf("blacklist sync failed on shard: %w", err)
-		}
+	add := p.Action == "add"
+	if p.Action != "add" && p.Action != "remove" {
+		return fmt.Errorf("unknown blacklist action: %s", p.Action)
+	}
+	if err := syncGlobalSetMemberToAllShards(ctx, w.svc.rdbs, key, p.IP, add); err != nil {
+		return fmt.Errorf("blacklist sync failed: %w", err)
 	}
 	if reason == "fraud" && p.Action == "add" && w.svc.rdbs[0] != nil {
 		_ = w.svc.rdbs[0].Publish(ctx, fraudQuarantineChannel, p.IP).Err()

@@ -33,6 +33,7 @@ type DynamicConfig struct {
 	ASNMobileWhitelist  string `json:"asn_mobile_whitelist"`
 	TLSHashBlocklist    string `json:"tls_hash_blocklist"`
 	RtbBudgetAuthority  string `json:"rtb_budget_authority"`
+	RtbMode             string `json:"rtb_mode"`
 }
 
 // SettingsChangeListener runs after a new dynamic config snapshot is stored.
@@ -112,67 +113,107 @@ func (sw *SettingsWatcher) Start(ctx context.Context, interval time.Duration) {
 	}
 }
 
-// syncFraudScoreBoosts scans for active ml:score:boost:* keys on the first responsive Redis shard.
+// syncFraudScoreBoosts scans for active ml:score:boost:* keys, preferring a healthy non-open shard (M14-01).
 func (sw *SettingsWatcher) syncFraudScoreBoosts(ctx context.Context) {
-	var rdb redis.UniversalClient
-	for _, client := range sw.rdbs {
-		if client != nil {
-			rdb = client
-			break
-		}
-	}
+	rdb := sw.pickHealthyShard()
 	if rdb == nil {
 		return
 	}
 
 	newBoosts := make(map[uuid.UUID]uint8)
-	cursor := uint64(0)
 	prefix := "ml:score:boost:"
 
-	for {
-		keys, next, err := rdb.Scan(ctx, cursor, prefix+"*", 100).Result()
-		if err != nil {
-			slog.Error("failed to scan ml boost keys from redis", "error", err)
+	for attempt := 0; attempt < len(sw.rdbs); attempt++ {
+		cursor := uint64(0)
+		ok := true
+		for {
+			keys, next, err := rdb.Scan(ctx, cursor, prefix+"*", 100).Result()
+			if err != nil {
+				slog.Warn("failed to scan ml boost keys from redis, trying next shard", "error", err)
+				ok = false
+				break
+			}
+
+			for _, key := range keys {
+				parts := strings.Split(key, ":")
+				if len(parts) < 4 {
+					continue
+				}
+				campIDStr := parts[3]
+				var campID uuid.UUID
+				if !ParseUUID(UnsafeBytes(campIDStr), &campID) {
+					continue
+				}
+
+				valStr, err := rdb.Get(ctx, key).Result()
+				if err != nil {
+					continue
+				}
+				val, err := strconv.Atoi(valStr)
+				if err != nil {
+					continue
+				}
+				if val < 0 {
+					val = 0
+				}
+				if val > 100 {
+					val = 100
+				}
+				newBoosts[campID] = uint8(val)
+			}
+
+			cursor = next
+			if cursor == 0 {
+				break
+			}
+		}
+		if ok {
+			sw.fraudScoreBoosts.Store(&FraudScoreBoostSnapshot{
+				Boosts: newBoosts,
+			})
 			return
 		}
-
-		for _, key := range keys {
-			parts := strings.Split(key, ":")
-			if len(parts) < 4 {
-				continue
-			}
-			campIDStr := parts[3]
-			campID, err := uuid.Parse(campIDStr)
-			if err != nil {
-				continue
-			}
-
-			valStr, err := rdb.Get(ctx, key).Result()
-			if err != nil {
-				continue
-			}
-			val, err := strconv.Atoi(valStr)
-			if err != nil {
-				continue
-			}
-			if val < 0 {
-				val = 0
-			}
-			if val > 100 {
-				val = 100
-			}
-			newBoosts[campID] = uint8(val)
+		rdb = sw.nextShardAfter(rdb)
+		if rdb == nil {
+			return
 		}
+		newBoosts = make(map[uuid.UUID]uint8)
+	}
+}
 
-		cursor = next
-		if cursor == 0 {
-			break
+// pickHealthyShard returns the first non-nil Redis client, preferring shards after 0 when multiple exist (M14-01).
+func (sw *SettingsWatcher) pickHealthyShard() redis.UniversalClient {
+	if len(sw.rdbs) == 0 {
+		return nil
+	}
+	// Prefer local copies on shards 1..N when present (shard-0 may be circuit-open).
+	for i := 1; i < len(sw.rdbs); i++ {
+		if sw.rdbs[i] != nil {
+			return sw.rdbs[i]
 		}
 	}
+	return sw.rdbs[0]
+}
 
-	sw.fraudScoreBoosts.Store(&FraudScoreBoostSnapshot{
-		Boosts: newBoosts,
-	})
+func (sw *SettingsWatcher) nextShardAfter(cur redis.UniversalClient) redis.UniversalClient {
+	if len(sw.rdbs) == 0 {
+		return nil
+	}
+	found := false
+	for _, rdb := range sw.rdbs {
+		if found && rdb != nil && rdb != cur {
+			return rdb
+		}
+		if rdb == cur {
+			found = true
+		}
+	}
+	for _, rdb := range sw.rdbs {
+		if rdb != nil && rdb != cur {
+			return rdb
+		}
+	}
+	return nil
 }
 
 // readConfigVersion returns config:version from the first responsive Redis shard.
@@ -265,6 +306,7 @@ func (sw *SettingsWatcher) parseConfig(version int64, data map[string]string) *D
 	updateString(&next.ASNMobileWhitelist, data["asn_mobile_whitelist"])
 	updateString(&next.TLSHashBlocklist, data["tls_hash_blocklist"])
 	updateString(&next.RtbBudgetAuthority, data[systemSettingRtbBudgetAuthority])
+	updateString(&next.RtbMode, data[SystemSettingRtbMode])
 
 	return &next
 }

@@ -85,7 +85,7 @@ func TestSentinelFailoverLoadWorker(t *testing.T) {
 	dialCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
-	clients, err := ConnectRedisShards(dialCtx, cfg, RedisShardOptions{PoolSize: 8, FilterTimeoutMs: 100})
+	clients, _, err := ConnectRedisShards(dialCtx, cfg, RedisShardOptions{PoolSize: 8, FilterTimeoutMs: 100})
 	if err != nil {
 		t.Fatalf("ConnectRedisShards: %v", err)
 	}

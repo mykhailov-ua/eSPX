@@ -1,10 +1,10 @@
 package ingestion
 
 import (
-	"bytes"
 	"context"
 	_ "embed"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"espx/internal/campaignmodel"
+	"espx/internal/database"
 	"espx/internal/metrics"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -41,12 +42,13 @@ func (sv *StringVal) MarshalBinary() ([]byte, error) {
 
 // UnifiedStringWrappers groups pooled string adapters passed as Lua arguments.
 type UnifiedStringWrappers struct {
-	clickID StringVal
-	evtType StringVal
-	payload StringVal
-	ip      StringVal
-	ua      StringVal
-	userID  StringVal
+	clickID     StringVal
+	evtType     StringVal
+	payload     StringVal
+	ip          StringVal
+	ua          StringVal
+	userID      StringVal
+	placementID StringVal
 }
 
 var (
@@ -58,19 +60,21 @@ var (
 
 // unifiedCheckScratch holds pooled buffers for one UnifiedFilter.Check without defer.
 type unifiedCheckScratch struct {
-	wRL, wDup, wIdem, wDate, wDS, wFcap, wImpTS, wQuota, wRefillLock, wFence, wFrozen bufWrapper
-	args                                                                              []any
-	wrappers                                                                          UnifiedStringWrappers
-	keyVals                                                                           [unifiedFilterKeyCount]StringVal
-	keyArgs                                                                           [unifiedFilterKeyCount]any
+	wDup, wIdem, wDate, wDS, wFcap, wImpTS, wQuota, wRefillLock, wFence, wFrozen bufWrapper
+	wDeadlineMono, wNowMono                                                      bufWrapper
+	deadlineMonoStr, nowMonoStr                                                  StringVal
+	precheck                                                                     luaPrecheckScratch
+	args                                                                         []any
+	wrappers                                                                     UnifiedStringWrappers
+	keyVals                                                                      [unifiedFilterKeyCount]StringVal
+	keyArgs                                                                      [unifiedFilterKeyCount]any
 }
 
 var unifiedScratchPool = sync.Pool{
 	New: func() any {
 		s := &unifiedCheckScratch{
-			args: make([]any, 28),
+			args: make([]any, 35),
 		}
-		s.wRL.buf = make([]byte, 0, 128)
 		s.wDup.buf = make([]byte, 0, 128)
 		s.wIdem.buf = make([]byte, 0, 128)
 		s.wDate.buf = make([]byte, 0, 128)
@@ -81,6 +85,8 @@ var unifiedScratchPool = sync.Pool{
 		s.wRefillLock.buf = make([]byte, 0, 128)
 		s.wFence.buf = make([]byte, 0, 128)
 		s.wFrozen.buf = make([]byte, 0, 128)
+		s.wDeadlineMono.buf = make([]byte, 0, 24)
+		s.wNowMono.buf = make([]byte, 0, 24)
 		for i := range s.keyVals {
 			s.keyArgs[i] = &s.keyVals[i]
 		}
@@ -121,6 +127,9 @@ func init() {
 	budgetFastLuaAny = budgetFastLua
 	for i := 0; i <= 24; i++ {
 		hourAnyCache[i] = i
+	}
+	for i := range maxRPDAnyCache {
+		maxRPDAnyCache[i] = uint64(i)
 	}
 }
 
@@ -179,7 +188,12 @@ type UnifiedFilter struct {
 	quotaChunkSizeAny            any
 	quotaRefillThresholdPctAny   any
 	quotaMode                    string
+	localQuotaMode               string
 	localQuotaCache              *LocalQuotaCache
+	localQuantaLedger            *LocalQuantaLedger
+	localQuantaStrict            *LocalQuantaStrict
+	localQuantaRefill            *QuotaRefillWorker
+	localQuantaPublisher         *BudgetDeltaPublisher
 	dbLookupTimeout              time.Duration
 	pgFallbackAllowed            bool
 	luaMetricsSeq                atomic.Uint64
@@ -193,6 +207,20 @@ type UnifiedFilter struct {
 	luaFullPathCounters      []prometheus.Counter
 	luaNoScriptCounters      []prometheus.Counter
 	redisObservability       redisShardObservability
+	regionCode               uint8
+	evalPinWorkers           int
+	evalPins                 *filterEvalPin
+	breakers                 []*database.RedisBreaker // M14-04 shard-0 outage reroute
+	filterSlowNs             int64                    // M14-17 FILTER_SLOW_MS as nanoseconds; 0 disables
+}
+
+// SetFilterSlowMs configures EVALSHA slow-script log threshold (M14-17). Default 5 ms.
+func (f *UnifiedFilter) SetFilterSlowMs(ms int) {
+	if ms <= 0 {
+		f.filterSlowNs = 0
+		return
+	}
+	f.filterSlowNs = int64(ms) * int64(time.Millisecond)
 }
 
 // SetPGFallbackAllowed toggles Postgres budget reload on Redis cache miss (disabled in production).
@@ -234,44 +262,47 @@ func (f *UnifiedFilter) SetGeoBidFloor(country string, floor int64) {
 	f.geoFloors.Store(country, floor)
 }
 
-// parseBidMicroKey is the JSON field prefix scanned without full unmarshaling.
-var parseBidMicroKey = []byte(`"bid_micro"`)
-
 // parseBidMicro reads bid_micro from JSON payloads without full unmarshaling on the track path.
 func parseBidMicro(payload []byte) int64 {
 	n := len(payload)
-	kLen := len(parseBidMicroKey)
-	if n < kLen {
+	if n < 11 {
 		return 0
 	}
+	_ = payload[n-1]
 
-	for i := 0; i <= n-kLen; i++ {
-		if payload[i] == '"' && bytes.Equal(payload[i:i+kLen], parseBidMicroKey) {
-			idx := i + kLen
-			for idx < n && (payload[idx] == ' ' || payload[idx] == '\t' || payload[idx] == ':') {
-				if payload[idx] == ':' {
-					idx++
-					break
-				}
-				idx++
-			}
-
-			for idx < n && (payload[idx] == ' ' || payload[idx] == '\t') {
-				idx++
-			}
-
-			var val int64
-			hasDigit := false
-			for idx < n && payload[idx] >= '0' && payload[idx] <= '9' {
-				val = val*10 + int64(payload[idx]-'0')
-				idx++
-				hasDigit = true
-			}
-			if hasDigit {
-				return val
-			}
-			return 0
+	for i := 0; i <= n-11; i++ {
+		if payload[i] != '"' || loadU64(payload[i:]) != 0x63696d5f64696222 ||
+			payload[i+8] != 'r' || payload[i+9] != 'o' {
+			continue
 		}
+		idx := i + 10
+		if idx >= n || payload[idx] != '"' {
+			continue
+		}
+		idx++
+		for idx < n && (payload[idx] == ' ' || payload[idx] == '\t' || payload[idx] == ':') {
+			if payload[idx] == ':' {
+				idx++
+				break
+			}
+			idx++
+		}
+
+		for idx < n && (payload[idx] == ' ' || payload[idx] == '\t') {
+			idx++
+		}
+
+		var val int64
+		hasDigit := false
+		for idx < n && payload[idx] >= '0' && payload[idx] <= '9' {
+			val = val*10 + int64(payload[idx]-'0')
+			idx++
+			hasDigit = true
+		}
+		if hasDigit {
+			return val
+		}
+		return 0
 	}
 	return 0
 }
@@ -342,6 +373,11 @@ func NewUnifiedFilter(
 // SetMetricsSampleMask configures downsampling for per-campaign Redis observability counters.
 func (f *UnifiedFilter) SetMetricsSampleMask(mask int) {
 	f.redisObservability.sampleMask = histogramSampleMaskFromConfig(mask)
+}
+
+// SetRegionCode scopes consolidated ingress counters to a regional cell (M9-02).
+func (f *UnifiedFilter) SetRegionCode(code uint8) {
+	f.regionCode = code
 }
 
 // SetLuaFastPathEnabled toggles Tier B budget-fast.lua routing for eligible events.
@@ -503,6 +539,9 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *campaignmodel.Event) err
 
 	campInfo, ok := f.registry.GetCampaign(evt.CampaignID)
 	if !ok {
+		if reg, ok := f.registry.(*Registry); ok && reg.IsStaleMode() {
+			return ErrRegistryStale
+		}
 		return ErrCampaignNotFound
 	}
 
@@ -531,30 +570,34 @@ func (f *UnifiedFilter) Check(ctx context.Context, evt *campaignmodel.Event) err
 		}
 	}
 
-	shard := f.sharder.GetShard(evt.CampaignID)
-	if campInfo.HasTriplet {
-		hash := ComputeCompositeHashUUID(evt.CampaignID, []byte(evt.UserID))
-		pct := hash % 100
-		if pct < 40 {
-			shard = int(campInfo.PrimaryAShard)
-		} else if pct < 80 {
-			shard = int(campInfo.PrimaryBShard)
-		} else {
-			shard = int(campInfo.ReserveShard)
-		}
+	amountMicro := f.impressionAmountMicro
+	if evt.Type != "impression" {
+		amountMicro = f.clickAmountMicro
+	}
+	if f.slaPenaltyActive.Load() {
+		amountMicro /= 2
+	}
+
+	if handled, err := f.checkLocalQuanta(ctx, evt, campInfo, amountMicro); handled {
+		return err
+	}
+
+	shard, err := f.resolveDebitShard(evt.CampaignID, evt.UserID, campInfo)
+	if err != nil {
+		return err
 	}
 	rdb := f.rdbs[shard%len(f.rdbs)]
 
-	scratch := unifiedScratchPool.Get().(*unifiedCheckScratch)
-	scratch.acquire()
-	var err error
 	if f.fastPathEnabled.Load() && !f.needsFullLuaPath(evt, campInfo) {
 		fastScratch := budgetFastScratchPool.Get().(*budgetFastScratch)
-		err = f.runBudgetFastLua(ctx, evt, campInfo, amount, rdb, fastScratch)
+		err := f.runBudgetFastLua(ctx, evt, campInfo, amount, rdb, shard, fastScratch)
 		budgetFastScratchPool.Put(fastScratch)
-	} else {
-		err = f.runUnifiedLua(ctx, evt, campInfo, amount, rdb, scratch)
+		return err
 	}
+
+	scratch := unifiedScratchPool.Get().(*unifiedCheckScratch)
+	scratch.acquire()
+	err = f.runUnifiedLua(ctx, evt, campInfo, amount, rdb, shard, scratch)
 	scratch.release()
 	unifiedScratchPool.Put(scratch)
 	return err
@@ -566,9 +609,9 @@ func (f *UnifiedFilter) runUnifiedLua(
 	campInfo *campaignmodel.Campaign,
 	amount any,
 	rdb redis.UniversalClient,
+	shard int,
 	scratch *unifiedCheckScratch,
 ) error {
-	wRL := &scratch.wRL
 	wDup := &scratch.wDup
 	wIdem := &scratch.wIdem
 	wDate := &scratch.wDate
@@ -579,12 +622,7 @@ func (f *UnifiedFilter) runUnifiedLua(
 	wRefillLock := &scratch.wRefillLock
 	args := scratch.args
 	wrappers := &scratch.wrappers
-
-	wRL.buf = wRL.buf[:0]
-	wRL.buf = appendCampaignHashTag(wRL.buf, evt.CampaignID)
-	wRL.buf = append(wRL.buf, "rl:ip:"...)
-	wRL.buf = append(wRL.buf, evt.IP...)
-	rlKey := unsafeString(wRL.buf)
+	precheck := &scratch.precheck
 
 	wDup.buf = wDup.buf[:0]
 	wDup.buf = appendCampaignHashTag(wDup.buf, evt.CampaignID)
@@ -660,7 +698,7 @@ func (f *UnifiedFilter) runUnifiedLua(
 	budgetFrozenKey := unsafeString(wFrozen.buf)
 
 	kv := scratch.keyVals[:]
-	kv[0].s = rlKey
+	kv[0].s = fraudBlacklistKey
 	kv[1].s = dupKey
 	kv[2].s = budgetSourceKey
 	kv[3].s = idempotencyKey
@@ -674,12 +712,23 @@ func (f *UnifiedFilter) runUnifiedLua(
 	kv[15].s = budgetFrozenKey
 
 	keyArgs := scratch.keyArgs
+	keyArgs[0] = &kv[0]
+	keyArgs[1] = &kv[1]
+	keyArgs[2] = &kv[2]
+	keyArgs[3] = &kv[3]
+	keyArgs[4] = &kv[4]
+	keyArgs[5] = &kv[5]
 	keyArgs[6] = &dirtyCampaignsKeyVal
 	keyArgs[7] = &dirtyCustomersKeyVal
 	keyArgs[8] = &f.streamKeyVal
+	keyArgs[9] = &kv[9]
+	keyArgs[11] = &kv[11]
+	keyArgs[12] = &kv[12]
+	keyArgs[13] = &kv[13]
 	keyArgs[14] = &refillNeededKeyVal
 	keyArgs[15] = &kv[14]
 	keyArgs[16] = &kv[15]
+	maxRPDAny := f.fillLuaPrecheckKeys(evt, campInfo, now, precheck, kv[:], keyArgs[:], 17, 18)
 	if evt.UserID != "" {
 		kv[10].s = unsafeString(wFcap.buf)
 		keyArgs[10] = &kv[10]
@@ -706,9 +755,10 @@ func (f *UnifiedFilter) runUnifiedLua(
 	wrappers.ip.s = evt.IP
 	wrappers.ua.s = evt.UA
 	wrappers.userID.s = evt.UserID
+	wrappers.placementID.s = evt.PlacementID
 
-	args[0] = f.rateLimitWindowAny
-	args[1] = f.rateLimitAny
+	args[0] = zeroAny // M9-03: IP rate limit enforced at edge only
+	args[1] = zeroAny
 	args[2] = f.dupTTLAny
 	args[3] = amount
 	args[4] = f.idempotencyTTLAny
@@ -734,34 +784,37 @@ func (f *UnifiedFilter) runUnifiedLua(
 	args[24] = f.quotaEnabledAny
 	args[25] = f.quotaChunkSizeAny
 	args[26] = f.quotaRefillThresholdPctAny
-	args[27] = campInfo.MigrationGen
-
-	shard := f.sharder.GetShard(evt.CampaignID)
-	if campInfo.HasTriplet {
-		hash := ComputeCompositeHashUUID(evt.CampaignID, []byte(evt.UserID))
-		pct := hash % 100
-		if pct < 40 {
-			shard = int(campInfo.PrimaryAShard)
-		} else if pct < 80 {
-			shard = int(campInfo.PrimaryBShard)
-		} else {
-			shard = int(campInfo.ReserveShard)
-		}
+	args[27] = campInfo.LuaRoutingEpoch()
+	if evt == nil || evt.FilterDeadlineMono <= 0 {
+		args[28] = zeroAny
+		args[29] = zeroAny
+	} else {
+		wD := &scratch.wDeadlineMono
+		wD.buf = strconv.AppendInt(wD.buf[:0], evt.FilterDeadlineMono, 10)
+		scratch.deadlineMonoStr.s = unsafeString(wD.buf)
+		args[28] = &scratch.deadlineMonoStr
+		wN := &scratch.wNowMono
+		wN.buf = strconv.AppendInt(wN.buf[:0], monotonicNano(), 10)
+		scratch.nowMonoStr.s = unsafeString(wN.buf)
+		args[29] = &scratch.nowMonoStr
 	}
+	args[30] = luaDegradeThresholdAny
+	args[31] = &wrappers.placementID
+	args[32] = maxRPDAny
+	args[33] = luaPrecheckIngressTTLAny
+
 	for i := 0; i < 2; i++ {
 		seq := f.luaMetricsSeq.Add(1)
 		sampleLua := shouldSampleHistogram(seq, f.redisObservability.sampleMask)
 		var luaStart int64
-		if sampleLua {
+		if sampleLua || f.filterSlowNs > 0 {
 			luaStart = monotonicNano()
 		}
 		f.redisObservability.recordLuaOp(shard, evt.CampaignID, sampleLua)
 		incRedisLuaTier(f.luaFullPathCounters, shard)
-		res, err := f.evalScript(ctx, rdb, shard, keyArgs, args)
+		res, err := f.evalScript(ctx, rdb, shard, evt, keyArgs, args[:34])
 
-		if sampleLua {
-			observeRedisLua(f.luaDurationObservers, shard, monoElapsedSeconds(luaStart))
-		}
+		f.noteLuaEvalDuration(shard, evt.CampaignID, "full", luaStart, sampleLua, false)
 
 		if err != nil {
 			return err

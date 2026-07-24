@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"espx/internal/campaignmodel"
+
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,7 +21,7 @@ const (
 	clockDriftTTCMin        = 3 * time.Second
 )
 
-// TestChaos_ClockDriftMonotonicTTC automates GUIDE_CHAOS_RELIABILITY scenario D: +3600s wall-clock drift
+// TestChaos_ClockDriftMonotonicTTC automates CHAOS.md scenario D: +3600s wall-clock drift
 // must not expire monotonic filter deadlines or falsely reject a click 5s after impression.
 func TestChaos_ClockDriftMonotonicTTC(t *testing.T) {
 	if testing.Short() {

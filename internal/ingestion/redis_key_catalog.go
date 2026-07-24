@@ -9,7 +9,7 @@ import (
 )
 
 // CampaignRedisKeyCatalog is the single source for slot-migration COPY/DRAIN key lists.
-// Used by CampaignKeyMigrator, PG re-warm, and REDIS.md documentation.
+// Used by CampaignKeyMigrator, PG re-warm, and DATA.md Part I documentation.
 type CampaignRedisKeyCatalog struct{}
 
 // DefaultCampaignRedisKeyCatalog is the process-wide catalog instance.

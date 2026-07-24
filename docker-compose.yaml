@@ -16,8 +16,8 @@ services:
       - SERVER_PORT=8181
       - METRICS_PORT=9101
       - TRACKER_PG_FALLBACK=${TRACKER_PG_FALLBACK:-0}
-      - GOMEMLIMIT=700MiB   # hard memory limit; triggers GC before OOM killer fires
-      - GOGC=50             # aggressive GC target: trade CPU for lower heap steady-state
+      - GOMEMLIMIT=700MiB   # soft heap cap; GC runs before OOM (M13-01)
+      - GOGC=300            # relaxed GC pace; hot path is 0 allocs/op so heap is stable
     volumes:
       - ./deploy/geoip:/deploy/geoip:ro   # MaxMind DBs for geo filter and bid floor lookup
       - espx_logs:/var/log/espx:rw        # mmap audit log segments written by tracker
@@ -71,7 +71,7 @@ services:
       - SERVER_PORT=8182
       - METRICS_PORT=9102
       - GOMEMLIMIT=700MiB
-      - GOGC=50
+      - GOGC=300
     volumes:
       - ./deploy/geoip:/deploy/geoip:ro
       - espx_logs:/var/log/espx:rw
@@ -124,7 +124,7 @@ services:
       - SERVER_PORT=8183
       - METRICS_PORT=9103
       - GOMEMLIMIT=700MiB
-      - GOGC=50
+      - GOGC=300
     volumes:
       - ./deploy/geoip:/deploy/geoip:ro
       - espx_logs:/var/log/espx:rw
@@ -177,7 +177,7 @@ services:
       - SERVER_PORT=8184
       - METRICS_PORT=9104
       - GOMEMLIMIT=700MiB
-      - GOGC=50
+      - GOGC=300
     volumes:
       - ./deploy/geoip:/deploy/geoip:ro
       - espx_logs:/var/log/espx:rw
@@ -227,6 +227,7 @@ services:
       - REDIS_PASS=${REDIS_PASSWORD}
       - REDIS_ADDRS=127.0.0.1:6479,127.0.0.1:6480,127.0.0.1:6481,127.0.0.1:6482,127.0.0.1:6483,127.0.0.1:6484
       - MANAGEMENT_URL=http://127.0.0.1:8188
+      - TRACKER_INGRESS_SCHEMA=${TRACKER_INGRESS_SCHEMA:-openrtb_3}
     volumes:
       - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./deploy/nginx/nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro

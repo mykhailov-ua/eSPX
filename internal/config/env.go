@@ -26,6 +26,8 @@ type Config struct {
 	RedisPassword                   Secret
 	RedisStreamName                 string
 	FraudStreamName                 string
+	FraudConsumerLagSec             int
+	H2IncompleteMax                 int
 	RedisGroupName                  string
 	RedisConsumerID                 string
 	CHDSN                           Secret
@@ -65,6 +67,7 @@ type Config struct {
 	TrackerPGFallback               bool
 	WriteTimeoutMs                  int
 	FilterTimeoutMs                 int
+	FilterSlowMs                    int
 	MetricsHistogramSampleMask      int
 	AuditLogSampleMask              int
 	AuditLedgerFlushSampleMask      int
@@ -150,6 +153,11 @@ type Config struct {
 	CampaignUpdateChannel   string
 	RtbCatalogReloadChannel string
 
+	// M14-02/M14-03: shard-0 survival
+	RegistryStaleTTLSec          int
+	CampaignUpdateBrokerFallback bool
+	CampaignUpdateBrokerTopic    string
+
 	AutoscaleHighCTRThreshold   float64
 	AutoscaleMinImpressions     int64
 	AutoscaleLowCTRThreshold    float64
@@ -222,18 +230,40 @@ type Config struct {
 	RtbBudgetDivergenceMicro int64
 	RtbReconcileSampleSize   int
 	RtbTargetingIndex        bool
+	RtbPrebidIVT             bool
+
+	// IngressSchema selects /track body wire format: openrtb_3 (default via Load) or espx_native.
+	// Zero-value Config (unit tests) is treated as espx_native by IsESPXNativeIngress.
+	IngressSchema string
 
 	QuotaMode                 string
+	LocalQuotaMode            string
 	QuotaChunkSize            int64
 	QuotaStrictThresholdMicro int64
+	QuotaStrictExitMicro      int64
 	QuotaRefillThresholdPct   int
+	LocalQuotaRefillMaxShard  int
+	QuotaAdaptiveFloorMicro   int64
+	QuotaAdaptiveCeilingMicro int64
+	BudgetDeltaTopic          string
 
-	SlotMapReloadTopic      string
-	SlotMapPollIntervalMs   int
-	SlotMigrationEnabled    bool
-	SlotMigrationIntervalMs int
-	MigrationFenceEnabled   bool
-	ManagementURL           string
+	SlotMapReloadTopic            string
+	SlotMapPollIntervalMs         int
+	SlotMigrationEnabled          bool
+	SlotMigrationIntervalMs       int
+	MigrationFenceEnabled         bool
+	SlotMigrationDualWriteEnabled bool
+	SlotMigrationLagEpsilon       int64
+	SlotMigrationLagThreshold     int64
+	ElasticShardingEnabled        bool
+	ShardOrchestratorEnabled      bool
+	ShardOrchestratorIntervalMs   int
+	TCPControlEnabled             bool
+	TCPControlHMACSecret          Secret
+	TCPMgmtBindAddr               string
+	TCPMgmtAddr                   string
+	TCPTrackerAddrs               []string
+	ManagementURL                 string
 
 	LuaFastPathEnabled bool
 
@@ -377,6 +407,8 @@ func Load() (*Config, error) {
 		RedisPassword:                   Secret(os.Getenv("REDIS_PASSWORD")),
 		RedisStreamName:                 os.Getenv("REDIS_STREAM_NAME"),
 		FraudStreamName:                 os.Getenv("FRAUD_STREAM_NAME"),
+		FraudConsumerLagSec:             getEnvInt("FRAUD_CONSUMER_LAG_SEC", 30),
+		H2IncompleteMax:                 getEnvInt("H2_INCOMPLETE_MAX", 3),
 		RedisGroupName:                  os.Getenv("REDIS_GROUP_NAME"),
 		RedisConsumerID:                 os.Getenv("REDIS_CONSUMER_ID"),
 		EventBatchSize:                  getEnvInt("EVENT_BATCH_SIZE", 1000),
@@ -407,6 +439,7 @@ func Load() (*Config, error) {
 		TrackerPGFallback:               getEnvBool("TRACKER_PG_FALLBACK", appEnv != "production"),
 		WriteTimeoutMs:                  getEnvInt("WRITE_TIMEOUT_MS", 5000),
 		FilterTimeoutMs:                 getEnvInt("FILTER_TIMEOUT_MS", 0),
+		FilterSlowMs:                    getEnvInt("FILTER_SLOW_MS", 5),
 		MetricsHistogramSampleMask:      getEnvInt("METRICS_HISTOGRAM_SAMPLE_MASK", 127),
 		AuditLogSampleMask:              getEnvInt("AUDIT_LOG_SAMPLE_RATE", 127),
 		AuditLedgerFlushSampleMask:      getEnvInt("AUDIT_LEDGER_FLUSH_SAMPLE_MASK", -1),
@@ -452,6 +485,9 @@ func Load() (*Config, error) {
 		AuthMetricsPort:                 os.Getenv("AUTH_METRICS_PORT"),
 		CampaignUpdateChannel:           os.Getenv("CAMPAIGN_UPDATE_CHANNEL"),
 		RtbCatalogReloadChannel:         os.Getenv("RTB_CATALOG_RELOAD_CHANNEL"),
+		RegistryStaleTTLSec:             getEnvInt("REGISTRY_STALE_TTL", 30),
+		CampaignUpdateBrokerFallback:    getEnvBool("CAMPAIGN_UPDATE_BROKER_FALLBACK", false),
+		CampaignUpdateBrokerTopic:       envOrDefault("CAMPAIGN_UPDATE_BROKER_TOPIC", "campaigns:update"),
 		AutoscaleHighCTRThreshold:       getEnvFloat("AUTOSCALE_HIGH_CTR_THRESHOLD", 0.015),
 		AutoscaleMinImpressions:         getEnvInt64("AUTOSCALE_MIN_IMPRESSIONS", 100),
 		AutoscaleLowCTRThreshold:        getEnvFloat("AUTOSCALE_LOW_CTR_THRESHOLD", 0.005),
@@ -536,18 +572,41 @@ func Load() (*Config, error) {
 	cfg.RtbReconcileIntervalMs = getEnvInt("RTB_RECONCILE_INTERVAL_MS", 30000)
 	cfg.RtbBudgetDivergenceMicro = int64(getEnvInt("RTB_BUDGET_DIVERGENCE_THRESHOLD_MICRO", 1000))
 	cfg.RtbReconcileSampleSize = getEnvInt("RTB_RECONCILE_SAMPLE_SIZE", 32)
-	cfg.RtbTargetingIndex = getEnvBool("RTB_TARGETING_INDEX", false)
+	cfg.RtbTargetingIndex = getEnvBool("RTB_TARGETING_INDEX", true)
+	cfg.RtbPrebidIVT = getEnvBool("RTB_PREBID_IVT", false)
 	if cfg.RtbBudgetAuthority == "" {
 		cfg.RtbBudgetAuthority = "redis"
+	}
+
+	cfg.IngressSchema = os.Getenv("TRACKER_INGRESS_SCHEMA")
+	if cfg.IngressSchema == "" {
+		cfg.IngressSchema = IngressSchemaOpenRTB3
+	}
+	switch cfg.IngressSchema {
+	case IngressSchemaOpenRTB3, IngressSchemaESPXNative:
+	default:
+		return nil, fmt.Errorf("invalid TRACKER_INGRESS_SCHEMA %q (want openrtb_3 or espx_native)", cfg.IngressSchema)
 	}
 
 	cfg.QuotaMode = os.Getenv("QUOTA_MODE")
 	if cfg.QuotaMode == "" {
 		cfg.QuotaMode = "off"
 	}
+	cfg.LocalQuotaMode = os.Getenv("LOCAL_QUOTA_MODE")
+	if cfg.LocalQuotaMode == "" {
+		cfg.LocalQuotaMode = "off"
+	}
 	cfg.QuotaChunkSize = getEnvInt64("QUOTA_CHUNK_SIZE", 0)
 	cfg.QuotaStrictThresholdMicro = getEnvInt64("QUOTA_STRICT_THRESHOLD_MICRO", 5_000_000)
+	cfg.QuotaStrictExitMicro = getEnvInt64("QUOTA_STRICT_EXIT_MICRO", 8_000_000)
 	cfg.QuotaRefillThresholdPct = getEnvInt("QUOTA_REFILL_THRESHOLD_PCT", 20)
+	cfg.LocalQuotaRefillMaxShard = getEnvInt("LOCAL_QUOTA_REFILL_MAX_PER_SHARD", 4)
+	cfg.QuotaAdaptiveFloorMicro = getEnvInt64("QUOTA_ADAPTIVE_FLOOR_MICRO", 500_000)
+	cfg.QuotaAdaptiveCeilingMicro = getEnvInt64("QUOTA_ADAPTIVE_CEILING_MICRO", 50_000_000)
+	cfg.BudgetDeltaTopic = os.Getenv("BUDGET_DELTA_TOPIC")
+	if cfg.BudgetDeltaTopic == "" {
+		cfg.BudgetDeltaTopic = "budget-deltas"
+	}
 
 	cfg.SlotMapReloadTopic = os.Getenv("SLOT_MAP_RELOAD_TOPIC")
 	if cfg.SlotMapReloadTopic == "" {
@@ -557,7 +616,26 @@ func Load() (*Config, error) {
 	cfg.SlotMigrationEnabled = getEnvBool("SLOT_MIGRATION_ENABLED", true)
 	cfg.SlotMigrationIntervalMs = getEnvInt("SLOT_MIGRATION_INTERVAL_MS", 30000)
 	cfg.MigrationFenceEnabled = getEnvBool("MIGRATION_FENCE_ENABLED", appEnv == "production")
-	cfg.LuaFastPathEnabled = getEnvBool("LUA_FAST_PATH_ENABLED", false)
+	cfg.SlotMigrationDualWriteEnabled = getEnvBool("SLOT_MIGRATION_DUAL_WRITE_ENABLED", false)
+	cfg.SlotMigrationLagEpsilon = getEnvInt64("SLOT_MIGRATION_LAG_EPSILON", 0)
+	cfg.SlotMigrationLagThreshold = getEnvInt64("SLOT_MIGRATION_LAG_THRESHOLD", 1000)
+	cfg.ElasticShardingEnabled = getEnvBool("ELASTIC_SHARDING_ENABLED", false)
+	cfg.ShardOrchestratorEnabled = getEnvBool("SHARD_ORCHESTRATOR_ENABLED", false)
+	cfg.ShardOrchestratorIntervalMs = getEnvInt("SHARD_ORCHESTRATOR_INTERVAL_MS", 10000)
+	cfg.TCPControlEnabled = getEnvBool("TCP_CONTROL_ENABLED", false)
+	cfg.TCPControlHMACSecret = Secret(os.Getenv("TCP_CONTROL_HMAC_SECRET"))
+	cfg.TCPMgmtBindAddr = os.Getenv("TCP_MGMT_BIND_ADDR")
+	if cfg.TCPMgmtBindAddr == "" {
+		cfg.TCPMgmtBindAddr = ":8192"
+	}
+	cfg.TCPMgmtAddr = os.Getenv("TCP_MGMT_ADDR")
+	if cfg.TCPMgmtAddr == "" {
+		cfg.TCPMgmtAddr = "127.0.0.1:8192"
+	}
+	if addrs := os.Getenv("TCP_TRACKER_ADDRS"); addrs != "" {
+		cfg.TCPTrackerAddrs = strings.Split(addrs, ",")
+	}
+	cfg.LuaFastPathEnabled = getEnvBool("LUA_FAST_PATH_ENABLED", true)
 	cfg.UDPControlEnabled = getEnvBool("UDP_CONTROL_ENABLED", false)
 	cfg.UDPFailClosed = getEnvBool("UDP_FAIL_CLOSED", true)
 	cfg.UDPMgmtBindAddr = os.Getenv("UDP_MGMT_BIND_ADDR")

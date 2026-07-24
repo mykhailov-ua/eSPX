@@ -17,8 +17,8 @@ func (s bucketSoASorter) Swap(i, j int) {
 func (s bucketSoASorter) Less(i, j int) bool {
 	ia := s.start + i
 	ib := s.start + j
-	sa := effectiveScore(s.soa.Bids[ia], s.soa.CTRPPM[ia])
-	sb := effectiveScore(s.soa.Bids[ib], s.soa.CTRPPM[ib])
+	sa := effectiveScoreWithBoost(s.soa.Bids[ia], s.soa.CTRPPM[ia], s.soa.BoostPPM[ia])
+	sb := effectiveScoreWithBoost(s.soa.Bids[ib], s.soa.CTRPPM[ib], s.soa.BoostPPM[ib])
 	if sa != sb {
 		return sa > sb
 	}

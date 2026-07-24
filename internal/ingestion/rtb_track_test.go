@@ -6,6 +6,7 @@ import (
 	"espx/internal/campaignmodel"
 	"espx/internal/config"
 	"espx/internal/rtb"
+
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -190,6 +191,10 @@ func BenchmarkBuildRtbTargeting_OpenRTB3(b *testing.B) {
 		IngestGeoResolved: true,
 		GeoHash:           12345,
 	}
+	slot := acquireOpenRTBScratchSlot()
+	parseOpenRTB3FSMInto(&slot.parsed, openrtbPayload)
+	attachOpenRTB3Scratch(evt, slot)
+	b.Cleanup(func() { releaseOpenRTB3Scratch(evt) })
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

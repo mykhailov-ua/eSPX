@@ -22,7 +22,7 @@ const (
 	shardLoadSpikePerWorker = 200 // 32×200 = 6400 events ≈ 10× baseline burst
 )
 
-// TestChaos_ShardLoadSpike automates EDGE.md Part III §7.3 sharp load rise on a pinned control cohort.
+// TestChaos_ShardLoadSpike automates ARCHITECTURE.md §Edge ingress §7.3 sharp load rise on a pinned control cohort.
 // CI: 32 concurrent gnet workers × 200 impressions (R5). Sustained 30 s 10× ramp: scripts/load-test/k6_spike_traffic.js.
 func TestChaos_ShardLoadSpike(t *testing.T) {
 	if testing.Short() {

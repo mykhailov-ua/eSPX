@@ -182,7 +182,7 @@ func (w *SlotMapWatcher) tryReload(ctx context.Context, source string) {
 }
 
 // PublishSlotMapReload emits a broker control message after active_version cutover.
-func PublishSlotMapReload(brokerURL, brokerRedisURL, topic string, timeout time.Duration, version int32) error {
+func PublishSlotMapReload(brokerURL, brokerRedisURL, topic string, timeout time.Duration, version int32, routingEpoch int64) error {
 	if brokerURL == "" {
 		return nil
 	}
@@ -192,7 +192,7 @@ func PublishSlotMapReload(brokerURL, brokerRedisURL, topic string, timeout time.
 	if timeout <= 0 {
 		timeout = 3 * time.Second
 	}
-	payload, err := EncodeSlotMapReloadMessage(version)
+	payload, err := EncodeSlotMapReloadMessage(version, routingEpoch)
 	if err != nil {
 		return err
 	}

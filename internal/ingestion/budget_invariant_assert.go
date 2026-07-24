@@ -59,31 +59,29 @@ func ReadBudgetInvariant(ctx context.Context, pool *pgxpool.Pool, rdb redis.Cmda
 	return snap, nil
 }
 
-// AssertBudgetInvariant verifies GUIDE_CHAOS_RELIABILITY R5: (budget_limit - redis_remaining) = pg_current_spend + sync_delta.
-func AssertBudgetInvariant(t testing.TB, ctx context.Context, pool *pgxpool.Pool, rdb redis.Cmdable, campaignID uuid.UUID) {
-	t.Helper()
-
+// VerifyBudgetInvariant returns nil when R5 holds within tolerance for one campaign.
+func VerifyBudgetInvariant(ctx context.Context, pool *pgxpool.Pool, rdb redis.Cmdable, campaignID uuid.UUID) error {
 	snap, err := ReadBudgetInvariant(ctx, pool, rdb, campaignID)
 	if err != nil {
-		t.Fatalf("read budget invariant: %v", err)
+		return err
 	}
-
 	redisSpend := snap.BudgetLimit - snap.RedisRemaining
 	pgPlusSync := snap.PGCurrentSpend + snap.SyncDelta
 	diff := redisSpend - pgPlusSync
-
 	if diff < -budgetInvariantToleranceMicro || diff > budgetInvariantToleranceMicro {
-		t.Fatalf(
-			"budget invariant violated for campaign %s: budget_limit=%d redis_remaining=%d sync_delta=%d pg_current_spend=%d redis_spend=%d pg_plus_sync=%d diff=%d (tolerance<=%d)",
-			campaignID,
-			snap.BudgetLimit,
-			snap.RedisRemaining,
-			snap.SyncDelta,
-			snap.PGCurrentSpend,
-			redisSpend,
-			pgPlusSync,
-			diff,
-			budgetInvariantToleranceMicro,
+		return fmt.Errorf(
+			"budget invariant violated for campaign %s: diff=%d tolerance=%d",
+			campaignID, diff, budgetInvariantToleranceMicro,
 		)
+	}
+	return nil
+}
+
+// AssertBudgetInvariant verifies CHAOS.md R5: (budget_limit - redis_remaining) = pg_current_spend + sync_delta.
+func AssertBudgetInvariant(t testing.TB, ctx context.Context, pool *pgxpool.Pool, rdb redis.Cmdable, campaignID uuid.UUID) {
+	t.Helper()
+
+	if err := VerifyBudgetInvariant(ctx, pool, rdb, campaignID); err != nil {
+		t.Fatal(err)
 	}
 }

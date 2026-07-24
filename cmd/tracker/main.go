@@ -20,6 +20,7 @@ import (
 	"espx/internal/rtb"
 	"espx/pkg/logger"
 
+	"github.com/google/uuid"
 	"github.com/panjf2000/gnet/v2"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
@@ -80,9 +81,11 @@ func main() {
 	registry.StartSync(ctx, time.Duration(cfg.RegistrySyncIntervalMs)*time.Millisecond)
 
 	var rdbs []redis.UniversalClient
-	rdbs, err = database.ConnectRedisShards(ctx, cfg, database.RedisShardOptions{
-		PoolSize:        cfg.RedisPoolSize,
-		FilterTimeoutMs: cfg.FilterTimeoutMs,
+	var breakers []*database.RedisBreaker
+	rdbs, breakers, err = database.ConnectRedisShards(ctx, cfg, database.RedisShardOptions{
+		PoolSize:         cfg.RedisPoolSize,
+		FilterTimeoutMs:  cfg.FilterTimeoutMs,
+		StickyPinWorkers: cfg.MaxWorkers,
 	})
 	if err != nil {
 		slog.Error("failed to connect to redis shards", "error", err)
@@ -121,7 +124,24 @@ func main() {
 		slog.Info("budget cache warmed", "keys_inserted", warmed)
 	}
 
+	registry.ConfigureStaleMode(time.Duration(cfg.RegistryStaleTTLSec) * time.Second)
 	registry.StartWatch(ctx, rdbs[0], channel)
+
+	if cfg.CampaignUpdateBrokerFallback && cfg.Broker.URL != "" {
+		topic := cfg.CampaignUpdateBrokerTopic
+		if topic == "" {
+			topic = ingestion.DefaultCampaignUpdateBrokerTopic
+		}
+		cuWatcher := ingestion.NewCampaignUpdateWatcher(ingestion.CampaignUpdateWatcherConfig{
+			Registry:       registry,
+			BrokerURL:      cfg.Broker.URL,
+			BrokerRedisURL: cfg.Broker.RedisURL,
+			BrokerTopic:    topic,
+			BrokerTimeout:  time.Duration(cfg.Broker.TimeoutMs) * time.Millisecond,
+		})
+		go cuWatcher.Start(ctx)
+		slog.Info("campaign update broker fallback enabled", "topic", topic)
+	}
 
 	consentChannel := cfg.ConsentUpdateChannel
 	if consentChannel == "" {
@@ -154,7 +174,6 @@ func main() {
 	geoFilter := ingestion.NewGeoFilter(geoProvider, registry)
 	scheduleFilter := ingestion.NewScheduleFilter(registry)
 	fraudFilter := ingestion.NewFraudFilter(geoProvider)
-	l3Filter := ingestion.NewFraudBlacklistFilter(rdbs[0])
 
 	settingsWatcher := ingestion.NewSettingsWatcher(rdbs, cfg)
 	deviceFilter := ingestion.NewDeviceFilter(settingsWatcher)
@@ -162,14 +181,13 @@ func main() {
 
 	breakerFilter := ingestion.NewEmergencyBreakerFilter(settingsWatcher)
 	consentFilter := ingestion.NewConsentFilter(registry, consentStore)
-	placementFilter := ingestion.NewPlacementBlacklistFilter(rdbs)
 
 	unifiedFilter := ingestion.NewUnifiedFilter(
 		rdbs,
 		sharder,
 		registry,
 		campaignRepo,
-		cfg.RateLimitPerMin,
+		0, // M9-03: IP rate limit enforced at XDP/nginx edge only
 		time.Duration(cfg.RateLimitWindowMs)*time.Millisecond,
 		time.Duration(cfg.DuplicateTTLSec)*time.Second,
 		time.Duration(cfg.IdempotencyTTLHrs)*time.Hour,
@@ -178,6 +196,8 @@ func main() {
 		cfg.RedisStreamName,
 		cfg.StreamMaxLen,
 	)
+	unifiedFilter.SetFilterEvalPinWorkers(cfg.MaxWorkers)
+	unifiedFilter.SetShardBreakers(breakers)
 	if err := unifiedFilter.PreloadScripts(ctx); err != nil {
 		slog.Error("failed to preload redis lua scripts on all shards", "error", err)
 		os.Exit(1)
@@ -187,7 +207,84 @@ func main() {
 	unifiedFilter.SetMetricsSampleMask(cfg.MetricsHistogramSampleMask)
 	unifiedFilter.SetQuotaConfig(cfg.QuotaMode, cfg.QuotaChunkSize, cfg.QuotaRefillThresholdPct)
 	unifiedFilter.SetLuaFastPathEnabled(cfg.LuaFastPathEnabled)
+	unifiedFilter.SetRegionCode(cfg.RegionCode)
 	unifiedFilter.SetPGFallbackAllowed(cfg.TrackerPGFallback)
+
+	var localQuantaLedger *ingestion.LocalQuantaLedger
+	var quotaRefillWorker *ingestion.QuotaRefillWorker
+	var budgetDeltaPublisher *ingestion.BudgetDeltaPublisher
+	var localQuantaFlusher *ingestion.LocalQuantaFlusher
+	if cfg.LocalQuotaMode == "shadow" || cfg.LocalQuotaMode == "live" {
+		localQuantaLedger = ingestion.NewLocalQuantaLedger()
+		localQuantaStrict := ingestion.NewLocalQuantaStrict(cfg.QuotaStrictThresholdMicro, cfg.QuotaStrictExitMicro)
+		chunkSize := cfg.QuotaChunkSize
+		if chunkSize <= 0 {
+			chunkSize = 5_000_000
+		}
+		quotaRefillWorker = ingestion.NewQuotaRefillWorker(
+			localQuantaLedger,
+			rdbs,
+			sharder,
+			ingestion.QuotaRefillConfig{
+				BaseChunkMicro: chunkSize,
+				ThresholdPct:   cfg.QuotaRefillThresholdPct,
+				MaxPerShard:    cfg.LocalQuotaRefillMaxShard,
+				FloorMicro:     cfg.QuotaAdaptiveFloorMicro,
+				CeilingMicro:   cfg.QuotaAdaptiveCeilingMicro,
+				StrictEnter:    cfg.QuotaStrictThresholdMicro,
+			},
+		)
+		brokerRedisURL := cfg.Broker.RedisURL
+		if brokerRedisURL == "" && len(cfg.RedisAddrs) > 0 {
+			brokerRedisURL = "redis://" + cfg.RedisAddrs[0] + "/0"
+		}
+		budgetDeltaPublisher = ingestion.NewBudgetDeltaPublisher(ingestion.BudgetDeltaPublisherConfig{
+			BrokerAddr: cfg.Broker.URL,
+			RedisURL:   brokerRedisURL,
+			Topic:      cfg.BudgetDeltaTopic,
+			TrackerID:  cfg.RedisConsumerID,
+			Timeout:    time.Duration(cfg.Broker.TimeoutMs) * time.Millisecond,
+		})
+		localQuantaFlusher = ingestion.NewLocalQuantaFlusher(localQuantaLedger, rdbs, sharder, budgetDeltaPublisher)
+		quotaRefillWorker.SetStrictMode(localQuantaStrict, localQuantaFlusher)
+		ingestion.SetRegistryQuantaFlushHook(func(id uuid.UUID) {
+			flushCtx, flushCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer flushCancel()
+			localQuantaFlusher.FlushLocalQuanta(flushCtx, id, ingestion.FlushReasonPause)
+		})
+		if cfg.Broker.URL != "" {
+			recoveryCtx, recoveryCancel := context.WithTimeout(ctx, 10*time.Second)
+			deltas, recErr := ingestion.FetchRecoveryDeltas(recoveryCtx, ingestion.BrokerConsumerConfig{
+				BrokerAddr: cfg.Broker.URL,
+				RedisURL:   brokerRedisURL,
+				Topic:      cfg.BudgetDeltaTopic,
+				MaxBytes:   uint32(cfg.Broker.MaxBytes),
+				Timeout:    time.Duration(cfg.Broker.TimeoutMs) * time.Millisecond,
+			}, 0)
+			recoveryCancel()
+			if recErr != nil {
+				slog.Warn("local quanta broker recovery skipped", "error", recErr)
+			} else if len(deltas) > 0 {
+				quotaRefillWorker.RecoverFromDeltas(deltas)
+				slog.Info("local quanta ledger recovered from broker", "campaigns", len(deltas))
+			}
+		}
+		unifiedFilter.SetLocalQuantaDeps(ingestion.LocalQuantaDeps{
+			Ledger:    localQuantaLedger,
+			Strict:    localQuantaStrict,
+			Refill:    quotaRefillWorker,
+			Publisher: budgetDeltaPublisher,
+		})
+		unifiedFilter.SetLocalQuantaMode(cfg.LocalQuotaMode)
+		slog.Info("local quanta enabled",
+			"mode", cfg.LocalQuotaMode,
+			"chunk_size", chunkSize,
+			"refill_threshold_pct", cfg.QuotaRefillThresholdPct,
+			"strict_enter_micro", cfg.QuotaStrictThresholdMicro,
+			"strict_exit_micro", cfg.QuotaStrictExitMicro,
+		)
+	}
+	unifiedFilter.SetFilterSlowMs(cfg.FilterSlowMs)
 	if cfg.TTCFailClosed {
 		slog.Info("TTC fail-closed enabled: clicks without impression timestamp are rejected")
 	}
@@ -195,9 +292,7 @@ func main() {
 
 	creativeStore := ingestion.NewBrandCreativeStore(rdbs[0])
 	licenseFilter := ingestion.NewLicenseFilter(registry)
-	entitlementsFilter := ingestion.NewEntitlementsFilter(registry, sharder, rdbs)
-	entitlementsFilter.SetRegionCode(cfg.RegionCode)
-	filterEngine := ingestion.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, licenseFilter, entitlementsFilter, breakerFilter, geoFilter, scheduleFilter, placementFilter, l3Filter, fraudFilter, deviceFilter, consentFilter, unifiedFilter)
+	filterEngine := ingestion.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, licenseFilter, breakerFilter, geoFilter, scheduleFilter, fraudFilter, deviceFilter, consentFilter, unifiedFilter)
 	filterEngine.SetSettingsWatcher(settingsWatcher)
 
 	var rtbCatalog *ingestion.RtbCatalog
@@ -220,16 +315,30 @@ func main() {
 		if cfg.RtbTargetingIndexEnabled() {
 			rtbCatalog.Registry().SetTargetingIndexEnabled(true)
 		}
-		ingestion.StartRtbCatalogSync(ctx, registry, rtbCatalog, cfg, rtbHybrid, rtbBudgetSync, time.Duration(cfg.RegistrySyncIntervalMs)*time.Millisecond)
+		ingestion.StartRtbCatalogSync(ctx, registry, rtbCatalog, cfg, rtbHybrid, rtbBudgetSync, settingsWatcher, time.Duration(cfg.RegistrySyncIntervalMs)*time.Millisecond)
 		if err := ingestion.ReloadRtbDeals(ctx, queries, rtbCatalog); err != nil {
 			slog.Warn("initial rtb deals load failed", "error", err)
 		} else {
 			slog.Info("rtb deals loaded", "count", rtbCatalog.DealCount())
 		}
-		ingestion.StartRtbCatalogReloadWatch(ctx, queries, rdbs[0], ingestion.RtbCatalogReloadChannel(cfg), registry, rtbCatalog, cfg, rtbHybrid, rtbBudgetSync)
+		ingestion.StartRtbCatalogReloadWatch(ctx, queries, rdbs[0], ingestion.RtbCatalogReloadChannel(cfg), registry, rtbCatalog, cfg, rtbHybrid, rtbBudgetSync, settingsWatcher)
 		dealFloorCache := ingestion.NewDealFloorCache(rdbs[0])
 		rtbCatalog.SetDealFloors(dealFloorCache)
 		ingestion.StartDealFloorRefresh(ctx, dealFloorCache, rtbCatalog, time.Duration(cfg.DealFloorRefreshIntervalMs)*time.Millisecond)
+		if allow, err := ingestion.LoadSupplyChainAllowlist(ctx, queries); err == nil {
+			rtbCatalog.SetSupplyChainAllowlist(allow)
+		} else {
+			slog.Warn("initial supply chain allowlist load failed", "error", err)
+		}
+		var rtbBudgetMirror *ingestion.RtbBudgetMirrorWriter
+		if rtbBudgetSync.Authority == ingestion.BudgetAuthorityRTB {
+			rtbBudgetMirror = ingestion.NewRtbBudgetMirrorWriter(rtbCatalog, registry, rdbs, sharder)
+			defer func() {
+				if rtbBudgetMirror != nil {
+					rtbBudgetMirror.Close()
+				}
+			}()
+		}
 		_ = ingestion.NewRtbAuthorityController(cfg, settingsWatcher, unifiedFilter, rtbCatalog, &rtbBudgetSync)
 		rtbReconcile = ingestion.NewRtbBudgetReconcileWorker(
 			ingestion.RtbBudgetReconcileConfig{
@@ -258,6 +367,15 @@ func main() {
 	}
 
 	gnetHandler := ingestion.NewAdsPacketHandler(cfg, registry, filterEngine, pool, rdbs, sharder, cfg.FraudStreamName, creativeStore)
+	ingestion.StartFraudBackpressureWatcher(ctx, ingestion.FraudBackpressureConfig{
+		Rdbs:        rdbs,
+		Writer:      gnetHandler.FraudWriter(),
+		Stream:      cfg.FraudStreamName,
+		EventStream: cfg.RedisStreamName,
+		Group:       cfg.RedisGroupName,
+		LagSec:      cfg.FraudConsumerLagSec,
+		Interval:    2 * time.Second,
+	})
 	if udpCtrl := ingestion.NewUDPControlFromConfig(cfg, len(rdbs)); udpCtrl != nil {
 		if err := udpCtrl.Start(ctx); err != nil {
 			slog.Error("udp control start failed", "error", err)
@@ -266,6 +384,30 @@ func main() {
 		defer udpCtrl.Close()
 		gnetHandler.SetUDPControl(udpCtrl)
 		slog.Info("udp ingress control enabled", "fail_closed", cfg.UDPFailClosed)
+	}
+	if cfg.TCPControlEnabled {
+		tcpClient := ingestion.NewTCPControlClient(ingestion.TCPControlClientConfig{
+			Enabled:   true,
+			Secret:    []byte(cfg.TCPControlHMACSecret),
+			TrackerID: cfg.UDPTrackerID,
+			MgmtAddr:  cfg.TCPMgmtAddr,
+			Sharder:   sharder,
+		})
+		go func() {
+			ticker := time.NewTicker(time.Duration(cfg.SlotMapPollIntervalMs) * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if err := tcpClient.RequestSnapshot(ctx); err != nil {
+						slog.Debug("tcp routing snapshot pull", "error", err)
+					}
+				}
+			}
+		}()
+		slog.Info("tcp routing snapshot client enabled", "mgmt", cfg.TCPMgmtAddr)
 	}
 	gnetHandler.ConfigureIngestGeo(geoProvider)
 	if rtbCatalog != nil {
@@ -352,11 +494,31 @@ func main() {
 
 	workerPool.Shutdown()
 
+	// M14-14: flush unused RAM quanta before closing refill/publisher/pins.
+	if localQuantaFlusher != nil {
+		flushCtx, flushCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		n := localQuantaFlusher.FlushAll(flushCtx)
+		flushCancel()
+		if n > 0 {
+			slog.Info("local quanta flushed on shutdown", "campaigns", n)
+		}
+		ingestion.SetRegistryQuantaFlushHook(nil)
+	}
+
+	if quotaRefillWorker != nil {
+		quotaRefillWorker.Close()
+	}
+	if budgetDeltaPublisher != nil {
+		budgetDeltaPublisher.Close()
+	}
+
 	registryWaitCtx, registryWaitCancel := context.WithTimeout(context.Background(), time.Duration(cfg.Lifecycle.WaitTimeoutMs)*time.Millisecond)
 	defer registryWaitCancel()
 	if err := registry.Wait(registryWaitCtx); err != nil {
 		slog.Error("registry wait failed", "error", err)
 	}
+
+	unifiedFilter.CloseFilterEvalPins()
 
 	for i, rdb := range rdbs {
 		if err := rdb.Close(); err != nil {

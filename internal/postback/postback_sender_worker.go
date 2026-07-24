@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -29,7 +29,7 @@ import (
 )
 
 var (
-	ErrNotProTier     = errors.New("Pro or Enterprise plan required")
+	ErrNotProTier     = errors.New("pro or enterprise plan required")
 	ErrDuplicateEvent = errors.New("duplicate postback event ignored")
 )
 

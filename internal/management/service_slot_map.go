@@ -4,10 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"espx/internal/ingestion"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 
 	"github.com/google/uuid"
 )
@@ -216,27 +215,17 @@ func (s *Service) ActivateSlotMapVersion(ctx context.Context, adminID uuid.UUID,
 }
 
 func (s *Service) afterSlotMapActivated(ctx context.Context, version int32) {
+	routingEpoch := int64(0)
+	if row, err := ingestion.NewCampaignRoutingRepo(s.GetPool()).BumpGlobalRoutingEpoch(ctx); err == nil {
+		routingEpoch = row.RoutingEpoch
+		version = row.ActiveVersion
+	}
 	if ss, ok := s.sharder.(*ingestion.StaticSlotSharder); ok {
 		if _, err := ingestion.LoadActiveSlotMap(ctx, s.GetPool(), ss, len(s.rdbs)); err != nil {
 			slog.Warn("management slot map reload after activate failed", "error", err)
 		}
 	}
-	if s.cfg == nil || s.cfg.Broker.URL == "" {
-		return
-	}
-	timeout := time.Duration(s.cfg.Broker.TimeoutMs) * time.Millisecond
-	if timeout <= 0 {
-		timeout = 3 * time.Second
-	}
-	if err := ingestion.PublishSlotMapReload(
-		s.cfg.Broker.URL,
-		s.cfg.Broker.RedisURL,
-		s.cfg.SlotMapReloadTopic,
-		timeout,
-		version,
-	); err != nil {
-		slog.Warn("slot map reload broker publish failed", "version", version, "error", err)
-	}
+	s.publishRoutingCutover(ctx, routingEpoch, version)
 }
 
 func slotRowToDTO(row db.RedisSlotMap) SlotMapDTO {

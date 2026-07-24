@@ -1,12 +1,8 @@
 package ingestion
 
 import (
-	"hash/fnv"
 	"math"
-	"math/rand"
-	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/google/uuid"
 )
@@ -26,6 +22,7 @@ type voseAliasTable struct {
 	campaigns []*CampaignMeta
 	prob      []float64
 	alias     []int
+	weights   map[uuid.UUID]uint32
 }
 
 // HybridBalancer selects campaigns and Redis shards for RTB traffic spreading.
@@ -33,18 +30,7 @@ type HybridBalancer struct {
 	totalShards   int
 	maxRpsPerNode int64
 	aliasTable    atomic.Pointer[voseAliasTable]
-}
-
-// randSeedSeq mixes per-goroutine RNG seeds to reduce collision under concurrency.
-var randSeedSeq atomic.Int64
-
-// randPool recycles math/rand sources for alias sampling on the hot path.
-var randPool = sync.Pool{
-	New: func() any {
-
-		seed := time.Now().UnixNano() ^ randSeedSeq.Add(1)
-		return rand.New(rand.NewSource(seed))
-	},
+	weightSnap    atomic.Pointer[map[uuid.UUID]uint32]
 }
 
 func NewHybridBalancer(totalShards int, maxRpsPerNode int) *HybridBalancer {
@@ -147,57 +133,51 @@ func (hb *HybridBalancer) UpdateCampaigns(campaigns []*CampaignMeta, secondsElap
 		prob[s] = 1.0
 	}
 
+	weightMap := buildHybridWeightMap(validCampaigns, weights)
 	hb.aliasTable.Store(&voseAliasTable{
 		campaigns: validCampaigns,
 		prob:      prob,
 		alias:     alias,
+		weights:   weightMap,
 	})
+	hb.weightSnap.Store(&weightMap)
 }
 
-// SelectAndShard picks a campaign and spreads hot traffic across sub-shards by user.
-func (hb *HybridBalancer) SelectAndShard(userID string, currentCampaignRps int64) (*CampaignMeta, int) {
-	table := hb.aliasTable.Load()
-	if table == nil || len(table.prob) == 0 {
-		return nil, 0
-	}
-
-	n := len(table.prob)
-	r := randPool.Get().(*rand.Rand)
-	idx := r.Intn(n)
-
-	selectedIdx := idx
-	if r.Float64() >= table.prob[idx] {
-		selectedIdx = table.alias[idx]
-	}
-	randPool.Put(r)
-
-	campaign := table.campaigns[selectedIdx]
-	if hb.totalShards <= 0 {
-		return campaign, 0
-	}
-
-	isHot := hb.maxRpsPerNode > 0 && currentCampaignRps > hb.maxRpsPerNode
-	var shard int
-
-	if !isHot {
-		shard = int(jumpHash(uint64(crc32Castagnoli(&campaign.ID)), int32(hb.totalShards)))
-	} else {
-		subShardCount := int(currentCampaignRps/hb.maxRpsPerNode) + 1
-		if subShardCount > hb.totalShards {
-			subShardCount = hb.totalShards
+func buildHybridWeightMap(campaigns []*CampaignMeta, raw []float64) map[uuid.UUID]uint32 {
+	out := make(map[uuid.UUID]uint32, len(campaigns))
+	for i, c := range campaigns {
+		if c == nil {
+			continue
 		}
-		if subShardCount <= 0 {
-			subShardCount = 1
+		w := raw[i]
+		if w <= 0 || math.IsNaN(w) || math.IsInf(w, 0) {
+			out[c.ID] = 1
+			continue
 		}
-
-		hasher := fnv.New32a()
-		_, _ = hasher.Write([]byte(userID))
-		userHash := hasher.Sum32()
-		subShardIdx := userHash % uint32(subShardCount)
-
-		combinedHash := uint64(crc32Castagnoli(&campaign.ID)) ^ uint64(subShardIdx)
-		shard = int(jumpHash(combinedHash, int32(hb.totalShards)))
+		scaled := w * 1000
+		if scaled > float64(math.MaxUint32) {
+			out[c.ID] = math.MaxUint32
+		} else if scaled < 1 {
+			out[c.ID] = 1
+		} else {
+			out[c.ID] = uint32(scaled)
+		}
 	}
+	return out
+}
 
-	return campaign, shard
+// WeightFor returns hybrid ranking weight for a campaign (R11); minimum 1.
+func (hb *HybridBalancer) WeightFor(id uuid.UUID) uint32 {
+	if hb == nil {
+		return 1
+	}
+	ptr := hb.weightSnap.Load()
+	if ptr == nil || *ptr == nil {
+		return 1
+	}
+	w, ok := (*ptr)[id]
+	if !ok || w == 0 {
+		return 1
+	}
+	return w
 }

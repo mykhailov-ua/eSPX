@@ -45,3 +45,8 @@ func (c *Config) RtbBudgetAuthoritative() bool {
 func (c *Config) RtbTargetingIndexEnabled() bool {
 	return c != nil && c.RtbTargetingIndex
 }
+
+// RtbPrebidIVTEnabled reports whether pre-bid IVT gate runs before RunAuction (R17).
+func (c *Config) RtbPrebidIVTEnabled() bool {
+	return c != nil && c.RtbPrebidIVT
+}

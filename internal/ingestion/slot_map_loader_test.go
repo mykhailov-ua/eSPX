@@ -48,7 +48,7 @@ func TestReloadStaticSlotMapIfChanged_skipsWhenCurrent(t *testing.T) {
 }
 
 func TestSlotMapReloadMessage_roundtrip(t *testing.T) {
-	payload, err := EncodeSlotMapReloadMessage(3)
+	payload, err := EncodeSlotMapReloadMessage(3, 7)
 	require.NoError(t, err)
 	msg, err := DecodeSlotMapReloadMessage(payload)
 	require.NoError(t, err)

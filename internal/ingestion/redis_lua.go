@@ -7,7 +7,9 @@ import (
 	"strconv"
 	"strings"
 
+	"espx/internal/campaignmodel"
 	"espx/internal/metrics"
+
 	redis "github.com/redis/go-redis/v9"
 )
 
@@ -42,15 +44,15 @@ func (f *UnifiedFilter) PreloadScripts(ctx context.Context) error {
 		metrics.RedisLuaScriptLoaded.WithLabelValues(shard).Set(1)
 		metrics.RedisLuaFastScriptLoaded.WithLabelValues(shard).Set(1)
 	}
-	return nil
+	return f.openFilterEvalPins(ctx)
 }
 
 // evalScript prefers pooled EVALSHA and falls back once so cold Redis shards still load the unified filter script.
-func (f *UnifiedFilter) evalScript(ctx context.Context, rdb redis.UniversalClient, shard int, keyArgs [unifiedFilterKeyCount]any, args []any) (int64, error) {
-	res, err := evalShaPooled(ctx, rdb, f.scriptHashAny, keyArgs, args)
+func (f *UnifiedFilter) evalScript(ctx context.Context, rdb redis.UniversalClient, shard int, evt *campaignmodel.Event, keyArgs [unifiedFilterKeyCount]any, args []any) (int64, error) {
+	res, err := f.evalShaPooled(ctx, rdb, shard, evt, f.scriptHashAny, keyArgs, args)
 	if err != nil && isNoScriptErr(err) {
 		incRedisLuaNoScript(f.luaNoScriptCounters, shard)
-		return evalPooled(ctx, rdb, unifiedFilterLuaAny, keyArgs, args)
+		return f.evalPooled(ctx, rdb, shard, evt, unifiedFilterLuaAny, keyArgs, args)
 	}
 	return res, err
 }

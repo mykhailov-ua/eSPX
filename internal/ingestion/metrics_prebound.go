@@ -4,6 +4,7 @@ import (
 	"strconv"
 
 	"espx/internal/metrics"
+
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -27,6 +28,8 @@ type preboundTrackMetrics struct {
 	decisionFraud            prometheus.Counter
 	decisionConsentDenied    prometheus.Counter
 	decisionInfraUnavailable prometheus.Counter
+	decisionRegistryStale    prometheus.Counter
+	decisionShardUnavailable prometheus.Counter
 
 	blockedEmergencyBreaker prometheus.Counter
 	blockedRateLimit        prometheus.Counter
@@ -42,6 +45,8 @@ type preboundTrackMetrics struct {
 	blockedFraud            prometheus.Counter
 	blockedConsent          prometheus.Counter
 	blockedInfra            prometheus.Counter
+	blockedRegistryStale    prometheus.Counter
+	blockedShardUnavailable prometheus.Counter
 }
 
 // newPreboundTrackMetrics binds all track-path label values once at handler startup.
@@ -65,6 +70,8 @@ func newPreboundTrackMetrics() preboundTrackMetrics {
 		decisionFraud:            metrics.FilterDecisions.WithLabelValues("fraud"),
 		decisionConsentDenied:    metrics.FilterDecisions.WithLabelValues("consent_denied"),
 		decisionInfraUnavailable: metrics.FilterDecisions.WithLabelValues("infra_unavailable"),
+		decisionRegistryStale:    metrics.FilterDecisions.WithLabelValues("registry_stale"),
+		decisionShardUnavailable: metrics.FilterDecisions.WithLabelValues("shard_unavailable"),
 
 		blockedEmergencyBreaker: metrics.FilterBlockedTotal.WithLabelValues("emergency_breaker"),
 		blockedRateLimit:        metrics.FilterBlockedTotal.WithLabelValues("rate_limit"),
@@ -80,6 +87,8 @@ func newPreboundTrackMetrics() preboundTrackMetrics {
 		blockedFraud:            metrics.FilterBlockedTotal.WithLabelValues("fraud"),
 		blockedConsent:          metrics.FilterBlockedTotal.WithLabelValues("consent_denied"),
 		blockedInfra:            metrics.FilterBlockedTotal.WithLabelValues("infra_unavailable"),
+		blockedRegistryStale:    metrics.FilterBlockedTotal.WithLabelValues("registry_stale"),
+		blockedShardUnavailable: metrics.FilterBlockedTotal.WithLabelValues("shard_unavailable"),
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"espx/internal/campaignmodel"
+
 	"github.com/google/uuid"
 	redis "github.com/redis/go-redis/v9"
 )
@@ -116,6 +117,9 @@ func NewScheduleFilter(registry campaignmodel.CampaignRegistry) *ScheduleFilter 
 func (f *ScheduleFilter) Check(ctx context.Context, evt *campaignmodel.Event) error {
 	camp, ok := f.registry.GetCampaign(evt.CampaignID)
 	if !ok {
+		if reg, ok := f.registry.(*Registry); ok && reg.IsStaleMode() {
+			return ErrRegistryStale
+		}
 		return ErrCampaignNotFound
 	}
 	now := time.Now()

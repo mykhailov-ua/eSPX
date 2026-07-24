@@ -6,6 +6,7 @@ local edge_metrics = require "edge-metrics"
 local edge_phase2 = require "edge-phase2"
 local edge_asn = require "edge-asn"
 local edge_ingress = require "edge-ingress"
+local edge_tarpit = require "edge-tarpit"
 
 local circuit_dict = ngx.shared.circuit_breaker
 local blacklist_cache = ngx.shared.blacklist_cache
@@ -82,5 +83,6 @@ local bucket_prev = bucket_curr - 1
 local client_ip = ngx.var.remote_addr
 
 phase1(client_ip, bucket_curr, bucket_prev)
+edge_tarpit.maybe_delay()
 edge_ingress.record_and_forward()
 edge_phase2.run()

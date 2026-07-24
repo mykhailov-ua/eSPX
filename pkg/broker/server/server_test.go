@@ -96,6 +96,31 @@ func TestBrokerIntegration(t *testing.T) {
 	}
 }
 
+func TestClient_ReconnectAfterClose(t *testing.T) {
+	s := NewServer("127.0.0.1:0", t.TempDir(), 1024*1024, 4096)
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Stop()
+
+	cli := client.NewClient(s.Addr(), 2*time.Second)
+	if err := cli.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cli.Produce("tracker-logs", 0, []byte("a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cli.Produce("tracker-logs", 0, []byte("b")); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestBrokerCrashRecovery ensures partition logs reopen with the correct next offset after restart.
 func TestBrokerCrashRecovery(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "broker-recovery-test-*")

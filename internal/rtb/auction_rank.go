@@ -1,5 +1,15 @@
 package rtb
 
+const (
+	rankDeadlineCheckMask = 31
+	rankMaxScanCandidates = 500
+)
+
+// GeoBitFromHash maps a geo hash to a single targeting bitmask bit.
+func GeoBitFromHash(geoHash uint32) uint64 {
+	return uint64(1) << (geoHash & 63)
+}
+
 func (registry *Registry) catalogSlicesValid(reg *CampaignAuctionRegistry) bool {
 	count := reg.Count
 	if !(count <= len(reg.CampaignIDs) && count <= len(reg.Bids) &&
@@ -7,6 +17,7 @@ func (registry *Registry) catalogSlicesValid(reg *CampaignAuctionRegistry) bool 
 		count <= len(reg.DailyBudgets) && count <= len(reg.PacingOpen) &&
 		count <= len(reg.DeviceMasks) && count <= len(reg.CategoryMasks) &&
 		count <= len(reg.GeoHashes) && count <= len(reg.Weights) &&
+		count <= len(reg.BoostPPM) &&
 		count <= len(reg.BudgetIndices) && count <= len(reg.CustomerBudgetIndices)) {
 		return false
 	}
@@ -68,6 +79,7 @@ func (registry *Registry) rankCandidates(
 	deviceMasks := soa.DeviceMasks[bucketStart:bucketEnd]
 	categoryMasks := soa.CategoryMasks[bucketStart:bucketEnd]
 	weights := soa.Weights[bucketStart:bucketEnd]
+	boostPPM := soa.BoostPPM[bucketStart:bucketEnd]
 	budgetIndices := soa.BudgetIndices[bucketStart:bucketEnd]
 	customerBudgetIndices := soa.CustomerBudgetIndices[bucketStart:bucketEnd]
 
@@ -77,9 +89,17 @@ func (registry *Registry) rankCandidates(
 	minBid := req.MinBid
 	store := registry.store
 	winnerPos := -1
+	deadline := req.DeadlineMono
+	hasDeadline := deadline > 0
 
 	for pos := 0; pos < len(catalogIdx); pos++ {
 		scanned++
+		if scanned > rankMaxScanCandidates {
+			return -1, -1, scanned, NoBidScanLimit
+		}
+		if hasDeadline && scanned&rankDeadlineCheckMask == 0 && monotonicNano() > deadline {
+			return -1, -1, scanned, NoBidTimeout
+		}
 		i := int(catalogIdx[pos])
 		if i < 0 || i >= regCount {
 			return -1, -1, scanned, NoBidCorruptCatalog
@@ -118,7 +138,7 @@ func (registry *Registry) rankCandidates(
 			continue
 		}
 
-		score := effectiveScore(bid, ctrppm[pos])
+		score := effectiveScoreWithBoost(bid, ctrppm[pos], boostPPM[pos])
 		if winnerIdx >= 0 && secondBid >= 0 && score < maxScore {
 			break
 		}

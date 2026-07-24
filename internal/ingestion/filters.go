@@ -8,6 +8,7 @@ import (
 	"unsafe"
 
 	"espx/internal/campaignmodel"
+
 	"github.com/google/uuid"
 	redis "github.com/redis/go-redis/v9"
 )
@@ -28,6 +29,8 @@ var (
 	ErrMigrationFenced        = errors.New("campaign debit fenced")
 	ErrLicenseExpired         = errors.New("license expired")
 	ErrDailyQuotaExceeded     = errors.New("daily quota exceeded")
+	ErrRegistryStale          = errors.New("registry stale: campaign unknown while control plane unreachable")
+	ErrShardUnavailable       = errors.New("shard unavailable")
 )
 
 // bufWrapper holds a reusable byte buffer for zero-allocation Redis key construction.
@@ -125,6 +128,9 @@ func (f *GeoFilter) Check(ctx context.Context, evt *campaignmodel.Event) error {
 func (f *GeoFilter) checkGeo(evt *campaignmodel.Event) error {
 	camp, ok := f.registry.GetCampaign(evt.CampaignID)
 	if !ok {
+		if reg, ok := f.registry.(*Registry); ok && reg.IsStaleMode() {
+			return ErrRegistryStale
+		}
 		return ErrCampaignNotFound
 	}
 
@@ -361,10 +367,10 @@ func (f *PlacementBlacklistFilter) Check(ctx context.Context, evt *campaignmodel
 	if evt == nil || evt.PlacementID == "" {
 		return nil
 	}
-	if len(f.rdbs) == 0 || f.rdbs[0] == nil {
+	rdb := pickLocalGlobalShard(f.rdbs)
+	if rdb == nil {
 		return nil
 	}
-	rdb := f.rdbs[0]
 
 	w := bufPool.Get().(*bufWrapper)
 	w.buf = appendCampaignHashTag(w.buf[:0], evt.CampaignID)

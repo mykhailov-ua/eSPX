@@ -61,7 +61,7 @@ func TestSentinelConnectAllShards(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	clients, err := ConnectRedisShards(ctx, cfg, RedisShardOptions{PoolSize: 4})
+	clients, _, err := ConnectRedisShards(ctx, cfg, RedisShardOptions{PoolSize: 4})
 	if err != nil {
 		t.Fatalf("ConnectRedisShards: %v", err)
 	}

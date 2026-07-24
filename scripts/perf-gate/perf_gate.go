@@ -98,10 +98,10 @@ func verifyRawZeroAlloc(filename string) error {
 		}
 
 		if hasBytes && bytesVal > 0 {
-			return fmt.Errorf("Memory Bloat: %s allocated %d B/op (Zero-Alloc violated)", fields[0], bytesVal)
+			return fmt.Errorf("memory bloat: %s allocated %d B/op (Zero-Alloc violated)", fields[0], bytesVal)
 		}
 		if hasAllocs && allocsVal > 0 {
-			return fmt.Errorf("Memory Leak: %s triggered %d allocs/op (Zero-Alloc violated)", fields[0], allocsVal)
+			return fmt.Errorf("memory leak: %s triggered %d allocs/op (Zero-Alloc violated)", fields[0], allocsVal)
 		}
 	}
 

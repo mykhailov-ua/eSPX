@@ -62,3 +62,11 @@ message AdLogRecord {
   bytes event_type = 4;
   uint32 priority = 5;
 }
+
+// BudgetDelta is a local-quanta spend record published to broker topic budget-deltas (M8-04).
+message BudgetDelta {
+  bytes campaign_id = 1;
+  int64 amount_micro = 2;
+  int64 created_at_unix_nano = 3;
+  bytes tracker_id = 4;
+}

@@ -25,12 +25,13 @@ func ttcEnabled(ttcMinMsAny any) bool {
 	}
 }
 
-// needsFullLuaPath routes to filter_full.lua when Tier B cannot satisfy campaign/event constraints.
+// needsFullLuaPath routes to unified-filter.lua when Tier B cannot satisfy campaign/event constraints.
+// Impressions use budget-fast.lua (M9-01); clicks always use the full script.
 func (f *UnifiedFilter) needsFullLuaPath(evt *campaignmodel.Event, campInfo *campaignmodel.Campaign) bool {
-	if !f.fastPathEnabled.Load() {
+	if evt.Type != "impression" {
 		return true
 	}
-	if f.rateLimit > 0 {
+	if !f.fastPathEnabled.Load() {
 		return true
 	}
 	if campInfo.FreqLimit > 0 && evt.UserID != "" {

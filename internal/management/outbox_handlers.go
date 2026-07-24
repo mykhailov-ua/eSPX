@@ -3,6 +3,7 @@ package management
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"espx/internal/ingestion"
@@ -383,21 +384,14 @@ func (w *OutboxWorker) handleFraudScoreBoost(ctx context.Context, payload []byte
 
 	key := fmt.Sprintf("ml:score:boost:%s", p.CampaignID)
 	if p.Boost <= 0 || p.TTLSeconds <= 0 {
-		for _, rdb := range w.svc.rdbs {
-			if rdb == nil {
-				continue
-			}
-			rdb.Del(ctx, key)
+		if err := deleteGlobalKeyFromAllShards(ctx, w.svc.rdbs, key); err != nil {
+			return err
 		}
 	} else {
 		ttl := time.Duration(p.TTLSeconds) * time.Second
-		for _, rdb := range w.svc.rdbs {
-			if rdb == nil {
-				continue
-			}
-			if err := rdb.Set(ctx, key, p.Boost, ttl).Err(); err != nil {
-				return fmt.Errorf("set ml score boost on shard: %w", err)
-			}
+		boostStr := strconv.Itoa(int(p.Boost))
+		if err := syncGlobalStringToAllShards(ctx, w.svc.rdbs, key, boostStr, ttl); err != nil {
+			return err
 		}
 	}
 
@@ -495,23 +489,8 @@ func (w *OutboxWorker) handlePausePlacement(ctx context.Context, payload []byte)
 	}
 
 	key := ingestion.PlacementBlacklistKey(uuid.MustParse(p.CampaignID))
-	for _, rdb := range w.svc.rdbs {
-		if rdb == nil {
-			continue
-		}
-		if p.Action == "remove" {
-			if err := rdb.HDel(ctx, key, p.PlacementID).Err(); err != nil {
-				return fmt.Errorf("failed to hdel placement blacklist on shard: %w", err)
-			}
-		} else {
-			// We use HSET with a value of "1" to mark as paused.
-			// The tracker will check HEXISTS or HGET.
-			if err := rdb.HSet(ctx, key, p.PlacementID, "1").Err(); err != nil {
-				return fmt.Errorf("failed to hset placement blacklist on shard: %w", err)
-			}
-		}
-	}
-	return nil
+	del := p.Action == "remove"
+	return syncGlobalHashFieldToAllShards(ctx, w.svc.rdbs, key, p.PlacementID, "1", del)
 }
 
 type PausePlacementPayload struct {

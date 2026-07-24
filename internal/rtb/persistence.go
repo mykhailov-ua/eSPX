@@ -135,6 +135,7 @@ func (registry *Registry) LoadSnapshot(path string) error {
 				CategoryMasks:         make([]uint64, count),
 				GeoHashes:             make([]uint32, count),
 				Weights:               make([]uint32, count),
+				BoostPPM:              make([]uint32, count),
 				BudgetIndices:         make([]uint32, count),
 				CustomerBudgetIndices: make([]uint32, count),
 			}

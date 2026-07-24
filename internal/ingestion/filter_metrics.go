@@ -1,10 +1,12 @@
 package ingestion
 
 import (
+	"log/slog"
 	"strconv"
 	"sync/atomic"
 
 	"espx/internal/metrics"
+
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -78,6 +80,30 @@ func (o *redisShardObservability) recordAcceptedSpend(shard int, campaignID uuid
 		return
 	}
 	recordSampledCampaignSpend(o, shard, campaignID, spendMicro)
+}
+
+// noteLuaEvalDuration records sampled histograms and M14-17 slow-script correlation logs.
+func (f *UnifiedFilter) noteLuaEvalDuration(shard int, campaignID uuid.UUID, tier string, startNs int64, sample bool, fast bool) {
+	if startNs == 0 {
+		return
+	}
+	elapsedNs := monotonicNano() - startNs
+	if sample {
+		sec := float64(elapsedNs) / 1e9
+		if fast {
+			observeRedisLuaTier(f.luaFastDurationObservers, shard, sec)
+		} else {
+			observeRedisLua(f.luaDurationObservers, shard, sec)
+		}
+	}
+	if f.filterSlowNs > 0 && elapsedNs > f.filterSlowNs {
+		metrics.FilterLuaSlowTotal.Inc()
+		slog.Warn("filter lua slow",
+			"campaign_id", campaignID,
+			"tier", tier,
+			"duration_ms", float64(elapsedNs)/1e6,
+		)
+	}
 }
 
 func sampledCampaignBucket(campaignID uuid.UUID) int {

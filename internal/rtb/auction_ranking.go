@@ -13,6 +13,13 @@ func normalizeCTRPPM(ctrPPM uint32) uint32 {
 
 // effectiveScore returns bid*CTR in micro-score units for ranking only.
 func effectiveScore(bid int64, ctrPPM uint32) int64 {
+	return effectiveScoreWithBoost(bid, ctrPPM, CTRPPMUnit)
+}
+
+// effectiveScoreWithBoost returns bid*CTR*boost in micro-score units (boost PPM defaults to 1.0).
+func effectiveScoreWithBoost(bid int64, ctrPPM, boostPPM uint32) int64 {
 	ctr := normalizeCTRPPM(ctrPPM)
-	return bid * int64(ctr) / int64(CTRPPMUnit)
+	boost := normalizeCTRPPM(boostPPM)
+	denom := int64(CTRPPMUnit) * int64(CTRPPMUnit)
+	return bid * int64(ctr) * int64(boost) / denom
 }

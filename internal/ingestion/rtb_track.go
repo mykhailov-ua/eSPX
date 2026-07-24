@@ -32,7 +32,20 @@ func ConfigureTrackRtb(proc *trackProcessor, cfg *config.Config, catalog *RtbCat
 	}
 	proc.rtbCatalog = catalog
 	proc.rtbMode = rtbModeFromConfig(cfg)
+	proc.settingsWatcher = watcher
+	if watcher != nil {
+		proc.rtbMode = RtbModeFromSetting(watcher.Get().RtbMode, cfg)
+		watcher.AddChangeListener(func(dc *DynamicConfig) {
+			if proc != nil {
+				proc.rtbMode = RtbModeFromSetting(dc.RtbMode, cfg)
+			}
+		})
+	}
 	proc.ingestGeo = geo
+	catalog.ConfigureRtbGates(watcher, geo)
+	if cfg.RtbPrebidIVTEnabled() {
+		catalog.SetPrebidIVT(true)
+	}
 	if unified != nil {
 		setting := ""
 		if watcher != nil {
@@ -67,32 +80,48 @@ func (h *AdsPacketHandler) ConfigureIngestGeo(geo GeoProvider) {
 
 func buildRtbTargeting(evt *campaignmodel.Event, deviceType []byte, floorMicro int64, catalog *RtbCatalog) RtbTargetingInput {
 	geoHash := uint32(0)
-	dealID := ""
 	if evt != nil && evt.IngestGeoResolved {
 		geoHash = evt.GeoHash
 	}
-	if evt != nil && len(evt.Payload) > 0 {
-		dealID = ParseDealID(evt.Payload)
-	}
 
-	// Try OpenRTB 3.0 parsing first
+	out := RtbTargetingInput{GeoHash: geoHash}
+
+	// Try OpenRTB 3.0 FSM first (shared with ingress / M12-02).
 	if evt != nil && len(evt.Payload) > 0 {
-		if minBid, devType, catMask, isOpenRTB := ParseOpenRTB3Payload(evt.Payload); isOpenRTB {
+		var parsed OpenRTB3Parsed
+		var haveParsed bool
+		if cached, ok := openRTB3ParsedFromScratch(evt); ok {
+			parsed = *cached
+			haveParsed = true
+		} else {
+			parsed = parseOpenRTB3FSM(evt.Payload)
+			haveParsed = parsed.IsOpenRTB
+		}
+		if haveParsed {
 			if floorMicro <= 0 {
-				floorMicro = minBid
+				floorMicro = parsed.MinBid
 			}
-			floorMicro = EffectiveDealFloor(catalog, catalogDealFloors(catalog), dealID, floorMicro)
-			return RtbTargetingInput{
-				GeoHash:             geoHash,
-				DeviceType:          devType,
-				CategoryMask:        catMask,
-				PublisherFloorMicro: floorMicro,
-				DealID:              dealID,
+			if parsed.DealIDLen > 0 {
+				out.DealIDLen = parsed.DealIDLen
+				src := ortbSlice(evt.Payload, parsed.DealIDOff, parsed.DealIDLen)
+				copy(out.DealIDBuf[:], src)
 			}
+			dealStr := ""
+			if out.DealIDLen > 0 {
+				dealStr = UnsafeString(out.DealIDBuf[:out.DealIDLen])
+			}
+			floorMicro = EffectiveDealFloor(catalog, catalogDealFloors(catalog), dealStr, floorMicro)
+			out.DeviceType = parsed.DeviceType
+			out.CategoryMask = parsed.CategoryMask
+			out.PublisherFloorMicro = floorMicro
+			return out
 		}
 	}
 
-	// Fallback to legacy flat JSON parsing
+	// Legacy flat bid_micro / category_mask (deprecated; counted for one-release sunset).
+	if evt != nil && len(evt.Payload) > 0 {
+		incIngressLegacyJSON()
+	}
 	if floorMicro <= 0 && evt != nil {
 		floorMicro = parseBidMicro(evt.Payload)
 	}
@@ -101,15 +130,19 @@ func buildRtbTargeting(evt *campaignmodel.Event, deviceType []byte, floorMicro i
 		if parsed := parseCategoryMask(evt.Payload); parsed != 0 {
 			categoryMask = parsed
 		}
+		if n := ParseDealIDBytes(evt.Payload, out.DealIDBuf[:]); n > 0 {
+			out.DealIDLen = uint8(n)
+		}
 	}
-	floorMicro = EffectiveDealFloor(catalog, catalogDealFloors(catalog), dealID, floorMicro)
-	return RtbTargetingInput{
-		GeoHash:             geoHash,
-		DeviceType:          DeviceMaskFromType(deviceType),
-		CategoryMask:        categoryMask,
-		PublisherFloorMicro: floorMicro,
-		DealID:              dealID,
+	dealStr := ""
+	if out.DealIDLen > 0 {
+		dealStr = UnsafeString(out.DealIDBuf[:out.DealIDLen])
 	}
+	floorMicro = EffectiveDealFloor(catalog, catalogDealFloors(catalog), dealStr, floorMicro)
+	out.DeviceType = DeviceMaskFromType(deviceType)
+	out.CategoryMask = categoryMask
+	out.PublisherFloorMicro = floorMicro
+	return out
 }
 
 func catalogDealFloors(catalog *RtbCatalog) *DealFloorCache {
@@ -130,8 +163,11 @@ func applyRtbAuction(proc trackProcessor, evt *campaignmodel.Event, deviceType [
 
 	if proc.rtbMode == rtbModeShadow {
 		recordRtbShadowAuction(proc.rtbCatalog, evt, res, reason, payloadBidMicro)
+		recordRtbDealOutcomeBytes(targeting.DealIDBuf[:], targeting.DealIDLen, payloadBidMicro, res, reason)
 		return trackOutcome{}, false
 	}
+
+	recordRtbDealOutcomeBytes(targeting.DealIDBuf[:], targeting.DealIDLen, payloadBidMicro, res, reason)
 
 	if !reason.OK() {
 		return trackOutcome{Status: trackStatusRejected, RejectKind: noBidToRejectKind(reason)}, true
@@ -142,5 +178,6 @@ func applyRtbAuction(proc trackProcessor, evt *campaignmodel.Event, deviceType [
 		return trackOutcome{Status: trackStatusRejected, RejectKind: filterRejectCampaignNotFound}, true
 	}
 	evt.CampaignID = uid
+	evt.ClearingPriceMicro = res.Price
 	return trackOutcome{}, false
 }

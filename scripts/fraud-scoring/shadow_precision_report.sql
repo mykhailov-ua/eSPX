@@ -1,6 +1,6 @@
 -- Staging gate: compare 24h shadow fraud scores against ivt-detector labels.
 -- Run after FRAUD_SCORING_ENABLED=true for >= 24h.
--- See docs/ARCHITECTURE.md#fraud-scoring-cold-path and docs/DATABASE.md Part II §5.
+-- See docs/ARCHITECTURE.md#fraud-scoring-cold-path and docs/DATA.md Part II §5.
 --
 -- Example:
 --   clickhouse-client --query "$(cat scripts/fraud-scoring/shadow_precision_report.sql)"

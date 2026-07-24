@@ -2,10 +2,16 @@
 Description=eSPX Tracker
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=10
+StartLimitBurst=3
+OnFailure=espx-rollback@tracker.service
 
 [Service]
 Type=simple
 EnvironmentFile=-/etc/espx/secrets.env
+Environment=TRACKER_INGRESS_SCHEMA=openrtb_3
+Environment=GOGC=300
+Environment=GOMEMLIMIT=700MiB
 ExecStart=/usr/local/bin/tracker
 Restart=on-failure
 RestartSec=5

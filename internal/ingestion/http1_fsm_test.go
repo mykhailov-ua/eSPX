@@ -2,6 +2,7 @@ package ingestion
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -187,8 +188,18 @@ func TestHTTP1Parse(t *testing.T) {
 		assert.ErrorIs(t, err, errInvalidRequest)
 	})
 
-	t.Run("reject chunked transfer-encoding", func(t *testing.T) {
-		_, _, err := parseHTTP1([]byte("POST /track HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 0\r\n\r\n"), maxBody)
+	t.Run("chunked transfer-encoding body", func(t *testing.T) {
+		body := []byte(`{"ok":true}`)
+		data := append([]byte("POST /track HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Type: application/json\r\n\r\n"), []byte(fmt.Sprintf("%x\r\n", len(body)))...)
+		data = append(data, body...)
+		data = append(data, "\r\n0\r\n\r\n"...)
+		_, req, err := parseHTTP1(data, maxBody)
+		require.NoError(t, err)
+		assert.Equal(t, body, req.Body)
+	})
+
+	t.Run("reject chunked with content-length", func(t *testing.T) {
+		_, _, err := parseHTTP1([]byte("POST /track HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 0\r\n\r\n0\r\n\r\n"), maxBody)
 		assert.ErrorIs(t, err, errInvalidRequest)
 	})
 

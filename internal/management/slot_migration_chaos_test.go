@@ -641,6 +641,50 @@ func TestChaos_SO02_SlotMigrationPGRewarmCutover(t *testing.T) {
 	})
 }
 
+// TestChaos_SO02_SlotMigrationDualWriteCutover validates zero-downtime dual-write catch-up (M1-08).
+func TestChaos_SO02_SlotMigrationDualWriteCutover(t *testing.T) {
+	if testing.Short() {
+		t.Skip("chaos integration test")
+	}
+
+	rdb, cleanup := database.SetupTestRedis(t)
+	defer cleanup()
+	rdbs := buildFourRedisShards(rdb, nil)
+	svc, pool, ctx := setupSlotMigrationChaos(t, rdbs)
+	svc.cfg = &config.Config{
+		SlotMigrationEnabled:          false,
+		MigrationFenceEnabled:         true,
+		SlotMigrationDualWriteEnabled: true,
+		SlotMigrationLagEpsilon:       0,
+		SlotMigrationLagThreshold:     1000,
+	}
+
+	const slot int16 = 8
+	campID, _ := seedCampaignForSlot(t, svc, pool, ctx, slot, rdbs[0])
+	mapRepo := ingestion.NewSlotMapRepo(pool)
+	v := prepareMigratingVersion(t, ctx, mapRepo, slot, 2)
+
+	require.NoError(t, svc.CopyAllMigratingSlots(ctx, v))
+	require.NoError(t, ingestion.PublishSlotMigrationDeltaTestHelper(ctx, rdbs[0], ingestion.SlotMigrationDelta{
+		CampaignID: campID,
+		Amount:     250,
+		SpendKey:   ingestion.BudgetCampaignKey(campID),
+	}))
+	require.NoError(t, svc.CatchUpDualWriteSlots(ctx, v))
+	require.NoError(t, svc.ActivateSlotMapVersion(ctx, uuid.Nil, v))
+
+	ingestion.AssertBudgetInvariant(t, ctx, pool, rdbs[2], campID)
+	require.NoError(t, svc.VerifySlotMigrationR5(ctx))
+
+	logChaosProof(t, "so02_slot_migration_dual_write", map[string]string{
+		"subsystem":   "slot_migration",
+		"fault":       "hot_slot_dual_write",
+		"r5_ok":       "true",
+		"dual_write":  "true",
+		"campaign_id": campID.String(),
+	})
+}
+
 // TestChaos_SlotMigrationPGRewarmColdStart seeds budget on target from Postgres when source had no Redis keys.
 func TestChaos_SlotMigrationPGRewarmColdStart(t *testing.T) {
 	if testing.Short() {

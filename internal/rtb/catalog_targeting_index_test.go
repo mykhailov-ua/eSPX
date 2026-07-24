@@ -20,6 +20,7 @@ func TestBuildTargetingIndex_groupsByGeoDeviceCategory(t *testing.T) {
 		CategoryMasks:         []uint64{1, 1, 2},
 		GeoHashes:             []uint32{7, 7, 7},
 		Weights:               []uint32{1, 1, 1},
+		BoostPPM:              []uint32{CTRPPMUnit, CTRPPMUnit, CTRPPMUnit},
 		BudgetIndices:         []uint32{0, 1, 2},
 		CustomerBudgetIndices: []uint32{invalidCustomerBudgetIdx, invalidCustomerBudgetIdx, invalidCustomerBudgetIdx},
 	}

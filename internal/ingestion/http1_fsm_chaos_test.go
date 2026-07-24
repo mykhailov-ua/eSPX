@@ -2,6 +2,7 @@ package ingestion
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -59,7 +60,7 @@ func http1ChaosMalformedCases() []http1ChaosCase {
 		{name: "negative_looking_cl", payload: []byte("POST /track HTTP/1.1\r\nContent-Length: -1\r\n\r\n"), maxBody: maxBody, wantErr: errInvalidRequest},
 		{name: "leading_zero_cl", payload: []byte("POST /track HTTP/1.1\r\nContent-Length: 0005\r\n\r\nhello"), maxBody: maxBody, wantOK: true},
 		{name: "pipelined_valid_then_garbage", payload: append(append([]byte(nil), nginxTrackCorpus...), randomWireGarbage(64)...), maxBody: 1024 * 1024, wantOK: true},
-		{name: "chunked_not_supported", payload: []byte("POST /track HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"), maxBody: maxBody, wantErr: errInvalidRequest},
+		{name: "chunked_empty_ok", payload: []byte("POST /track HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"), maxBody: maxBody, wantOK: true},
 		{name: "control_chars_in_method", payload: []byte("PO\x01ST /track HTTP/1.1\r\nContent-Length: 0\r\n\r\n"), maxBody: maxBody, wantErr: errInvalidRequest},
 	}
 }
@@ -490,6 +491,47 @@ func TestChaos_HTTP1_PipelinedMalformedMix(t *testing.T) {
 	logChaosProof(t, "http1_pipelined_malformed_mix", map[string]string{
 		"accepted": "5",
 		"tail_err": err.Error(),
+	})
+}
+
+// TestChaos_HTTP1_PipelinedKeepAliveBudget pipelines 10 impression POSTs on one keep-alive
+// connection through the real chaos ingest stack and asserts budget invariant (R5).
+func TestChaos_HTTP1_PipelinedKeepAliveBudget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("chaos integration test")
+	}
+
+	ctx := context.Background()
+	infra, cleanup := setupAdsChaosInfra(t)
+	defer cleanup()
+
+	stack := startAdsIngestStack(t, infra, "ads-chaos-http1-pipeline")
+	defer stack.Close(t)
+
+	const n = 10
+	var pipelined []byte
+	for i := 0; i < n; i++ {
+		body := fmt.Sprintf(
+			`{"campaign_id":"%s","type":"impression","click_id":"pipe-%d","user_id":"pipe-user"}`,
+			stack.CampaignID, i,
+		)
+		pipelined = append(pipelined, BuildGnetPostTrackJSON([]byte(body))...)
+	}
+
+	conn := NewGnetHarnessConn(pipelined)
+	act := stack.Handler.OnTraffic(conn)
+	assert.Equal(t, gnet.None, act)
+	require.Equal(t, n, conn.WriteCount())
+	for i, resp := range conn.AllResponses() {
+		require.Equal(t, http.StatusAccepted, ParseGnetHTTPStatus(resp), "response %d", i+1)
+	}
+
+	AssertBudgetInvariant(t, ctx, infra.Pool, infra.Redis, stack.CampaignID)
+
+	logChaosProof(t, "http1_pipelined_keepalive_budget", map[string]string{
+		"pipelined": fmt.Sprintf("%d", n),
+		"accepted":  fmt.Sprintf("%d", n),
+		"budget_ok": "true",
 	})
 }
 

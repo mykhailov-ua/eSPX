@@ -6,7 +6,7 @@ set -euo pipefail
 source "$(cd "$(dirname "$0")/../lib" && pwd)/paths.sh"
 cd "$ROOT"
 
-BENCH_PATTERN='Benchmark(AdsPacketHandlerProto$$|AdsPacketHandlerProto_NoExtra|AdsPacketHandlerProto_ExtraBytes|HotPath_|TrackRequest_ParseJSON|CompositeRouting_Protobuf|Auction$$|HTTP1Parse$$)'
+BENCH_PATTERN='Benchmark(AdsPacketHandlerProto$$|AdsPacketHandlerProto_NoExtra|AdsPacketHandlerProto_ExtraBytes|HotPath_|TrackRequest_ParseJSON|CompositeRouting_Protobuf|Auction$$|HTTP1Parse$$|HTTP1DFA_|HTTP2DFA_|HTTP2DecodeFrame$$|HTTP3DFA_|HTTP3VarintDecode$$)'
 
 BENCH_COUNT=10
 if [[ "${PERF_GATE_STRICT:-}" != "true" ]]; then

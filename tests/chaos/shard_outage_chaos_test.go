@@ -25,10 +25,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestChaos_Shard0Outage implements CHAOS.md section 6 scenario A. With shard 0
-// unreachable, campaigns on shards 1-3 continue to accept track requests within
-// the baseline latency budget. Outbox events that require shard 0 remain PENDING
-// until the shard recovers and the worker can process them.
+// TestChaos_Shard0Outage implements CHAOS.md / M14-05: with shard 0 unreachable,
+// campaigns on shards 1-3 continue to accept track within the baseline latency
+// budget; shard-0 campaigns fail explicitly (503); outbox stays PENDING until
+// recovery; budget invariant holds on surviving shards.
 func TestChaos_Shard0Outage(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")
@@ -65,6 +65,7 @@ func TestChaos_Shard0Outage(t *testing.T) {
 	}
 
 	registry := testutil.NewAdsRegistry(t, queries)
+	registry.ConfigureStaleMode(30 * time.Second)
 	registry.SetBudgetWarmer(ingestion.NewBudgetCacheWarmer(rdbs, sharder))
 	_, err = registry.Sync(ctx)
 	require.NoError(t, err)
@@ -78,6 +79,7 @@ func TestChaos_Shard0Outage(t *testing.T) {
 		MaxRequestBodySize:    1024 * 1024,
 		StreamMaxLen:          100000,
 		CampaignUpdateChannel: "campaigns:shard0-chaos",
+		RegistryStaleTTLSec:   30,
 	}
 
 	partManager := database.NewPartitionManager(pool, 7, 2)
@@ -98,6 +100,7 @@ func TestChaos_Shard0Outage(t *testing.T) {
 		"shard0-chaos-stream",
 		100000,
 	)
+	unifiedFilter.SetShardBreakers(shardInfra.Breakers)
 	filterEngine := ingestion.NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, unifiedFilter)
 	handler := ingestion.NewAdsPacketHandler(cfg, registry, filterEngine, pool, rdbs, sharder, cfg.FraudStreamName, nil)
 	defer handler.Stop(ctx)
@@ -120,10 +123,26 @@ func TestChaos_Shard0Outage(t *testing.T) {
 
 	testutil.TripRedisBreaker(t, shardInfra.Clients[0], shardInfra.Breakers[0])
 
-	statusShard0, _ := postClickCampaign(t, handler, campaignIDs[0], uuid.NewString())
-	assert.NotEqual(t, http.StatusAccepted, statusShard0, "shard 0 campaign must not accept while redis-0 is down")
-	assert.True(t, statusShard0 == http.StatusServiceUnavailable || statusShard0 == http.StatusInternalServerError,
-		"shard 0 expected 503 or 500, got %d", statusShard0)
+	statusShard0, bodyShard0 := postClickCampaignBody(t, handler, campaignIDs[0], uuid.NewString())
+	assert.Equal(t, http.StatusServiceUnavailable, statusShard0, "shard 0 campaign must 503 while redis-0 is down")
+	assert.Contains(t, bodyShard0, "shard_unavailable", "explicit shard_unavailable body, got %q", bodyShard0)
+
+	unknownID := uuid.New()
+	for {
+		if sharder.GetShard(unknownID) != 0 {
+			break
+		}
+		unknownID = uuid.New()
+	}
+	// Force stale mode so unknown IDs surface as registry_stale (M14-02).
+	registry.ConfigureStaleMode(1 * time.Millisecond)
+	time.Sleep(5 * time.Millisecond)
+	require.True(t, registry.IsStaleMode())
+	statusStale, bodyStale := postClickCampaignBody(t, handler, unknownID, uuid.NewString())
+	assert.Equal(t, http.StatusServiceUnavailable, statusStale)
+	assert.Contains(t, bodyStale, "registry_stale")
+	registry.ConfigureStaleMode(30 * time.Second)
+	registry.MarkPubSubOK()
 
 	budgetLimit := testutil.LatencyBudget(baselineLatency)
 	for shard := 1; shard < numShards; shard++ {
@@ -157,6 +176,7 @@ func TestChaos_Shard0Outage(t *testing.T) {
 		remaining, err := shardInfra.Clients[shard].Get(ctx, budgetKey).Int64()
 		require.NoError(t, err)
 		assert.GreaterOrEqual(t, remaining, int64(0), "budget must stay non-negative on shard %d", shard)
+		ingestion.AssertBudgetInvariant(t, ctx, pool, shardInfra.Clients[shard], campaignIDs[shard])
 	}
 
 	testutil.LogChaosProof(t, "shard_0_outage", map[string]string{
@@ -164,11 +184,27 @@ func TestChaos_Shard0Outage(t *testing.T) {
 		"shards_123_ok": "true",
 		"outbox":        "processed",
 	})
+	testutil.LogChaosProof(t, "shard0_survival_shards_1_3", map[string]string{
+		"shard0_status": "503_shard_unavailable",
+		"invariant":     "ok",
+	})
 }
 
 // postClickCampaign sends a JSON click to the gnet handler and returns the HTTP
 // status code and wall-clock latency for the request.
 func postClickCampaign(t *testing.T, h *ingestion.AdsPacketHandler, campaignID uuid.UUID, clickID string) (int, time.Duration) {
+	t.Helper()
+	status, _, elapsed := postClickCampaignFull(t, h, campaignID, clickID)
+	return status, elapsed
+}
+
+func postClickCampaignBody(t *testing.T, h *ingestion.AdsPacketHandler, campaignID uuid.UUID, clickID string) (int, string) {
+	t.Helper()
+	status, body, _ := postClickCampaignFull(t, h, campaignID, clickID)
+	return status, body
+}
+
+func postClickCampaignFull(t *testing.T, h *ingestion.AdsPacketHandler, campaignID uuid.UUID, clickID string) (int, string, time.Duration) {
 	t.Helper()
 	start := time.Now()
 	payload := map[string]any{
@@ -179,8 +215,8 @@ func postClickCampaign(t *testing.T, h *ingestion.AdsPacketHandler, campaignID u
 	}
 	body, err := json.Marshal(payload)
 	require.NoError(t, err)
-	status, _ := ingestion.PostTrackGnetJSON(h, body)
-	return status, time.Since(start)
+	status, respBody := ingestion.PostTrackGnetJSON(h, body)
+	return status, string(respBody), time.Since(start)
 }
 
 // latestOutboxEventID returns the highest outbox_events.id for the given event_type.

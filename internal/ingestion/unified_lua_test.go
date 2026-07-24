@@ -9,6 +9,7 @@ import (
 
 	"espx/internal/campaignmodel"
 	"espx/internal/metrics"
+
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	redis "github.com/redis/go-redis/v9"
@@ -197,6 +198,7 @@ func BenchmarkUnifiedFilter_Check_RealRedis(b *testing.B) {
 		"events",
 		10_000,
 	)
+	f.SetFilterEvalPinWorkers(1)
 	if err := f.PreloadScripts(ctx); err != nil {
 		b.Fatal(err)
 	}

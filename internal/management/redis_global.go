@@ -3,6 +3,7 @@ package management
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -55,6 +56,82 @@ func replicateConfigVersionFromPrimary(ctx context.Context, rdbs []redis.Univers
 		}
 		if err := rdbs[i].Set(ctx, redisConfigVersionKey, version, 0).Err(); err != nil {
 			return fmt.Errorf("replicate config version on shard %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// syncGlobalStringToAllShards SETs a global (non-hash-tagged) key on every shard (M14-01).
+func syncGlobalStringToAllShards(ctx context.Context, rdbs []redis.UniversalClient, key, value string, ttl time.Duration) error {
+	if len(rdbs) == 0 {
+		return fmt.Errorf("no redis client available")
+	}
+	for i, rdb := range rdbs {
+		if rdb == nil {
+			return fmt.Errorf("redis shard %d is nil", i)
+		}
+		if err := rdb.Set(ctx, key, value, ttl).Err(); err != nil {
+			return fmt.Errorf("set %s on shard %d: %w", key, i, err)
+		}
+	}
+	return nil
+}
+
+// deleteGlobalKeyFromAllShards DELs a global key on every shard (M14-01).
+func deleteGlobalKeyFromAllShards(ctx context.Context, rdbs []redis.UniversalClient, key string) error {
+	if len(rdbs) == 0 {
+		return fmt.Errorf("no redis client available")
+	}
+	for i, rdb := range rdbs {
+		if rdb == nil {
+			continue
+		}
+		if err := rdb.Del(ctx, key).Err(); err != nil {
+			return fmt.Errorf("del %s on shard %d: %w", key, i, err)
+		}
+	}
+	return nil
+}
+
+// syncGlobalSetMemberToAllShards SAdds or SRems a member on every shard (blacklist:* fan-out, M14-01).
+func syncGlobalSetMemberToAllShards(ctx context.Context, rdbs []redis.UniversalClient, key, member string, add bool) error {
+	if len(rdbs) == 0 {
+		return fmt.Errorf("no redis client available")
+	}
+	for i, rdb := range rdbs {
+		if rdb == nil {
+			return fmt.Errorf("redis shard %d is nil", i)
+		}
+		var err error
+		if add {
+			err = rdb.SAdd(ctx, key, member).Err()
+		} else {
+			err = rdb.SRem(ctx, key, member).Err()
+		}
+		if err != nil {
+			return fmt.Errorf("set member sync on shard %d key %s: %w", i, key, err)
+		}
+	}
+	return nil
+}
+
+// syncGlobalHashFieldToAllShards HSETs or HDELs a hash field on every shard (placement blacklist, M14-01).
+func syncGlobalHashFieldToAllShards(ctx context.Context, rdbs []redis.UniversalClient, key, field, value string, del bool) error {
+	if len(rdbs) == 0 {
+		return fmt.Errorf("no redis client available")
+	}
+	for i, rdb := range rdbs {
+		if rdb == nil {
+			continue
+		}
+		var err error
+		if del {
+			err = rdb.HDel(ctx, key, field).Err()
+		} else {
+			err = rdb.HSet(ctx, key, field, value).Err()
+		}
+		if err != nil {
+			return fmt.Errorf("hash field sync on shard %d key %s: %w", i, key, err)
 		}
 	}
 	return nil

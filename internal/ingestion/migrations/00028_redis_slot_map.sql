@@ -1,4 +1,4 @@
--- 00028_redis_slot_map.sql: Fixed Slot Map control plane (EDGE.md Part II §2).
+-- 00028_redis_slot_map.sql: Fixed Slot Map control plane (DATA.md Part I §2).
 -- 1024 slots per version; slot ∈ [0,1023] unique per version.
 -- Lifecycle: ACTIVE → MIGRATING → DRAINING (see docs/redis-slot-map-control-plane.md).
 

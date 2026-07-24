@@ -6,6 +6,7 @@ import (
 
 	"espx/internal/campaignmodel"
 	"espx/internal/rtb"
+
 	"github.com/google/uuid"
 )
 
@@ -96,8 +97,7 @@ func BuildRtbCatalogRowsFromHybrid(
 				}
 			}
 		}
-		row := CampaignDataFromDomain(camp, base)
-		out = append(out, row)
+		out = append(out, fanOutRtbCatalogRows(camp, base)...)
 	}
 	return out
 }

@@ -48,6 +48,7 @@ func RegisterOpsRoutes(mux *http.ServeMux, pool *pgxpool.Pool, rdbs []redis.Univ
 			http.Error(w, "slot map meta unavailable", http.StatusServiceUnavailable)
 			return
 		}
+		meta, _ := repo.GetSlotMapMeta(ctx)
 		rows, err := repo.ListVersion(ctx, active)
 		if err != nil {
 			http.Error(w, "slot map unavailable", http.StatusServiceUnavailable)
@@ -62,6 +63,7 @@ func RegisterOpsRoutes(mux *http.ServeMux, pool *pgxpool.Pool, rdbs []redis.Univ
 		if err := json.NewEncoder(w).Encode(ingestion.OpsSlotMapResponse{
 			Version:       active,
 			ActiveVersion: active,
+			RoutingEpoch:  meta.RoutingEpoch,
 			Slots:         slots,
 		}); err != nil {
 			slog.Error("ops slot map encode failed", "error", err)

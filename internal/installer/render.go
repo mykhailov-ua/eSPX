@@ -9,12 +9,17 @@ import (
 )
 
 func renderTemplates(profile *InstallProfile, dryRun bool) error {
+	if err := profile.Validate(); err != nil {
+		return err
+	}
+
 	unit, err := renderSystemdUnit(profile)
 	if err != nil {
 		return err
 	}
 
-	secrets := []byte("REDIS_URL=redis://localhost:6379\nESPX_TELEMETRY_ENABLED=" + boolString(profile.TelemetryEnabled) + "\n")
+	secrets := renderSecrets(profile)
+	composeEnv := renderComposeEnv(profile)
 
 	manifests := []struct {
 		path    string
@@ -23,6 +28,13 @@ func renderTemplates(profile *InstallProfile, dryRun bool) error {
 	}{
 		{systemdUnitPath("espx-tracker.service"), unit, 0644},
 		{secretsPath(), secrets, 0600},
+	}
+	if profile.Type == ProfileComposeDev {
+		manifests = append(manifests, struct {
+			path    string
+			content []byte
+			mode    os.FileMode
+		}{composeEnvPath(), composeEnv, 0644})
 	}
 
 	for _, m := range manifests {
@@ -42,6 +54,13 @@ func renderTemplates(profile *InstallProfile, dryRun bool) error {
 			return err
 		}
 		fmt.Printf("Rendered %s\n", m.path)
+	}
+
+	if err := writeRollbackUnits(profile, dryRun); err != nil {
+		return err
+	}
+	if err := applyServiceBinaries(profile, dryRun); err != nil {
+		return err
 	}
 
 	switch profile.Type {

@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"espx/internal/config"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 	"espx/internal/rtb"
 
 	"github.com/google/uuid"
@@ -53,12 +53,16 @@ func ReloadRtbCatalog(
 	cfg *config.Config,
 	hybrid *HybridBalancer,
 	budgetSync RtbBudgetSync,
+	watcher *SettingsWatcher,
 ) error {
 	if err := ReloadRtbDeals(ctx, q, catalog); err != nil {
 		return err
 	}
 	if registry != nil && catalog != nil && cfg != nil && cfg.RtbEnabled() {
-		SyncRtbCatalog(ctx, registry, catalog, cfg, hybrid, budgetSync)
+		SyncRtbCatalog(ctx, registry, catalog, cfg, hybrid, budgetSync, watcher)
+		if allow, err := LoadSupplyChainAllowlist(ctx, q); err == nil {
+			catalog.SetSupplyChainAllowlist(allow)
+		}
 	}
 	return nil
 }
@@ -74,6 +78,7 @@ func StartRtbCatalogReloadWatch(
 	cfg *config.Config,
 	hybrid *HybridBalancer,
 	budgetSync RtbBudgetSync,
+	watcher *SettingsWatcher,
 ) {
 	if rdb == nil || catalog == nil || q == nil {
 		return
@@ -85,7 +90,7 @@ func StartRtbCatalogReloadWatch(
 	reload := func() {
 		reloadCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		if err := ReloadRtbCatalog(reloadCtx, q, registry, catalog, cfg, hybrid, budgetSync); err != nil {
+		if err := ReloadRtbCatalog(reloadCtx, q, registry, catalog, cfg, hybrid, budgetSync, watcher); err != nil {
 			slog.Error("rtb catalog reload failed", "error", err)
 			return
 		}

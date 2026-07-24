@@ -24,6 +24,10 @@ func TestDealIndex_UpdateAndLookup(t *testing.T) {
 	_, ok = idx.Lookup("missing")
 	assert.False(t, ok)
 
+	d2, ok := idx.LookupBytes([]byte("deal-a"))
+	require.True(t, ok)
+	assert.Equal(t, int64(100), d2.FloorMicro)
+
 	all := idx.All()
 	require.Len(t, all, 2)
 }

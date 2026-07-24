@@ -60,7 +60,7 @@ func main() {
 	}
 
 	var rdbs []redis.UniversalClient
-	rdbs, err = database.ConnectRedisShards(ctx, cfg, database.RedisShardOptions{
+	rdbs, _, err = database.ConnectRedisShards(ctx, cfg, database.RedisShardOptions{
 		PoolSize: cfg.RedisPoolSize,
 	})
 	if err != nil {
@@ -93,9 +93,6 @@ func main() {
 	authMiddleware := management.NewAuthMiddleware(tokenMaker, rdbs[0], cfg, mgmtAuthClient)
 	authHandler := management.NewAuthHandler(authClient, tokenMaker, rdbs[0], cfg, authMiddleware)
 
-	svc := management.NewService(pool, rdbs, sharder, cfg)
-	svc.SetPaymentPool(pool)
-
 	if cfg.UDPControlEnabled {
 		udpSrv := management.NewUDPControlServer(cfg, pool, sharder, len(rdbs))
 		if err := udpSrv.Start(ctx); err != nil {
@@ -103,6 +100,22 @@ func main() {
 			os.Exit(1)
 		}
 		defer udpSrv.Close()
+	}
+
+	var tcpSrv *management.TCPControlServer
+	if cfg.TCPControlEnabled {
+		tcpSrv = management.NewTCPControlServer(cfg, pool, sharder, len(rdbs))
+		if err := tcpSrv.Start(ctx); err != nil {
+			slog.Error("tcp control server start failed", "error", err)
+			os.Exit(1)
+		}
+		defer tcpSrv.Close()
+	}
+
+	svc := management.NewService(pool, rdbs, sharder, cfg)
+	svc.SetPaymentPool(pool)
+	if tcpSrv != nil {
+		svc.SetTCPControlServer(tcpSrv)
 	}
 
 	if cfg.ClickHouseEnabled() {
@@ -198,6 +211,27 @@ func main() {
 	reconInterval := time.Duration(cfg.Management.ReconIntervalMs) * time.Millisecond
 	svc.StartReconWorker(reconInterval)
 	slog.Info("started recon worker", "interval", reconInterval)
+
+	if cfg.BrokerEnabled() && (cfg.LocalQuotaMode == "shadow" || cfg.LocalQuotaMode == "live") {
+		brokerRedisURL := cfg.Broker.RedisURL
+		if brokerRedisURL == "" && len(cfg.RedisAddrs) > 0 {
+			brokerRedisURL = "redis://" + cfg.RedisAddrs[0] + "/0"
+		}
+		budgetDeltaAgg := ingestion.NewBudgetDeltaAggregator()
+		svc.SetBrokerDeltas(budgetDeltaAgg)
+		deltaConsumer := ingestion.NewBudgetDeltaConsumer(budgetDeltaAgg, ingestion.BrokerConsumerConfig{
+			BrokerAddr: cfg.Broker.URL,
+			RedisURL:   brokerRedisURL,
+			Topic:      cfg.BudgetDeltaTopic,
+			Group:      cfg.RedisGroupName + "_mgmt_budget_delta",
+			MaxBytes:   uint32(cfg.Broker.MaxBytes),
+			Timeout:    time.Duration(cfg.Broker.TimeoutMs) * time.Millisecond,
+		})
+		svc.StartBackgroundWorker(func() {
+			deltaConsumer.Start(ctx)
+		})
+		slog.Info("management budget delta recon consumer enabled", "topic", cfg.BudgetDeltaTopic)
+	}
 
 	if cfg.QuotaMode == "shadow" || cfg.QuotaMode == "live" {
 		svc.StartBackgroundWorker(func() {
@@ -304,6 +338,15 @@ func main() {
 			orchestrator.Start(ctx)
 		})
 		slog.Info("started slot migration orchestrator", "interval", migrationInterval)
+	}
+
+	if cfg.ShardOrchestratorEnabled {
+		interval := time.Duration(cfg.ShardOrchestratorIntervalMs) * time.Millisecond
+		shardOrch := management.NewShardOrchestrator(svc, &management.RealShardMetricsProvider{}, interval)
+		svc.StartBackgroundWorker(func() {
+			shardOrch.Start(ctx)
+		})
+		slog.Info("started shard orchestrator", "interval", interval)
 	}
 
 	mgmtHandler := management.NewHandler(svc, cfg, authMiddleware, mgmtAuthClient, paymentClient, billingClient)

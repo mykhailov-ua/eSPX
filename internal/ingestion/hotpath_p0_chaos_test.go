@@ -368,3 +368,66 @@ func TestChaos_ScriptFlushUnderTrackRPS(t *testing.T) {
 		"budget_ok":      "true",
 	})
 }
+
+// TestChaos_ProductionFilterChainRedisLatency runs the tracker production filter order
+// (license→entitlements→breaker→geo→schedule→placement→l3→fraud→device→consent→unified)
+// under Redis latency monkey and asserts budget invariant.
+func TestChaos_ProductionFilterChainRedisLatency(t *testing.T) {
+	if testing.Short() {
+		t.Skip("chaos integration test")
+	}
+
+	ctx := context.Background()
+	infra, cleanup := setupAdsChaosInfra(t)
+	defer cleanup()
+
+	stack := startAdsIngestStackOpts(t, infra, "ads-chaos-prod-filter-baseline", adsIngestStackOpts{
+		filterTimeoutMs:   2000,
+		maxWorkers:        8,
+		rateLimit:         1_000_000,
+		productionFilters: true,
+		useStaticSlot:     true,
+		redisMetrics:      true,
+	})
+	baseline := measureChaosTrackLatencies(t, stack.Handler, stack.CampaignID, 4, 60)
+	baselineP99 := percentileDuration(baseline, 99)
+	stack.Close(t)
+
+	delayed := startAdsIngestStackOpts(t, infra, "ads-chaos-prod-filter-monkey", adsIngestStackOpts{
+		filterTimeoutMs:   2000,
+		maxWorkers:        8,
+		rateLimit:         1_000_000,
+		productionFilters: true,
+		useStaticSlot:     true,
+		redisMetrics:      true,
+		redisDelay:        p0LatencyRedisDelay,
+	})
+	defer delayed.Close(t)
+
+	const samples = 40
+	latencies := make([]time.Duration, 0, samples)
+	okCount := 0
+	for i := 0; i < samples; i++ {
+		start := time.Now()
+		status := postChaosImpression(t, delayed.Handler, delayed.CampaignID, fmt.Sprintf("prod-w%d", i%4))
+		latencies = append(latencies, time.Since(start))
+		if status == http.StatusAccepted || status == http.StatusOK {
+			okCount++
+		}
+	}
+	expP99 := percentileDuration(latencies, 99)
+	require.Greater(t, okCount, samples*7/10, "production chain must accept majority under Redis delay")
+	require.Greater(t, expP99, baselineP99+50*time.Millisecond,
+		"injected Redis latency must raise p99 above production-filter baseline")
+
+	AssertBudgetInvariant(t, ctx, infra.Pool, infra.Redis, delayed.CampaignID)
+
+	logChaosProof(t, "production_filter_redis_latency", map[string]string{
+		"baseline_p99_ms": fmt.Sprintf("%.3f", float64(baselineP99.Microseconds())/1000),
+		"exp_p99_ms":      fmt.Sprintf("%.3f", float64(expP99.Microseconds())/1000),
+		"redis_delay_ms":  fmt.Sprintf("%d", p0LatencyRedisDelay.Milliseconds()),
+		"ok":              fmt.Sprintf("%d", okCount),
+		"samples":         fmt.Sprintf("%d", samples),
+		"filters":         "license,entitlements,breaker,geo,schedule,placement,l3,fraud,device,consent,unified",
+	})
+}

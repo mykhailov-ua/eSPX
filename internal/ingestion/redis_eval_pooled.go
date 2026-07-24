@@ -6,15 +6,18 @@ import (
 	"time"
 	"unsafe"
 
+	"espx/internal/campaignmodel"
+
 	redis "github.com/redis/go-redis/v9"
 )
 
-const unifiedFilterKeyCount = 17
+const unifiedFilterKeyCount = 19
 
 var (
 	evalShaCmdAny any = "evalsha"
 	evalCmdAny    any = "eval"
 	numKeys15Any  any = unifiedFilterKeyCount
+	numKeys19Any  any = unifiedFilterKeyCount
 	numKeys9Any   any = budgetFastKeyCount
 	numKeys1Any   any = 1
 )
@@ -22,8 +25,8 @@ var (
 // evalWirePool recycles EVALSHA wire argument slices (3 + keys + argv).
 var evalWirePool = sync.Pool{
 	New: func() any {
-		// Pre-length to unified-filter wire size (3 + 17 keys + 27 argv) to avoid growth on hot path.
-		s := make([]any, 47, 56)
+		// Pre-length to unified-filter wire size (3 + 19 keys + 34 argv).
+		s := make([]any, 56, 64)
 		return &s
 	},
 }
@@ -79,14 +82,14 @@ func fillEvalShaWire(dst []any, sha1 any, keyArgs [unifiedFilterKeyCount]any, sc
 	return dst
 }
 
-func evalShaPooled(ctx context.Context, c redis.UniversalClient, sha1 any, keyArgs [unifiedFilterKeyCount]any, scriptArgs []any) (int64, error) {
+func (f *UnifiedFilter) evalShaPooled(ctx context.Context, c redis.UniversalClient, shard int, evt *campaignmodel.Event, sha1 any, keyArgs [unifiedFilterKeyCount]any, scriptArgs []any) (int64, error) {
 	wirePtr := evalWirePool.Get().(*[]any)
 	wire := fillEvalShaWire(*wirePtr, sha1, keyArgs, scriptArgs)
 	*wirePtr = wire
 
 	cmd := evalCmdPool.Get().(*redis.Cmd)
 	resetPooledRedisCmd(cmd, ctx, wire, 3)
-	err := c.Process(ctx, cmd)
+	err := f.processFilterEval(ctx, c, shard, evt, cmd)
 	val, intErr := cmd.Int64()
 	if intErr != nil && err == nil {
 		err = intErr
@@ -99,18 +102,18 @@ func evalShaPooled(ctx context.Context, c redis.UniversalClient, sha1 any, keyAr
 	return val, nil
 }
 
-func evalPooled(ctx context.Context, c redis.UniversalClient, script any, keyArgs [unifiedFilterKeyCount]any, scriptArgs []any) (int64, error) {
-	return evalPooledN(ctx, c, script, keyArgs[:], scriptArgs, unifiedFilterKeyCount)
+func (f *UnifiedFilter) evalPooled(ctx context.Context, c redis.UniversalClient, shard int, evt *campaignmodel.Event, script any, keyArgs [unifiedFilterKeyCount]any, scriptArgs []any) (int64, error) {
+	return f.evalPooledN(ctx, c, shard, evt, script, keyArgs[:], scriptArgs, unifiedFilterKeyCount)
 }
 
-func evalShaPooledN(ctx context.Context, c redis.UniversalClient, sha1 any, keyArgs []any, scriptArgs []any, numKeys int) (int64, error) {
+func (f *UnifiedFilter) evalShaPooledN(ctx context.Context, c redis.UniversalClient, shard int, evt *campaignmodel.Event, sha1 any, keyArgs []any, scriptArgs []any, numKeys int) (int64, error) {
 	wirePtr := evalWirePool.Get().(*[]any)
 	wire := fillEvalShaWireN(*wirePtr, sha1, keyArgs, scriptArgs, numKeys)
 	*wirePtr = wire
 
 	cmd := evalCmdPool.Get().(*redis.Cmd)
 	resetPooledRedisCmd(cmd, ctx, wire, 3)
-	err := c.Process(ctx, cmd)
+	err := f.processFilterEval(ctx, c, shard, evt, cmd)
 	val, intErr := cmd.Int64()
 	if intErr != nil && err == nil {
 		err = intErr
@@ -123,14 +126,14 @@ func evalShaPooledN(ctx context.Context, c redis.UniversalClient, sha1 any, keyA
 	return val, nil
 }
 
-func evalPooledN(ctx context.Context, c redis.UniversalClient, script any, keyArgs []any, scriptArgs []any, numKeys int) (int64, error) {
+func (f *UnifiedFilter) evalPooledN(ctx context.Context, c redis.UniversalClient, shard int, evt *campaignmodel.Event, script any, keyArgs []any, scriptArgs []any, numKeys int) (int64, error) {
 	wirePtr := evalWirePool.Get().(*[]any)
 	wire := fillEvalWireN(*wirePtr, script, keyArgs, scriptArgs, numKeys)
 	*wirePtr = wire
 
 	cmd := evalCmdPool.Get().(*redis.Cmd)
 	resetPooledRedisCmd(cmd, ctx, wire, 3)
-	err := c.Process(ctx, cmd)
+	err := f.processFilterEval(ctx, c, shard, evt, cmd)
 	val, intErr := cmd.Int64()
 	if intErr != nil && err == nil {
 		err = intErr
@@ -190,7 +193,7 @@ func numKeysAny(n int) any {
 	case 1:
 		return numKeys1Any
 	case unifiedFilterKeyCount:
-		return numKeys15Any
+		return numKeys19Any
 	case budgetFastKeyCount:
 		return numKeys9Any
 	default:

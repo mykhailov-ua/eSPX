@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,7 +23,17 @@ func isFraudTelemetry(e *campaignmodel.Event) bool {
 	if e == nil {
 		return false
 	}
+	if e.Type == fraudAggregateEventType {
+		return false
+	}
 	return e.GhostEvent || e.FraudReason != "" || e.FraudScore > 0
+}
+
+const fraudAggregateEventType = "fraud_aggregate"
+
+// isFraudAggregateSpike routes M11 subnet/reason aggregate windows to fraud_aggregate_spikes.
+func isFraudAggregateSpike(e *campaignmodel.Event) bool {
+	return e != nil && e.Type == fraudAggregateEventType
 }
 
 // fraudGhostFlag maps ghost_event to ClickHouse UInt8 without per-row heap allocation.
@@ -31,6 +42,23 @@ func fraudGhostFlag(e *campaignmodel.Event) uint8 {
 		return 1
 	}
 	return 0
+}
+
+// fraudAggregateFields reads count and window_ms stashed in ClickID/UserID by parseMessage.
+func fraudAggregateFields(e *campaignmodel.Event) (uint64, uint32) {
+	var count uint64
+	var windowMs uint32
+	if e.ClickID != "" {
+		if n, err := strconv.ParseUint(e.ClickID, 10, 64); err == nil {
+			count = n
+		}
+	}
+	if e.UserID != "" {
+		if n, err := strconv.ParseUint(e.UserID, 10, 32); err == nil {
+			windowMs = uint32(n)
+		}
+	}
+	return count, windowMs
 }
 
 // slicePool recycles event batch slices for ClickHouse table routing.
@@ -252,7 +280,16 @@ func (chStore *ClickHouseStore) insertTable(ctx context.Context, table string, e
 	}
 
 	for _, e := range evts {
-		if isFraud {
+		if table == "fraud_aggregate_spikes" {
+			count, windowMs := fraudAggregateFields(e)
+			err = batch.Append(
+				e.IP,
+				e.FraudReason,
+				count,
+				windowMs,
+				e.CreatedAt,
+			)
+		} else if isFraud {
 			err = batch.Append(
 				e.ClickID,
 				e.CampaignID,
@@ -311,6 +348,7 @@ func (chStore *ClickHouseStore) insertToClickHouse(ctx context.Context, events [
 	pClicks := slicePool.Get().(*[]*campaignmodel.Event)
 	pConvs := slicePool.Get().(*[]*campaignmodel.Event)
 	pFraud := slicePool.Get().(*[]*campaignmodel.Event)
+	pAgg := slicePool.Get().(*[]*campaignmodel.Event)
 
 	defer func() {
 		for i := range *pImps {
@@ -333,6 +371,11 @@ func (chStore *ClickHouseStore) insertToClickHouse(ctx context.Context, events [
 		}
 		*pFraud = (*pFraud)[:0]
 
+		for i := range *pAgg {
+			(*pAgg)[i] = nil
+		}
+		*pAgg = (*pAgg)[:0]
+
 		if cap(*pImps) <= 100000 {
 			slicePool.Put(pImps)
 		}
@@ -345,15 +388,23 @@ func (chStore *ClickHouseStore) insertToClickHouse(ctx context.Context, events [
 		if cap(*pFraud) <= 100000 {
 			slicePool.Put(pFraud)
 		}
+		if cap(*pAgg) <= 100000 {
+			slicePool.Put(pAgg)
+		}
 	}()
 
 	imps := *pImps
 	clicks := *pClicks
 	convs := *pConvs
 	fraud := *pFraud
+	agg := *pAgg
 
 	for i := range events {
 		e := events[i]
+		if isFraudAggregateSpike(e) {
+			agg = append(agg, e)
+			continue
+		}
 		if isFraudTelemetry(e) {
 			fraud = append(fraud, e)
 			continue
@@ -369,7 +420,7 @@ func (chStore *ClickHouseStore) insertToClickHouse(ctx context.Context, events [
 		}
 	}
 
-	*pImps, *pClicks, *pConvs, *pFraud = imps, clicks, convs, fraud
+	*pImps, *pClicks, *pConvs, *pFraud, *pAgg = imps, clicks, convs, fraud, agg
 
 	insert := func(table string, evts []*campaignmodel.Event, isFraud bool) error {
 		if len(evts) == 0 {
@@ -388,6 +439,9 @@ func (chStore *ClickHouseStore) insertToClickHouse(ctx context.Context, events [
 		return err
 	}
 	if err := insert("fraud_events", fraud, true); err != nil {
+		return err
+	}
+	if err := insert("fraud_aggregate_spikes", agg, false); err != nil {
 		return err
 	}
 

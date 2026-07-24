@@ -18,6 +18,7 @@ type trackIngestFields struct {
 	clickID     string
 	placementID string
 	deviceType  []byte
+	ortbSlot    *openRTBScratchSlot
 }
 
 // parseTrackIngest decodes protobuf or JSON /track bodies into shared ingest fields.
@@ -27,7 +28,8 @@ func (h *AdsPacketHandler) parseTrackIngest(
 	wReqID *bufWrapper,
 ) (fields trackIngestFields, badResp []byte, httpStatus int, ok bool) {
 	contentType := unsafeString(req.ContentType)
-	if contentType == "application/x-protobuf" || contentType == "" {
+	espxNative := h.cfg == nil || h.cfg.IsESPXNativeIngress()
+	if espxNative && (contentType == "application/x-protobuf" || contentType == "") {
 		h.trackMetrics.throughputProto.Inc()
 		pbReq := &ctx.pbReq
 		pbReq.CampaignId = pbReq.CampaignId[:0]
@@ -65,8 +67,6 @@ func (h *AdsPacketHandler) parseTrackIngest(
 			}
 			if len(pbReq.Metadata.ExtraBytes) > 0 {
 				fields.payload = pbReq.Metadata.ExtraBytes
-				// Extract placement_id from ExtraBytes if possible, but protobuf usually has dedicated fields if needed.
-				// For now, we rely on JSON path for placements.
 			} else if len(pbReq.Metadata.ExtraKeys) > 0 {
 				ctx.extraBuf = marshalExtra(ctx.extraBuf, pbReq.Metadata.ExtraKeys, pbReq.Metadata.ExtraValues)
 				fields.payload = ctx.extraBuf
@@ -80,7 +80,11 @@ func (h *AdsPacketHandler) parseTrackIngest(
 	trackReq := &ctx.trackReq
 	trackReq.Reset()
 
-	if err := ParseTrackRequestJSON(trackReq, req.Body); err != nil {
+	if !espxNative {
+		if err := ParseOpenRTB3Ingress(trackReq, req.Body); err != nil {
+			return fields, respInvalidJSON, http.StatusBadRequest, false
+		}
+	} else if err := ParseTrackRequestJSONOpt(trackReq, req.Body); err != nil {
 		return fields, respInvalidJSON, http.StatusBadRequest, false
 	}
 	fields.campaignID = trackReq.CampaignID
@@ -91,6 +95,8 @@ func (h *AdsPacketHandler) parseTrackIngest(
 	if trackReq.ClickID != "" {
 		fields.clickID = trackReq.ClickID
 	}
+	fields.ortbSlot = trackReq.ortbSlot
+	trackReq.ortbSlot = nil
 	return fields, nil, 0, true
 }
 
@@ -104,6 +110,9 @@ func fillTrackEvent(evt *campaignmodel.Event, fields trackIngestFields, ip, ua s
 	evt.Payload = append(evt.Payload[:0], fields.payload...)
 	evt.IP = ip
 	evt.UA = ua
+	if fields.ortbSlot != nil {
+		attachOpenRTB3Scratch(evt, fields.ortbSlot)
+	}
 }
 
 // deliverGnetTrack maps processTrack outcomes to gnet responses and metrics.

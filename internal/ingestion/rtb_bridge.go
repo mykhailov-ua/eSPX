@@ -6,6 +6,7 @@ import (
 
 	"espx/internal/campaignmodel"
 	"espx/internal/rtb"
+
 	"github.com/google/uuid"
 )
 
@@ -34,6 +35,7 @@ type RtbCampaignInput struct {
 	CategoryMask     uint64
 	GeoHash          uint32
 	Weight           uint32
+	BoostPPM         uint32
 }
 
 // RtbTargetingInput carries request-side auction dimensions derived from ingest metadata.
@@ -43,6 +45,13 @@ type RtbTargetingInput struct {
 	CategoryMask        uint64
 	PublisherFloorMicro int64
 	DealID              string
+	DealIDLen           uint8
+	DealIDBuf           [64]byte
+	SeatCount           uint8
+	DeadlineMono        int64
+	DealBlock           rtb.NoBidReason
+	Schain              SchainNodes
+	SchainCount         uint8
 }
 
 // CampaignIDFromUUID maps campaign UUIDs to the fixed-width rtb catalog key.
@@ -87,6 +96,8 @@ func BidRequestFromEvent(evt *campaignmodel.Event, targeting RtbTargetingInput) 
 		MinBid:       targeting.PublisherFloorMicro,
 		GeoHash:      targeting.GeoHash,
 		DeviceType:   targeting.DeviceType,
+		DeadlineMono: targeting.DeadlineMono,
+		DealBlock:    targeting.DealBlock,
 	}
 }
 
@@ -109,6 +120,7 @@ func CampaignDataFromDomain(camp *campaignmodel.Campaign, input RtbCampaignInput
 		CategoryMask:   input.CategoryMask,
 		GeoHashVal:     input.GeoHash,
 		Weight:         input.Weight,
+		BoostPPM:       input.BoostPPM,
 		Budget:         remaining,
 	}
 }
@@ -127,7 +139,7 @@ func BuildRtbCatalogRows(campaigns []*campaignmodel.Campaign, inputs map[uuid.UU
 		if !ok {
 			continue
 		}
-		out = append(out, CampaignDataFromDomain(camp, input))
+		out = append(out, fanOutRtbCatalogRows(camp, input)...)
 	}
 	return out
 }

@@ -1,18 +1,18 @@
-# Development Guide
+# Development
 
-Environment setup, engineering standards, tooling, and operational procedures.
+Local environment, CI gates, and operational runbooks. Hot-path rules: [GO.md](./GO.md). Code style: [STYLE.md](./STYLE.md). Chaos: [CHAOS.md](./CHAOS.md).
 
 ---
 
 ## Requirements
 
-*   Go 1.25+
-*   Docker and Docker Compose
-*   `buf` CLI (or `make proto`)
+- Go 1.25+
+- Docker Compose
+- `buf` (or `make proto`)
 
 ---
 
-## Quick Start
+## Quick start
 
 ```bash
 cp .env.example .env
@@ -21,212 +21,177 @@ bash scripts/local-dev/dev_stack.sh full
 bash scripts/local-dev/dev_preflight.sh
 ```
 
-`dev_stack.sh` modes:
-
-| Mode | Contents |
+| `dev_stack.sh` mode | Contents |
 | :--- | :--- |
 | `infra` | Postgres, Redis ×6, ClickHouse |
-| `full` | All services (trackers, processor, management, billing, …) |
-| `sentinel` | Redis Sentinel topology |
+| `full` | All services |
+| `sentinel` | Redis Sentinel |
 
 ---
 
-## Engineering Standards
-
-Normative rules for all changes. Hot-path detail: [GO.md](./GO.md). Architecture: [ARCHITECTURE.md](./ARCHITECTURE.md).
-
-### Hot-path SLA
-
-| Area | Target |
-| :--- | :--- |
-| Tracker handler | p95 < 50 ms, p99 < 80 ms, hard ceiling 100 ms |
-| Redis unified-filter Lua | p99 < 10 ms per shard |
-| Geo filter (sampled) | p99 < 10 µs |
-| RTB `RunAuction` | p99 < 15 µs; p99 candidates scanned < 500 |
-| Fraud boost in `FilterEngine` | 0 allocs/op on touched paths |
-
-Load-test abort: control-cohort p99 > 80 ms for 30 s **or** budget invariant violation.
-
-### Code zones
-
-| Zone | Packages | Allocations | Errors |
-| :--- | :--- | :--- | :--- |
-| **Hot** | `internal/ingestion`, `internal/rtb` | 0 allocs/op on request path | `filterRejectKind`, `NoBidReason` |
-| **Cold** | `management`, `adminapi`, `payment`, workers | Idiomatic Go | `errors.Is`, `writeServiceError` |
-| **Edge** | `internal/edge`, `cmd/edge-*` | Kernel maps | Verifier-safe C |
-
-**Forbidden on hot path:** `defer` in loops, closures in request loops, `interface{}` boxing, `sync.Map`, `fmt.Sprintf` / string `+` in loops, dynamic Prometheus labels.
-
-### CI merge gates
+## CI merge gates
 
 ```bash
 go test ./... -short
 make lint
 bash scripts/ci/check_comments.sh
-bash scripts/chaos-drills/test_chaos.sh      # write paths, outbox, Redis Lua
-bash scripts/perf-gate/perf_gate_run.sh      # when internal/ingestion or internal/rtb touched
-make test-alloc-gate                         # hot-path allocation regression
-bash scripts/ci/check_compliance.sh          # edge/compliance grep
+bash scripts/chaos-drills/test_chaos.sh
+bash scripts/perf-gate/perf_gate_run.sh    # when ingestion/rtb touched
+make test-alloc-gate
+bash scripts/ci/check_compliance.sh
 ```
 
-Chaos steady-state (R1): `/track` p99 < 80 ms; error rate < 0.1% (excl. valid rejects); budget drift within recon window.
-
-Style and chaos matrices: `GUIDE_STYLE_CODE.md`, `GUIDE_CHAOS_RELIABILITY.md`.
+Chaos steady-state: `/track` p99 < 80 ms; error rate < 0.1% (excluding valid rejects). See [CHAOS.md](./CHAOS.md) R1.
 
 ---
 
 ## Slot migration (M1)
 
-### COPY vs activation delta policy
+### Default path
 
-Slot migration uses a **PG re-warm authoritative** cutover for budget keys:
+1. **COPY** — `CampaignKeyMigrator` `DUMP`/`RESTORE` per `CampaignRedisKeyCatalog`.
+2. **Fence** — `MIGRATION_FENCE_ENABLED=true` → Lua code `11`.
+3. **PG re-warm** — `RewarmCampaignBudgetKeys` on target from `budget_limit - current_spend`.
+4. **EXISTS gate** — reject activation if required keys missing on target.
+5. **Epoch bump** — `ActivateSlotMapVersionWithMigration`; broker reload.
+6. **Drain** — delete keys on source shard.
 
-1. **COPY** (`CampaignKeyMigrator`) — idempotent `DUMP`/`RESTORE` of hash-tagged campaign keys from `CampaignRedisKeyCatalog` (budget, quota, fcap, dedup, idempotency, rate-limit, impression timestamps, placement blocklists). Ephemeral keys may drift between COPY and cutover; that is acceptable.
-2. **Fence** — when `MIGRATION_FENCE_ENABLED=true`, `BumpMigrationFences` sets `budget:migration_fence:{uuid}` on the **source** shard and increments `campaigns.migration_gen`. Lua returns code `11` (debit fenced).
-3. **PG re-warm** — at activation, `RewarmCampaignBudgetKeys` seeds `{uuid}budget:campaign:{uuid}` on the **target** shard from Postgres `budget_limit - current_spend`. This is the cutover source of truth for spend counters.
-4. **EXISTS gate** — activation rejects cutover when required keys are missing on the target after PG re-warm (`ErrSlotMigrationKeysMissing`).
-5. **Epoch bump** — `ActivateSlotMapVersionWithMigration` sets `active_version`, reloads `StaticSlotSharder`, and publishes broker reload.
-6. **Drain** — old-shard keys deleted after cutover.
+### Dual-write (opt-in)
 
-Dual-write / lag catch-up (M1-08) is phase 2; fence + PG re-warm remains the default path.
+`SLOT_MIGRATION_DUAL_WRITE_ENABLED=true`: COPY → `dual_writing` → `slot_migration:delta` stream → lag catch-up → cutover when `ad_slot_migration_lag_messages ≤ SLOT_MIGRATION_LAG_EPSILON`.
 
-### Rollback playbook
+| Env | Default |
+| :--- | :--- |
+| `SLOT_MIGRATION_LAG_EPSILON` | `0` |
+| `SLOT_MIGRATION_LAG_THRESHOLD` | `1000` |
 
-If a slot map activation causes routing or budget issues:
+### Rollback
 
-1. **Identify** active version and previous stable version: `GET /admin/slot-map` or `redis_slot_map_meta.active_version`.
-2. **Rollback map**: `RollbackSlotMapVersion(ctx, adminID, previousVersion)` — reverts `active_version`, reloads sharder, publishes broker reload. Tracker traffic routes to the previous slot→shard mapping immediately.
-3. **Target shard cleanup** (optional): for each campaign in rolled-back slots, `DrainCampaignKeys` on the **target** shard removes keys copied during the failed migration. Source shard keys may still exist if drain had not completed.
-4. **PG re-warm source** (if source was drained): for affected campaigns, call admin `POST /admin/campaigns/{id}/warm-budget` or run `RewarmCampaignBudgetKeys` on the source shard from Postgres.
-5. **Verify R5**: `VerifySlotMigrationR5` and `AssertBudgetInvariant` on a sample campaign per shard.
-6. **Clear fences**: delete `budget:migration_fence:{uuid}` on any shard where copy left fence keys; confirm `migration_gen` in Postgres matches tracker registry.
+1. `RollbackSlotMapVersion(ctx, adminID, previousVersion)`
+2. Optional `DrainCampaignKeys` on failed target
+3. PG re-warm source if drained
+4. `VerifySlotMigrationR5`, `AssertBudgetInvariant`
+5. Clear `budget:migration_fence:{uuid}`
 
-Chaos coverage: `TestChaos_SlotMigrationRollbackAfterActivate`, `TestChaos_SO02_SlotMigrationPGRewarmCutover`, `TestChaos_LUA10_DebitFencedDuringSlotCopy`.
+Chaos: `TestChaos_SlotMigrationRollbackAfterActivate`, `TestChaos_SO02_SlotMigrationPGRewarmCutover`, `TestChaos_LUA10_DebitFencedDuringSlotCopy`.
+
+Elastic sharding (M2): [DATA.md](./DATA.md) Part I §7.
 
 ---
 
-## K3s (Kubernetes)
+## Shard-0 outage (M14 / GAP-SHARD-04)
 
-### Cold path
+Shard 0 holds `campaigns:update` pub/sub, auth lockout, and is the default outbox notify target. Shards 1–3 hold ~75% of campaign debit keys. Sentinel promote typically recovers shard 0 in ~10–15 s.
 
-Services in namespace `espx`. Databases stay in Docker Compose.
+### Expected behavior while redis-0 is down
+
+| Surface | Behavior |
+| :--- | :--- |
+| Track shards 1–3 | Continue accepting; p99 stays within SLA |
+| Track shard-0 campaigns | Explicit `503 shard_unavailable` (or debit via `campaign_routing` reserve when M2 triplet present) — never silent accept |
+| Unknown campaign IDs | After `REGISTRY_STALE_TTL` (default 30 s) without pub/sub: `503 registry_stale` (not 404) |
+| Global keys | `config:values`, `blacklist:*`, `ml:score:boost:*`, placement pause hashes already fan-out to all masters; tracker reads local copy |
+| Management outbox | Events needing shard-0 write/notify stay `PENDING` until recovery |
+| Metric / alert | `ad_registry_stale_mode`, `ad_shard0_pubsub_unreachable` → alert `Shard0PubSubUnreachable` |
+
+### Operator steps
+
+1. Confirm Sentinel: `redis-cli -p <sentinel> SENTINEL masters` — wait for promote.
+2. Watch `ad_redis_breaker_state{shard="0"}` and `ad_registry_stale_mode`.
+3. After master is up: outbox worker drains PENDING; shard-0 track returns 202.
+4. Optional: enable `CAMPAIGN_UPDATE_BROKER_FALLBACK=true` so trackers reconcile via broker topic `campaigns:update` without shard-0 Redis.
+
+| Env | Default | Purpose |
+| :--- | :--- | :--- |
+| `REGISTRY_STALE_TTL` | `30` (seconds) | Pub/sub quiet → stale-serve |
+| `CAMPAIGN_UPDATE_BROKER_FALLBACK` | `false` | Broker secondary notify path |
+| `CAMPAIGN_UPDATE_BROKER_TOPIC` | `campaigns:update` | Broker topic name |
+
+Chaos: `TestChaos_Shard0Outage`, `scripts/chaos-drills/m14_shard0_failure.sh`.
+
+Blast radius: [DATA.md](./DATA.md) Part I §2.
+
+---
+
+## Kubernetes
 
 ```bash
 bash scripts/k8s/install_k3s.sh
-bash scripts/k8s/k8s_cold_path_up.sh
-```
-
-### Hot path
-
-Trackers and Nginx use `hostNetwork` for latency.
-
-```bash
-bash scripts/k8s/k8s_hot_path_up.sh
+bash scripts/k8s/k8s_cold_path_up.sh   # cold path namespace
+bash scripts/k8s/k8s_hot_path_up.sh    # trackers + nginx, hostNetwork
 ```
 
 ---
 
-## Code Generation
+## Code generation
 
 | Command | Output |
 | :--- | :--- |
-| `make proto` | Protobuf (vtproto) in `internal/*/pb/` |
-| `make gen` | sqlc queries in `internal/*/sqlc/` |
+| `make proto` | vtproto in `internal/*/pb/` |
+| `make gen` | sqlc in `internal/*/sqlc/` |
 
 ---
 
-## Scripts (`scripts/`)
+## Scripts
 
-| Script | Purpose |
+| Path | Purpose |
 | :--- | :--- |
-| `local-dev/dev_stack.sh` | Compose lifecycle |
-| `local-dev/check_deps.sh` | Ports, migrations |
-| `local-dev/smoke_local.sh` | Health check all services |
-| `perf-gate/perf_gate_run.sh` | Benchmarks, zero-alloc gate |
-| `chaos-drills/test_chaos.sh` | Fault injection suite |
-| `edge-tuning/edge_nic_tune.sh` | NIC RX ring, IRQ |
-| `redis-ops/` | Shard operations |
-| `load-test/` | RPS load tests |
+| `scripts/local-dev/dev_stack.sh` | Compose lifecycle |
+| `scripts/perf-gate/perf_gate_run.sh` | Benchmark gate |
+| `scripts/chaos-drills/test_chaos.sh` | Fault injection |
+| `scripts/edge-tuning/edge_nic_tune.sh` | NIC tuning |
+| `scripts/redis-ops/` | Shard ops |
+| `scripts/load-test/` | Load tests |
 
 ---
 
-## Ports and Services
+## Ports
 
-| Service | Port | Protocol |
-| :--- | :--- | :--- |
-| Nginx | 8180 | HTTP |
-| Tracker | 8181–8184 | HTTP (gnet) |
-| Processor | 8186 | HTTP |
-| Management | 8188 | HTTP |
-| Management gRPC | 51053 | gRPC |
-| UDP control | 8190 → 8191 | UDP |
-| Auth | 51051 | gRPC |
-| Payment | 51052, 8187 | gRPC, HTTP |
-| Billing | 51054 | gRPC |
-| Notifier | 8085 | HTTP |
-| Redis shards | 6479–6482 | TCP |
-| PostgreSQL | 5430 | TCP |
-| ClickHouse | 9000 | TCP |
+| Service | Port |
+| :--- | :--- |
+| Nginx | 8180 |
+| Tracker | 8181–8184 |
+| Processor | 8186 |
+| Management HTTP / gRPC | 8188 / 51053 |
+| UDP control | 8190 → 8191 |
+| Auth / Payment / Billing | 51051 / 51052, 8187 / 51054 |
+| Redis shards | 6479–6482 |
+| PostgreSQL / ClickHouse | 5430 / 9000 |
 
 ---
 
-## Environment Variables (Key)
+## Key environment variables
 
-Full list: `.env.example`. Cold-path durability: [CONCEPTS.md](./CONCEPTS.md) §10.
+Full list: `.env.example`.
 
 | Variable | Role |
 | :--- | :--- |
-| `DB_DSN` | Postgres connection |
-| `REDIS_ADDRS` | Shard addresses |
-| `FILTER_TIMEOUT_MS` | Filter deadline (100 ms prod) |
-| `TTC_FAIL_CLOSED` | Reject clicks without impression timestamp |
-| `TRACKER_PG_FALLBACK` | Off in production |
-| `RTB_MODE` | `off` / `shadow` / `live` — see [RTB.md](./RTB.md) |
-| `RTB_BUDGET_AUTHORITY` | `redis` or `rtb` |
-| `RTB_TARGETING_INDEX` | Geo+device+category inverted index |
-| `PROCESSOR_PG_GATE_SLOTS`, `PROCESSOR_CH_GATE_SLOTS` | Write concurrency (`0` = auto) |
-| `CH_SPOOL_SEGMENT_MB`, `CH_SPOOL_MAX_SEGMENTS` | CH outage spool |
-| `FRAUD_SCORING_ENABLED` | Cold-path ML workers |
+| `FILTER_TIMEOUT_MS` | Filter deadline (≤ 100 prod) |
+| `TRACKER_PG_FALLBACK` | `0` in production |
+| `RTB_MODE` | `off` / `shadow` / `live` |
+| `PROCESSOR_PG_GATE_SLOTS` | PG write concurrency |
+| `CH_SPOOL_SEGMENT_MB` | CH outage spool |
+| `LOCAL_QUOTA_MODE` | `live` for M8 local quanta |
 
 ---
 
 ## Testing
 
 ```bash
-go test ./... -short                    # unit + short integration
-go test ./internal/rtb/... -bench=BenchmarkAuction -benchmem -run='^$'
-go test ./tests/e2e/... -count=1        # full stack (slow)
+go test ./... -short
+go test ./internal/ingestion/ -run 'TestChaos_' -timeout 15m
+go test ./tests/e2e/... -count=1
 EXPLAIN_AUDIT=1 go test ./internal/database/... -run TestExplainAudit
 ```
 
-Hot-path change checklist:
-
-1. `Benchmark*` — 0 allocs/op  
-2. `go test -gcflags="-m"` — no escape on hot functions  
-3. `go tool objdump` — no `panicIndex` in inner loops (BCE)  
-4. Chaos tests if write path or Lua changed  
+Hot-path change: `make test-alloc-gate`; chaos if write path changed ([CHAOS.md](./CHAOS.md) R10).
 
 ---
 
-## Anti-Fraud Operations
+## Anti-fraud operations
 
-**Emergency shutdown:** `FRAUD_SCORING_ENABLED=false`; restart `fraud-scorer` / `ivt-detector`.
+- Disable ML workers: `FRAUD_SCORING_ENABLED=false`; restart `fraud-scorer`, `ivt-detector`.
+- Reset boost: management API → `ML_SCORE_BOOST` outbox.
+- Unblock IP: remove `ip_blacklist` + `UPDATE_BLACKLIST` outbox.
 
-**Manual corrections:**
-
-* Reset campaign boost — management API → `ML_SCORE_BOOST` outbox  
-* Unblock IP — remove from `ip_blacklist` + `UPDATE_BLACKLIST` outbox  
-
-Actions recorded in `audit_logs`.
-
----
-
-## Documentation Map
-
-| Topic | Document |
-| :--- | :--- |
-| System design | [ARCHITECTURE.md](./ARCHITECTURE.md) |
-| Open gaps | [GAPS.md](./GAPS.md) |
-| RTB | [RTB.md](./RTB.md) |
-| Redis / Lua | [REDIS.md](./REDIS.md) |
-| Databases | [DATABASE.md](./DATABASE.md) |
+Actions logged in `audit_logs`.

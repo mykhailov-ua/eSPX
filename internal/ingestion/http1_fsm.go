@@ -30,17 +30,22 @@ func init() {
 	}
 }
 
-type http1HeaderFlags struct {
-	chunkedTE bool
-	hasTE     bool
-	clSet     bool
-	clValue   int
-}
+const (
+	http1flChunkedTE uint8 = 1 << iota
+	http1flHasTE
+	http1flInvalidTE
+	http1flCLSet
+)
 
-// parseHTTP1 extracts one HTTP/1.1 request from data without copying the body (0 allocs/op).
-func parseHTTP1(data []byte, maxBody int64) (int, parsedHTTPRequest, error) {
+// parseHTTP1 extracts one HTTP/1.1 request from data without copying the body (0 allocs/op on common path).
+func parseHTTP1(data []byte, maxBody int64, scratch ...[]byte) (int, parsedHTTPRequest, error) {
+	var chunkScratch []byte
+	if len(scratch) > 0 {
+		chunkScratch = scratch[0]
+	}
 	var req parsedHTTPRequest
-	var hdrFlags http1HeaderFlags
+	var hFlags uint8
+	var clValue int
 	n := len(data)
 	if n == 0 {
 		return 0, req, errIncompleteRequest
@@ -157,13 +162,32 @@ headers:
 		if len(val) > http1MaxHeaderValLen || !httpHeaderValValid(val) {
 			return 0, req, errInvalidRequest
 		}
-		if err := http1AssignHeader(&req, key, val, &hdrFlags); err != nil {
+		if err := http1AssignHeader(&req, key, val, &hFlags, &clValue); err != nil {
 			return 0, req, err
 		}
 		i += 2
 	}
 
-	if hdrFlags.hasTE {
+	if hFlags&http1flInvalidTE != 0 {
+		return 0, req, errInvalidRequest
+	}
+
+	if hFlags&http1flChunkedTE != 0 {
+		if hFlags&http1flCLSet != 0 {
+			return 0, req, errInvalidRequest
+		}
+		consumed, body, cl, scratchOut, err := parseHTTP1ChunkedBody(data, i, maxBody, chunkScratch)
+		if err != nil {
+			return 0, req, err
+		}
+		req.Body = body
+		req.ContentLength = cl
+		req.HasContentLength = true
+		_ = scratchOut
+		return consumed, req, nil
+	}
+
+	if hFlags&http1flHasTE != 0 {
 		return 0, req, errInvalidRequest
 	}
 
@@ -201,7 +225,7 @@ func httpPathValid(b []byte) bool {
 // http1IngressValid restricts tracker ingress to POST /track and probe GET paths.
 func http1IngressValid(method, path []byte) bool {
 	if len(method) == 4 && method[0] == 'P' && method[1] == 'O' && method[2] == 'S' && method[3] == 'T' {
-		return httpPathHasPrefix(path, "/track")
+		return httpPathHasPrefix(path, "/track") || httpPathHasPrefix(path, "/openrtb/bid")
 	}
 	if len(method) == 3 && method[0] == 'G' && method[1] == 'E' && method[2] == 'T' {
 		return bytesEqual(path, "/health") ||
@@ -344,7 +368,7 @@ func foldKeyU64(key []byte, off int) uint64 {
 }
 
 // http1AssignHeader dispatches a folded header name to parsedHTTPRequest slots (0 allocs).
-func http1AssignHeader(req *parsedHTTPRequest, key, val []byte, fl *http1HeaderFlags) error {
+func http1AssignHeader(req *parsedHTTPRequest, key, val []byte, hFlags *uint8, clValue *int) error {
 	kl := len(key)
 	if kl < 6 {
 		return nil
@@ -392,11 +416,11 @@ func http1AssignHeader(req *parsedHTTPRequest, key, val []byte, fl *http1HeaderF
 			if !ok {
 				return errInvalidRequest
 			}
-			if fl.clSet && fl.clValue != cl {
+			if *hFlags&http1flCLSet != 0 && *clValue != cl {
 				return errInvalidRequest
 			}
-			fl.clSet = true
-			fl.clValue = cl
+			*hFlags |= http1flCLSet
+			*clValue = cl
 			req.ContentLength = cl
 			req.HasContentLength = true
 		}
@@ -416,9 +440,11 @@ func http1AssignHeader(req *parsedHTTPRequest, key, val []byte, fl *http1HeaderF
 	case 17: // transfer-encoding
 		if foldKeyU64(key, 0) == 0x726566736e617274 && foldKeyU64(key, 8) == 0x6e69646f636e652d &&
 			httpFold[key[16]] == 'g' {
-			fl.hasTE = true
-			if teValueHasChunked(val) {
-				fl.chunkedTE = true
+			*hFlags |= http1flHasTE
+			if teValueOnlyChunked(val) {
+				*hFlags |= http1flChunkedTE
+			} else {
+				*hFlags |= http1flInvalidTE
 			}
 		}
 	}

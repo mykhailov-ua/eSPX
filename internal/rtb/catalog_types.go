@@ -12,6 +12,8 @@ type BidRequest struct {
 	MinBid       int64
 	GeoHash      uint32
 	DeviceType   uint8
+	DeadlineMono int64
+	DealBlock    NoBidReason // pre-validated PMP gate; NoBidNone when absent or passing
 }
 
 // AuctionResult carries the clearing outcome without heap allocation on the hot path.

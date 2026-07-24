@@ -8,7 +8,7 @@ import (
 
 	"espx/internal/edge/allowlist"
 	"espx/internal/ingestion"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 	"espx/pkg/coldpath"
 
 	"github.com/google/uuid"
@@ -188,6 +188,14 @@ func normalizeSystemSettings(settings map[string]string) (map[string]string, err
 	for k, v := range settings {
 		if k == "rtb_budget_authority" {
 			norm, err := ingestion.NormalizeRtbBudgetAuthoritySetting(v)
+			if err != nil {
+				return nil, err
+			}
+			out[k] = norm
+			continue
+		}
+		if k == ingestion.SystemSettingRtbMode {
+			norm, err := ingestion.NormalizeRtbModeSetting(v)
 			if err != nil {
 				return nil, err
 			}

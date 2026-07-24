@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"time"
 
 	"espx/internal/config"
@@ -15,29 +16,33 @@ const redisConnectRetries = 30
 
 // RedisShardOptions tunes per-shard pool sizing and tracker filter deadlines.
 type RedisShardOptions struct {
-	PoolSize        int
-	FilterTimeoutMs int // tracker hot path: aligns Read/WriteTimeout with filter deadline; 0 = default
+	PoolSize         int
+	FilterTimeoutMs  int // tracker hot path: aligns Read/WriteTimeout with filter deadline; 0 = default
+	StickyPinWorkers int // reserve extra pool slots per shard for tracker filter eval pins
 }
 
 // ConnectRedisShards dials every Redis shard with optional Sentinel failover and per-shard circuit breakers.
-func ConnectRedisShards(ctx context.Context, cfg *config.Config, opts RedisShardOptions) ([]redis.UniversalClient, error) {
+// Breakers are returned in shard order for M14-04 ingest reroute; callers may ignore them.
+func ConnectRedisShards(ctx context.Context, cfg *config.Config, opts RedisShardOptions) ([]redis.UniversalClient, []*RedisBreaker, error) {
 	names := cfg.ResolveRedisMasterNames()
 	if cfg.RedisSentinelEnabled() && len(names) != len(cfg.RedisAddrs) {
-		return nil, fmt.Errorf("sentinel master name count (%d) must match REDIS_ADDRS (%d)", len(names), len(cfg.RedisAddrs))
+		return nil, nil, fmt.Errorf("sentinel master name count (%d) must match REDIS_ADDRS (%d)", len(names), len(cfg.RedisAddrs))
 	}
 
 	clients := make([]redis.UniversalClient, 0, len(cfg.RedisAddrs))
+	breakers := make([]*RedisBreaker, 0, len(cfg.RedisAddrs))
 	for i := range cfg.RedisAddrs {
-		rdb, err := connectRedisShard(ctx, cfg, i, names, opts)
+		rdb, br, err := connectRedisShard(ctx, cfg, i, names, opts)
 		if err != nil {
 			for _, c := range clients {
 				_ = c.Close()
 			}
-			return nil, err
+			return nil, nil, err
 		}
 		clients = append(clients, rdb)
+		breakers = append(breakers, br)
 	}
-	return clients, nil
+	return clients, breakers, nil
 }
 
 // ConnectRedisShard dials a single shard (auth and other single-shard services).
@@ -45,10 +50,11 @@ func ConnectRedisShard(ctx context.Context, cfg *config.Config, shardIdx int, op
 	if shardIdx < 0 || shardIdx >= len(cfg.RedisAddrs) {
 		return nil, fmt.Errorf("redis shard index %d out of range [0,%d)", shardIdx, len(cfg.RedisAddrs))
 	}
-	return connectRedisShard(ctx, cfg, shardIdx, cfg.ResolveRedisMasterNames(), opts)
+	rdb, _, err := connectRedisShard(ctx, cfg, shardIdx, cfg.ResolveRedisMasterNames(), opts)
+	return rdb, err
 }
 
-func connectRedisShard(ctx context.Context, cfg *config.Config, shardIdx int, masterNames []string, opts RedisShardOptions) (redis.UniversalClient, error) {
+func connectRedisShard(ctx context.Context, cfg *config.Config, shardIdx int, masterNames []string, opts RedisShardOptions) (redis.UniversalClient, *RedisBreaker, error) {
 	uopts := shardUniversalOptions(cfg, shardIdx, masterNames, opts)
 	rdb := redis.NewUniversalClient(uopts)
 
@@ -62,7 +68,7 @@ func connectRedisShard(ctx context.Context, cfg *config.Config, shardIdx int, ma
 		select {
 		case <-ctx.Done():
 			_ = rdb.Close()
-			return nil, fmt.Errorf("redis shard %d (%s): %w", shardIdx, dialLabel, ctx.Err())
+			return nil, nil, fmt.Errorf("redis shard %d (%s): %w", shardIdx, dialLabel, ctx.Err())
 		default:
 		}
 		if pingErr = rdb.Ping(ctx).Err(); pingErr == nil {
@@ -72,13 +78,13 @@ func connectRedisShard(ctx context.Context, cfg *config.Config, shardIdx int, ma
 		select {
 		case <-ctx.Done():
 			_ = rdb.Close()
-			return nil, fmt.Errorf("redis shard %d (%s): %w", shardIdx, dialLabel, ctx.Err())
+			return nil, nil, fmt.Errorf("redis shard %d (%s): %w", shardIdx, dialLabel, ctx.Err())
 		case <-time.After(time.Second):
 		}
 	}
 	if pingErr != nil {
 		_ = rdb.Close()
-		return nil, fmt.Errorf("redis shard %d (%s): %w", shardIdx, dialLabel, pingErr)
+		return nil, nil, fmt.Errorf("redis shard %d (%s): %w", shardIdx, dialLabel, pingErr)
 	}
 
 	breaker := NewRedisBreaker(
@@ -87,13 +93,21 @@ func connectRedisShard(ctx context.Context, cfg *config.Config, shardIdx int, ma
 		time.Duration(cfg.RedisBreakerOpenTimeoutMs)*time.Millisecond,
 	)
 	rdb.AddHook(NewRedisCircuitBreakerHook(breaker))
-	return rdb, nil
+	return rdb, breaker, nil
 }
 
 func shardUniversalOptions(cfg *config.Config, shardIdx int, masterNames []string, opts RedisShardOptions) *redis.UniversalOptions {
+	poolSize := opts.PoolSize
+	if poolSize <= 0 {
+		poolSize = 10 * runtime.GOMAXPROCS(0)
+	}
+	if opts.StickyPinWorkers > 0 {
+		poolSize += opts.StickyPinWorkers
+	}
 	uopts := &redis.UniversalOptions{
-		Password: string(cfg.RedisPassword),
-		PoolSize: opts.PoolSize,
+		Password:       string(cfg.RedisPassword),
+		PoolSize:       poolSize,
+		MaxActiveConns: poolSize,
 	}
 	if opts.FilterTimeoutMs > 0 {
 		d := time.Duration(opts.FilterTimeoutMs) * time.Millisecond

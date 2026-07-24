@@ -1,10 +1,10 @@
 -- name: GetSlotMapMeta :one
-SELECT active_version, updated_at
+SELECT active_version, routing_epoch, updated_at
 FROM redis_slot_map_meta
 WHERE id = 1;
 
 -- name: LockSlotMapMeta :one
-SELECT active_version, updated_at
+SELECT active_version, routing_epoch, updated_at
 FROM redis_slot_map_meta
 WHERE id = 1
 FOR UPDATE;

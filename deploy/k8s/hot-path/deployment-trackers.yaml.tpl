@@ -41,7 +41,7 @@ spec:
             - name: GOMEMLIMIT
               value: "700MiB"
             - name: GOGC
-              value: "50"
+              value: "300"   # M13-01: relaxed GC; hot path is 0 allocs/op under GOMEMLIMIT
           volumeMounts:
             - name: geoip
               mountPath: /deploy/geoip
@@ -121,7 +121,7 @@ spec:
             - name: GOMEMLIMIT
               value: "700MiB"
             - name: GOGC
-              value: "50"
+              value: "300"   # M13-01: relaxed GC; hot path is 0 allocs/op under GOMEMLIMIT
           volumeMounts:
             - name: geoip
               mountPath: /deploy/geoip
@@ -198,7 +198,7 @@ spec:
             - name: GOMEMLIMIT
               value: "700MiB"
             - name: GOGC
-              value: "50"
+              value: "300"   # M13-01: relaxed GC; hot path is 0 allocs/op under GOMEMLIMIT
           volumeMounts:
             - name: geoip
               mountPath: /deploy/geoip
@@ -275,7 +275,7 @@ spec:
             - name: GOMEMLIMIT
               value: "700MiB"
             - name: GOGC
-              value: "50"
+              value: "300"   # M13-01: relaxed GC; hot path is 0 allocs/op under GOMEMLIMIT
           volumeMounts:
             - name: geoip
               mountPath: /deploy/geoip

@@ -25,6 +25,13 @@ const (
 	IngressSchemaESPXNative IngressSchema = "espx_native"
 )
 
+// ServiceDeploy pins binary rollout metadata for apply (M13-03).
+type ServiceDeploy struct {
+	Binary    string `yaml:"binary,omitempty"`
+	HealthURL string `yaml:"health_url,omitempty"`
+	Version   string `yaml:"version,omitempty"`
+}
+
 // InstallProfile is the persisted install.yaml contract: topology, feature flags, and NIC binding.
 type InstallProfile struct {
 	Type             Profile       `yaml:"profile"`
@@ -33,6 +40,8 @@ type InstallProfile struct {
 	MultiRegion      bool          `yaml:"multi_region"`
 	TelemetryEnabled bool          `yaml:"telemetry_enabled"`
 	Interface        string        `yaml:"interface"`
+	Tracker          ServiceDeploy `yaml:"tracker,omitempty"`
+	Processor        ServiceDeploy `yaml:"processor,omitempty"`
 }
 
 // Validate enforces profile-specific constraints before configure/apply.

@@ -12,16 +12,26 @@ type TrackRequest struct {
 	ClickID     string
 	PlacementID string
 	Payload     []byte
+	ortbSlot    *openRTBScratchSlot // pooled OpenRTB parse cache; transferred to Event.Scratch on ingest
 }
 
 // Reset clears fields before reuse; Payload is nil'd to drop input-buffer references.
 func (v *TrackRequest) Reset() {
+	v.resetForParse()
+	v.Payload = nil
+	if v.ortbSlot != nil {
+		releaseOpenRTBScratchSlot(v.ortbSlot)
+		v.ortbSlot = nil
+	}
+}
+
+// resetForParse clears scalar fields without dropping Payload or the OpenRTB parse cache.
+func (v *TrackRequest) resetForParse() {
 	v.CampaignID = uuid.Nil
 	v.UserID = ""
 	v.Type = ""
 	v.ClickID = ""
 	v.PlacementID = ""
-	v.Payload = nil
 }
 
 // UnmarshalJSON decodes track JSON for encoding/json compatibility on cold paths.

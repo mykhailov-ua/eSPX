@@ -5,9 +5,11 @@ import (
 	_ "embed"
 	"errors"
 	"sync"
+	"time"
 
 	"espx/internal/campaignmodel"
 	"espx/internal/metrics"
+
 	redis "github.com/redis/go-redis/v9"
 )
 
@@ -17,13 +19,14 @@ var budgetFastLua string
 var budgetFastLuaAny any
 
 const (
-	budgetFastKeyCount = 9
-	budgetFastArgCount = 13
+	budgetFastKeyCount = 12
+	budgetFastArgCount = 16
 )
 
 // budgetFastScratch holds pooled buffers for one budget-fast Lua round trip.
 type budgetFastScratch struct {
 	wIdem, wQuota, wFence, wFrozen bufWrapper
+	precheck                       luaPrecheckScratch
 	args                           []any
 	wrappers                       UnifiedStringWrappers
 	keyVals                        [budgetFastKeyCount]StringVal
@@ -52,12 +55,14 @@ func (f *UnifiedFilter) runBudgetFastLua(
 	campInfo *campaignmodel.Campaign,
 	amount any,
 	rdb redis.UniversalClient,
+	shard int,
 	scratch *budgetFastScratch,
 ) error {
 	wIdem := &scratch.wIdem
 	wQuota := &scratch.wQuota
 	args := scratch.args
 	wrappers := &scratch.wrappers
+	precheck := &scratch.precheck
 
 	budgetSourceKey := campInfo.BudgetCampaignKey
 	if f.quotaEnabledAny == oneAny {
@@ -84,6 +89,13 @@ func (f *UnifiedFilter) runBudgetFastLua(
 	wFrozen.buf = appendUUID(wFrozen.buf, evt.CampaignID)
 	budgetFrozenKey := unsafeString(wFrozen.buf)
 
+	var now time.Time
+	if campInfo.Location == nil || campInfo.Location == time.UTC {
+		now = CachedTimeUTC()
+	} else {
+		now = CachedTimeIn(campInfo.Location)
+	}
+
 	kv := scratch.keyVals[:]
 	kv[0].s = budgetSourceKey
 	kv[1].s = idempotencyKey
@@ -91,11 +103,14 @@ func (f *UnifiedFilter) runBudgetFastLua(
 	kv[3].s = campInfo.CustomerSyncKey
 	kv[7].s = migrationFenceKey
 	kv[8].s = budgetFrozenKey
+	kv[9].s = fraudBlacklistKey
 
 	keyArgs := scratch.keyArgs
 	keyArgs[4] = &dirtyCampaignsKeyVal
 	keyArgs[5] = &dirtyCustomersKeyVal
 	keyArgs[6] = &f.streamKeyVal
+	keyArgs[9] = &kv[9]
+	maxRPDAny := f.fillLuaPrecheckKeys(evt, campInfo, now, precheck, kv[:], keyArgs[:], 11, 10)
 
 	wrappers.clickID.s = evt.ClickID
 	wrappers.evtType.s = evt.Type
@@ -116,33 +131,23 @@ func (f *UnifiedFilter) runBudgetFastLua(
 	args[9] = &wrappers.ua
 	args[10] = &wrappers.userID
 	args[11] = f.skipBudgetDebitAny
-	args[12] = campInfo.MigrationGen
+	args[12] = campInfo.LuaRoutingEpoch()
+	args[13] = maxRPDAny
+	args[14] = luaPrecheckIngressTTLAny
+	args[15] = &wrappers.placementID
+	wrappers.placementID.s = evt.PlacementID
 
-	shard := f.sharder.GetShard(evt.CampaignID)
-	if campInfo.HasTriplet {
-		hash := ComputeCompositeHashUUID(evt.CampaignID, []byte(evt.UserID))
-		pct := hash % 100
-		if pct < 40 {
-			shard = int(campInfo.PrimaryAShard)
-		} else if pct < 80 {
-			shard = int(campInfo.PrimaryBShard)
-		} else {
-			shard = int(campInfo.ReserveShard)
-		}
-	}
 	for i := 0; i < 2; i++ {
 		seq := f.luaMetricsSeq.Add(1)
 		sampleLua := shouldSampleHistogram(seq, f.redisObservability.sampleMask)
 		var luaStart int64
-		if sampleLua {
+		if sampleLua || f.filterSlowNs > 0 {
 			luaStart = monotonicNano()
 		}
 		f.redisObservability.recordLuaOp(shard, evt.CampaignID, sampleLua)
 		incRedisLuaTier(f.luaFastPathCounters, shard)
-		res, err := f.evalFastScript(ctx, rdb, shard, keyArgs, args)
-		if sampleLua {
-			observeRedisLuaTier(f.luaFastDurationObservers, shard, monoElapsedSeconds(luaStart))
-		}
+		res, err := f.evalFastScript(ctx, rdb, shard, evt, keyArgs, args)
+		f.noteLuaEvalDuration(shard, evt.CampaignID, "fast", luaStart, sampleLua, true)
 		if err != nil {
 			return err
 		}
@@ -154,9 +159,13 @@ func (f *UnifiedFilter) runBudgetFastLua(
 			if retry {
 				continue
 			}
+			f.RecordShadowLuaOutcome(evt.CampaignID, true)
 			return ErrBudgetExhausted
 		}
 		if handled, handleErr := f.handleLuaResult(ctx, evt, campInfo, amount, rdb, budgetSourceKey, shard, res, sampleLua); handled {
+			if res == 3 {
+				f.RecordShadowLuaOutcome(evt.CampaignID, true)
+			}
 			return handleErr
 		}
 	}
@@ -178,6 +187,8 @@ func (f *UnifiedFilter) handleLuaResult(
 	if res == -1 {
 		return false, nil
 	}
+
+	metrics.FilterLuaBranchTotal.WithLabelValues(luaBranchLabel(res)).Inc()
 
 	switch res {
 	case 1:
@@ -206,6 +217,20 @@ func (f *UnifiedFilter) handleLuaResult(
 		return true, nil
 	case 11:
 		return true, ErrMigrationFenced
+	case luaReturnDailyQuota:
+		return true, ErrDailyQuotaExceeded
+	case luaReturnFraudSignal:
+		addFraudSignal(evt, FraudReasonL3Blocklist)
+		metrics.EventsProcessed.Inc()
+		f.recordAcceptedSpendIfDebited(shard, evt.CampaignID, amount, sampleLua)
+		return true, nil
+	case luaReturnPlacement:
+		return true, ErrPlacementBlocked
+	case luaReturnTierDegraded:
+		metrics.FilterTierDegradedTotal.Inc()
+		metrics.EventsProcessed.Inc()
+		f.recordAcceptedSpendIfDebited(shard, evt.CampaignID, amount, sampleLua)
+		return true, nil
 	default:
 		metrics.EventsProcessed.Inc()
 		f.recordAcceptedSpendIfDebited(shard, evt.CampaignID, amount, sampleLua)
@@ -214,11 +239,11 @@ func (f *UnifiedFilter) handleLuaResult(
 }
 
 // evalFastScript prefers pooled EVALSHA for budget-fast.lua with NOSCRIPT fallback.
-func (f *UnifiedFilter) evalFastScript(ctx context.Context, rdb redis.UniversalClient, shard int, keyArgs [budgetFastKeyCount]any, args []any) (int64, error) {
-	res, err := evalShaPooledN(ctx, rdb, f.fastScriptHashAny, keyArgs[:], args, budgetFastKeyCount)
+func (f *UnifiedFilter) evalFastScript(ctx context.Context, rdb redis.UniversalClient, shard int, evt *campaignmodel.Event, keyArgs [budgetFastKeyCount]any, args []any) (int64, error) {
+	res, err := f.evalShaPooledN(ctx, rdb, shard, evt, f.fastScriptHashAny, keyArgs[:], args, budgetFastKeyCount)
 	if err != nil && isNoScriptErr(err) {
 		incRedisLuaNoScript(f.luaNoScriptCounters, shard)
-		return evalPooledN(ctx, rdb, budgetFastLuaAny, keyArgs[:], args, budgetFastKeyCount)
+		return f.evalPooledN(ctx, rdb, shard, evt, budgetFastLuaAny, keyArgs[:], args, budgetFastKeyCount)
 	}
 	return res, err
 }
@@ -262,6 +287,9 @@ func (f *UnifiedFilter) recoverBudgetAfterMiss(
 	}
 
 	metrics.BudgetCacheMissPGTotal.Inc()
+	if f.repo == nil {
+		return false, ErrBudgetExhausted
+	}
 	dbCtx, cancel := context.WithTimeout(ctx, dbTimeout)
 	camp, err := f.repo.GetByID(dbCtx, evt.CampaignID)
 	cancel()

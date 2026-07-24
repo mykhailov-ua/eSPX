@@ -38,9 +38,12 @@ type Event struct {
 	Scratch unsafe.Pointer
 	// FilterDeadlineMono is a monotonic-ns filter budget set by FilterEngine.Check; 0 means unset.
 	FilterDeadlineMono int64
+	// FilterWorkerIdx selects the sticky Redis eval conn row when filter eval pins are enabled (-1 → row 0).
+	FilterWorkerIdx    int8
 	IngestGeoResolved  bool
 	GeoHash            uint32
 	GeoCountry         string
+	ClearingPriceMicro int64
 	// ClickIDBuf is a pre-allocated buffer to format generated click IDs without heap allocation.
 	ClickIDBuf [36]byte
 }
@@ -69,9 +72,11 @@ func (event *Event) Reset() {
 	event.CreatedAt = time.Time{}
 	event.Scratch = nil
 	event.FilterDeadlineMono = 0
+	event.FilterWorkerIdx = -1
 	event.IngestGeoResolved = false
 	event.GeoHash = 0
 	event.GeoCountry = ""
+	event.ClearingPriceMicro = 0
 	if cap(event.StringBuffer) > 2048 {
 		event.StringBuffer = make([]byte, 0, 256)
 	} else {

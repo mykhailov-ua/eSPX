@@ -24,6 +24,16 @@ groups:
           summary: "Redis shard circuit breaker is OPEN"
           description: "Shard {{ $labels.shard }} Redis circuit breaker has been open for 30s. Hot-path filter calls are fast-failing with 503."
 
+      # M14-05: shard-0 pub/sub control plane unreachable (registry stale-serve).
+      - alert: Shard0PubSubUnreachable
+        expr: ad_shard0_pubsub_unreachable == 1 or ad_registry_stale_mode == 1
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Shard-0 campaigns:update pub/sub unreachable"
+          description: "Tracker registry is in stale-serve mode (REGISTRY_STALE_TTL exceeded). Shards 1–3 continue ingest; shard-0-homed campaigns return 503 shard_unavailable; unknown campaign IDs return 503 registry_stale; management outbox may stay PENDING until Sentinel promotes a replica. Runbook: docs/DEVELOPMENT.md §Shard-0 outage."
+
       # Sustained PG or ClickHouse write errors on the processor path.
       - alert: DatabaseWriteErrors
         expr: rate(ad_db_write_errors_total[1m]) > 0
@@ -179,6 +189,16 @@ groups:
           summary: "Pinned worker pool rejecting requests"
           description: "Requests rejected because the pinned worker pool queue is full. Hot-path backpressure is active; scale workers or reduce ingress."
 
+      # M11: fraud aggregate hash table nearing capacity during attack spikes.
+      - alert: FraudStreamAggTablePressure
+        expr: ad_fraud_stream_agg_table_fill_ratio > 0.9
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Fraud aggregate hash table above 90% fill"
+          description: "FraudStreamWriter aggregate table is >90% full. Spike telemetry may drop via ad_fraud_stream_dropped_total; verify ivt-detector spike visibility."
+
       # Unhandled panics or filter bugs surfacing as 500 on /track.
       - alert: HTTP500RateHigh
         expr: sum(rate(ad_http_requests_total{status="500"}[5m])) > 0.001
@@ -275,6 +295,16 @@ groups:
         annotations:
           summary: "Tracker redis shard {{ $labels.shard }} unhealthy"
           description: "Health probe cannot ping redis shard {{ $labels.shard }}. Campaigns on this shard will 503 at filter stage."
+
+      # M1-09: dual-write lag during active slot migration.
+      - alert: SlotMigrationLagActive
+        expr: ad_slot_migration_lag_messages > 0
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Slot migration dual-write lag on slot {{ $labels.slot }} (version {{ $labels.version }})"
+          description: "Replication lag {{ $value }} messages for 30s during active migration. Cutover blocked until catch-up completes or fence fallback triggers."
 
   - name: broker-alerts
     rules:

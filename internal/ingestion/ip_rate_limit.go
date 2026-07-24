@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"espx/internal/campaignmodel"
+
 	redis "github.com/redis/go-redis/v9"
 )
 
@@ -27,8 +28,8 @@ type IPRateLimiter struct {
 	wire          [5]any
 }
 
-func NewIPRateLimiter(rdb redis.UniversalClient, limit int, windowMs time.Duration) *IPRateLimiter {
-	ms := windowMs.Milliseconds()
+func NewIPRateLimiter(rdb redis.UniversalClient, limit int, window time.Duration) *IPRateLimiter {
+	ms := window.Milliseconds()
 	l := &IPRateLimiter{
 		rdb:           rdb,
 		limit:         limit,

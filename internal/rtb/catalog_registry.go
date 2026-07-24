@@ -87,6 +87,7 @@ func (registry *Registry) UpdateCampaigns(campaigns []CampaignData) {
 			CategoryMasks:         make([]uint64, n),
 			GeoHashes:             make([]uint32, n),
 			Weights:               make([]uint32, n),
+			BoostPPM:              make([]uint32, n),
 			BudgetIndices:         make([]uint32, n),
 			CustomerBudgetIndices: make([]uint32, n),
 		}
@@ -109,6 +110,7 @@ func (registry *Registry) UpdateCampaigns(campaigns []CampaignData) {
 		reg.CategoryMasks[wIdx] = c.CategoryMask
 		reg.GeoHashes[wIdx] = c.GeoHashVal
 		reg.Weights[wIdx] = c.Weight
+		reg.BoostPPM[wIdx] = normalizeCTRPPM(c.BoostPPM)
 		reg.BudgetIndices[wIdx] = registry.store.GetOrAllocateSlot(c.ID, c.Budget)
 		reg.CustomerBudgetIndices[wIdx] = registry.store.GetOrAllocateCustomerSlot(c.CustomerID, c.CustomerBudget)
 

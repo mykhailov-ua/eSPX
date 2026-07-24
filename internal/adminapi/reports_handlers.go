@@ -85,7 +85,7 @@ func (h *ReportsHTTPHandlers) registerScaffoldReports(mux *http.ServeMux) {
 }
 
 func (h *ReportsHTTPHandlers) notImplemented(w http.ResponseWriter, _ *http.Request) {
-	httpresponse.Error(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "reports scaffold; see docs/GAPS.md GAP-PROD-01")
+	httpresponse.Error(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "reports scaffold; see docs/BACKLOG.md GAP-PROD-01")
 }
 
 func (h *ReportsHTTPHandlers) writeServiceError(w http.ResponseWriter, err error) {

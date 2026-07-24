@@ -1,4 +1,4 @@
-// k6 10× spike profile for eSPX control-cohort load validation (EDGE.md Part III §7).
+// k6 10× spike profile for eSPX control-cohort load validation (ARCHITECTURE.md §Edge ingress §7).
 // Ramp 1×→10× over 10s, hold 30s, ramp down 10s. Uses dirty-traffic mix from k6_dirty_traffic.js.
 //
 // Env:

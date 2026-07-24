@@ -148,6 +148,10 @@ var (
 		Name: "ad_http_parse_errors_total",
 		Help: "Total number of HTTP/1.1 parsing errors",
 	}, []string{"error_type"})
+	IngressLegacyJSONTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "espx_ingress_legacy_json_total",
+		Help: "Track payloads that fell back to deprecated flat bid_micro / category_mask JSON (M12-08 sunset)",
+	})
 	WorkerPoolRejectTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ad_worker_pool_reject_total",
 		Help: "Requests rejected because pinned worker pool queue is full",
@@ -161,6 +165,46 @@ var (
 	FraudStreamDropTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ad_fraud_stream_drop_total",
 		Help: "Fraud reject events dropped because the async fraud stream ring is full",
+	})
+	FraudStreamCriticalDropTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_fraud_stream_critical_drop_total",
+		Help: "Critical fraud lane (L1/L3) drops after short spin when critical ring is full",
+	})
+	FraudStreamAggregatedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_fraud_stream_aggregated_total",
+		Help: "Fraud reject events folded into subnet/reason aggregates during ring pressure",
+	})
+	FraudStreamAggregatedDropTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_fraud_stream_dropped_total",
+		Help: "Fraud events dropped because the fixed aggregate hash table overflowed",
+	})
+	FraudStreamMode = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ad_fraud_stream_mode",
+		Help: "Fraud stream writer mode (1 = aggregating at >=80% ring fill or force)",
+	}, []string{"aggregating"})
+	FraudStreamAggTableFill = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "ad_fraud_stream_agg_table_fill_ratio",
+		Help: "Ratio of occupied slots in the fraud aggregate hash table (0-1)",
+	})
+	FraudStreamRingFillRatio = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "ad_fraud_stream_ring_fill_ratio",
+		Help: "Analytical fraud ring fill ratio (0-1)",
+	})
+	FraudStreamPending = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "ad_fraud_stream_pending",
+		Help: "Pending fraud events across critical + analytical rings",
+	})
+	FraudStreamBackpressureTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_fraud_stream_backpressure_total",
+		Help: "Times tracker forced fraud aggregation due to consumer lag signal",
+	})
+	FraudStreamPELAgeSeconds = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ad_fraud_stream_pel_age_seconds",
+		Help: "Oldest pending entry idle age for ad:events:stream (or fraud stream) per shard",
+	}, []string{"stream", "shard"})
+	H2HostileDisconnectTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_h2_hostile_disconnect_total",
+		Help: "HTTP/2 connections closed after H2_INCOMPLETE_MAX incomplete frames with consumed=0",
 	})
 
 	// Filter engine metrics exist so delivery health dashboards expose pass/block mix, dependency blips, and geo lookup tail latency.
@@ -184,6 +228,10 @@ var (
 	TTCBypassTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ad_ttc_bypass_total",
 		Help: "Clicks accepted without impression timestamp (TTC fail-open bypass)",
+	})
+	FilterTierDegradedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "filter_tier_degraded_total",
+		Help: "Filter checks that skipped non-critical Lua gates near the monotonic deadline (M9-04)",
 	})
 
 	// Redis Lua metrics exist so shard-level script availability and EVAL latency alerts catch filter hot-path regressions early.
@@ -258,6 +306,14 @@ var (
 		Name:    "ad_registry_warm_duration_seconds",
 		Help:    "Duration of incremental registry warm (UpdateAndWarmCampaign)",
 		Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0},
+	})
+	RegistryStaleMode = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "ad_registry_stale_mode",
+		Help: "1 when tracker registry is in stale-serve mode (shard-0 pub/sub quiet > REGISTRY_STALE_TTL), else 0",
+	})
+	Shard0PubSubUnreachable = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "ad_shard0_pubsub_unreachable",
+		Help: "1 when shard-0 campaigns:update pub/sub is unreachable (tracker stale-serve), else 0",
 	})
 
 	// Geo provider status exists so production deploys that accidentally run the mock geo provider are caught before targeting goes wrong.
@@ -468,6 +524,10 @@ var (
 		Help:    "Campaign rows examined per auction in the geo shard",
 		Buckets: []float64{1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500},
 	})
+	RtbAuctionScanLimitTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_rtb_auction_scan_limit_total",
+		Help: "RTB auctions that hit the max candidate scan budget before clearing",
+	})
 	RtbBudgetSpendRejectedTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ad_rtb_budget_spend_rejected_total",
 		Help: "Final CAS budget debits rejected after a winner was selected",
@@ -502,6 +562,34 @@ var (
 	TrackerLocalQuotaBlockTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ad_tracker_local_quota_block_total",
 		Help: "Total number of events blocked locally by tracker quota cache",
+	})
+	LocalQuotaRefillTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ad_local_quota_refill_total",
+		Help: "Local quanta refill attempts by outcome",
+	}, []string{"status"})
+	LocalQuotaRefillHerdTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_local_quota_refill_herd_total",
+		Help: "Refill attempts rejected by per-shard concurrency cap (herd control)",
+	})
+	LocalQuotaShadowDiffTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_local_quota_shadow_diff_total",
+		Help: "Shadow-mode local spend divergences from Lua debit",
+	})
+	LocalQuotaSpendTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_local_quota_spend_total",
+		Help: "Successful local quanta debits on the hot path",
+	})
+	LocalQuotaFlushTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ad_local_quota_flush_total",
+		Help: "Local quanta returned to Redis on pause/shutdown/strict (M14-13/15)",
+	}, []string{"reason"})
+	FilterLuaBranchTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "filter_lua_branch_total",
+		Help: "Unified/budget-fast Lua return-code branch tags (M14-16)",
+	}, []string{"branch"})
+	FilterLuaSlowTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "filter_lua_slow_total",
+		Help: "EVALSHA durations exceeding FILTER_SLOW_MS (M14-17)",
 	})
 
 	UDPControlPacketsReceivedTotal = promauto.NewCounter(prometheus.CounterOpts{
@@ -756,6 +844,34 @@ var (
 		Name: "ad_slot_migration_cutover_blocked_total",
 		Help: "Slot cutover attempts blocked (lag threshold, missing keys, invariant failure)",
 	}, []string{"reason"})
+	ElasticRoutingCutoverTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_elastic_routing_cutover_total",
+		Help: "Global routing_epoch bumps with broker/TCP cutover (M2)",
+	})
+	ElasticCampaignMigrationTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_elastic_campaign_migration_total",
+		Help: "Per-campaign elastic triplet migrations completed by ShardOrchestrator",
+	})
+	TCPControlSnapshotSentTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_tcp_control_snapshot_sent_total",
+		Help: "Signed TCP routing snapshots sent to trackers",
+	})
+	TCPControlSnapshotAppliedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_tcp_control_snapshot_applied_total",
+		Help: "Signed TCP routing snapshots applied on tracker",
+	})
+	TCPControlSnapshotErrorsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_tcp_control_snapshot_errors_total",
+		Help: "TCP routing snapshot encode/decode/HMAC failures",
+	})
+	TCPControlAckSentTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_tcp_control_ack_sent_total",
+		Help: "Tracker ACK frames sent after TCP snapshot apply",
+	})
+	TCPControlAckReceivedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ad_tcp_control_ack_received_total",
+		Help: "Management received tracker ACK after TCP snapshot",
+	})
 
 	// XDP edge filter counters — summed per-CPU stats map scraped by edge-bpf-sync.
 	XDPPassTotal = promauto.NewCounterVec(prometheus.CounterOpts{

@@ -11,9 +11,10 @@ import (
 	"espx/internal/config"
 	"espx/internal/ingestion"
 	"espx/internal/ingestion/pb"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 	"espx/internal/rtb"
 	"espx/internal/testutil"
+
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
@@ -93,7 +94,7 @@ func TestE2E_RtbLiveBudgetAuthority(t *testing.T) {
 		Redis:     []redis.UniversalClient{rdb},
 		Sharder:   sharder,
 	}
-	ingestion.SyncRtbCatalog(ctx, registry, catalog, cfg, nil, budgetSync)
+	ingestion.SyncRtbCatalog(ctx, registry, catalog, cfg, nil, budgetSync, nil)
 
 	rtbCampID := ingestion.CampaignIDFromUUID(campaignID)
 	rtbBudgetBefore := rtbStore.GetBudget(rtbCampID)

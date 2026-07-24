@@ -47,12 +47,6 @@ var (
 	bufferPool = sync.Pool{
 		New: func() any { return new(bytes.Buffer) },
 	}
-	fraudValuesPool = sync.Pool{
-		New: func() any {
-			s := make([]any, 22)
-			return &s
-		},
-	}
 	responseBytesPool = sync.Pool{
 		New: func() any {
 			s := make([]byte, 4096)
@@ -96,6 +90,14 @@ type connContext struct {
 	offloadOnEnter func()
 	offloadBlock   <-chan struct{}
 	offloadWG      *sync.WaitGroup
+
+	// M5-C: HTTP/2 cleartext ingress on this connection.
+	protoH2    bool
+	h2         h2ConnState // initialized via newH2ConnState in allocConnContext
+	h2StreamID uint32
+
+	// M5-B3: chunked body assembly scratch.
+	chunkScratch []byte
 }
 
 // init materializes HTTP status label strings once so gnet track metrics avoid per-request strconv.
@@ -244,12 +246,14 @@ func NewRouter(cfg *config.Config, registry campaignmodel.CampaignRegistry, filt
 		ip := extractClientIP(r, cfg.TrustedProxies)
 		var clickID string
 		var requestIDStr string
+		var ortbSlot *openRTBScratchSlot
 
 		contentType := ""
 		if ctSlice := r.Header["Content-Type"]; len(ctSlice) > 0 {
 			contentType = ctSlice[0]
 		}
-		if contentType == "application/x-protobuf" || contentType == "" {
+		espxNative := cfg.IsESPXNativeIngress()
+		if espxNative && (contentType == "application/x-protobuf" || contentType == "") {
 			buf := bufferPool.Get().(*bytes.Buffer)
 			defer putBuffer(buf)
 
@@ -308,7 +312,12 @@ func NewRouter(cfg *config.Config, registry campaignmodel.CampaignRegistry, filt
 			req.Reset()
 			defer trackRequestPool.Put(req)
 
-			err := ParseTrackRequestJSON(req, buf.Bytes())
+			var err error
+			if !espxNative {
+				err = ParseOpenRTB3Ingress(req, buf.Bytes())
+			} else {
+				err = ParseTrackRequestJSONOpt(req, buf.Bytes())
+			}
 			if err != nil {
 				metrics.HttpParseErrors.WithLabelValues("invalid_json").Inc()
 				status = http.StatusBadRequest
@@ -322,6 +331,8 @@ func NewRouter(cfg *config.Config, registry campaignmodel.CampaignRegistry, filt
 			if req.ClickID != "" {
 				clickID = req.ClickID
 			}
+			ortbSlot = req.ortbSlot
+			req.ortbSlot = nil
 		}
 
 		if clickID == "" {
@@ -342,6 +353,10 @@ func NewRouter(cfg *config.Config, registry campaignmodel.CampaignRegistry, filt
 			ua = uaSlice[0]
 		}
 		evt.UA = ua
+
+		if ortbSlot != nil {
+			attachOpenRTB3Scratch(evt, ortbSlot)
+		}
 
 		var landing string
 		if filterEngine != nil {
@@ -382,6 +397,7 @@ func NewRouter(cfg *config.Config, registry campaignmodel.CampaignRegistry, filt
 				landing = outcome.LandingURL
 			}
 		} else {
+			releaseOpenRTB3Scratch(evt)
 			landing = ResolveLandingURL(registry, creativeStore, evt)
 		}
 		campaignmodel.EventPool.Put(evt)
@@ -509,6 +525,8 @@ var (
 	respLicenseExpired     = []byte("HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: 15\r\nConnection: keep-alive\r\n\r\nlicense expired")
 	respDailyQuotaExceeded = []byte("HTTP/1.1 429 Too Many Requests\r\nContent-Type: text/plain\r\nRetry-After: 60\r\nContent-Length: 21\r\nConnection: keep-alive\r\n\r\ndaily quota exceeded")
 	respPlacementBlocked   = []byte("HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: 17\r\nConnection: keep-alive\r\n\r\nplacement blocked")
+	respRegistryStale      = []byte("HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nRetry-After: 1\r\nContent-Length: 14\r\nConnection: keep-alive\r\n\r\nregistry_stale")
+	respShardUnavailable   = []byte("HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nRetry-After: 1\r\nContent-Length: 17\r\nConnection: keep-alive\r\n\r\nshard_unavailable")
 	respHealthzOK          = []byte("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nOK")
 	respReadyzOK           = []byte("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nOK")
 	respReadyz503          = []byte("HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: 9\r\nConnection: keep-alive\r\n\r\nnot ready")
@@ -566,6 +584,16 @@ func (h *AdsPacketHandler) SetWorkerPool(wp *PinnedWorkerPool) {
 
 // write sends a response and returns connContext to the pool when using a worker pool.
 func (h *AdsPacketHandler) write(c gnet.Conn, data []byte, ctx *connContext) {
+	if ctx != nil && ctx.protoH2 && ctx.h2StreamID != 0 {
+		buf := ctx.bufSlice
+		if cap(buf) < len(data)+512 {
+			buf = make([]byte, len(data)+512)
+			ctx.bufSlice = buf
+		}
+		if n, err := h2WrapH1Response(buf, ctx.h2StreamID, data); err == nil {
+			data = buf[:n]
+		}
+	}
 	if h.workerPool != nil && ctx != nil {
 		_ = c.AsyncWrite(data, func(c gnet.Conn, err error) error {
 			h.contextPool.Put(ctx)
@@ -828,6 +856,14 @@ func (h *AdsPacketHandler) OnBoot(eng gnet.Engine) (action gnet.Action) {
 	return gnet.None
 }
 
+// FraudWriter returns the async fraud stream writer for backpressure wiring (M14-12).
+func (h *AdsPacketHandler) FraudWriter() *FraudStreamWriter {
+	if h == nil {
+		return nil
+	}
+	return h.fraudWriter
+}
+
 // Stop shuts down fraud streaming and the gnet engine.
 func (h *AdsPacketHandler) Stop(ctx context.Context) error {
 	if h.fraudWriter != nil {
@@ -926,7 +962,25 @@ func (h *AdsPacketHandler) OnTraffic(c gnet.Conn) (action gnet.Action) {
 		metrics.GnetBytesReceived.Add(float64(len(buf)))
 		metrics.GnetPacketsReceived.Inc()
 
-		reqLen, req, err := h.parseHTTP(buf)
+		if isH2ClientPreface(buf) {
+			if act := h.onTrafficH2(c, buf); act != gnet.None {
+				return act
+			}
+			continue
+		}
+		if ctx, ok := c.Context().(*connContext); ok && ctx != nil && ctx.protoH2 {
+			if act := h.onTrafficH2(c, buf); act != gnet.None {
+				return act
+			}
+			continue
+		}
+
+		var parseScratch []byte
+		if ctx, ok := c.Context().(*connContext); ok && ctx != nil {
+			parseScratch = ctx.chunkScratch
+		}
+
+		reqLen, req, err := h.parseHTTP(buf, parseScratch)
 		if err != nil {
 			if errors.Is(err, errIncompleteRequest) {
 				metrics.HttpParseErrors.WithLabelValues("incomplete").Inc()
@@ -1009,7 +1063,7 @@ func (h *AdsPacketHandler) runOffloadedRequest(workerID int, ctx *connContext) {
 	}
 	c.SetContext(ctx)
 	reqBytes := (*ctx.offloadReqBuf)[:ctx.offloadReqLen:ctx.offloadReqLen]
-	_, reqParsed, err := h.parseHTTP(reqBytes)
+	_, reqParsed, err := h.parseHTTP(reqBytes, ctx.chunkScratch)
 	if err != nil {
 		h.write(c, respBadRequestClose, ctx)
 		return
@@ -1041,12 +1095,12 @@ var (
 )
 
 // parseHTTP extracts one HTTP request from the gnet inbound buffer without copying the body.
-func (h *AdsPacketHandler) parseHTTP(data []byte) (int, parsedHTTPRequest, error) {
+func (h *AdsPacketHandler) parseHTTP(data []byte, scratch ...[]byte) (int, parsedHTTPRequest, error) {
 	maxBody := int64(1 << 20)
 	if h != nil && h.cfg != nil {
 		maxBody = h.cfg.MaxRequestBodySize
 	}
-	return parseHTTP1(data, maxBody)
+	return parseHTTP1(data, maxBody, scratch...)
 }
 
 // React handles a parsed /track POST after filtering and audit logging.
@@ -1111,6 +1165,13 @@ func (h *AdsPacketHandler) React(req parsedHTTPRequest, c gnet.Conn) gnet.Action
 	}
 
 	if !bytes.Equal(req.Path, []byte("/track")) {
+		if bytes.Equal(req.Path, []byte("/openrtb/bid")) {
+			if !req.HasContentLength {
+				h.write(c, respBadRequestClose, ctx)
+				return gnet.Close
+			}
+			return h.reactOpenRTBBid(req, c, ctx)
+		}
 		h.write(c, respNotFound, ctx)
 		return gnet.None
 	}
@@ -1146,6 +1207,11 @@ func (h *AdsPacketHandler) React(req parsedHTTPRequest, c gnet.Conn) gnet.Action
 
 	evt := &ctx.evt
 	fillTrackEvent(evt, fields, ip, ua)
+	if h.workerPool != nil {
+		if w := ctx.workerID; w >= 0 && w <= 127 {
+			evt.FilterWorkerIdx = int8(w)
+		}
+	}
 	evt.TLSHash = unsafeString(req.TLSHash)
 	evt.SecCHUA = unsafeString(req.SecCHUA)
 	evt.AcceptLang = unsafeString(req.AcceptLang)
@@ -1166,6 +1232,7 @@ func (h *AdsPacketHandler) React(req parsedHTTPRequest, c gnet.Conn) gnet.Action
 		return h.deliverGnetTrack(ctx, req, c, evt, startMono, wReqID, requestIDStr, outcome)
 	}
 
+	releaseOpenRTB3Scratch(evt)
 	h.trackMetrics.decisionAccepted.Inc()
 	writeAuditLog(h.logger, &h.auditLogSeq, h.auditLogSampleMask, ctx.shardID, evt)
 	landing := ResolveLandingURL(h.registry, h.creativeStore, &ctx.evt)

@@ -121,6 +121,10 @@ function _M.active_version()
     return dict:get("version") or 0
 end
 
+function _M.routing_epoch()
+    return dict:get("routing_epoch") or 0
+end
+
 function _M.get_shard(campaign_id)
     local ver = dict:get("version")
     if not ver or ver <= 0 then
@@ -147,6 +151,9 @@ function _M.sync()
         return
     end
     dict:set("version", doc.version or doc.active_version or 0)
+    if doc.routing_epoch then
+        dict:set("routing_epoch", doc.routing_epoch)
+    end
     for i = 0, 1023 do
         dict:set("s:" .. i, doc.slots[i + 1])
     end

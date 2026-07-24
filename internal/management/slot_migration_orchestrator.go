@@ -50,6 +50,12 @@ func (o *SlotMigrationOrchestrator) tick(ctx context.Context) {
 		return
 	}
 	if draft > 0 {
+		if err := o.svc.CatchUpDualWriteSlots(ctx, draft); err != nil {
+			slog.Warn("slot migration dual-write catch-up", "version", draft, "error", err)
+			if o.svc.alerter != nil {
+				o.svc.alerter.AlertSlotMigrationError("dual_write_catchup", err)
+			}
+		}
 		if err := o.svc.CopyAllMigratingSlots(ctx, draft); err != nil {
 			slog.Warn("slot migration copy tick", "version", draft, "error", err)
 			if o.svc.alerter != nil {

@@ -66,6 +66,46 @@ func buildSYNPacket(t *testing.T, src, dst net.IP, dport uint16) []byte {
 	return pkt
 }
 
+// buildSYNPacketWithMSS builds a SYN with window, TTL, and a 4-byte MSS TCP option.
+func buildSYNPacketWithMSS(t *testing.T, src, dst net.IP, dport uint16, window uint16, ttl byte, mss uint16) []byte {
+	t.Helper()
+	src4 := src.To4()
+	dst4 := dst.To4()
+	require.NotNil(t, src4)
+	require.NotNil(t, dst4)
+
+	const (
+		ethLen  = 14
+		ipLen   = 20
+		tcpDoff = 6 // 24-byte header: 20 fixed + 4-byte MSS option
+		tcpLen  = tcpDoff * 4
+	)
+	pkt := make([]byte, ethLen+ipLen+tcpLen)
+
+	binary.BigEndian.PutUint16(pkt[12:14], 0x0800)
+
+	ip := pkt[ethLen:]
+	ip[0] = 0x45
+	ip[1] = 0
+	binary.BigEndian.PutUint16(ip[2:4], uint16(ipLen+tcpLen))
+	ip[8] = ttl
+	ip[9] = 6 // TCP
+	copy(ip[12:16], src4)
+	copy(ip[16:20], dst4)
+
+	tcp := pkt[ethLen+ipLen:]
+	tcp[12] = byte(tcpDoff) << 4
+	binary.BigEndian.PutUint16(tcp[0:2], 12345)
+	binary.BigEndian.PutUint16(tcp[2:4], dport)
+	binary.BigEndian.PutUint16(tcp[14:16], window)
+	tcp[13] = 0x02 // SYN
+	tcp[20] = 0x02 // MSS kind
+	tcp[21] = 0x04 // MSS length
+	binary.BigEndian.PutUint16(tcp[22:24], mss)
+
+	return pkt
+}
+
 func buildACKPacket(t *testing.T, src, dst net.IP, dport uint16) []byte {
 	t.Helper()
 	pkt := buildSYNPacket(t, src, dst, dport)

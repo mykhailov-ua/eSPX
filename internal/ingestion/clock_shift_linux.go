@@ -17,9 +17,9 @@ func shiftSystemClock(d time.Duration) (restore func(), err error) {
 	}
 	orig := syscall.Timeval{Sec: tv.Sec, Usec: tv.Usec}
 
-	deltaSec := d / time.Second
+	delta := d / time.Second
 	deltaUsec := int64((d % time.Second) / time.Microsecond)
-	tv.Sec += int64(deltaSec)
+	tv.Sec += int64(delta)
 	tv.Usec += deltaUsec
 	if tv.Usec >= 1_000_000 {
 		tv.Sec += tv.Usec / 1_000_000

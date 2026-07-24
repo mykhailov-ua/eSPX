@@ -9,6 +9,7 @@ import (
 
 	"espx/internal/ingestion"
 	db "espx/internal/ingestion/sqlc"
+	"espx/internal/metrics"
 
 	"github.com/google/uuid"
 )
@@ -19,7 +20,7 @@ type PaddedEma struct {
 	_     [56]byte // padding to align to 64-byte cache line boundary
 }
 
-// ShardOrchestrator monitors Redis shard capacity and triggers automated Triplet migrations.
+// ShardOrchestrator monitors Redis shard capacity and triggers elastic triplet migrations (M2).
 type ShardOrchestrator struct {
 	svc             *Service
 	metricsProvider ShardMetricsProvider
@@ -77,8 +78,7 @@ func (o *ShardOrchestrator) tick(ctx context.Context) {
 		return
 	}
 
-	// 1. Collect metrics and update shard EWMA
-	alpha := 0.15 // ~60s window with 10s interval
+	alpha := 0.15
 	var maxShard int16 = -1
 	var maxEma float64 = -1.0
 
@@ -89,12 +89,11 @@ func (o *ShardOrchestrator) tick(ctx context.Context) {
 			continue
 		}
 
-		// Calculate raw capacity score (0.0 - 1.0)
 		cpuScore := m.CPUUsage / 100.0
 		memScore := m.MemoryPct / 100.0
 		opsScore := 0.0
 		if m.OpsPerSec > 0 {
-			opsScore = float64(m.OpsPerSec) / 50000.0 // assume 50k ops/sec limit
+			opsScore = float64(m.OpsPerSec) / 50000.0
 		}
 
 		rawScore := cpuScore
@@ -119,14 +118,12 @@ func (o *ShardOrchestrator) tick(ctx context.Context) {
 		}
 	}
 
-	// 2. Check overload duration and trigger migration
 	if maxShard != -1 && maxEma >= o.scaleThreshold {
 		start, ok := o.overloadStart[maxShard]
 		if !ok {
 			o.overloadStart[maxShard] = time.Now()
 			slog.Info("orchestrator: shard capacity threshold exceeded", "shard", maxShard, "ema", maxEma)
 		} else if time.Since(start) >= o.overloadLimit {
-			// Quorum gate check & cooldown check
 			if time.Since(o.lastScaleTime) >= o.cooldown {
 				slog.Info("orchestrator: triggering scale-out migration", "shard", maxShard, "ema", maxEma)
 				if err := o.migrateLoad(ctx, maxShard); err == nil {
@@ -135,8 +132,6 @@ func (o *ShardOrchestrator) tick(ctx context.Context) {
 				} else {
 					slog.Error("orchestrator: migration failed", "shard", maxShard, "error", err)
 				}
-			} else {
-				slog.Debug("orchestrator: migration skipped due to cooldown", "shard", maxShard)
 			}
 		}
 	} else if maxShard != -1 {
@@ -145,7 +140,6 @@ func (o *ShardOrchestrator) tick(ctx context.Context) {
 }
 
 func (o *ShardOrchestrator) migrateLoad(ctx context.Context, sourceShard int16) error {
-	// Find the campaign with the highest load on this shard
 	campaigns, err := o.svc.listActiveCampaignUUIDs(ctx)
 	if err != nil {
 		return err
@@ -157,8 +151,7 @@ func (o *ShardOrchestrator) migrateLoad(ctx context.Context, sourceShard int16) 
 
 	for _, id := range campaigns {
 		if int16(sharder.GetShard(id)) == sourceShard {
-			// In a real system, we would query metrics. Here we use a mock/random load or EWMA
-			load := 0.5 // default
+			load := 0.5
 			ema, ok := o.campaignEma[id]
 			if !ok {
 				ema = &PaddedEma{Value: load}
@@ -175,7 +168,6 @@ func (o *ShardOrchestrator) migrateLoad(ctx context.Context, sourceShard int16) 
 		return fmt.Errorf("no campaign found on overloaded shard %d", sourceShard)
 	}
 
-	// Find the least loaded target shard
 	var targetShard int16 = -1
 	var minEma float64 = 1e18
 	for i := int16(0); i < int16(len(o.svc.rdbs)); i++ {
@@ -195,8 +187,23 @@ func (o *ShardOrchestrator) migrateLoad(ctx context.Context, sourceShard int16) 
 
 	slog.Info("orchestrator: initiating campaign migration", "campaign", bestCampaign, "source", sourceShard, "target", targetShard)
 
-	// Perform Triplet migration:
-	// 1. Update PG assignment and increment migration_gen
+	routeRepo := ingestion.NewCampaignRoutingRepo(o.svc.GetPool())
+	existing, _ := routeRepo.GetCampaignRouting(ctx, bestCampaign)
+	routingEpoch := existing.RoutingEpoch + 1
+	if routingEpoch <= 0 {
+		var migrationGen int64
+		if err := o.svc.GetPool().QueryRow(ctx, `SELECT migration_gen FROM campaigns WHERE id = $1`, ingestion.ToUUID(bestCampaign)).Scan(&migrationGen); err == nil {
+			routingEpoch = migrationGen + 1
+		} else {
+			routingEpoch = 1
+		}
+	}
+
+	homeSlot := ingestion.HomeSlotForCampaign(bestCampaign)
+	if _, err := routeRepo.UpsertCampaignRouting(ctx, bestCampaign, homeSlot, targetShard, targetShard, targetShard, routingEpoch, 0.5, maxCampaignLoad); err != nil {
+		return err
+	}
+
 	tx, err := o.svc.GetPool().Begin(ctx)
 	if err != nil {
 		return err
@@ -204,59 +211,45 @@ func (o *ShardOrchestrator) migrateLoad(ctx context.Context, sourceShard int16) 
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	q := db.New(tx)
-	_, err = q.UpsertCampaignShardAssignment(ctx, db.UpsertCampaignShardAssignmentParams{
-		CampaignID:    ingestion.ToUUID(bestCampaign),
-		PrimaryAShard: targetShard, // migrate to target
-		PrimaryBShard: targetShard,
-		ReserveShard:  targetShard,
-		HEma:          0.5,
-		CEma:          0.5,
-	})
-	if err != nil {
-		return err
-	}
-
-	// Increment migration_gen on campaign
 	row, err := q.GetCampaignForUpdate(ctx, ingestion.ToUUID(bestCampaign))
 	if err != nil {
 		return err
 	}
 	_, err = q.UpdateCampaignStatus(ctx, db.UpdateCampaignStatusParams{
 		ID:     ingestion.ToUUID(bestCampaign),
-		Status: row.Status, // keep status, but trigger update
+		Status: row.Status,
 	})
 	if err != nil {
 		return err
 	}
-
-	// Bump migration_gen in DB
 	_, err = tx.Exec(ctx, "UPDATE campaigns SET migration_gen = migration_gen + 1 WHERE id = $1", ingestion.ToUUID(bestCampaign))
 	if err != nil {
 		return err
 	}
-
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 
-	// 2. Set migration fence on source shard
 	srcRdb := o.svc.rdbs[sourceShard]
 	dstRdb := o.svc.rdbs[targetShard]
 	if err := ingestion.BumpMigrationFences(ctx, o.svc.GetPool(), srcRdb, []uuid.UUID{bestCampaign}); err != nil {
 		return err
 	}
 
-	// 3. Copy campaign keys from source to target
 	migrator := &ingestion.CampaignKeyMigrator{}
 	if _, err := migrator.MigrateCampaignKeys(ctx, srcRdb, dstRdb, bestCampaign); err != nil {
 		return err
 	}
-
-	// 4. Drain old keys from source shard
 	if _, err := migrator.DrainCampaignKeys(ctx, srcRdb, bestCampaign); err != nil {
 		return err
 	}
 
-	slog.Info("orchestrator: campaign migration completed successfully", "campaign", bestCampaign)
+	global, err := routeRepo.BumpGlobalRoutingEpoch(ctx)
+	if err == nil {
+		o.svc.publishRoutingCutover(ctx, global.RoutingEpoch, global.ActiveVersion)
+	}
+	metrics.ElasticCampaignMigrationTotal.Inc()
+
+	slog.Info("orchestrator: campaign migration completed successfully", "campaign", bestCampaign, "routing_epoch", routingEpoch)
 	return nil
 }

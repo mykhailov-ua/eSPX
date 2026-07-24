@@ -29,7 +29,11 @@ func newQuotaUnifiedFilter(t testing.TB, rdb redis.UniversalClient) *UnifiedFilt
 }
 
 func quotaKey(campaignID uuid.UUID) string {
-	return "budget:quota:" + campaignID.String()
+	var buf []byte
+	buf = appendCampaignHashTag(buf[:0], campaignID)
+	buf = append(buf, "budget:quota:"...)
+	buf = appendUUID(buf, campaignID)
+	return string(buf)
 }
 
 func seedCampaignQuota(t testing.TB, ctx context.Context, rdb redis.UniversalClient, campID uuid.UUID, micro int64) {

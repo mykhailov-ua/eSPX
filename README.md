@@ -1,299 +1,551 @@
 # eSPX
 
-**Event Stream Pacing** — real-time ad event ingestion, atomic budget enforcement, and async settlement.
+Event Stream Pacing — ad event ingestion, atomic budget enforcement, async settlement.
 
-eSPX is an engine for ad networks and media buying operations requiring a deterministic hot path: each event is either atomically accepted and debited or rejected with an explicit cause, eliminating post-factum report reconciliation.
-
-## Capabilities
-
-| Problem | Solution |
-| :--- | :--- |
-| **Budget Control** | Event-time debiting; PostgreSQL serves as the source of truth for financial records, Redis operates as an edge cache |
-| **Scaling** | Client-side campaign sharding, single Lua round-trip per event, horizontal tracker scaling |
-| **Fraud Prevention** | Multi-tier (L1/L2/L3) ingress cascade, cold-path ML scoring, edge blacklists, and XDP L4 filtering |
-| **Financial Ledger** | Top-up → ledger → spend → invoice workflow with built-in reconciliation and auditing |
-| **Deployment Perimeter** | Self-hosted / on-premise execution; multi-tenant plan management |
+Each `/track` request is accepted and debited, or rejected with an explicit cause. PostgreSQL holds financial truth; Redis holds hot state; ClickHouse holds telemetry. The tracker hot path does not import `internal/fraudscoring`.
 
 ---
 
-## Architecture: Hot Path vs Cold Path
+## Business logic
 
-The architecture enforces strict decoupling: the hot path does not import cold-path packages (including `internal/fraudscoring`). Machine learning scoring runs isolated in `fraud-scorer` / `processor`; the tracker reads snapshot coefficients from Redis.
+### Event acceptance
+
+A `/track` request carries an ad event: `campaign_id`, `customer_id`, `event_type` (impression, click, conversion), bid amount in micro-units, and device/geo context. Default ingress is OpenRTB 3.0 (`TRACKER_INGRESS_SCHEMA=openrtb_3`); optional `espx_native` accepts `TrackRequest` JSON or vtproto `AdEvent`.
+
+The tracker returns one of three outcomes:
+
+| Outcome | Meaning |
+| :--- | :--- |
+| **Accepted** | Budget debited (or local-quanta debited + Lua `skip_budget=1`), event enqueued to `ad:events:stream`, landing URL returned |
+| **Rejected** | No debit; HTTP status and `filterRejectKind` metric identify the cause (budget, geo, schedule, fcap, duplicate, etc.) |
+| **Fraud-accepted** | Event recorded for analytics but not billed; used when fraud tier allows ghost-IVT logging |
+
+Accept-or-reject is decided at event time. Post-hoc budget correction is reconciliation-only (`ReconWorker` → `RECONCILIATION_ADJUST` outbox), not a substitute for hot-path enforcement.
+
+### Campaign delivery
+
+Campaigns move through `ACTIVE` → `PAUSED` / `EXHAUSTED`. Configuration lives in PostgreSQL; the tracker holds an in-memory registry reloaded from Redis pub/sub on shard 0 (`campaigns:update`), with broker fallback and stale-serve when shard 0 is unreachable (M14).
+
+Delivery controls applied before Lua:
+
+| Control | Layer | Fail policy |
+| :--- | :--- | :--- |
+| Emergency breaker | Go | Closed (503) |
+| Geo targeting (MaxMind) | Go | Open on lookup error |
+| Schedule / daypart | Go | Closed |
+| Placement / L3 blocklist | Go + Lua (M9-02) | Closed |
+| ML fraud boost | Go (Redis snapshot `ml:score:boost:{id}`) | Tier thresholds per campaign |
+| Consent purposes | Go | Closed when required bits missing |
+| License / subscription | Go | Closed when expired |
+
+Pacing modes: `ASAP` (spend while budget remains) or `EVEN` (token-bucket in Tier C Lua). Frequency caps, deduplication, idempotency, time-to-click, and impression-timestamp checks run in Lua (Tier C) or partially in Tier B for impressions.
+
+### Budget and billing
+
+All monetary amounts use **micro-units** (1 unit = 1,000,000 micro-units). The budget invariant is `current_spend ≤ budget_limit` (±1 micro-unit), enforced by atomic Lua debit or local quanta + broker delta reconciliation.
+
+| Store | Role |
+| :--- | :--- |
+| Redis `{uuid}budget:campaign:{uuid}` | Hot remaining budget per campaign |
+| Redis `{uuid}budget:quota:{uuid}` | Distributed quota pool (when `QUOTA_MODE=live`) |
+| PostgreSQL `balance_ledger` | Immutable append-only ledger; balance = `SUM(amount)` |
+| PostgreSQL `campaigns.current_spend` | Aggregated spend; synced from Redis dirty sets via `SyncWorker` |
+
+**Settlement path:** Lua `XADD` → per-shard `ad:events:stream` → `processor` → PostgreSQL event row + `balance_ledger` FEE entry + ClickHouse batch → `XAck` after durable write. `SyncWorker` propagates PG spend deltas back to Redis budget keys.
+
+**Local quanta (M8):** High-RPS quota-mode campaigns debit in tracker RAM (`TrySpendLocal`, ~13 ns/op), publish `BudgetDelta` to broker topic `budget-deltas`, then call Tier B Lua with `skip_budget=1` for idempotency and stream enqueue only. Refill at 80% depletion via `local-quota-refill.lua`; pause/SIGTERM flush via `local-quota-return.lua`.
+
+### RTB (programmatic lane)
+
+When `RTB_MODE≠off`, an in-process auction runs before `FilterEngine.Check`:
+
+| Mode | Behavior |
+| :--- | :--- |
+| `off` | Direct campaign from request body |
+| `shadow` | `RunAuctionEval`; metrics only; request campaign unchanged |
+| `live` | `RunAuction`; winning `campaign_id` and `ClearingPriceMicro` replace request fields |
+
+Auction uses in-memory catalog, PMP deals, geo index, ML fraud boost in ranking, optional pre-bid IVT and `schain` validation. `POST /openrtb/bid` serves OpenRTB 2.6 bid traffic. Admin live gate and bid-shading APIs live in `management`. Detail: [docs/RTB.md](docs/RTB.md).
+
+### Fraud and IVT
+
+Hot path: incremental fraud accumulator, tier thresholds (`Pass` / `Suspect` / `IVT` / `Block`), and `GetFraudScoreBoosts()` snapshot (~93 ns/op, 0 allocs). Critical signals (L1 reject, L3 blocklist) go to a dedicated 512-slot fraud ring; analytical signals use a 3584-slot ring with /24 aggregation at ≥80% fill (M11).
+
+Cold path: `ivt-detector` (ClickHouse batch rules) and `fraud-scorer` (LightGBM + Isolation Forest) write to management outbox → Redis (`ML_SCORE_BOOST`, `ML_GHOST_IVT`, `ML_BLACKLIST_ADD`). Tracker never imports `internal/fraudscoring`.
+
+### Ingress quotas
+
+Three independent axes: **RPS** (tracker `ingress_quota` + optional UDP `:8191`), **RPD** (Redis `ingress:day:{customer_id}:{YYYYMMDD}` inside Lua, HTTP 429), **events/month** (`usage_meters` → overage billing). RPD headers: `X-RateLimit-Limit-Day`, `X-RateLimit-Remaining-Day`, `X-RateLimit-Reset-Day`.
+
+---
+
+## Design decisions
+
+eSPX targets **self-hosted / on-prem ad networks and buy-side stacks**: event-time budget enforcement, auditable settlement, and tracker p99 < 80 ms under burst traffic. The choices below trade hyperscaler elasticity for predictable cost, operable blast radius, and hard financial invariants.
+
+| Area | Choice | Why this is optimal here |
+| :--- | :--- | :--- |
+| **Hot / cold split** | `internal/ingestion` + gnet on `/track`; admin, ML, billing in separate binaries | **Technical:** GC pauses, HTTP admin I/O, and model inference are incompatible with 0-allocs/op and 80 ms p99. **Context:** Buyers reject or ghost-charge on latency; ops changes and model retrains must not share fate with ingest. Separate deploy units match how customers run tracker fleets vs. a single management VM. |
+| **Three stores** | Redis (hot), PostgreSQL (ledger + config), ClickHouse (telemetry) | **Technical:** Lua gives atomic debit+dedup in one RTT; PG gives ACID + `balance_ledger`; CH gives 100M+ row scans off the hot path. **Context:** Finance and disputes require PG truth; product analytics and IVT rules need CH history without paying OLTP cost per impression. One of each store is deployable on modest hardware; no managed multi-PB warehouse required. |
+| **Client-side sharding** | 4 standalone Redis masters; `crc32_castagnoli & 1023 → slot_table`; not Redis Cluster | **Technical:** Every event is one `EVALSHA` with hash-tagged keys on one master; Cluster redirects break that contract. Lookup is ~5.6 ns via `atomic.Value`. **Context:** Four shards fit typical on-prem RAM budgets and ops headcount; Sentinel failover is well understood. Elastic triplets (M2) address hot-campaign skew without jumping to Cluster ops complexity. |
+| **Atomic Lua budget** | Tier B/C: debit + pre-checks + `XADD` in one round trip; M8 `skip_budget` for local quanta | **Technical:** Go-side GET/debit/INCR allows TOCTOU overspend; Lua serializes on the shard master (p99 < 10 ms). **Context:** Ad billing is accept-or-reject at impression time — post-hoc reconciliation is a business failure. Single RTT keeps per-event cost low enough for high-volume CPM/CPA lines. vs alternatives: [Why Redis Lua](#why-redis-lua-not-native-modules-keydb-or-aerospike). |
+| **Async settlement** | Per-shard streams → processor → PG/CH; `XAck` after durable write | **Technical:** `/track` returns after Redis accept, not PG fsync. **Context:** Ingest RPS and ledger write throughput decouple; processor can batch and backpressure without blocking buyers. Matches “fast ack, eventual ledger” model standard in RTB and affiliate networks. |
+| **Transactional outbox** | PG txn + `outbox_events` → workers → Redis | **Technical:** Prevents split brain when PG rolls back. **Context:** Campaign pause, blacklist, and budget mirror must be legally and financially consistent with PG config. Operators expect admin UI changes to stick; outbox is the cheapest correct pattern without 2PC across PG and Redis. |
+| **Edge before tracker** | XDP L4 + Nginx Lua (blacklist, rate limit, DFA parse, shard pick, optional tarpit) | **Technical:** Drops SYN floods and junk at line rate; TLS/H2/H3 terminate at Nginx; tracker keeps one H1.1 DFA. **Context:** Attack traffic and scrapers are common in open `/track` endpoints; burning Go workers on garbage raises $/M requests. Edge shard pick must match Go `StaticSlotSharder` so customers can scale trackers horizontally without client changes. |
+| **gnet + zero alloc** | Table-FSM parse, vtproto pools, no boxing/closures on hot path | **Technical:** Heap allocs → GC STW → p99 breach under spike. CI enforces 0 allocs/op. **Context:** At 50k–200k RPS per node, default Go HTTP stacks and per-request allocations are uneconomical; custom stack is justified only on this path. |
+| **Local budget quanta (M8)** | RAM debit + broker `budget-deltas`; Lua `skip_budget=1` for idempotency/`XADD` | **Technical:** Removes one Redis RTT per impression on quota-mode lines; M3 recon + broker deltas preserve `current_spend ≤ budget_limit`. **Context:** High-RPS campaigns are the revenue core; shaving ~80 µs Lua RTT per event materially raises effective capacity per tracker host before adding hardware. |
+| **In-process RTB** | `RunAuction` before `FilterEngine` (~30 ns/op, 0 allocs) | **Technical:** In-memory catalog + ranking; no RPC hop. **Context:** Programmatic lanes need sub-ms auction inside the same request as budget check; external exchange adds latency and splits budget authority. Shadow/live modes let operators validate yield before cutover. |
+| **Cold-path fraud / ML** | `ivt-detector` + `fraud-scorer` → outbox → Redis snapshots | **Technical:** CH batch and inference are seconds-scale; tracker reads `ml:score:boost` at ~93 ns/op. **Context:** False-positive cost is reputational; rules and models can iterate daily without tracker redeploy. Fits teams that run batch IVT, not real-time embedding on every bid. |
+| **Immutable ledger** | `balance_ledger` micro-units; balance = `SUM(ledger)` | **Technical:** No lost updates on concurrent settlement. **Context:** Customers reconcile against invoices and disputes; append-only ledger is audit-friendly and matches how finance teams expect top-up → spend → invoice to work. |
+| **Elastic triplets (opt-in)** | M2 orchestrator on M1 slot migration | **Technical:** Adds shard capacity without Redis Cluster. **Context:** Default N=4 is enough for most tenants; triplets activate only when a single campaign dominates a shard — avoiding premature complexity for small installs. |
+
+### Why Redis Lua (not native modules, KeyDB, or Aerospike)
+
+The hot path needs **one atomic step per event** on a single shard: read budget/quota, apply migration fence and `routing_epoch`, run dedup/idempotency/fcap/pacing/TTC pre-checks, debit (or skip when local quanta already debited via `skip_budget=1`), and `XADD` to `ad:events:stream`. Five scripts are embedded (`budget-fast`, `unified-filter`, `local-quota-refill`, `local-quota-return`, `ip-rate-limit`); hot path uses Tier B or C in **one `EVALSHA`** (~81k ns/op end-to-end with real Redis; p99 < 10 ms/shard SLA). Anything that cannot run as a single server-side atomic unit forces multiple round trips and reintroduces TOCTOU overspend (documented as R-LUA-01 in [docs/DATA.md](docs/DATA.md)).
+
+#### Redis Lua (chosen)
+
+| Property | Effect |
+| :--- | :--- |
+| **Atomicity model** | Script runs uninterrupted on the shard master thread — same guarantee a native module would provide for single-key/hash-tag sets. |
+| **Deploy surface** | Scripts are **embedded in the tracker binary** (`go:embed`), `SCRIPT LOAD` on startup. Budget rule changes ship with the tracker version customers already roll; no `.so` on database nodes. Sticky eval pins (M9) and M14 branch metrics ship in the same binary. |
+| **Ops stack** | Stock Redis 7 + Sentinel + replicas. On-prem installs use Docker/apt images without custom builds. Failover, backups, and hiring pool match mainstream Redis. |
+| **Feature fit** | Streams (`XADD`), pub/sub (`campaigns:update` on shard 0), hash tags (`{uuid}…`), `COPY`/`RESTORE` for slot migration, global key fan-out (M14) — all already used in M1/M2/M9/M14. |
+| **Testability** | `testcontainers-go` Redis + chaos suite (`TestChaos_LUA*`) exercise real `EVALSHA` paths in CI. |
+| **Iteration cost** | Budget tiers (B/C), tier degradation (M9-04), consolidated pre-checks (M9-02) landed as Lua diffs without recompiling Redis or coordinating module ABI across 4 masters. |
+
+Lua’s cost is real: Redis 5.1, no JIT, scripts must stay non-blocking, and long scripts block the whole shard (R-LUA-04). eSPX accepts that because scripts are bounded, tier B skips heavy gates on impressions, and local quanta (M8) removes budget RTT on the highest-RPS lines.
+
+#### C/Rust Redis module (rejected for primary path)
+
+A native module could run the same logic faster per opcode, but **does not remove the single-shard atomic requirement** and adds:
+
+- **Release coupling:** Module `.so` must match exact Redis minor version and libc on every master and promoted replica. Tracker and DB tiers version independently — a budget fix would require coordinated Redis restarts or `MODULE LOAD`, higher rollback risk than `SCRIPT LOAD`.
+- **Operational blast radius:** Native code on the data plane needs separate security review, crash dumps on `SIGSEGV`, and distro-specific builds. Self-hosted customers often forbid non-packaged Redis extensions.
+- **Marginal win vs SLA:** Filter work is dominated by **network RTT** (~80 µs Lua Tier B), not Lua interpreter overhead. M9 sticky eval pins already removed client-side allocs; M8 removes the budget portion of Lua on quota lines. A faster module does not fix multi-RTT Go-side filter patterns (forbidden by style guide).
+- **Duplication:** Stream writes, recon snapshot scripts, slot-migration fences, and refill scripts would still need Lua or module equivalents — two server extension mechanisms instead of one.
+
+Modules remain reasonable for **optional** edge features (e.g. custom probabilistic structures) if a future bottleneck proves CPU-bound inside Redis after RTT is eliminated. They are not the default for financial atomicity in this codebase.
+
+#### KeyDB (rejected)
+
+KeyDB is a Redis fork with multi-threading and optional active-active replication.
+
+- **Compatibility risk:** eSPX relies on Lua 5.1 semantics, `EVALSHA`, streams, and Sentinel behavior tested against **vanilla Redis**. Fork drift in script caching, replication, or `COPY` during slot migration is unpriced risk for budget invariants.
+- **Wrong scaling axis:** Per-shard atomicity still serializes on one logical key chain per campaign. Multi-threaded KeyDB increases throughput for **independent keys**, not for a single hot `{campaign_id}budget:*` chain. Horizontal scale is already **4 shards + elastic triplets (M2)**, not bigger single-node Redis.
+- **Active-active:** Cross-master writes break the “one authoritative debit per campaign per shard” model unless you add conflict resolution — unacceptable for `current_spend ≤ budget_limit`.
+- **Business context:** Support and documentation target Redis; asking on-prem buyers to run a fork for marginal CPU gains trades a well-understood SLA for vendor-specific behavior.
+
+#### Aerospike (rejected)
+
+Aerospike fits high-cardinality KV at cluster scale, but **does not match eSPX’s existing data plane or team constraints**:
+
+- **Rewrite cost:** Entire key catalog (`CampaignRedisKeyCatalog`), hash-tag colocation, `ad:events:stream` consumers, pub/sub registry reload, outbox fan-out to shards, and M1 `DUMP`/`RESTORE` migration tooling are Redis-specific. Aerospike partitions + UDFs (Lua or C) would be a multi-milestone replatform, not an optimization.
+- **Atomic scope:** Aerospike offers record-level atomicity within one partition; cross-record transactions are limited. eSPX maps **one campaign’s budget, dedup, fcap, and stream enqueue** to one hash-tagged key set on one shard — Redis Lua already matches that boundary. You would still need server-side UDFs; C UDF deploy has the same ops burden as Redis modules, with a smaller on-prem install base in ad-tracking.
+- **Streams and cold path:** Processor settlement, fraud stream aggregation (M11), and management outbox patterns are built on **Redis streams and the Redis protocol**. Aerospike would fork the consumer ecosystem or require a bridge process (extra latency, ops).
+- **Economics:** Aerospike cluster TCO and licensing (commercial features, K8s operator maturity) target higher baseline scale than typical **4-shard self-hosted** tenants. Redis + Sentinel + optional M8 local quanta hits the SLA at lower fixed cost.
+- **Business context:** Buyers need **auditable, explainable** budget rejection at event time. A bespoke Aerospike UDF stack complicates support; Redis Lua scripts are inspectable text in the repo and in `SCRIPT EXISTS` on the node.
+
+#### Summary
+
+| Option | Atomic debit + stream enqueue | Fits current M1/M8/M9 stack | On-prem ops | Primary blocker |
+| :--- | :---: | :---: | :---: | :--- |
+| **Redis Lua** | Yes (1× `EVALSHA`) | Yes | Stock Redis + Sentinel | Script CPU / blocking (mitigated by tiers + quanta) |
+| **C/Rust module** | Yes | Partial (second extension layer) | Custom `.so` per Redis build | Deploy coupling; RTT-dominated SLA |
+| **KeyDB** | Yes (Lua compatible) | Unverified fork semantics | Non-standard Redis | Active-active / fork risk vs finance invariants |
+| **Aerospike** | UDF required | No (full replatform) | Cluster + UDF deploy | Rewrite streams, migration, outbox; higher TCO |
+
+For this product — **event-time billing, self-hosted, 4-shard Redis, PG ledger** — Lua is the best trade: native atomicity, one RTT, scripts versioned with the tracker, and no second datastore operations model. Deeper key/Lua policy: [docs/DATA.md](docs/DATA.md) Part I §3–5.
+
+#### Why Lua is not the bottleneck
+
+Lua is the **largest single step** on `/track`, but it is not what breaks the **80 ms handler p99** first under normal load. Three separate claims:
+
+**1. It fits inside the SLA budget**
+
+| Stage | Typical scale | SLA / ceiling |
+| :--- | ---: | :--- |
+| HTTP/1 DFA + OpenRTB parse | ~0.1–0.5 µs (bench; wire only) | — |
+| Go `FilterEngine` + RTB auction | ~1–50 µs (geo sampled; auction ~30 ns/op) | `RunAuction` p99 < 15 µs |
+| **One `EVALSHA` (Tier B)** | **~80 µs median** bench; **p99 < 10 ms / shard** | `FILTER_TIMEOUT_MS` ≤ 100 ms total |
+| End-to-end handler | varies with RTT, load, GC tails | p99 < 80 ms |
+
+Tier B at ~80 µs leaves **two orders of magnitude** below the handler ceiling before counting network jitter, TLS at the edge, or cross-AZ Redis RTT. Wire parse and in-process auction are not the limiter either ([docs/CAPABILITIES.md](docs/CAPABILITIES.md) §M12 — Lua dominates them in absolute time, but all are ≪ 80 ms).
+
+**2. Most “Lua latency” is network and queueing, not the interpreter**
+
+`BenchmarkLuaScript_Happy` (~81k ns/op) is an **end-to-end tracker→Redis→tracker** measurement with a real server, not Lua VM CPU in isolation. That budget includes:
+
+- TCP write/read and client serialization (mitigated by M9 sticky eval pins: 0 allocs/op on the wire path)
+- Redis single-threaded **command queue** behind other campaigns on the same shard
+- Only a small fraction is Lua 5.1 executing ~15–40 `GET`/`INCR`/`XADD`-class ops on hash-tagged keys
+
+A faster C/Rust module would shrink the last fraction; it would **not** remove the RTT or the shard queue. That is why the style guide forbids multiple round trips: **one hop is the optimization target**, not opcode speed inside Redis.
+
+**3. What actually becomes the bottleneck first**
+
+| Failure mode | Symptom | Mitigation in this codebase |
+| :--- | :--- | :--- |
+| **Hot shard / script blocking** | p99 Lua → 10 ms+ on one master | 4 shards + elastic triplets (M2); Tier B on impressions; tier degradation (M9-04); R-LUA-04 chaos tests |
+| **Extra Redis round trips** | Linear RTT add per hop | Single `EVALSHA` (M9); local quanta (M8) on quota lines |
+| **GC / heap on tracker** | Handler p99 spikes unrelated to Redis | 0 allocs/op; `GOGC=300` + `GOMEMLIMIT` (M13) |
+| **Cross-AZ or overloaded Redis** | RTT dominates even short scripts | Co-locate tracker + Redis per cell; circuit breaker; edge drop before tracker |
+| **Wrong tier** | Tier C (~92k ns bench) on impression flood | `LUA_FAST_PATH_ENABLED=true` default |
+
+Under load-test abort rules, chaos watches **handler p99 > 80 ms for 30 s**, not Lua microseconds. Lua p99 > 10 ms/shard is an early **shard capacity** signal (add shard, migrate hot campaign, enable quanta), not proof that the language was the wrong choice.
+
+**Summary:** Lua is the mandatory atomic debit + enqueue primitive; it is tuned to **one RTT** and **< 10 ms p99 per shard** so the tracker can spend its budget on everything else. The bottleneck at scale is **Redis shard throughput and RTT**, which sharding, Tier B, and local quanta address — not Lua interpreter performance vs a native module.
+
+---
+
+## SLAs
+
+| Metric | Target |
+| :--- | :--- |
+| `ad_http_request_duration_seconds` (tracker handler) | p95 < 50 ms, p99 < 80 ms, max 100 ms |
+| Redis Lua (`budget-fast` / `unified-filter`) | p99 < 10 ms / shard |
+| Geo filter (sampled) | p99 < 10 µs |
+| `RunAuction` | p99 < 15 µs; candidates scanned p99 < 500 |
+| Hot-path parse / filter / auction | 0 allocs/op (`make test-alloc-gate`) |
+| Budget invariant | `current_spend ≤ budget_limit` (±1 micro-unit) |
+
+Production: `FILTER_TIMEOUT_MS` ≤ 100.
+
+---
+
+## Topology
 
 ```mermaid
+%%{init: {"flowchart": {"curve": "stepAfter", "padding": 12, "nodeSpacing": 28, "rankSpacing": 40}}}%%
 flowchart TB
-  subgraph edge [Edge L4/L7]
-    XDP[XDP BPF filter]
-    Nginx[Nginx / OpenResty Lua]
+  subgraph edge ["Edge"]
+    direction TB
+    XDP["XDP :8180"]
+    Nginx["Nginx / OpenResty Lua"]
+    XDP --> Nginx
   end
 
-  subgraph hot [Hot path — tracker, internal/ingestion]
-    Gnet[gnet event loop + DFA HTTP/1.1]
-    Pool[PinnedWorkerPool]
-    FE[FilterEngine Go]
-    Lua[Redis unified-filter.lua]
-    BrokerP[Broker produce]
+  subgraph hot ["Hot path"]
+    direction TB
+    Tracker["tracker gnet"]
+    Redis["Redis ×4 · Lua EVALSHA"]
+    Tracker --> Redis
   end
 
-  subgraph cold [Cold path]
-    Proc[processor]
-    Mgmt[management + adminapi]
-    IVT[ivt-detector]
-    FS[fraud-scorer]
-    PG[(PostgreSQL)]
-    CH[(ClickHouse)]
+  subgraph cold ["Cold path"]
+    direction TB
+    Proc["processor"]
+    Mgmt["management + adminapi"]
+    IVT["ivt-detector"]
+    FS["fraud-scorer"]
+    PG[("PostgreSQL")]
+    CH[("ClickHouse")]
   end
 
-  XDP --> Nginx --> Gnet
-  Gnet --> Pool --> FE --> Lua
-  Lua --> BrokerP
-  BrokerP --> Proc
+  Nginx --> Tracker
+  Redis --> Proc
   Proc --> PG
   Proc --> CH
   IVT --> CH
+  CH --> Mgmt
   IVT --> Mgmt
   FS --> Mgmt
   Mgmt --> PG
-  Mgmt --> Redis[(Redis shards)]
+  Mgmt --> Redis
 ```
 
-### Hot Path (`internal/ingestion`)
+Default ingress: Nginx terminates TLS/H2/H3; upstream H1.1 to tracker. Default body schema: OpenRTB 3.0 (`TRACKER_INGRESS_SCHEMA=openrtb_3`). Detail: [docs/EDGE.md](docs/EDGE.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-Target: **0 heap allocations/op** across parse, filter, and response execution. CI (`make test-alloc-gate`) enforces zero-allocation bounds.
-
-| Component | Function |
-| :--- | :--- |
-| **gnet/v2** | `epoll` I/O multiplexing, fixed event loops (~2 per CPU core) |
-| **DFA HTTP/1.1 scanner** | Zero-copy parsing directly from socket ring buffers |
-| **PinnedWorkerPool** | Hash-based worker pinning per campaign for L1/L2 cache locality; 64-byte padding against false sharing |
-| **vtproto pools** | Reuse of Protocol Buffer structures; `appendReuseBytes` for byte slices |
-| **FilterEngine** | Chain of Go filters under a unified monotonic deadline (`FilterDeadlineMono`) |
-| **UnifiedFilter** | Single Redis `EVALSHA` call covering budget, pacing, deduplication, rate limiting, TTC, frequency capping, and stream enqueueing |
-| **StaticSlotSharder** | `crc32(campaign_id) & 1023` mapped to a 1024-slot array; lookups resolved via `atomic.Value` |
-| **FraudStreamWriter** | Lossy MPSC ring buffer (4096 slots) for asynchronous telemetry non-blocking to gnet loops |
-| **LatencyRing / FraudStream** | Lossy fixed buffers; drops events upon buffer overflow |
-
-Hot path constraints prohibit: `interface{}`/`any` boxing, request loop closures, `sync.Map`, per-request `fmt.Sprintf`, per-request `strings.Builder`, per-request `context.WithTimeout`, and dynamic Prometheus label creation.
-
-### Cold Path
-
-| Service | Function |
-| :--- | :--- |
-| **processor** | Consumes broker/Redis streams → executes PostgreSQL settlement and ClickHouse batch inserts |
-| **management** | HTMX administration interface, billing engine, transactional outbox, pacing controller, slot migration orchestrator |
-| **auth / payment / billing / notifier** | gRPC and standard library HTTP services |
-| **ivt-detector** | ClickHouse batch analysis → emits blacklists, ghost flags, and score adjustments via outbox |
-| **fraud-scorer** | LightGBM + Isolation Forest (+ optional ONNX); outputs scores to Redis `ml:score:boost:{campaign_id}` |
-| **broker** | Log-based message broker implementation (gnet TCP + mmap segments) |
-| **edge-xdp / edge-bpf-sync** | L4 XDP packet filtering and BPF map state synchronization |
-
-Tracker SLA (`ad_http_request_duration_seconds`): **p95 < 50 ms**, **p99 < 80 ms**, hard limit 100 ms. Production configuration: `FILTER_TIMEOUT_MS` ≤ 100.
+Request path: parse → geo → [RTB if `RTB_MODE≠off`] → `FilterEngine.Check` → Tier B/C Lua (or local quanta + `skip_budget` Lua) → stream `XADD` → response.
 
 ---
 
-## Benchmarks: gnet + Custom Broker
+## Services
 
-Executed on `linux/amd64`, Intel i5-11400H @ 2.70 GHz, `go test -benchmem`.
+| Binary | Port(s) | Role |
+| :--- | :--- | :--- |
+| `tracker` | 8181–8184 | gnet ingest, `FilterEngine`, RTB, Lua; optional UDP ingress quota `:8191` |
+| `processor` | 8186 | Redis streams → PG / CH; budget sync |
+| `management` | 8188, 51053 | Admin HTTP (`/api/v1`, legacy `/admin`), outbox, recon, settlement gRPC |
+| `auth` | 51051 | gRPC: PASETO, API keys |
+| `payment` | 51052, 8187 | Stripe webhooks |
+| `billing` | 51054 | Invoices from `balance_ledger` |
+| `notifier` | 8085 | Alerts |
+| `ivt-detector`, `fraud-scorer` | — | CH batch → management outbox → Redis |
+| `edge-xdp`, `edge-bpf-sync` | — | XDP L4 SYN cookies, autoban, passive IVT fingerprints |
+| `broker`, `log-shipper`, … | — | Optional mmap log pipeline; `budget-deltas` topic for M8 recon |
 
-### Tracker / Ingestion (Hot Path)
+Libraries: `internal/adminapi`, `internal/licensing`, `internal/rtb`, `internal/ingestion`.
 
-| Benchmark | ns/op | B/op | allocs/op |
-| :--- | ---: | ---: | ---: |
-| `StaticSlotSharder_1024` (GetShard) | **5.7** | 0 | **0** |
-| `FilterEngine.Check` (no timeout) | **25.0** | 0 | **0** |
-| `AdsPacketHandlerProto` accept | **167** | 0 | **0** |
-| `FilterFraudBoost` (ML snapshot apply) | **90** | 0 | **0** |
-| `TrackRequest_ParseJSON` | **186** (~818 MB/s) | 0 | **0** |
-| `RunAuction` (RTB) | **27** | 0 | **0** |
-| `RunAuction` high density | **115** | 0 | **0** |
+---
 
-Reproduction command:
+## Management and administration
+
+Administrative traffic does not share the tracker event loop. Mutations that affect delivery (pause, blacklist, pacing, budget) run in a PostgreSQL transaction plus `outbox_events`; direct HTTP writes to Redis are forbidden. Reporting reads PostgreSQL and ClickHouse; balances derive only from `balance_ledger`.
+
+### HTTP surface
+
+| Prefix | Audience | Examples |
+| :--- | :--- | :--- |
+| `/api/v1/*` | Operators, automation | Campaign stats, balance, recon, billing, ops |
+| `/api/v1/selfserve/*` | Tenant API keys | Create/pause/resume campaigns, payment intents, invoices |
+| `/admin/*` | Legacy HTMX UI | Mirrored under `/api/v1` where applicable |
+
+RBAC permissions gate routes (`campaigns:read`, `customers:write`, `shards:read`, `audit:read`, etc.). Contracts are godoc on handlers and DTOs in `internal/adminapi`, not OpenAPI.
+
+### Reporting and dashboards
+
+| Area | Routes | Source |
+| :--- | :--- | :--- |
+| Campaign stats | `GET /api/v1/campaigns/{id}/stats` | PG `campaign_stats` + CH hourly MVs (`stale=true` when CH lag > 5 min) |
+| Balance | `GET /api/v1/customers/{id}/balance`, `/balance/export` | `balance_ledger` sum; CSV export with cursor pagination |
+| Forecast | `POST /api/v1/forecast/campaign` | CH 90-day trends + PG budget limits |
+| Reports | `GET /api/v1/reports/*` | Placements, keywords, pacing drift, IVT by source, geo ROI, spend velocity, … |
+| Dashboards | `GET /api/v1/dashboards/*` | Operator shard health (shipped); buyer/CFO/fraud/adops (stubs) |
+| Saved views | `GET/POST /api/v1/views` | Operator-defined report filters |
+
+### Billing and payments
+
+| Area | Routes | Notes |
+| :--- | :--- | :--- |
+| Invoices | `/api/v1/billing/invoices/*` | PDF, void, preview, ledger lines, delivery retry |
+| Wallet / statement | `/api/v1/customers/{id}/wallet`, `/billing/statement` | Composite PG + CH read |
+| Tax profile | `GET/PUT /api/v1/customers/{id}/tax-profile` | Per-customer tax config |
+| Disputes | `GET /api/v1/disputes` | Payment gRPC proxy |
+| Exports | `POST /api/v1/billing/exports` | Async job + download |
+| Self-serve | `/api/v1/selfserve/payment-intents`, `/invoices` | Stripe via `payment` service |
+
+`billing` service generates monthly invoices from ledger; `payment` handles Stripe webhooks and settlement outbox.
+
+### Operations
+
+| Route | Purpose |
+| :--- | :--- |
+| `GET /api/v1/ops/shards` | Shard health, slot map version, routing epoch |
+| `GET /api/v1/ops/outbox`, `/ops/dlq` | Outbox backlog and dead-letter inspection |
+| `POST /api/v1/ops/dlq/{id}/retry` | Retry failed side effects |
+| `GET /api/v1/recon/runs` | PG ↔ Redis ↔ CH reconciliation history |
+| `GET /api/v1/audit/export` | Audit log export |
+| `POST /api/v1/consent` | Consent records; `ConsentRetentionWorker` enforces retention |
+
+Additional operator APIs: postback config/DLQ (`/api/v1/postbacks/*`), cost-sync credentials (`/api/v1/cost-sync/*`), margin-guard policies (`/api/v1/margin-guard/*`), licensing usage (`/api/v1/customers/{id}/usage`, `/quota-status`).
+
+### Background workers
+
+| Worker | Function |
+| :--- | :--- |
+| `OutboxWorker` | 20 ms poll; 20+ event types → Redis/registry (priority lanes) |
+| `ReconWorker` | PG spend ↔ Redis budgets ↔ CH hourly MVs; `RECONCILIATION_ADJUST` on drift |
+| `SyncWorker` ×4 | Redis dirty sets → PG `UpdateSpend` → Redis commit |
+| `PacingControllerWorker` | Daypart and spend pacing profile updates |
+| `ScheduleWorker` | Time-based activate/pause |
+| `CampaignDrainWorker` | Finalize cancelled campaigns |
+| `ShardOrchestrator` | Capacity EWMA → hot-campaign micro-migration (opt-in) |
+| `VolumeMeterWorker` | Events/month metering for licensing |
+| `LedgerInvariantWorker` | Ledger drift scan |
+| `ivt-detector` / `fraud-scorer` | CH batch → outbox → Redis blacklists and ML snapshots |
+
+Outbox event types include: `CREATE_CAMPAIGN`, `PAUSE_CAMPAIGN`, `RESUME_CAMPAIGN`, `CANCEL_CAMPAIGN`, `UPDATE_CAMPAIGN_PACING`, `UPDATE_CAMPAIGN_FRAUD`, `UPDATE_BLACKLIST`, `UPDATE_SETTINGS`, `RECONCILIATION_ADJUST`, `ML_SCORE_BOOST`, `ML_GHOST_IVT`, `ML_BLACKLIST_ADD`, `RELOAD_RTB_CATALOG`, `PAUSE_PLACEMENT`, `PURGE_USER_DATA`, and others. Full dispatch: `internal/management/outbox_handlers.go`.
+
+### Entitlements
+
+Two layers merge in `internal/licensing/`:
+
+| Layer | Scope |
+| :--- | :--- |
+| Product license (JWT per `deployment_id`) | Deployment rights, instance ceilings |
+| Tenant subscription (PostgreSQL per `customer_id`) | Per-tenant features and quotas |
+
+Effective limit = `min(license, subscription)` per axis. Hot path reads a JWT snapshot only; `VolumeMeterWorker` records events/month for overage billing.
+
+Detail: [docs/MANAGEMENT.md](docs/MANAGEMENT.md).
+
+---
+
+## Redis and Lua
+
+### Topology and routing
+
+```text
+slot  = crc32_castagnoli(campaign_id) & 1023
+shard = slot_table[slot]    # 4 standalone Redis masters (non-cluster)
+```
+
+- **Model:** Client-side `StaticSlotSharder` (`atomic.Value` snapshot; `GetShard` ~5.6 ns/op). Not Redis Cluster — every `EVALSHA` targets one master with hash-tagged keys on that shard.
+- **Shard 0:** Pub/sub (`campaigns:update`), auth lockout, creative structures; global keys fan-out to all shards via outbox (M14-01).
+- **Failover:** Sentinel quorum 2; promotion ~10–15 s. Circuit breaker opens after 150 consecutive errors.
+- **Slot migration (M1):** `CampaignRedisKeyCatalog` drives COPY/DRAIN; migration fence (`code 11`) or dual-write delta stream; PG re-warm at cutover.
+- **Elastic triplets (M2):** `campaign_routing`, `routing_epoch`, `ShardOrchestrator`, TCP HMAC cutover — opt-in (`ELASTIC_SHARDING_ENABLED`).
+- **Shard-0 survival (M14):** Registry stale-serve, broker `campaigns:update` fallback, ingest reroute for triplet campaigns; `503 registry_stale` / `503 shard_unavailable`. Runbook: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) §Shard-0 outage.
+
+### Key layout
+
+| Class | Examples | Placement |
+| :--- | :--- | :--- |
+| **Global (replicated)** | `blacklist:*`, `ml:score:boost:{id}`, `config:values`, placement pause hashes | All shards via outbox; tracker reads local copy when shard 0 circuit-open |
+| **Campaign-local** | `{uuid}budget:campaign:{uuid}`, `{uuid}budget:quota:{uuid}`, `{uuid}dup:*`, `{uuid}idempotency:*`, `{uuid}ingress:day:*` | Home shard per `campaign_id` hash |
+| **Streams** | `ad:events:stream`, `slot_migration:delta` | Per-shard |
+| **Migration** | `budget:migration_fence:{uuid}`, `budget:frozen` | Source shard during COPY |
+
+Hash tags (`{uuid}…`) colocate all keys for one campaign on one shard so a single Lua script stays atomic.
+
+### Embedded Lua scripts
+
+Scripts ship in the tracker binary (`go:embed`), `SCRIPT LOAD` on startup, hot path uses `EVALSHA` with `NOSCRIPT` → `EVAL` fallback.
+
+| Script | Tier / role | When used |
+| :--- | :--- | :--- |
+| `budget-fast.lua` | **Tier B** | Impressions (default). Budget debit, fraud/placement/RPD pre-checks, idempotency, `XADD`. No fcap/pacing/TTC. |
+| `unified-filter.lua` | **Tier C** | Clicks and impressions needing fcap, even pacing, TTC, quota-refill probes. Same pre-checks as Tier B. |
+| `local-quota-refill.lua` | Cold | `QuotaRefillWorker`: atomically moves chunk from `budget:quota` to local ledger |
+| `local-quota-return.lua` | Cold | Pause/eviction/SIGTERM: return unused local quanta to Redis + broker delta |
+| `ip-rate-limit.lua` | Legacy | Embedded but **not** on hot path (M9-03); IP limits enforced at XDP PPS and nginx `limit_req` only |
+
+**Tier selection:** `LUA_FAST_PATH_ENABLED=true` (default) routes impressions to Tier B. Tier C when fcap, pacing, TTC, or strict quota paths apply.
+
+**Local quanta path:** `TrySpendLocal` → publish `BudgetDelta` → Tier B with `skip_budget=1` (idempotency + stream only).
+
+**Tier degradation (M9-04):** When filter deadline has < 2 ms left, Tier C skips non-critical gates and returns code `20` (`filter_tier_degraded_total`).
+
+**Lua return codes (Tier B):** `0` ok, `3` budget exhausted, `11` migration fenced, `12` daily quota, `14` placement blocked, `21` fraud signal (accepted with flag), `20` degraded ok.
+
+**Sticky eval pins (M9-08):** One `redis.Conn` per pinned worker × shard; `EVALSHA` on sticky conn achieves 0 allocs/op on wire path. Shutdown: `CloseFilterEvalPins()` before shard client close.
+
+**Observability (M14):** `filter_lua_branch_total{branch}`, `FILTER_SLOW_MS` slog per campaign+tier.
+
+IP rate limit composite key at edge: `campaign_id` + `user_id`, fallback client IP.
+
+Detail: [docs/DATA.md](docs/DATA.md) Part I §3–5.
+
+### Edge Lua (OpenResty)
+
+Nginx/OpenResty on `:8180` / `:443` terminates TLS, H2, and H3; upstream to tracker is HTTP/1.1. Shard pick must match Go `StaticSlotSharder` (`edge-slot-map.lua`, `edge-shard-balancer.lua`).
+
+| Module | Role |
+| :--- | :--- |
+| `access-check.lua` | Two-phase gate: phase 1 (rate limit, circuit breaker, blacklist) without body; phase 2 delegates to `edge-phase2.lua` |
+| `edge-phase2.lua` | `read_body`, DFA parse, per-campaign `edge-rl.lua`, proxy to tracker pool |
+| `edge-parse-dfa.lua` | Byte DFA: `openrtb_3` extracts `request.item[0].id`; `espx_native` scans `campaign_id` |
+| `edge-rl.lua` | Per-campaign rate limit (`campaign_id` + `user_id`, IP fallback) |
+| `edge-blacklist-sync.lua` | Timer sync of Redis blacklist into `ngx.shared` cache; fail-closed when stale |
+| `edge-slot-map.lua` | Slot table + `routing_epoch` reload from management/broker |
+| `edge-shard-balancer.lua` | `get_shard()` upstream balancer parity with Go |
+| `edge-tarpit.lua` | Optional slow/drop on oversized headers or body (M14-08, `EDGE_TARPIT_ENABLED`) |
+| `edge-fraud-tier.lua` | Edge-side fraud score tier for RL tightening |
+| `edge-metrics.lua` | Prometheus counters for parse rejects, blacklist stale, protocol ingress |
+
+Ingress schema must match tracker: `TRACKER_INGRESS_SCHEMA=openrtb_3` (default) or `espx_native`.
+
+Detail: [docs/EDGE.md](docs/EDGE.md), [docs/EBPF.md](docs/EBPF.md) (XDP L4 before nginx).
+
+---
+
+## Hot path (summary)
+
+See [Redis and Lua](#redis-and-lua) for script tiers, key layout, and edge modules.
+
+| Component | Notes |
+| :--- | :--- |
+| gnet/v2 + HTTP/1 DFA | Table FSM on ring buffer; optional h2c (`handler_http2.go`) |
+| `PinnedWorkerPool` | Campaign-hash worker pinning |
+| `FilterEngine` | Go filters under monotonic `FilterDeadlineMono` |
+| Tier B (`budget-fast.lua`) | Default for impressions; one `EVALSHA` |
+| Tier C (`unified-filter.lua`) | Clicks / fcap / pacing / TTC |
+| Local quanta (M8) | `TrySpendLocal` + broker `budget-deltas`; `LOCAL_QUOTA_MODE` canary; pause/SIGTERM flush (M14) |
+| Sticky eval pins (M9) | 0 allocs/op on `EVALSHA` wire path |
+| `FraudStreamWriter` | Dual ring: 512 critical + 3584 analytical (M14); M11 /24 aggregation at ≥80% analytical fill |
+| Wire hardening (M14) | JSON depth cap (16/32), H2 hostile disconnect, optional edge tarpit |
+| Lua observability (M14) | `filter_lua_branch_total{branch}`; `FILTER_SLOW_MS` slow-script logs |
+
+Rules and PR checklist: [docs/GO.md](docs/GO.md). Runtime: tracker `GOGC=300`, `GOMEMLIMIT=700MiB` (M13).
+
+---
+
+## Benchmarks
+
+`linux/amd64`, Intel i5-11400H @ 2.70 GHz, Go 1.25, `go test -benchmem -count=3` (2026-07-24). Median of three runs.
+
+### Parse and routing
+
+| Benchmark | ns/op | allocs/op |
+| :--- | ---: | ---: |
+| `BenchmarkHTTP1DFA_Happy` | ~65 | 0 |
+| `BenchmarkHTTP1DFA_Worst` | ~501 | 0 |
+| `BenchmarkHTTP2DFA_Happy` | ~8.5 | 0 |
+| `BenchmarkHTTP2DFA_Worst` | ~117 | 0 |
+| `BenchmarkHTTP3DFA_Happy` | ~2.1 | 0 |
+| `BenchmarkHTTP3DFA_Worst` | ~52 | 0 |
+| `BenchmarkParseOpenRTB3FSM` | ~325 | 0 |
+| `BenchmarkTrackRequest_ParseJSONOpt` | ~171 | 0 |
+| `BenchmarkStaticSlotSharder_1024` | ~5.6 | 0 |
+| `BenchmarkSlotHash_CRC32` | ~2.3 | 0 |
+
+### Filter, RTB, quanta, fraud
+
+| Benchmark | ns/op | allocs/op |
+| :--- | ---: | ---: |
+| `BenchmarkFilterFraudBoost` | ~93 | 0 |
+| `BenchmarkAuction` | ~30 | 0 |
+| `BenchmarkAuction_highDensity` | ~112 | 0 |
+| `BenchmarkLocalQuantaSpend` | ~13 | 0 |
+| `BenchmarkFraudAggregate` (M11) | ~23 | 0 |
+
+### Redis Lua (requires testcontainer Redis)
+
+| Benchmark | Tier | ns/op | allocs/op |
+| :--- | :--- | ---: | ---: |
+| `BenchmarkLuaScript_Happy` | B (impression) | ~81k | 0 |
+| `BenchmarkLuaScript_Worst` | C (click + fcap) | ~92k | 0 |
+
+Source: [docs/CAPABILITIES.md](docs/CAPABILITIES.md) §M9 (real Redis, 2026-07-24).
+
+### Broker (`pkg/broker`)
+
+| Benchmark | ns/op | allocs/op |
+| :--- | ---: | ---: |
+| `BenchmarkSegmentWrite` | ~26 | 0 |
+| `BenchmarkTopicRegistryLookup` | ~1.2 | 0 |
+| `BenchmarkReadFrame` | ~32 | 0 |
+| `BenchmarkBrokerThroughput/Produce-Sequential` | ~15.5k | 1 |
+| `BenchmarkBrokerThroughput/Fetch-Sequential` | ~15.4k | 1 |
 
 ```bash
-go test -benchmem -run='^$' -bench='BenchmarkStaticSlotSharder|BenchmarkFilterFraudBoost|BenchmarkHotPath|BenchmarkAuction' ./internal/ingestion/... ./internal/rtb/...
+go test -run='^$' -bench='BenchmarkHTTP1DFA|BenchmarkParseOpenRTB3FSM|BenchmarkAuction|BenchmarkFilterFraudBoost' -benchmem ./internal/ingestion/... ./internal/rtb/...
+go test -run='^$' -bench='BenchmarkLuaScript' -benchmem ./internal/ingestion/...   # needs Docker
 make test-alloc-gate
 ```
 
-### Custom Message Broker (`pkg/broker`)
+---
 
-Log-based message broker leveraging **gnet TCP**, **mmap log segments**, and Redis leader election. Binary wire protocol for Produce/Fetch operations; built-in retention and replication.
-
-| Benchmark | ns/op | B/op | allocs/op | Description |
-| :--- | ---: | ---: | ---: | :--- |
-| `SegmentWrite` (mmap append) | **28** | 0 | **0** | Segment write execution |
-| `TopicRegistryLookup` | **1.2** | 0 | **0** | Topic ID map lookup |
-| `ReadFrame` (wire decode) | **32** | 0 | **0** | Wire frame parsing |
-| `BrokerThroughput/Produce` | **14 300** | 24 | 1 | 256 B payload end-to-end |
-| `BrokerThroughput/Fetch` | **14 300** | 173 | 1 | Sequential fetch |
+## Quick start
 
 ```bash
-go test -benchmem -run='^$' -bench='BenchmarkBrokerThroughput|BenchmarkSegmentWrite|BenchmarkReadFrame' ./pkg/broker/...
+make dev-up
+make test
+make test-alloc-gate
 ```
 
-The tracker emits slot-map reloading instructions and stream events through the broker; processor and log-shipper components operate as consumers committing offsets to Redis.
+CI gates: `scripts/perf-gate/`, `scripts/chaos-drills/test_chaos.sh`.
 
 ---
 
-## GC and Memory Management on the Hot Path
+## Documentation
 
-The hot path eliminates runtime heap allocations per request by sourcing memory from gnet socket ring buffers, vtproto allocation pools, fixed-size stack arrays (`[N]byte`), and pre-allocated slices (`[]byte`). This minimizes garbage collector invocation frequency and reduces Stop-The-World (STW) pause duration under peak load.
-
-| Mechanism | Effect |
+| Document | Scope |
 | :--- | :--- |
-| **0 allocs/op** during parse/filter/respond | Reduced allocation rate resulting in fewer GC cycles |
-| **`GOMEMLIMIT`** (700 MiB tracker, 1500 MiB processor) | Soft heap limit enabling GC cycles prior to OOM invocation |
-| **`GOGC=50`** (tracker) | Accelerated heap reclamation, trading CPU cycles for reduced steady-state heap size |
-| **Container Isolation** (tracker / processor) | Prevents processor batch GC pauses from blocking gnet event loops |
-| **vtproto + sync.Pool** | Struct instance reuse replacing per-event allocations |
-| **Lossy Ring Buffers** (fraud, latency) | Fixed memory bounds; drops overflowing items to prevent unbounded heap growth |
-| **Monotonic Deadlines** | Avoids per-request `time.Now()` and `context.Context` heap allocations |
-
-With sufficient memory capacity, setting `GOGC=off` reduces STW frequencies further if steady-state heap remains predictable. The design goal is bounded STW durations during traffic spikes.
-
----
-
-## Fraud Prevention Architecture
-
-The fraud detection layer utilizes dynamic signal accumulation inside `fraudAccumulator` (up to 4 distinct reason flags, score range 0–100), mapping outputs to campaign tiers and response levels.
-
-### Action Tiers
-
-| Tier | Response | Trigger Condition |
-| :--- | :--- | :--- |
-| **L1 Reject** | HTTP 403 response, event is not debited | Active L3 blocklist entry **or** ≥ 2 L1-high signals |
-| **L2 Shadow (ghost)** | HTTP 200 (accepted), `ShadowEvent=true`, appended to fraud stream | 1× L1-high, L2-weak signal, or Suspect/IVT/Block campaign tier |
-| **L3 Quarantine** | IP added to `blacklist:fraud` (shard 0), propagated via outbox | Cold-path output from IVT rules, ML models, or manual intervention |
-
-An active L3 record or two L1-high signals short-circuits the **UnifiedFilter (Lua budget)** check, skipping unnecessary Redis network round-trips.
-
-### Hot Path Signals (Go + Lua)
-
-| Code | Weight | Category | Origin |
-| :--- | ---: | :--- | :--- |
-| `datacenter_ip` | 45 | L1-high | MaxMind anonymous/proxy/datacenter flags |
-| `low_ttc` | 45 | L1-high | Time-to-click below threshold set in unified Lua script |
-| `tls_blocklist` | 45 | L1-high | TLS fingerprint match against static blocklist |
-| `missing_imp_ts` | 35 | L2-weak | Click missing prior impression timestamp (TTC fail-closed) |
-| `device_mismatch` | 35 | L2-weak | DeviceFilter mismatch between UA/device and campaign targeting |
-| `l3_blocklist` | 100 | L3 | Match in `SISMEMBER blacklist:fraud` on Redis shard 0 |
-
-### FilterEngine Execution Sequence
-
-1. License / Entitlements check
-2. **Emergency Breaker** — Global circuit breaker
-3. **Geo** — MaxMind lookup (fail-open on error)
-4. **Schedule** — Campaign dayparting validation
-5. **Placement Blacklist** — Paused placement list per shard
-6. **Fraud Blacklist (L3)** — Ingress check for cold-path quarantine lists
-7. **Fraud (datacenter IP)** — MaxMind anonymous IP verification
-8. **Device** — Device attribute mismatch evaluation
-9. **Consent** — GDPR purpose validation
-10. **ML Boost** — Snapshot apply from `ml:score:boost:{campaign_id}` (0 allocations, ~90 ns)
-11. **UnifiedFilter Lua** — Executes budget evaluation, pacing, deduplication, rate limits, TTC, frequency capping, idempotency checks, migration fencing, and stream XADD operations
-
-Campaign tier thresholds follow: `pass ≤ suspect ≤ ivt ≤ block` (default values: 20/50/75/90). Setting `GhostIVTEnabled` activates L2 ghost processing for the suspect threshold range.
-
-### Cold Path: ivt-detector + fraud-scorer
-
-**ivt-detector** (ClickHouse rule execution via scheduled batching):
-
-| Rule | Function |
-| :--- | :--- |
-| `high_click_to_imp_ratio` | Identifies anomalous IP-level CTR thresholds |
-| `shared_fingerprint_cluster` | Clusters overlapping client device fingerprints |
-| `campaign_ctr_spike` | Detects sudden campaign-level CTR anomalies |
-| `interval_botnet` | Detects deterministic click timing intervals indicative of automated botnets |
-| `datacenter_asn` | Flags hosting provider ASNs by IP range |
-| `fraud_scoring_rule` | Evaluates ML ensemble outputs to trigger boost, ghost mode, or blacklisting |
-
-**fraud-scorer**: Executes LightGBM + Isolation Forest inference models, with optional ONNX support (`-tags fraudscoring_onnx`). Microbatch output maps to transactional outbox events:
-
-| Outbox Event | Action |
-| :--- | :--- |
-| `ML_SCORE_BOOST` | Writes `ml:score:boost:{campaign_id}` to Redis |
-| `ML_GHOST_IVT` | Enables ghost mode for traffic identified as suspect |
-| `ML_BLACKLIST_ADD` | Appends IP address to `blacklist:fraud` and Nginx access deny lists |
-| `ML_MODEL_VERSION` | Executes canary deployments of model versions per shard |
-
-Model updates deploy as a single-shard canary, evaluating false-positive metrics prior to full promotion or rollback.
-
-### Edge Filtering (L4/L7)
-
-| Layer | Implementation |
-| :--- | :--- |
-| **XDP** (`edge_filter.c`) | Ingress LPM allow/deny rules, per-IP SYN rate limiting (64/s), global SYN rate limiting (50k/s per 8 cores), token-bucket PPS limiting (2000), and TCP anomaly drops |
-| **Nginx Lua** | Edge blacklist enforcement, rate limiting, and `get_shard()` mapping aligned with Go StaticSlot logic |
-| **UDP Control** | Pushes shard maps and campaign state updates without HTTP overhead |
-
-Planned roadmap (M10): SYN cookie generation, RST flood mitigation, and TCP fingerprinting linked to `ML_GHOST_IVT` (scoring without hard L4 blocking).
-
-### Fraud Telemetry
-
-`FraudStreamWriter` utilizes an MPSC ring buffer containing 4096 fixed-size entry slots, flushing via batch Redis `XADD` operations. Buffer exhaustion triggers lossy event dropping with metric increments, preserving non-blocking behavior in gnet loops.
-
----
-
-## Redis Sharding Architecture
-
-### Current Strategy: StaticSlot (Phase 2)
-
-```
-campaign_id ──crc32──► slot = hash & 1023 ──► slot_table[1024] ──► shard_id
-```
-
-- **4 standalone Redis master nodes** (production topology, non-clustered)
-- Shard lookup table stored as an immutable snapshot in `atomic.Value`; reloads execute without mutex contention on `GetShard` (~5.7 ns lookup cost)
-- Master slot table state persisted in PostgreSQL; `SlotMapWatcher` uses polling and broker topic push notifications for reloads
-- Shard 0 handles pub/sub (`campaigns:update`), authentication lockouts, brand creatives, and `blacklist:fraud`
-- Budget and filter key entries utilize hash-tags `{campaign_uuid}` to guarantee single-shard key co-location
-
-**JumpHash status**: Deprecated, pending removal from production (M9-07). `HybridBalancer.SelectAndShard` is restricted to RTB canary evaluation.
-
-### Planned Strategy (M1 → M2)
-
-Elastic sharding capabilities remain blocked pending complete key migration implementation.
-
-| Phase | Status | Objective |
-| :--- | :--- | :--- |
-| **M1 Slot Migration** | Active | `SlotMigrationOrchestrator`: COPY (`DUMP`/`RESTORE`) → drain → activate. `MIGRATION_FENCE_ENABLED` blocks debiting during COPY. Pre-warms PostgreSQL state for target shards; executes `AssertBudgetInvariant` |
-| **CampaignRedisKeyCatalog** | Active | Unified directory of hash-tagged keys for migration, warming, and reference |
-| **Edge Sync** | Partial | `edge-slot-map.lua` + `edge-bpf-sync`. Maintains parity between Edge shard mapping and Go `GetShard` output |
-| **M2 Elastic Triplets** | Blocked on M1 | `ShardOrchestrator`: EWMA metrics tracking per shard/campaign; automated triplet migration on overload (> 85% utilization for > 5 min) |
-
-Cutover sequence: **fence → pause → pre-warm PG state on target → increment epoch → drain source shard → execute R5 invariant verification**.
-
----
-
-## Component Topology and Tech Stack
-
-| Binary | Location |
-| :--- | :--- |
-| tracker | `cmd/tracker` |
-| processor | `cmd/processor` |
-| management | `cmd/management` |
-| broker | `cmd/broker` |
-| fraud-scorer | `cmd/fraud-scorer` |
-| ivt-detector | `cmd/ivt-detector` |
-| auth / payment / billing / notifier | `cmd/*` |
-
-**Technology Stack:** Go 1.25+, gnet/v2, pgx/v5 + sqlc, Redis (client-sharded), PostgreSQL, ClickHouse, embedded Lua scripts, vtproto, MaxMind IP database, Prometheus, HTMX administration UI.
-
-Redis unified-filter Lua execution: **p99 < 10 ms** per shard. Geo filter lookup: **p99 < 10 µs** (sampled).
-
----
-
-## Quick Start
-
-```bash
-make dev-up          # Start local docker-compose environment
-make test            # Execute unit and integration tests
-make test-alloc-gate # Run zero-allocation verification suite on hot path
-```
-
-Performance assertion gates and fault injection suites: `scripts/perf-gate/`, `scripts/chaos-drills/`.
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Topology, request flow, SLAs |
+| [docs/GO.md](docs/GO.md) | Tracker hot path |
+| [docs/DATA.md](docs/DATA.md) | Redis, PostgreSQL, ClickHouse |
+| [docs/EDGE.md](docs/EDGE.md) | Nginx/OpenResty ingress |
+| [docs/EBPF.md](docs/EBPF.md) | XDP L4 |
+| [docs/RTB.md](docs/RTB.md) | In-process auction |
+| [docs/MANAGEMENT.md](docs/MANAGEMENT.md) | Control plane |
+| [docs/CAPABILITIES.md](docs/CAPABILITIES.md) | Shipped milestones (M1–M14) |
+| [docs/BACKLOG.md](docs/BACKLOG.md) | Open gaps |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Local setup, CI, runbooks |
 
 ---
 
 ## Licensing
 
-On-premise license server and verification tooling: `cmd/license-server`. Tenant deployment tiers configured via deployment configuration files.
+Product license (JWT per deployment) and tenant subscriptions merge in `internal/licensing/`. Binary: `cmd/license-server`. Detail: [docs/MANAGEMENT.md](docs/MANAGEMENT.md) §5–6 and [Management and administration](#management-and-administration) above.

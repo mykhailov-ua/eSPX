@@ -12,6 +12,7 @@ import (
 	"espx/internal/config"
 	"espx/internal/database"
 	"espx/internal/ingestion"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	"github.com/spf13/cobra"
@@ -95,7 +96,7 @@ func getDB(ctx context.Context) (*pgxpool.Pool, error) {
 
 // getRedisShards dials every shard with StaticSlot routing matching the tracker hot path.
 func getRedisShards(ctx context.Context) ([]redis.UniversalClient, *ingestion.StaticSlotSharder, error) {
-	clients, err := database.ConnectRedisShards(ctx, cfg, database.RedisShardOptions{PoolSize: 10})
+	clients, _, err := database.ConnectRedisShards(ctx, cfg, database.RedisShardOptions{PoolSize: 10})
 	if err != nil {
 		return nil, nil, err
 	}

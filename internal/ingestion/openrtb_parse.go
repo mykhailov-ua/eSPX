@@ -1,10 +1,6 @@
 package ingestion
 
-import (
-	"bytes"
-)
-
-// parseDecimalMicro parses a decimal string like "1.50" or "150" into micro-units (multiplied by 1,000,000).
+// parseDecimalMicro parses a decimal string like "1.50" or "150" into micro-units (×1_000_000).
 func parseDecimalMicro(b []byte) int64 {
 	i := 0
 	n := len(b)
@@ -36,7 +32,6 @@ func parseDecimalMicro(b []byte) int64 {
 		}
 		i++
 	}
-	// Pad decimal part to 6 digits (micro-units)
 	for decDigits < 6 {
 		dec *= 10
 		decDigits++
@@ -45,116 +40,39 @@ func parseDecimalMicro(b []byte) int64 {
 }
 
 // ParseOpenRTB3Payload parses a nested OpenRTB 3.0 / AdCOM JSON payload on the hot path with 0 allocs.
+// Uses the shared incremental JSON FSM (M12-02); no bytes.Index substring scans.
 func ParseOpenRTB3Payload(payload []byte) (minBid int64, deviceType uint8, categoryMask uint64, isOpenRTB bool) {
-	n := len(payload)
-	if n < 10 {
+	p := parseOpenRTB3FSM(payload)
+	if !p.IsOpenRTB {
 		return 0, 0, 0, false
 	}
-
-	openrtbIdx := bytes.Index(payload, []byte(`"openrtb"`))
-	if openrtbIdx == -1 {
-		return 0, 0, 0, false
-	}
-
-	minBid = 0
-	deviceType = 1
-	categoryMask = 1
-
-	flrIdx := bytes.Index(payload, []byte(`"flr"`))
-	if flrIdx != -1 {
-		idx := flrIdx + 5
-		for idx < n && (payload[idx] == ' ' || payload[idx] == '\t' || payload[idx] == ':') {
-			idx++
-		}
-		valStart := idx
-		for idx < n && ((payload[idx] >= '0' && payload[idx] <= '9') || payload[idx] == '.') {
-			idx++
-		}
-		if valStart < idx {
-			minBid = parseDecimalMicro(payload[valStart:idx])
-		}
-	}
-
-	deviceIdx := bytes.Index(payload, []byte(`"device"`))
-	if deviceIdx != -1 {
-		typeIdx := bytes.Index(payload[deviceIdx:], []byte(`"type"`))
-		if typeIdx != -1 {
-			idx := deviceIdx + typeIdx + 6
-			for idx < n && (payload[idx] == ' ' || payload[idx] == '\t' || payload[idx] == ':') {
-				idx++
-			}
-			valStart := idx
-			for idx < n && (payload[idx] >= '0' && payload[idx] <= '9') {
-				idx++
-			}
-			if valStart < idx {
-				var adcomType int
-				for j := valStart; j < idx; j++ {
-					adcomType = adcomType*10 + int(payload[j]-'0')
-				}
-				// Map AdCOM 1.0 device types to our internal DeviceMask:
-				// 1 = Mobile/Tablet, 2 = PC, 4 = Phone, 5 = Tablet
-				switch adcomType {
-				case 2: // PC -> Desktop (1)
-					deviceType = 1
-				case 4, 1: // Phone / Mobile -> Mobile (2)
-					deviceType = 2
-				case 5: // Tablet -> Tablet (4)
-					deviceType = 4
-				default:
-					deviceType = 1
-				}
-			}
-		}
-	}
-
-	catIdx := bytes.Index(payload, []byte(`"category_mask"`))
-	if catIdx != -1 {
-		idx := catIdx + 15
-		for idx < n && (payload[idx] == ' ' || payload[idx] == '\t' || payload[idx] == ':') {
-			idx++
-		}
-		valStart := idx
-		for idx < n && (payload[idx] >= '0' && payload[idx] <= '9') {
-			idx++
-		}
-		if valStart < idx {
-			var mask uint64
-			for j := valStart; j < idx; j++ {
-				mask = mask*10 + uint64(payload[j]-'0')
-			}
-			categoryMask = mask
-		}
-	}
-
-	return minBid, deviceType, categoryMask, true
+	return p.MinBid, p.DeviceType, p.CategoryMask, true
 }
 
-// ParseDealID extracts a PMP deal_id from OpenRTB or legacy JSON payload without full unmarshaling.
+// ParseDealID extracts a PMP deal_id into a heap string (cold/compat). Prefer ParseDealIDBytes on hot path.
 func ParseDealID(payload []byte) string {
-	if len(payload) == 0 {
+	var buf [ortbDealIDMax]byte
+	n := ParseDealIDBytes(payload, buf[:])
+	if n == 0 {
 		return ""
 	}
-	key := []byte(`"deal_id"`)
-	idx := bytes.Index(payload, key)
-	if idx == -1 {
-		return ""
+	return string(buf[:n])
+}
+
+// ParseDealIDBytes copies deal_id into dst without heap allocation; returns length written.
+func ParseDealIDBytes(payload []byte, dst []byte) int {
+	if len(payload) == 0 || len(dst) == 0 {
+		return 0
 	}
-	i := idx + len(key)
-	n := len(payload)
-	for i < n && (payload[i] == ' ' || payload[i] == '\t' || payload[i] == ':') {
-		i++
+	p := parseOpenRTB3FSM(payload)
+	if p.DealIDLen == 0 {
+		return 0
 	}
-	if i >= n || payload[i] != '"' {
-		return ""
+	src := ortbSlice(payload, p.DealIDOff, p.DealIDLen)
+	n := len(src)
+	if n > len(dst) {
+		n = len(dst)
 	}
-	i++
-	start := i
-	for i < n && payload[i] != '"' {
-		i++
-	}
-	if start >= i {
-		return ""
-	}
-	return string(payload[start:i])
+	copy(dst[:n], src[:n])
+	return n
 }

@@ -7,13 +7,14 @@ import (
 
 	"espx/internal/database"
 	"espx/internal/metrics"
+
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
 )
 
 const chaosRedisShardLabel = "0"
 
-// chaosGaugeValue reads a Prometheus gauge for GUIDE_CHAOS_RELIABILITY steady-state assertions.
+// chaosGaugeValue reads a Prometheus gauge for CHAOS.md steady-state assertions.
 func chaosGaugeValue(t *testing.T, g interface{ Write(*dto.Metric) error }) float64 {
 	t.Helper()
 	var m dto.Metric
@@ -33,7 +34,7 @@ func redisBreakerStateMetric(t *testing.T, shard string) float64 {
 	return chaosGaugeValue(t, g)
 }
 
-// requireRedisOutageMetrics waits until GUIDE_CHAOS_RELIABILITY R8 signals Redis degradation:
+// requireRedisOutageMetrics waits until CHAOS.md R8 signals Redis degradation:
 // ad_tracker_health_degraded==1 (health probe) or ad_redis_breaker_state==open.
 func requireRedisOutageMetrics(t *testing.T) {
 	t.Helper()

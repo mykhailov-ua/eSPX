@@ -3,6 +3,7 @@ package ingestion
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"strings"
@@ -77,6 +78,11 @@ type Registry struct {
 	replicaPath   string
 	wg            sync.WaitGroup
 	budgetWarmer  *BudgetCacheWarmer
+
+	// M14-02: stale-serve when shard-0 pub/sub (or broker fallback) is quiet.
+	lastPubSubOKUnix int64 // unix nano; atomic
+	staleTTLNano     int64 // atomic; 0 = disabled
+	staleMode        int32 // atomic; 1 = stale
 }
 
 func NewRegistry(repo db.Querier) *Registry {
@@ -135,6 +141,8 @@ func (r *Registry) UpdateAndWarmCampaign(ctx context.Context, id uuid.UUID) erro
 		}
 	} else {
 		delete(newMap, id)
+		// M14-13: return unused RAM quanta when campaign leaves ACTIVE.
+		invokeRegistryQuantaFlush(id)
 	}
 	r.data.Store(&campaignMapSnapshot{byID: newMap})
 	w := r.budgetWarmer
@@ -495,33 +503,75 @@ func (r *Registry) StartWatch(ctx context.Context, rdb redis.UniversalClient, ch
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
-		pubsub := rdb.Subscribe(ctx, channel)
-		defer pubsub.Close()
-
-		ch := pubsub.Channel(redis.WithChannelSize(1000))
+		backoff := time.Second
 		for {
+			if ctx.Err() != nil {
+				return
+			}
+			if rdb == nil {
+				slog.Error("registry pubsub: nil redis client")
+				return
+			}
+			err := r.watchPubSubOnce(ctx, rdb, channel)
+			if ctx.Err() != nil {
+				return
+			}
+			slog.Warn("registry pubsub disconnected, reconnecting", "error", err, "backoff", backoff)
 			select {
 			case <-ctx.Done():
 				return
-			case msg, ok := <-ch:
-				if !ok {
-					slog.Error("redis pubsub channel closed permanently")
-					return
-				}
-				id, err := uuid.Parse(msg.Payload)
-				if err != nil {
-					slog.Warn("received invalid campaign id in pubsub", "payload", msg.Payload)
-					continue
-				}
-				if err := r.UpdateAndWarmCampaign(ctx, id); err != nil {
-					slog.Error("incremental campaign registry reload failed", "campaign_id", id, "error", err)
-					continue
-				}
-				slog.Debug("campaign registry incremental reload", "campaign_id", id)
+			case <-time.After(backoff):
+			}
+			if backoff < 30*time.Second {
+				backoff *= 2
 			}
 		}
 	}()
 }
+
+func (r *Registry) watchPubSubOnce(ctx context.Context, rdb redis.UniversalClient, channel string) error {
+	pubsub := rdb.Subscribe(ctx, channel)
+	defer pubsub.Close()
+
+	if _, err := pubsub.Receive(ctx); err != nil {
+		return err
+	}
+	r.MarkPubSubOK()
+
+	ch := pubsub.Channel(redis.WithChannelSize(1000))
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			// Probe subscription health; failure enters reconnect + stale-serve path.
+			if err := pubsub.Ping(ctx); err != nil {
+				return err
+			}
+			r.MarkPubSubOK()
+		case msg, ok := <-ch:
+			if !ok {
+				return errPubSubClosed
+			}
+			id := uuid.UUID{}
+			if !ParseUUID(UnsafeBytes(msg.Payload), &id) {
+				slog.Warn("received invalid campaign id in pubsub", "payload", msg.Payload)
+				continue
+			}
+			if err := r.UpdateAndWarmCampaign(ctx, id); err != nil {
+				slog.Error("incremental campaign registry reload failed", "campaign_id", id, "error", err)
+				continue
+			}
+			r.MarkPubSubOK()
+			slog.Debug("campaign registry incremental reload", "campaign_id", id)
+		}
+	}
+}
+
+var errPubSubClosed = errors.New("redis pubsub channel closed")
 
 func (r *Registry) Wait(ctx context.Context) error {
 	done := make(chan struct{})

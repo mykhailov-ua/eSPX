@@ -64,6 +64,12 @@ func (c *CLI) Run() error {
 		}
 		return c.RunApply(dryRun)
 
+	case "rollback":
+		if len(c.Args) < 3 {
+			return fmt.Errorf("usage: espx-install rollback <tracker|processor>")
+		}
+		return RunRollbackCLI(c.Args[2])
+
 	case "doctor":
 		asJSON := false
 		for _, arg := range c.Args[2:] {
@@ -93,6 +99,7 @@ func (c *CLI) PrintUsage() {
 	fmt.Println("  provision [--yes]")
 	fmt.Println("  configure [--interactive]")
 	fmt.Println("  apply     [--dry-run]")
+	fmt.Println("  rollback  <tracker|processor>")
 	fmt.Println("  doctor    [--json]")
 	fmt.Println("  license   <install|activate|status>")
 }

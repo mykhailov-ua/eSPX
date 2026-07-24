@@ -23,6 +23,8 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 	rediscontainer "github.com/testcontainers/testcontainers-go/modules/redis"
 	"github.com/testcontainers/testcontainers-go/wait"
+
+	"espx/internal/licensing"
 )
 
 const adsContainerStopTimeout = 10 * time.Second
@@ -46,17 +48,18 @@ type adsChaosInfra struct {
 
 // adsIngestStack wires gnet tracker handler and a stream consumer against chaos infra.
 type adsIngestStack struct {
-	Handler       *AdsPacketHandler
-	Consumer      *StreamConsumer
-	Registry      *Registry
-	UnifiedFilter *UnifiedFilter
-	CampaignID    uuid.UUID
-	Stream        string
-	ctx           context.Context
-	Cancel        context.CancelFunc
-	probeCancel   context.CancelFunc
-	redisMetrics  bool
-	cfg           *config.Config
+	Handler         *AdsPacketHandler
+	Consumer        *StreamConsumer
+	Registry        *Registry
+	UnifiedFilter   *UnifiedFilter
+	SettingsWatcher *SettingsWatcher
+	CampaignID      uuid.UUID
+	Stream          string
+	ctx             context.Context
+	Cancel          context.CancelFunc
+	probeCancel     context.CancelFunc
+	redisMetrics    bool
+	cfg             *config.Config
 }
 
 // setupAdsChaosInfra boots Postgres and Redis with ads migrations applied.
@@ -241,6 +244,75 @@ func seedChaosCampaign(t *testing.T, infra *adsChaosInfra, registry *Registry) u
 	return campaignID
 }
 
+func seedChaosLicenseActive(registry *Registry, customerID uuid.UUID) {
+	registry.entitlements.Store(&entitlementsSnapshot{
+		byCustomerID: map[uuid.UUID]licensing.Entitlements{
+			customerID: {
+				Limits: licensing.Limits{
+					MaxRPS:            10_000_000,
+					MaxRequestsPerDay: 10_000_000,
+				},
+			},
+		},
+		licenseState: licensing.StateActive,
+		license: licensing.Entitlements{
+			Limits: licensing.Limits{MaxRPS: 10_000_000},
+		},
+	})
+}
+
+func buildChaosProductionFilterEngine(
+	timeout time.Duration,
+	registry *Registry,
+	rdbs []redis.UniversalClient,
+	sharder Sharder,
+	campaignRepo *CampaignRepo,
+	rateLimit int,
+	stream string,
+	maxStreamLen int,
+) (*FilterEngine, *UnifiedFilter, *SettingsWatcher) {
+	cfg := &config.Config{
+		RateLimitPerMin: rateLimit,
+		RedisStreamName: stream,
+		StreamMaxLen:    maxStreamLen,
+	}
+	geoProvider := &MockGeoProvider{}
+	settingsWatcher := NewSettingsWatcher(rdbs, cfg)
+	consentStore := NewConsentStore(rdbs[0])
+
+	unifiedFilter := NewUnifiedFilter(
+		rdbs,
+		sharder,
+		registry,
+		campaignRepo,
+		0,
+		time.Minute,
+		45*time.Second,
+		24*time.Hour,
+		100_000,
+		10_000,
+		stream,
+		maxStreamLen,
+	)
+	unifiedFilter.SetLuaFastPathEnabled(true)
+	unifiedFilter.SetTTCMin(0)
+
+	engine := NewFilterEngine(timeout,
+		NewLicenseFilter(registry),
+		NewEmergencyBreakerFilter(settingsWatcher),
+		NewGeoFilter(geoProvider, registry),
+		NewScheduleFilter(registry),
+		NewFraudFilter(geoProvider),
+		NewDeviceFilter(settingsWatcher),
+		NewConsentFilter(registry, consentStore),
+		unifiedFilter,
+	)
+	unifiedFilter.SetRegionCode(0)
+	engine.SetRegistry(registry)
+	engine.SetSettingsWatcher(settingsWatcher)
+	return engine, unifiedFilter, settingsWatcher
+}
+
 func startAdsIngestStack(t *testing.T, infra *adsChaosInfra, stream string) *adsIngestStack {
 	return startAdsIngestStackOpts(t, infra, stream, adsIngestStackOpts{filterTimeoutMs: 2000})
 }
@@ -271,12 +343,13 @@ func (o adsIngestStackOpts) rateLimitOrDefault() int {
 }
 
 type adsIngestStackOpts struct {
-	filterTimeoutMs int
-	redisMetrics    bool
-	maxWorkers      int
-	rateLimit       int
-	redisDelay      time.Duration // Latency Monkey: per-command delay on Redis hook (P0 chaos).
-	useStaticSlot   bool          // Production sharder instead of JumpHash (P0 chaos).
+	filterTimeoutMs   int
+	redisMetrics      bool
+	maxWorkers        int
+	rateLimit         int
+	redisDelay        time.Duration // Latency Monkey: per-command delay on Redis hook (P0 chaos).
+	useStaticSlot     bool          // Production sharder instead of JumpHash (P0 chaos).
+	productionFilters bool          // Tracker production filter chain (license→…→unified).
 }
 
 func startAdsIngestStackOpts(t *testing.T, infra *adsChaosInfra, stream string, opts adsIngestStackOpts) *adsIngestStack {
@@ -308,25 +381,50 @@ func startAdsIngestStackOpts(t *testing.T, infra *adsChaosInfra, stream string, 
 	}
 	registry.SetBudgetWarmer(NewBudgetCacheWarmer([]redis.UniversalClient{infra.Redis}, sharder))
 	campaignID := seedChaosCampaign(t, infra, registry)
+	if opts.productionFilters {
+		if camp, ok := registry.GetCampaign(campaignID); ok {
+			seedChaosLicenseActive(registry, camp.CustomerID)
+		}
+	}
 
 	store := NewPostgresStore(infra.Queries, 1*time.Second)
 	campaignRepo := NewCampaignRepo(infra.Queries)
 	rateLimit := opts.rateLimitOrDefault()
-	unifiedFilter := NewUnifiedFilter(
-		[]redis.UniversalClient{infra.Redis},
-		sharder,
-		registry,
-		campaignRepo,
-		rateLimit,
-		time.Minute,
-		45*time.Second,
-		24*time.Hour,
-		100_000,
-		10_000,
-		stream,
-		100000,
+
+	var (
+		unifiedFilter   *UnifiedFilter
+		filterEngine    *FilterEngine
+		settingsWatcher *SettingsWatcher
 	)
-	filterEngine := NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, unifiedFilter)
+	if opts.productionFilters {
+		filterEngine, unifiedFilter, settingsWatcher = buildChaosProductionFilterEngine(
+			time.Duration(cfg.FilterTimeoutMs)*time.Millisecond,
+			registry,
+			[]redis.UniversalClient{infra.Redis},
+			sharder,
+			campaignRepo,
+			rateLimit,
+			stream,
+			cfg.StreamMaxLen,
+		)
+		require.NoError(t, unifiedFilter.PreloadScripts(ctx))
+	} else {
+		unifiedFilter = NewUnifiedFilter(
+			[]redis.UniversalClient{infra.Redis},
+			sharder,
+			registry,
+			campaignRepo,
+			rateLimit,
+			time.Minute,
+			45*time.Second,
+			24*time.Hour,
+			100_000,
+			10_000,
+			stream,
+			100000,
+		)
+		filterEngine = NewFilterEngine(time.Duration(cfg.FilterTimeoutMs)*time.Millisecond, unifiedFilter)
+	}
 	consumer := NewStreamConsumer(store, infra.Redis, stream, stream+"-group", stream+"-c1",
 		cfg.EventBatchSize, cfg.MaxWorkers,
 		100*time.Millisecond, 1*time.Second,
@@ -337,16 +435,20 @@ func startAdsIngestStackOpts(t *testing.T, infra *adsChaosInfra, stream string, 
 	handler := NewAdsPacketHandler(cfg, registry, filterEngine, infra.Pool, []redis.UniversalClient{infra.Redis}, sharder, cfg.FraudStreamName, nil)
 
 	stack := &adsIngestStack{
-		Handler:       handler,
-		Consumer:      consumer,
-		Registry:      registry,
-		UnifiedFilter: unifiedFilter,
-		CampaignID:    campaignID,
-		Stream:        stream,
-		ctx:           ctx,
-		Cancel:        cancel,
-		redisMetrics:  opts.redisMetrics,
-		cfg:           cfg,
+		Handler:         handler,
+		Consumer:        consumer,
+		Registry:        registry,
+		UnifiedFilter:   unifiedFilter,
+		SettingsWatcher: settingsWatcher,
+		CampaignID:      campaignID,
+		Stream:          stream,
+		ctx:             ctx,
+		Cancel:          cancel,
+		redisMetrics:    opts.redisMetrics,
+		cfg:             cfg,
+	}
+	if settingsWatcher != nil {
+		go settingsWatcher.Start(ctx, time.Second)
 	}
 	if opts.redisMetrics {
 		stack.startRedisHealthProbe(t)

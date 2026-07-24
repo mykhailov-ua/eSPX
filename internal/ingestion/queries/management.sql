@@ -24,9 +24,9 @@ RETURNING *;
 
 -- name: GetCampaignFull :one
 SELECT c.*, 
-       sa.primary_a_shard, sa.primary_b_shard, sa.reserve_shard, sa.h_ema, sa.c_ema
+       cr.primary_a_shard, cr.primary_b_shard, cr.reserve_shard, cr.h_ema, cr.c_ema, cr.routing_epoch
 FROM campaigns c
-LEFT JOIN campaign_shard_assignment sa ON c.id = sa.campaign_id
+LEFT JOIN campaign_routing cr ON c.id = cr.campaign_id
 WHERE c.id = $1;
 
 -- name: CreateLedgerEntry :one

@@ -13,7 +13,7 @@ import (
 	"espx/internal/database"
 	"espx/internal/ingestion"
 	"espx/internal/ingestion/pb"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -71,7 +71,7 @@ func TestE2E_Flow(t *testing.T) {
 	campaignRepo := ingestion.NewCampaignRepo(queries)
 	unifiedFilter := ingestion.NewUnifiedFilter(
 		[]redis.UniversalClient{rdb},
-		ingestion.NewJumpHashSharder(1),
+		ingestion.NewStaticSlotSharder(1),
 		registry,
 		campaignRepo,
 		1000,
@@ -88,7 +88,7 @@ func TestE2E_Flow(t *testing.T) {
 	consumer.Start(ctx)
 	defer consumer.Close()
 
-	sharder := ingestion.NewJumpHashSharder(1)
+	sharder := ingestion.NewStaticSlotSharder(1)
 	handler := ingestion.NewAdsPacketHandler(cfg, registry, filterEngine, pool, []redis.UniversalClient{rdb}, sharder, cfg.FraudStreamName, nil)
 	defer handler.Stop(ctx)
 
@@ -159,7 +159,7 @@ func TestE2E_Flow_Protobuf(t *testing.T) {
 	campaignRepo := ingestion.NewCampaignRepo(queries)
 	unifiedFilter := ingestion.NewUnifiedFilter(
 		[]redis.UniversalClient{rdb},
-		ingestion.NewJumpHashSharder(1),
+		ingestion.NewStaticSlotSharder(1),
 		registry,
 		campaignRepo,
 		1000,
@@ -176,7 +176,7 @@ func TestE2E_Flow_Protobuf(t *testing.T) {
 	consumer.Start(ctx)
 	defer consumer.Close()
 
-	sharder := ingestion.NewJumpHashSharder(1)
+	sharder := ingestion.NewStaticSlotSharder(1)
 	handler := ingestion.NewAdsPacketHandler(cfg, registry, filterEngine, pool, []redis.UniversalClient{rdb}, sharder, cfg.FraudStreamName, nil)
 	defer handler.Stop(ctx)
 

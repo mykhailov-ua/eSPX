@@ -46,6 +46,7 @@ type Campaign struct {
 	DailySpendKeyPrefix string
 
 	MigrationGen  int64
+	RoutingEpoch  int64
 	HasTriplet    bool
 	PrimaryAShard int16
 	PrimaryBShard int16
@@ -58,6 +59,7 @@ type Campaign struct {
 	CurrentSpend     int64
 	DailyBudget      int64
 	DailyBudgetMicro int64
+	ReserveMicro     int64
 	Location         *time.Location
 	TargetCountries  map[string]struct{}
 
@@ -78,6 +80,17 @@ type Campaign struct {
 	FraudThresholdBlock   uint8
 	GhostIVTEnabled       bool
 	BehaviorFlags         BehaviorFlags
+}
+
+// LuaRoutingEpoch returns the epoch wired into Lua ARGV for migration fence checks (M2).
+func (c *Campaign) LuaRoutingEpoch() int64 {
+	if c == nil {
+		return 0
+	}
+	if c.RoutingEpoch > c.MigrationGen {
+		return c.RoutingEpoch
+	}
+	return c.MigrationGen
 }
 
 // BehaviorFlags enables per-campaign behavioral filter checks on the ingest hot path.

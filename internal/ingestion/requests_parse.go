@@ -40,13 +40,11 @@ func skipJSONValue(data []byte, start int) (int, error) {
 		i++ // skip '"'
 		return i, nil
 	case '{', '[':
+		// Absolute nest depth from this container; MaxJSONDepth rejects hostile deep nesting (M14-06).
 		depth := 1
-		openChar := b
-		closeChar := byte('}')
-		if b == '[' {
-			closeChar = byte(']')
+		if depth > MaxJSONDepth {
+			return i, errMalformedJSON
 		}
-
 		i++
 		inString := false
 		for i < n && depth > 0 {
@@ -63,9 +61,12 @@ func skipJSONValue(data []byte, start int) (int, error) {
 				switch char {
 				case '"':
 					inString = true
-				case openChar:
+				case '{', '[':
 					depth++
-				case closeChar:
+					if depth > MaxJSONDepth {
+						return i, errMalformedJSON
+					}
+				case '}', ']':
 					depth--
 				}
 			}

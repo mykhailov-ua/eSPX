@@ -57,6 +57,15 @@ function _M.record_blacklist_stale()
     metrics:incr("blacklist_stale_total", 1, 0)
 end
 
+function _M.record_tarpit(delay_sec)
+    metrics:incr("tarpit_total", 1, 0)
+    local ms = math.floor((delay_sec or 0) * 1000)
+    if ms < 0 then
+        ms = 0
+    end
+    metrics:incr("tarpit_delay_ms_total", ms, 0)
+end
+
 local function say_metric(name, metric_type, help, value)
     ngx.say("# HELP ", name, " ", help)
     ngx.say("# TYPE ", name, " ", metric_type)
@@ -81,6 +90,8 @@ function _M.render_prometheus()
     local ingress_h2 = metrics:get("ingress_protocol:h2_total") or 0
     local ingress_h3 = metrics:get("ingress_protocol:h3_total") or 0
     local blacklist_stale = metrics:get("blacklist_stale_total") or 0
+    local tarpit_total = metrics:get("tarpit_total") or 0
+    local tarpit_delay_ms = metrics:get("tarpit_delay_ms_total") or 0
     local sync_ts = blacklist_cache:get("_bl_sync_ts") or 0
     local bl_count = blacklist_cache:get("_bl_count") or 0
 
@@ -179,6 +190,18 @@ function _M.render_prometheus()
         "counter",
         "Requests rejected because blacklist sync is missing or stale (503).",
         blacklist_stale
+    )
+    say_metric(
+        "espx_edge_tarpit_total",
+        "counter",
+        "Requests delayed by optional edge tarpit (EDGE_TARPIT_ENABLED).",
+        tarpit_total
+    )
+    say_metric(
+        "espx_edge_tarpit_delay_ms_total",
+        "counter",
+        "Cumulative tarpit delay milliseconds applied at edge.",
+        tarpit_delay_ms
     )
     say_metric(
         "espx_edge_sync_last_success_timestamp",

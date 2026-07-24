@@ -9,8 +9,13 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-// outputPad matches cilium/ebpf prog.Test allocation (256 + NET_IP_ALIGN).
+// benchOutputPad matches cilium/ebpf RunOptions.DataOut sizing (256 + NET_IP_ALIGN).
 const benchOutputPad = 258
+
+func benchRunOptions(pkt []byte) *ebpf.RunOptions {
+	out := make([]byte, len(pkt)+benchOutputPad)
+	return &ebpf.RunOptions{Data: pkt, DataOut: out, Repeat: 1}
+}
 
 // BenchmarkXDP_passSYN_noFingerprint isolates Tier C ringbuf cost vs baseline.
 func BenchmarkXDP_passSYN_noFingerprint(b *testing.B) {
@@ -21,12 +26,12 @@ func BenchmarkXDP_passSYN_noFingerprint(b *testing.B) {
 		b.Fatal(err)
 	}
 	pkt := buildSYNPacketBench(net.IPv4(10, 1, 2, 3), trackerPort)
+	opts := benchRunOptions(pkt)
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _, err := objs.XdpEdgeFilter.Test(pkt)
-		if err != nil {
+		if _, err := objs.XdpEdgeFilter.Run(opts); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -35,23 +40,7 @@ func BenchmarkXDP_passSYN_noFingerprint(b *testing.B) {
 func BenchmarkXDP_passSYN(b *testing.B) {
 	objs := loadBenchObjects(b)
 	pkt := buildSYNPacketBench(net.IPv4(10, 1, 2, 3), trackerPort)
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, _, err := objs.XdpEdgeFilter.Test(pkt)
-		if err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-// BenchmarkXDP_passSYN_run uses a reused output buffer (no per-iter alloc).
-func BenchmarkXDP_passSYN_run(b *testing.B) {
-	objs := loadBenchObjects(b)
-	pkt := buildSYNPacketBench(net.IPv4(10, 1, 2, 3), trackerPort)
-	out := make([]byte, len(pkt)+benchOutputPad)
-	opts := &ebpf.RunOptions{Data: pkt, DataOut: out, Repeat: 1}
+	opts := benchRunOptions(pkt)
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -69,12 +58,12 @@ func BenchmarkXDP_dropBlocklist(b *testing.B) {
 		b.Fatal(err)
 	}
 	pkt := buildSYNPacketBench(net.IPv4(10, 9, 8, 7), trackerPort)
+	opts := benchRunOptions(pkt)
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _, err := objs.XdpEdgeFilter.Test(pkt)
-		if err != nil {
+		if _, err := objs.XdpEdgeFilter.Run(opts); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -83,12 +72,12 @@ func BenchmarkXDP_dropBlocklist(b *testing.B) {
 func BenchmarkXDP_passPPSACK(b *testing.B) {
 	objs := loadBenchObjects(b)
 	pkt := buildACKPacketBench(net.IPv4(10, 2, 3, 4), trackerPort)
+	opts := benchRunOptions(pkt)
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _, err := objs.XdpEdgeFilter.Test(pkt)
-		if err != nil {
+		if _, err := objs.XdpEdgeFilter.Run(opts); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -98,12 +87,12 @@ func BenchmarkXDP_dropAnomaly(b *testing.B) {
 	objs := loadBenchObjects(b)
 	pkt := buildSYNPacketBench(net.IPv4(10, 3, 4, 5), trackerPort)
 	pkt[47] = 0x03 // SYN+FIN
+	opts := benchRunOptions(pkt)
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _, err := objs.XdpEdgeFilter.Test(pkt)
-		if err != nil {
+		if _, err := objs.XdpEdgeFilter.Run(opts); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -121,12 +110,12 @@ func BenchmarkXDP_dropNonTCP(b *testing.B) {
 	udp := pkt[34:]
 	udp[2] = byte(trackerPort >> 8)
 	udp[3] = byte(trackerPort & 0xff)
+	opts := benchRunOptions(pkt)
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _, err := objs.XdpEdgeFilter.Test(pkt)
-		if err != nil {
+		if _, err := objs.XdpEdgeFilter.Run(opts); err != nil {
 			b.Fatal(err)
 		}
 	}

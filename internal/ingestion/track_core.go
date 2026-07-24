@@ -25,12 +25,13 @@ type trackOutcome struct {
 
 // trackProcessor holds dependencies shared by HTTP and gnet /track handlers.
 type trackProcessor struct {
-	filterEngine  *FilterEngine
-	registry      campaignmodel.CampaignRegistry
-	creativeStore *BrandCreativeStore
-	rtbCatalog    *RtbCatalog
-	rtbMode       uint8
-	ingestGeo     GeoProvider
+	filterEngine    *FilterEngine
+	registry        campaignmodel.CampaignRegistry
+	creativeStore   *BrandCreativeStore
+	rtbCatalog      *RtbCatalog
+	rtbMode         uint8
+	settingsWatcher *SettingsWatcher
+	ingestGeo       GeoProvider
 }
 
 func newTrackProcessor(filterEngine *FilterEngine, registry campaignmodel.CampaignRegistry, creativeStore *BrandCreativeStore) trackProcessor {
@@ -48,8 +49,10 @@ func newTrackProcessor(filterEngine *FilterEngine, registry campaignmodel.Campai
 func processTrack(p trackProcessor, evt *campaignmodel.Event, deviceType []byte) trackOutcome {
 	ensureIngestGeo(p.ingestGeo, evt)
 	if out, handled := applyRtbAuction(p, evt, deviceType); handled {
+		releaseOpenRTB3Scratch(evt)
 		return out
 	}
+	releaseOpenRTB3Scratch(evt)
 	if p.filterEngine != nil {
 		if err := p.filterEngine.Check(context.Background(), evt); err != nil {
 			if kind, ok := classifyFilterErr(err); ok {

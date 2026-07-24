@@ -21,6 +21,9 @@ func TestShardUniversalOptions_direct(t *testing.T) {
 	if opts.PoolSize != 8 {
 		t.Fatalf("pool=%d", opts.PoolSize)
 	}
+	if opts.MaxActiveConns != 8 {
+		t.Fatalf("max_active=%d", opts.MaxActiveConns)
+	}
 	if opts.ReadTimeout.Milliseconds() != 12 || opts.WriteTimeout.Milliseconds() != 12 {
 		t.Fatalf("timeouts read=%s write=%s", opts.ReadTimeout, opts.WriteTimeout)
 	}
@@ -39,5 +42,22 @@ func TestShardUniversalOptions_sentinel(t *testing.T) {
 	}
 	if len(opts.Addrs) != 2 {
 		t.Fatalf("sentinel addrs=%v", opts.Addrs)
+	}
+}
+
+func TestShardUniversalOptions_stickyPinReserve(t *testing.T) {
+	cfg := &config.Config{
+		RedisAddrs:    []string{"127.0.0.1:6479"},
+		RedisPassword: "secret",
+	}
+	opts := shardUniversalOptions(cfg, 0, cfg.ResolveRedisMasterNames(), RedisShardOptions{
+		PoolSize:         8,
+		StickyPinWorkers: 16,
+	})
+	if opts.PoolSize != 24 {
+		t.Fatalf("pool=%d want 24", opts.PoolSize)
+	}
+	if opts.MaxActiveConns != 24 {
+		t.Fatalf("max_active=%d want 24", opts.MaxActiveConns)
 	}
 }

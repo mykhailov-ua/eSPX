@@ -211,7 +211,11 @@ func TestPreflightJSONSchema(t *testing.T) {
 }
 
 func TestGoldenRenderSystemd(t *testing.T) {
-	got, err := renderSystemdUnit(&InstallProfile{Type: ProfileSingleVPS, Interface: "eth0"})
+	got, err := renderSystemdUnit(&InstallProfile{
+		Type:          ProfileSingleVPS,
+		Interface:     "eth0",
+		IngressSchema: IngressSchemaOpenRTB3,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,6 +236,7 @@ func TestIdempotentApply(t *testing.T) {
 
 	profile := &InstallProfile{
 		Type:             ProfileComposeDev,
+		IngressSchema:    IngressSchemaOpenRTB3,
 		TelemetryEnabled: false,
 	}
 

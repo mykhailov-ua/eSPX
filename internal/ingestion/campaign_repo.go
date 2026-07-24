@@ -151,6 +151,9 @@ func campaignFromGetCampaignFullRow(row db.GetCampaignFullRow) *campaignmodel.Ca
 		camp.HEma = row.HEma.Float64
 		camp.CEma = row.CEma.Float64
 	}
+	if row.RoutingEpoch.Valid {
+		camp.RoutingEpoch = row.RoutingEpoch.Int64
+	}
 
 	return camp
 }
@@ -193,6 +196,7 @@ func campaignFromListActiveCampaignsRow(row db.ListActiveCampaignsRow) *campaign
 		DailyBudget:            row.DailyBudget,
 		DailyBudgetMicro:       dailyBudgetMicro,
 		DailyBudgetMicroAny:    dailyBudgetMicro,
+		ReserveMicro:           row.ReserveMicro,
 		Timezone:               row.Timezone,
 		Location:               loc,
 		FreqLimit:              row.FreqLimit.Int32,
@@ -222,6 +226,9 @@ func campaignFromListActiveCampaignsRow(row db.ListActiveCampaignsRow) *campaign
 		camp.ReserveShard = row.ReserveShard.Int16
 		camp.HEma = row.HEma.Float64
 		camp.CEma = row.CEma.Float64
+	}
+	if row.RoutingEpoch.Valid {
+		camp.RoutingEpoch = row.RoutingEpoch.Int64
 	}
 
 	return camp

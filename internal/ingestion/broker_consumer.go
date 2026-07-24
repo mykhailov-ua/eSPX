@@ -185,6 +185,7 @@ func (b *BrokerStreamConsumer) run(ctx context.Context) {
 			}
 			evt, parseErr := ParseBrokerPayload(iter.Payload)
 			if parseErr != nil {
+				// Poison payloads advance the consumer offset without store flush (skip/DLQ-at-offset policy).
 				metrics.BrokerIngestParseErrorsTotal.WithLabelValues(b.cfg.Topic, b.cfg.Group).Inc()
 				slog.Warn("broker payload parse failed", "group", b.cfg.Group, "offset", iter.Offset, "error", parseErr)
 				nextCommit = iter.Offset + 1

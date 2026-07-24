@@ -12,6 +12,7 @@ type candidateBucketSoA struct {
 	DeviceMasks           []uint8
 	CategoryMasks         []uint64
 	Weights               []uint32
+	BoostPPM              []uint32
 	BudgetIndices         []uint32
 	CustomerBudgetIndices []uint32
 }
@@ -35,6 +36,7 @@ func (soa *candidateBucketSoA) slicesValid(end int) bool {
 		end <= len(soa.DeviceMasks) &&
 		end <= len(soa.CategoryMasks) &&
 		end <= len(soa.Weights) &&
+		end <= len(soa.BoostPPM) &&
 		end <= len(soa.BudgetIndices) &&
 		end <= len(soa.CustomerBudgetIndices)
 }
@@ -52,6 +54,7 @@ func resetBucketSoA(soa *candidateBucketSoA) {
 	soa.DeviceMasks = soa.DeviceMasks[:0]
 	soa.CategoryMasks = soa.CategoryMasks[:0]
 	soa.Weights = soa.Weights[:0]
+	soa.BoostPPM = soa.BoostPPM[:0]
 	soa.BudgetIndices = soa.BudgetIndices[:0]
 	soa.CustomerBudgetIndices = soa.CustomerBudgetIndices[:0]
 }
@@ -67,6 +70,7 @@ func appendBucketCandidate(soa *candidateBucketSoA, reg *CampaignAuctionRegistry
 	soa.DeviceMasks = append(soa.DeviceMasks, reg.DeviceMasks[i])
 	soa.CategoryMasks = append(soa.CategoryMasks, reg.CategoryMasks[i])
 	soa.Weights = append(soa.Weights, reg.Weights[i])
+	soa.BoostPPM = append(soa.BoostPPM, reg.BoostPPM[i])
 	soa.BudgetIndices = append(soa.BudgetIndices, reg.BudgetIndices[i])
 	soa.CustomerBudgetIndices = append(soa.CustomerBudgetIndices, reg.CustomerBudgetIndices[i])
 }
@@ -85,6 +89,7 @@ func ensureBucketSoACap(soa *candidateBucketSoA, wantCap int) {
 		soa.DeviceMasks = make([]uint8, 0, wantCap)
 		soa.CategoryMasks = make([]uint64, 0, wantCap)
 		soa.Weights = make([]uint32, 0, wantCap)
+		soa.BoostPPM = make([]uint32, 0, wantCap)
 		soa.BudgetIndices = make([]uint32, 0, wantCap)
 		soa.CustomerBudgetIndices = make([]uint32, 0, wantCap)
 	}
@@ -100,6 +105,7 @@ func swapBucketSoA(soa *candidateBucketSoA, i, j int) {
 	soa.DeviceMasks[i], soa.DeviceMasks[j] = soa.DeviceMasks[j], soa.DeviceMasks[i]
 	soa.CategoryMasks[i], soa.CategoryMasks[j] = soa.CategoryMasks[j], soa.CategoryMasks[i]
 	soa.Weights[i], soa.Weights[j] = soa.Weights[j], soa.Weights[i]
+	soa.BoostPPM[i], soa.BoostPPM[j] = soa.BoostPPM[j], soa.BoostPPM[i]
 	soa.BudgetIndices[i], soa.BudgetIndices[j] = soa.BudgetIndices[j], soa.BudgetIndices[i]
 	soa.CustomerBudgetIndices[i], soa.CustomerBudgetIndices[j] = soa.CustomerBudgetIndices[j], soa.CustomerBudgetIndices[i]
 }

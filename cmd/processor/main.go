@@ -138,7 +138,7 @@ func main() {
 	chJanitor.StartBackground(ctx, 24*time.Hour)
 
 	var rdbs []redis.UniversalClient
-	rdbs, err = database.ConnectRedisShards(ctx, cfg, database.RedisShardOptions{
+	rdbs, _, err = database.ConnectRedisShards(ctx, cfg, database.RedisShardOptions{
 		PoolSize: cfg.RedisPoolSize,
 	})
 	if err != nil {
@@ -179,6 +179,7 @@ func main() {
 	var chConsumers []*ingestion.StreamConsumer
 	var brokerConsumers []*ingestion.BrokerStreamConsumer
 	var brokerReconcile *ingestion.BrokerReconcileWorker
+	var budgetDeltaConsumer *ingestion.BudgetDeltaConsumer
 	var syncWorkers []*ingestion.SyncWorker
 
 	for i, rdb := range rdbs {
@@ -264,6 +265,15 @@ func main() {
 		fc.Start(consumerCtx)
 	}
 
+	ingestion.StartFraudLagPublisher(
+		ctx,
+		rdbs,
+		cfg.FraudStreamName,
+		cfg.RedisGroupName+"_fraud",
+		cfg.FraudConsumerLagSec,
+		2*time.Second,
+	)
+
 	if cfg.BrokerEnabled() {
 		brokerRedisURL := cfg.Broker.RedisURL
 		if brokerRedisURL == "" && len(cfg.RedisAddrs) > 0 {
@@ -330,6 +340,26 @@ func main() {
 			"pg_group", cfg.RedisGroupName+"_pg_broker",
 			"ch_group", cfg.RedisGroupName+"_ch_broker",
 		)
+	}
+
+	if cfg.BrokerEnabled() && (cfg.LocalQuotaMode == "shadow" || cfg.LocalQuotaMode == "live") {
+		brokerRedisURL := cfg.Broker.RedisURL
+		if brokerRedisURL == "" && len(cfg.RedisAddrs) > 0 {
+			brokerRedisURL = "redis://" + cfg.RedisAddrs[0] + "/0"
+		}
+		budgetDeltaConsumer = ingestion.NewBudgetDeltaConsumer(
+			ingestion.NewBudgetDeltaAggregator(),
+			ingestion.BrokerConsumerConfig{
+				BrokerAddr: cfg.Broker.URL,
+				RedisURL:   brokerRedisURL,
+				Topic:      cfg.BudgetDeltaTopic,
+				Group:      cfg.RedisGroupName + "_budget_delta",
+				MaxBytes:   uint32(cfg.Broker.MaxBytes),
+				Timeout:    time.Duration(cfg.Broker.TimeoutMs) * time.Millisecond,
+			},
+		)
+		budgetDeltaConsumer.Start(consumerCtx)
+		slog.Info("budget delta consumer enabled", "topic", cfg.BudgetDeltaTopic)
 	}
 
 	slog.Info("starting ad-event-processor worker",
@@ -402,6 +432,9 @@ func main() {
 
 	for _, bc := range brokerConsumers {
 		bc.Close()
+	}
+	if budgetDeltaConsumer != nil {
+		budgetDeltaConsumer.Close()
 	}
 	if brokerReconcile != nil {
 		brokerReconcile.Close()

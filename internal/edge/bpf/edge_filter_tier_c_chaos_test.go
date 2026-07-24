@@ -2,7 +2,6 @@ package bpf
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"net"
 	"sync"
@@ -248,18 +247,7 @@ func TestChaos_XDPFingerprintExtremeTCPFields(t *testing.T) {
 	}
 
 	src := net.IPv4(203, 0, 113, 88)
-	pkt := buildSYNPacket(t, src, net.IPv4(10, 0, 0, 1), trackerPort)
-	tcp := pkt[34:]
-	binary.BigEndian.PutUint16(tcp[14:16], 0xffff) // max window
-	pkt[22] = 255                                  // max TTL
-	// MSS option: kind=2 len=4 value=0xffff
-	if len(pkt) < 58 {
-		t.Fatal("packet too short for MSS option test")
-	}
-	pkt[46] = 0x60 // doff=12 (48 bytes header) for option space
-	pkt[54] = 0x02 // MSS kind
-	pkt[55] = 0x04
-	binary.BigEndian.PutUint16(pkt[56:58], 0xffff)
+	pkt := buildSYNPacketWithMSS(t, src, net.IPv4(10, 0, 0, 1), trackerPort, 0xffff, 255, 0xffff)
 
 	ret := runXDP(t, objs.XdpEdgeFilter, pkt)
 	assert.Equal(t, uint32(2), ret)

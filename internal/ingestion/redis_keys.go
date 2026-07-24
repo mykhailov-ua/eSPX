@@ -22,6 +22,10 @@ func budgetCampaignKey(id uuid.UUID) string {
 	return campaignHashTag(id) + "budget:campaign:" + idStr
 }
 
+func budgetQuotaKey(id uuid.UUID) string {
+	return campaignHashTag(id) + "budget:quota:" + id.String()
+}
+
 // BudgetCampaignKey returns the Redis key for campaign budget.
 func BudgetCampaignKey(id uuid.UUID) string {
 	return budgetCampaignKey(id)

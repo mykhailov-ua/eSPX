@@ -28,6 +28,11 @@ func (registry *Registry) runAuction(req *BidRequest, spend bool) (AuctionResult
 		return AuctionResult{}, NoBidCorruptCatalog
 	}
 
+	if req.DealBlock != NoBidNone {
+		recordAuctionOutcome(start, req.DealBlock, 0)
+		return AuctionResult{}, req.DealBlock
+	}
+
 	bucket, bucketStart, bucketEnd, ok := registry.candidateRange(reg, req)
 	if !ok {
 		recordAuctionOutcome(start, NoBidNoCandidates, 0)
@@ -57,6 +62,7 @@ func (registry *Registry) runAuction(req *BidRequest, spend bool) (AuctionResult
 			recordAuctionOutcome(start, NoBidSpendFailed, scanned)
 			return AuctionResult{}, NoBidSpendFailed
 		}
+		recordBudgetSpendMirror(reg.CampaignIDs[winnerIdx], winnerBudgetIdx, price)
 	}
 
 	recordAuctionOutcome(start, NoBidNone, scanned)

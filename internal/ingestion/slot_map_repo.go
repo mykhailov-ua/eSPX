@@ -53,11 +53,19 @@ func (r *SlotMapRepo) GetActiveVersion(ctx context.Context) (int32, error) {
 	if r.pool == nil {
 		return 0, fmt.Errorf("slot map repo: nil pool")
 	}
-	meta, err := db.New(r.pool).GetSlotMapMeta(ctx)
+	meta, err := r.GetSlotMapMeta(ctx)
 	if err != nil {
 		return 0, err
 	}
 	return meta.ActiveVersion, nil
+}
+
+// GetSlotMapMeta returns active version and global routing epoch.
+func (r *SlotMapRepo) GetSlotMapMeta(ctx context.Context) (db.GetSlotMapMetaRow, error) {
+	if r.pool == nil {
+		return db.GetSlotMapMetaRow{}, fmt.Errorf("slot map repo: nil pool")
+	}
+	return db.New(r.pool).GetSlotMapMeta(ctx)
 }
 
 // ListVersion returns all slot rows for a map version ordered by slot index.

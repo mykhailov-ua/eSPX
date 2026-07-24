@@ -971,6 +971,67 @@
       "title": "Redis Breaker State & Lua Script Loaded (per shard)",
       "description": "Shard breaker open (1) and SCRIPT LOAD status; cross-check after Redis restart.",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 72 },
+      "id": 20,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "editorMode": "code",
+          "expr": "ad_fraud_stream_ring_fill_ratio",
+          "legendFormat": "ring_fill",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "editorMode": "code",
+          "expr": "ad_fraud_stream_pending",
+          "legendFormat": "pending",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "editorMode": "code",
+          "expr": "ad_fraud_stream_pel_age_seconds",
+          "legendFormat": "pel_age {{stream}} shard={{shard}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "editorMode": "code",
+          "expr": "rate(ad_fraud_stream_critical_drop_total[1m])",
+          "legendFormat": "critical_drop/s",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Fraud Stream Backlog (M14)",
+      "description": "Analytical ring fill, pending depth, PEL age per shard, critical-lane drop rate (GAP-OPS-04).",
+      "type": "timeseries"
     }
   ],
   "schemaVersion": 36,

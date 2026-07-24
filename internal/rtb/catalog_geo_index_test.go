@@ -21,6 +21,7 @@ func TestBuildGeoIndex_groupsByGeo(t *testing.T) {
 		CategoryMasks:         []uint64{1, 1, 1, 1},
 		GeoHashes:             []uint32{7, 7, 9, 9},
 		Weights:               []uint32{1, 2, 3, 4},
+		BoostPPM:              []uint32{CTRPPMUnit, CTRPPMUnit, CTRPPMUnit, CTRPPMUnit},
 		BudgetIndices:         []uint32{0, 1, 2, 3},
 		CustomerBudgetIndices: []uint32{invalidCustomerBudgetIdx, invalidCustomerBudgetIdx, invalidCustomerBudgetIdx, invalidCustomerBudgetIdx},
 	}

@@ -6,8 +6,9 @@ import (
 
 	"espx/internal/campaignmodel"
 	"espx/internal/config"
-	"espx/internal/ingestion/sqlc"
+	db "espx/internal/ingestion/sqlc"
 	"espx/internal/rtb"
+
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -38,7 +39,7 @@ func TestBuildRtbInputsFromRegistry_customerPoolAndHybridBid(t *testing.T) {
 	pools := buildCustomerBudgetPools([]*campaignmodel.Campaign{campA, campB})
 	assert.Equal(t, int64(1200), pools[customerID])
 
-	inputs := BuildRtbInputsFromRegistry(registry, cfg, metaByID, pools)
+	inputs := BuildRtbInputsFromRegistry(registry, cfg, metaByID, pools, nil, nil)
 	require.Contains(t, inputs, campA.ID)
 	assert.Equal(t, int64(300), inputs[campA.ID].BidMicro)
 	assert.Equal(t, uint32(100_000), inputs[campA.ID].CTRPPM)
@@ -61,7 +62,7 @@ func TestSyncRtbCatalog_hybridOverridesBid(t *testing.T) {
 		id: {campaign: camp, status: db.CampaignStatusTypeACTIVE},
 	}})
 
-	SyncRtbCatalog(context.Background(), registry, catalog, cfg, hybrid, RtbBudgetSync{})
+	SyncRtbCatalog(context.Background(), registry, catalog, cfg, hybrid, RtbBudgetSync{}, nil)
 
 	geo := GeoHashFromCountry("US")
 	res, reason := catalog.RunAuction(&campaignmodel.Event{}, RtbTargetingInput{

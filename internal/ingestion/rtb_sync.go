@@ -7,6 +7,7 @@ import (
 
 	"espx/internal/campaignmodel"
 	"espx/internal/config"
+
 	"github.com/google/uuid"
 )
 
@@ -89,6 +90,8 @@ func BuildRtbInputsFromRegistry(
 	cfg *config.Config,
 	metaByID map[uuid.UUID]*CampaignMeta,
 	customerPools map[uuid.UUID]int64,
+	hybrid *HybridBalancer,
+	boosts *FraudScoreBoostSnapshot,
 ) map[uuid.UUID]RtbCampaignInput {
 	if registry == nil || cfg == nil {
 		return nil
@@ -102,7 +105,7 @@ func BuildRtbInputsFromRegistry(
 		if camp == nil {
 			continue
 		}
-		out[camp.ID] = rtbInputForCampaign(camp, cfg, metaByID[camp.ID], customerPools[camp.CustomerID])
+		out[camp.ID] = rtbInputForCampaign(camp, cfg, metaByID[camp.ID], customerPools[camp.CustomerID], hybrid, boosts)
 	}
 	return out
 }
@@ -112,6 +115,8 @@ func rtbInputForCampaign(
 	cfg *config.Config,
 	meta *CampaignMeta,
 	customerBudget int64,
+	hybrid *HybridBalancer,
+	boosts *FraudScoreBoostSnapshot,
 ) RtbCampaignInput {
 	geo := firstTargetCountryGeo(camp)
 	pacing := PacingOpenFromManagement(camp.Status == campaignmodel.CampaignStatusActive)
@@ -120,26 +125,41 @@ func rtbInputForCampaign(
 	if dailyMicro <= 0 {
 		dailyMicro = camp.DailyBudget
 	}
+	weight := uint32(1)
+	if hybrid != nil {
+		weight = hybrid.WeightFor(camp.ID)
+	}
+	boostPPM := uint32(CTRPPMUnit)
+	if boosts != nil {
+		if b, ok := boosts.Boosts[camp.ID]; ok {
+			boostPPM = BoostPPMFromUint8(b)
+		}
+	}
 	if meta != nil {
-		return RtbCampaignInputFromHybrid(
+		inp := RtbCampaignInputFromHybrid(
 			meta,
 			geo,
 			rtbDeviceMaskAll,
 			defaultCategoryMask,
-			1,
+			weight,
 			pacing,
 			customerID,
 			customerBudget,
 			dailyMicro,
 		)
+		inp.ReserveMicro = camp.ReserveMicro
+		inp.BoostPPM = boostPPM
+		return inp
 	}
 	return RtbCampaignInput{
 		BidMicro:         defaultBidMicro(cfg),
 		CTRPPM:           CTRPPMUnit,
+		ReserveMicro:     camp.ReserveMicro,
 		DeviceMask:       rtbDeviceMaskAll,
 		CategoryMask:     defaultCategoryMask,
 		GeoHash:          geo,
-		Weight:           1,
+		Weight:           weight,
+		BoostPPM:         boostPPM,
 		PacingOpen:       pacing,
 		CustomerID:       customerID,
 		CustomerBudget:   customerBudget,
@@ -177,6 +197,7 @@ func SyncRtbCatalog(
 	cfg *config.Config,
 	hybrid *HybridBalancer,
 	budgetSync RtbBudgetSync,
+	watcher *SettingsWatcher,
 ) {
 	if registry == nil || catalog == nil || cfg == nil {
 		return
@@ -188,7 +209,8 @@ func SyncRtbCatalog(
 		hybrid.UpdateCampaigns(metas, utcSecondsElapsed(), rtbDaySeconds)
 	}
 	customerPools := buildCustomerBudgetPools(campaigns)
-	inputs := BuildRtbInputsFromRegistry(registry, cfg, metaByID, customerPools)
+	boosts := fraudBoostsFromWatcher(watcher)
+	inputs := BuildRtbInputsFromRegistry(registry, cfg, metaByID, customerPools, hybrid, boosts)
 	rows := BuildRtbCatalogRowsFromHybrid(campaigns, metaByID, inputs)
 	catalog.SyncCampaignRows(campaigns, rows)
 	SyncRTBBudgetState(ctx, catalog.Registry().Store(), campaigns, customerPools, budgetSync)
@@ -202,6 +224,7 @@ func StartRtbCatalogSync(
 	cfg *config.Config,
 	hybrid *HybridBalancer,
 	budgetSync RtbBudgetSync,
+	watcher *SettingsWatcher,
 	interval time.Duration,
 ) {
 	if registry == nil || catalog == nil || cfg == nil || interval <= 0 {
@@ -209,7 +232,7 @@ func StartRtbCatalogSync(
 	}
 	syncOnce := func() {
 		syncCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		SyncRtbCatalog(syncCtx, registry, catalog, cfg, hybrid, budgetSync)
+		SyncRtbCatalog(syncCtx, registry, catalog, cfg, hybrid, budgetSync, watcher)
 		cancel()
 	}
 	syncOnce()

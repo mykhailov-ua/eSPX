@@ -110,6 +110,7 @@ func BenchmarkUnifiedFilter_Check_FastPath_RealRedis(b *testing.B) {
 		10_000,
 	)
 	f.SetLuaFastPathEnabled(true)
+	f.SetFilterEvalPinWorkers(1)
 	f.SetTTCMin(0)
 	if err := f.PreloadScripts(ctx); err != nil {
 		b.Fatal(err)

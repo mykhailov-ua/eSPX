@@ -31,6 +31,8 @@ const (
 	filterRejectLicenseExpired
 	filterRejectDailyQuotaExceeded
 	filterRejectPlacementBlocked
+	filterRejectRegistryStale
+	filterRejectShardUnavailable
 )
 
 // filterRejectSpec holds the HTTP response template for a rejection kind.
@@ -60,6 +62,8 @@ var filterRejectSpecs = [...]filterRejectSpec{
 	filterRejectLicenseExpired:     {http.StatusForbidden, "license expired", respLicenseExpired, "license_expired"},
 	filterRejectDailyQuotaExceeded: {http.StatusTooManyRequests, "daily quota exceeded", respDailyQuotaExceeded, "daily_quota_exceeded"},
 	filterRejectPlacementBlocked:   {http.StatusForbidden, "placement blocked", respPlacementBlocked, "placement_blocked"},
+	filterRejectRegistryStale:      {http.StatusServiceUnavailable, "registry_stale", respRegistryStale, "registry_stale"},
+	filterRejectShardUnavailable:   {http.StatusServiceUnavailable, "shard_unavailable", respShardUnavailable, "shard_unavailable"},
 }
 
 // FraudReasonID indexes stable fraud signal codes shared by filters, metrics, and ClickHouse.
@@ -155,6 +159,10 @@ func classifyFilterErr(err error) (filterRejectKind, bool) {
 		return filterRejectSchedule, true
 	case errors.Is(err, ErrCampaignNotFound):
 		return filterRejectCampaignNotFound, true
+	case errors.Is(err, ErrRegistryStale):
+		return filterRejectRegistryStale, true
+	case errors.Is(err, ErrShardUnavailable):
+		return filterRejectShardUnavailable, true
 	case errors.Is(err, ErrBidFloorNotMet):
 		return filterRejectBidFloor, true
 	case errors.Is(err, ErrMigrationFenced):
@@ -231,6 +239,12 @@ func (m *preboundTrackMetrics) recordFilterReject(kind filterRejectKind) {
 	case filterRejectInfra:
 		m.blockedInfra.Inc()
 		m.decisionInfraUnavailable.Inc()
+	case filterRejectRegistryStale:
+		m.blockedRegistryStale.Inc()
+		m.decisionRegistryStale.Inc()
+	case filterRejectShardUnavailable:
+		m.blockedShardUnavailable.Inc()
+		m.decisionShardUnavailable.Inc()
 	case filterRejectLicenseExpired, filterRejectDailyQuotaExceeded:
 		// Not tracked in preboundTrackMetrics, handled via dynamic recordHTTPFilterReject
 	}
